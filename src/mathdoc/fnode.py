@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
-from email.policy import default
 from pathlib import Path
+import shlex
 from typing import Any
 from uuid import uuid4
 
@@ -31,10 +31,13 @@ class FileNode:
     depens: list[str] = field(default_factory=list)
     blocks: list[CodeBlock] = field(default_factory=list)
 
-    # @classmethod
-    # def create(cls, path: Path) -> "FileNode":
-    #     """Create a new node with an auto-generated unique id."""
-    #     return cls(fnode=str(uuid4()), path=path)
+    @classmethod
+    def create(cls, pstr: str = "", title: str = "") -> "FileNode":
+        """Create a new node with an auto-generated unique id."""
+        fnode = str(uuid4())
+        if not pstr:
+            pstr = f"data/{fnode}.mdoc"
+        return cls(path=Path(pstr), fnode=fnode, title=title)
 
     def add_block(self, codetype: str, content: str, *, metadata: dict[str, str]) -> CodeBlock:
         """Append a new content block and return it."""
@@ -124,76 +127,86 @@ class FileNode:
         depens: list[str] = []
         blocks: list[CodeBlock] = []
 
-        index = 0
-        while index < len(lines):
-            line = lines[index].strip()
-            index += 1
+        status = ""
+        for index, raw_line in enumerate(lines):
+            line = raw_line.strip()
 
             if not line:
                 continue
             # fnode and title must exist and be unique
             if line.startswith("@fnode:"):
+                if status:
+                    raise ValueError(
+                        f"line {index+1}: unexpected '@fnode' after {status} block in {self.path}")
                 if fnode:
-                    raise ValueError(f"Duplicate '@fnode' in {self.path}")
+                    raise ValueError(
+                        f"line {index+1}: Duplicate '@fnode' in {self.path}")
                 fnode = line.split(":", 1)[1].strip()
                 if not fnode:
                     raise ValueError(
-                        f"'@fnode' must be non-empty in {self.path}")
+                        f"line {index+1}: '@fnode' must be non-empty in {self.path}")
                 continue
             if line.startswith("@title:"):
+                if status:
+                    raise ValueError(
+                        f"line {index+1}: unexpected '@title' after {status} block in {self.path}")
                 if title:
-                    raise ValueError(f"Duplicate '@title' in {self.path}")
+                    raise ValueError(
+                        f"line {index+1}: Duplicate '@title' in {self.path}")
                 title = line.split(":", 1)[1].strip()
                 if not title:
                     raise ValueError(
-                        f"'@title' must be non-empty in {self.path}")
+                        f"line {index+1}: '@title' must be non-empty in {self.path}")
                 continue
-            # depen is optional but must be unique and non-empty if exists
+
+            # depens is optional but must be unique and non-empty if exists
             if line.startswith("@dep:"):
+                if status:
+                    raise ValueError(
+                        f"line {index+1}: unexpected '@dep' after {status} block in {self.path}")
                 if depens:
-                    raise ValueError(f"Duplicate '@dep' in {self.path}")
-                while index < len(lines):
-                    candidate = lines[index].strip()
-                    index += 1
-                    if candidate == "@end":
-                        break
-                    if not candidate:
-                        raise ValueError(
-                            f"Empty dependency entry in {self.path}")
-                    dep = candidate.split(":", 1)[0].strip()
-                    if not dep:
-                        raise ValueError(
-                            f"Invalid dependency format in {self.path}: '{candidate}'")
-                    depens.append(dep)
-                else:
                     raise ValueError(
-                        f"Missing '@end' for '@dep' block in {self.path}")
-                if not depens:
-                    raise ValueError(
-                        f"'@dep' block must be non-empty in {self.path}")
+                        f"line {index+1}: Duplicate '@dep' in {self.path}")
+                status = "@dep"
                 continue
             # src is optional and can have multiple blocks
             if line.startswith("@src:"):
-                codetype = line.split(":", 1)[1].strip()
-                content_lines: list[str] = []
-
-                while index < len(lines):
-                    candidate = lines[index]
-                    index += 1
-                    if candidate.strip() == "@end":
-                        break
-                    content_lines.append(candidate)
-                else:
+                if status:
                     raise ValueError(
-                        f"Missing '@end' for block '{codetype}' in {self.path}")
+                        f"line {index+1}: unexpected '@src' after {status} block in {self.path}")
+                codetype, metadata = self._parse_src_header(line)
+                blocks.append(CodeBlock(codetype=codetype,
+                              content="", metadata=metadata))
+                status = "@src"
+                continue
 
-                blocks.append(
-                    CodeBlock(
-                        codetype=codetype,
-                        content="\n".join(content_lines).rstrip("\n"),
-                    )
-                )
+            # get dep content
+            if status == "@dep":
+                if line == "@end":
+                    if not depens:
+                        raise ValueError(
+                            f"line {index+1}: '@dep' block must be non-empty in {self.path}")
+                    status = ""
+                    continue
+                dep = line.split(":", 1)[0].strip()
+                if not dep:
+                    raise ValueError(
+                        f"line {index+1}: Invalid dependency format in {self.path}: '{line}'")
+                depens.append(dep)
+                continue
+            # get src content
+            if status == "@src":
+                if line == "@end":
+                    status = ""
+                    continue
+                blocks[-1].content += raw_line + "\n"
+                continue
+            raise ValueError(
+                f"line {index+1}: Unrecognized line in {self.path}: '{line}'")
 
+        if status:
+            raise ValueError(
+                f"Unclosed block '{status}' in {self.path}")
         if not fnode:
             raise ValueError(
                 f"'@fnode' must exist and be non-empty in {self.path}")
@@ -228,7 +241,8 @@ class FileNode:
             output_lines.append("")
 
         for block in self.blocks:
-            output_lines.append(f"@src: {block.codetype}")
+            output_lines.append(self._format_src_header(
+                block.codetype, block.metadata))
             if block.content:
                 output_lines.extend(block.content.splitlines())
             output_lines.append("@end")
@@ -236,3 +250,43 @@ class FileNode:
 
         payload = "\n".join(output_lines).rstrip() + "\n"
         self.path.write_text(payload, encoding="utf-8")
+
+    @staticmethod
+    def _parse_src_header(line: str) -> tuple[str, dict[str, str]]:
+        """
+        Parse a src header line.
+
+        Example:
+        - @src: latex preamble="path"
+        - @src: lean version=4.2
+        """
+        payload = line.split(":", 1)[1].strip()
+        if not payload:
+            raise ValueError("Missing codetype after '@src:'.")
+
+        tokens = shlex.split(payload)
+        if not tokens:
+            raise ValueError("Invalid '@src' header.")
+
+        codetype = tokens[0]
+        metadata: dict[str, str] = {}
+        for token in tokens[1:]:
+            if "=" not in token:
+                raise ValueError(f"Invalid src metadata token: '{token}'")
+            key, value = token.split("=", 1)
+            key = key.strip()
+            if not key:
+                raise ValueError(f"Invalid src metadata token: '{token}'")
+            metadata[key] = value
+
+        return codetype, metadata
+
+    @staticmethod
+    def _format_src_header(codetype: str, metadata: dict[str, str]) -> str:
+        """Format a src header line for saving."""
+
+        if not metadata:
+            return f"@src: {codetype}"
+
+        meta_tokens = [f"{key}=\"{value}\"" for key, value in metadata.items()]
+        return f"@src: {codetype} " + " ".join(meta_tokens)
