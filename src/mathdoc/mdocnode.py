@@ -8,14 +8,14 @@ from .codeblock import CodeBlock
 
 
 @dataclass(slots=True)
-class FileNode:
+class MdocNode:
     """
     Core unit for a knowledge card file.
     - `fnode`: globally unique id for this card.
     - `title`: human readable title.
     - `path`: file path of the card.
     - `blocks`: one or more code/text blocks (natural language, LaTeX, C++, etc).
-    - `depens`: other FileNode ids this node depends on.
+    - `depens`: other MdocNode ids this node depends on.
     """
 
     path: Path
@@ -25,12 +25,11 @@ class FileNode:
     blocks: list[CodeBlock] = field(default_factory=list)
 
     @classmethod
-    def create(cls, pstr: str = "", title: str = "Untitled") -> "FileNode":
+    def create(cls, folder: str = ".", title: str = "Untitled") -> "MdocNode":
         """Create a new node with an auto-generated unique id."""
         fnode = str(uuid4())
-        if not pstr:
-            pstr = f"data/{fnode}.mdoc"
-        return cls(path=Path(pstr), fnode=fnode, title=title)
+        path = f"{folder}/{fnode}.mdoc"
+        return cls(path=Path(path).resolve(), fnode=fnode, title=title)
 
     def add_block(self, codetype: str, content: str, *, metadata: dict[str, str] = {}) -> CodeBlock:
         """Append a new content block and return it."""
@@ -47,12 +46,12 @@ class FileNode:
         del self.blocks[index]
 
     def add_dependency(self, dep_fnode: str) -> None:
-        """Register a dependency by FileNode id."""
+        """Register a dependency by MdocNode id."""
         if dep_fnode not in self.depens:
             self.depens.append(dep_fnode)
 
     def rmv_dependency(self, dep_fnode: str) -> None:
-        """Unregister a dependency by FileNode id."""
+        """Unregister a dependency by MdocNode id."""
         if dep_fnode in self.depens:
             self.depens.remove(dep_fnode)
 
@@ -78,15 +77,15 @@ class FileNode:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "FileNode":
+    def from_dict(cls, data: dict[str, Any]) -> "MdocNode":
         """
-        Build an FileNode from dict data.
+        Build an MdocNode from dict data.
 
         TODO: add strict input validation and migration for old schema.
         """
         raw_path = data.get("path")
         if not raw_path:
-            raise ValueError("FileNode.from_dict requires 'path'.")
+            raise ValueError("MdocNode.from_dict requires 'path'.")
 
         raw_id = data.get("fnode")
         node = cls(
