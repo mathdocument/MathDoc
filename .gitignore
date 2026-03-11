@@ -1,0 +1,5 @@
+.*
+!.gitignore
+
+# builds 
+__pycache__/
