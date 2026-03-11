@@ -1,17 +1,10 @@
-from dataclasses import dataclass, field
-from pathlib import Path
 import shlex
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
+from dataclasses import dataclass, field
 
-
-@dataclass(slots=True)
-class CodeBlock:
-    """A typed content block in a knowledge card."""
-
-    codetype: str
-    content: str
-    metadata: dict[str, str] = field(default_factory=dict)
+from .codeblock import CodeBlock
 
 
 @dataclass(slots=True)
@@ -32,14 +25,14 @@ class FileNode:
     blocks: list[CodeBlock] = field(default_factory=list)
 
     @classmethod
-    def create(cls, pstr: str = "", title: str = "") -> "FileNode":
+    def create(cls, pstr: str = "", title: str = "Untitled") -> "FileNode":
         """Create a new node with an auto-generated unique id."""
         fnode = str(uuid4())
         if not pstr:
             pstr = f"data/{fnode}.mdoc"
         return cls(path=Path(pstr), fnode=fnode, title=title)
 
-    def add_block(self, codetype: str, content: str, *, metadata: dict[str, str]) -> CodeBlock:
+    def add_block(self, codetype: str, content: str, *, metadata: dict[str, str] = {}) -> CodeBlock:
         """Append a new content block and return it."""
         block = CodeBlock(
             codetype=codetype,
@@ -197,9 +190,12 @@ class FileNode:
             # get src content
             if status == "@src":
                 if line == "@end":
+                    if not blocks[-1].content.strip():
+                        raise ValueError(
+                            f"line {index+1}: '@src' block must be non-empty in {self.path}")
                     status = ""
                     continue
-                blocks[-1].content += raw_line + "\n"
+                blocks[-1].content += raw_line.rstrip() + "\n"
                 continue
             raise ValueError(
                 f"line {index+1}: Unrecognized line in {self.path}: '{line}'")
