@@ -169,6 +169,10 @@ class MdocNode:
                     raise ValueError(
                         f"line {index+1}: unexpected '@src' after {status} block in {self.path}")
                 codetype, metadata = self._parse_src_header(line)
+                for block in blocks:
+                    if codetype == block.codetype:
+                        raise ValueError(
+                            f"line {index+1}: Duplicate '@src' codetype '{codetype}' in {self.path}")
                 blocks.append(CodeBlock(codetype=codetype,
                               content="", metadata=metadata))
                 status = "@src"

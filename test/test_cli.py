@@ -2,6 +2,7 @@ import os
 import pty
 import re
 import select
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -127,6 +128,48 @@ def _rewrite_title(mdoc_path: str, new_title: str) -> None:
     path.write_text(updated, encoding="utf-8")
 
 
+def _append_src_block(mdoc_path: str, codetype: str, body: str) -> None:
+    path = Path(mdoc_path)
+    text = path.read_text(encoding="utf-8")
+    if not text.endswith("\n"):
+        text += "\n"
+    text += f"@src: {codetype}\n"
+    if body:
+        for line in body.splitlines():
+            text += f"{line}\n"
+    text += "@end\n\n"
+    path.write_text(text, encoding="utf-8")
+
+
+def _write_fake_imgcat(bin_dir: Path) -> None:
+    script = bin_dir / "imgcat"
+    script.write_text(
+        "#!/bin/sh\n"
+        "file=''\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  case \"$1\" in\n"
+        "    --width|--height)\n"
+        "      shift 2\n"
+        "      ;;\n"
+        "    --*)\n"
+        "      shift\n"
+        "      ;;\n"
+        "    *)\n"
+        "      file=\"$1\"\n"
+        "      break\n"
+        "      ;;\n"
+        "  esac\n"
+        "done\n"
+        "if [ -z \"$file\" ]; then\n"
+        "  exit 2\n"
+        "fi\n"
+        "cat \"$file\" >/dev/null || exit 1\n"
+        "printf '\\033]1337;File=name=fake.png;inline=1:RkFLRQ==\\a\\n'\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+
+
 class TestMdcCli(unittest.TestCase):
     def test_init_new_search_and_path_boundary(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_basic.") as tmp:
@@ -167,6 +210,71 @@ class TestMdcCli(unittest.TestCase):
             search_fnode = _run_cli(["search", fnode_1[:8]], repo)
             self.assertEqual(search_fnode.returncode, 0, search_fnode.stdout + search_fnode.stderr)
             self.assertIn("Linear Algebra", search_fnode.stdout)
+
+    def test_eval_runs_natl_and_py_blocks(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_eval_ok.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_src = _run_cli(["new", "-t", "Eval Source", "-f", "."], repo)
+            self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
+            _, src_path = _extract_created_mdoc(new_src.stdout)
+
+            _append_src_block(src_path, "natl", "hello from natl")
+            _append_src_block(src_path, "py", "print('hello from py')")
+
+            eval_run = _run_cli(["eval", src_path], repo)
+            self.assertEqual(eval_run.returncode, 0, eval_run.stdout + eval_run.stderr)
+            self.assertIn("blocks: 2", eval_run.stdout)
+            self.assertIn("[1] natl: ok", eval_run.stdout)
+            self.assertIn("hello from natl", eval_run.stdout)
+            self.assertIn("[2] py: ok", eval_run.stdout)
+            self.assertIn("hello from py", eval_run.stdout)
+            self.assertIn("failed: 0", eval_run.stdout)
+
+    def test_eval_returns_nonzero_when_py_block_fails(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_eval_fail.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_src = _run_cli(["new", "-t", "Eval Failing Source", "-f", "."], repo)
+            self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
+            _, src_path = _extract_created_mdoc(new_src.stdout)
+
+            _append_src_block(src_path, "py", "raise RuntimeError('boom')")
+
+            eval_run = _run_cli(["eval", src_path], repo)
+            self.assertEqual(eval_run.returncode, 1)
+            self.assertIn("[1] py: failed (1)", eval_run.stdout)
+            self.assertIn("boom", eval_run.stdout)
+            self.assertIn("failed: 1", eval_run.stdout)
+
+    def test_eval_runs_latex_block_with_xelatex(self) -> None:
+        required = ("xelatex", "pdftoppm")
+        missing = [name for name in required if shutil.which(name) is None]
+        if missing:
+            self.skipTest(f"missing tools: {', '.join(missing)}")
+
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_eval_latex.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_src = _run_cli(["new", "-t", "Eval Latex Source", "-f", "."], repo)
+            self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
+            _, src_path = _extract_created_mdoc(new_src.stdout)
+
+            _append_src_block(src_path, "latex", r"$\int_0^1 x^2\,dx=\frac{1}{3}$")
+
+            bin_dir = repo / "bin"
+            bin_dir.mkdir(parents=True, exist_ok=True)
+            _write_fake_imgcat(bin_dir)
+            env_extra = {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+            eval_run = _run_cli(["eval", src_path], repo, env_extra=env_extra)
+            self.assertEqual(eval_run.returncode, 0, eval_run.stdout + eval_run.stderr)
+            self.assertIn("[1] latex: ok", eval_run.stdout)
+            self.assertIn("artifact tex:", eval_run.stdout)
+            self.assertIn("artifact pdf:", eval_run.stdout)
+            self.assertIn("\x1b]1337;File=name=fake.png;inline=1:", eval_run.stdout)
 
     def test_dep_add_show_rm_interactive(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_dep.") as tmp:

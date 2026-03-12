@@ -8,6 +8,8 @@ from pathlib import Path
 from .indcache import IndCache
 from .mdocnode import MdocNode
 from .utils import (
+    STYLE,
+    colorize,
     find_mdoc_root,
     format_mdoc_item,
     load_mdoc_from_ref,
@@ -98,6 +100,57 @@ def _cmd_search(args: argparse.Namespace) -> int:
         print(format_mdoc_item(fnode, title, rel_path))
 
     return 0
+
+
+def _cmd_eval(args: argparse.Namespace) -> int:
+    mdoc_root = _get_mdoc_root_or_none()
+    if mdoc_root is None:
+        return 1
+
+    cache = IndCache(mdoc_root)
+    cache.bootstrap_if_needed()
+    try:
+        node, src_rel = load_mdoc_from_ref(cache, args.source)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        print(f"Error: failed to load mdoc: {exc}")
+        return 1
+
+    print(
+        f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
+    if not node.blocks:
+        print("No blocks to eval")
+        return 0
+
+    print(f"blocks: {len(node.blocks)}")
+    print("result:")
+    failed = 0
+    for index, block in enumerate(node.blocks, start=1):
+        result = block.compile(mdoc_root=mdoc_root)
+        if result.ok:
+            print(colorize(f"[{index}] {block.codetype}: ok", STYLE["grn"]))
+        else:
+            failed += 1
+            print(
+                colorize(
+                    f"[{index}] {block.codetype}: failed ({result.returncode})",
+                    STYLE["red"],
+                )
+            )
+
+        if result.stdout:
+            for line in result.stdout.rstrip("\n").splitlines():
+                if line.startswith("\x1b"):
+                    print(f"  {line}")
+                else:
+                    print(f"  {line}")
+        if result.stderr:
+            for line in result.stderr.rstrip("\n").splitlines():
+                print(f"  ! {line}")
+        print("")
+
+    summary_color = STYLE["grn"] if failed == 0 else STYLE["red"]
+    print(colorize(f"failed: {failed}", summary_color))
+    return 1 if failed else 0
 
 
 def _cmd_dep_add(args: argparse.Namespace) -> int:
@@ -234,7 +287,7 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
 
     if not node.depens:
         print(
-                f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
+            f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
         print("No dependencies to remove")
         return 0
 
@@ -276,7 +329,8 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
         refreshed = refreshed_by_fnode.get(dep_fnode)
         if refreshed is None:
             continue
-        selected_rows_by_fnode[dep_fnode] = (dep_fnode, refreshed[0], refreshed[1])
+        selected_rows_by_fnode[dep_fnode] = (
+            dep_fnode, refreshed[0], refreshed[1])
 
     old_len = len(node.depens)
     node.depens = [dep for dep in node.depens if dep not in selected_set]
@@ -386,6 +440,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "search", help="Search mdocs by title or fnode")
     search_parser.add_argument("query", help="Query by title or fnode")
     search_parser.set_defaults(func=_cmd_search)
+
+    eval_parser = subparsers.add_parser(
+        "eval", help="Compile and run all blocks in a mdoc")
+    eval_parser.add_argument(
+        "source",
+        help="Source mdoc to evaluate (fnode or .mdoc path)",
+    )
+    eval_parser.set_defaults(func=_cmd_eval)
 
     dep_parser = subparsers.add_parser("dep", help="Manage mdoc dependencies")
     dep_subparsers = dep_parser.add_subparsers(

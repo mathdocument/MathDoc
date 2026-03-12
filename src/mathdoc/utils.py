@@ -9,19 +9,24 @@ from pathlib import Path
 from .indcache import IndCache
 from .mdocnode import MdocNode
 
-ANSI_RESET = "\x1b[0m"
-ANSI_BOLD = "\x1b[1m"
-FG_BLACK = "\x1b[30m"
-FG_WHITE = "\x1b[37m"
-FG_RED = "\x1b[31m"
-FG_ORANGE = "\x1b[38;5;208m"
-FG_YELLOW = "\x1b[33m"
-FG_GREEN = "\x1b[32m"
-FG_CYAN = "\x1b[36m"
-FG_BLUE = "\x1b[34m"
-FG_PURPLE = "\x1b[35m"
-GLYPH_UNSELECTED = "\U000F0131"
-GLYPH_SELECTED = "\U000F0136"
+STYLE: dict[str, str] = {
+    # ANSI style/color codes (aligned with user's shell env naming)
+    "rst": "\033[0m",
+    "bld": "\033[1m",
+    "udl": "\033[4m",
+    "blk": "\033[30m",
+    "wht": "\033[37m",
+    "red": "\033[31m",
+    "org": "\033[38;5;208m",
+    "ylw": "\033[33m",
+    "grn": "\033[32m",
+    "cyn": "\033[36m",
+    "blu": "\033[34m",
+    "ppl": "\033[35m",
+    # Nerd font symbols
+    "glyph_unselected": "\U000F0131",
+    "glyph_selected": "\U000F0C52",
+}
 
 
 def short_fnode(fnode: str) -> str:
@@ -64,10 +69,12 @@ def _supports_color() -> bool:
     return term not in ("", "dumb") and os.environ.get("NO_COLOR") is None
 
 
-def _style(text: str, codes: tuple[str, ...], enabled: bool) -> str:
+def colorize(text: str, *codes: str, enabled: bool | None = None) -> str:
+    if enabled is None:
+        enabled = _supports_color() and sys.stdout.isatty()
     if not enabled or not codes:
         return text
-    return "".join(codes) + text + ANSI_RESET
+    return "".join(codes) + text + STYLE["rst"]
 
 
 def _read_next_byte(fd: int, timeout_sec: float) -> bytes:
@@ -99,7 +106,7 @@ def _read_key(fd: int) -> str:
     if lower in keymap:
         return keymap[lower]
 
-    if ch == b"\x1b":
+    if ch == b"\033":
         second = _read_next_byte(fd, 0.01)
         if second != b"[":
             return "quit"
@@ -132,11 +139,11 @@ def _clip(text: str, width: int) -> str:
 def _render_block(lines: list[str], prev_count: int) -> int:
     out: list[str] = []
     if prev_count > 0:
-        out.append(f"\x1b[{prev_count}A")
+        out.append(f"\033[{prev_count}A")
 
     total = max(prev_count, len(lines))
     for idx in range(total):
-        out.append("\r\x1b[2K")
+        out.append("\r\033[2K")
         if idx < len(lines):
             out.append(lines[idx])
         out.append("\n")
@@ -151,7 +158,7 @@ def _clear_block(prev_count: int) -> None:
         return
     # Move to the block start and delete those lines so terminal content
     # below shifts up instead of leaving cleared blank lines.
-    out: list[str] = [f"\x1b[{prev_count}A", "\r", f"\x1b[{prev_count}M"]
+    out: list[str] = [f"\033[{prev_count}A", "\r", f"\033[{prev_count}M"]
     sys.stdout.write("".join(out))
     sys.stdout.flush()
 
@@ -174,7 +181,7 @@ def select_indices_interactive(matches: list[tuple[str, str, str]]) -> list[int]
 
     try:
         tty.setraw(fd)
-        sys.stdout.write("\x1b[?25l")
+        sys.stdout.write("\033[?25l")
         sys.stdout.flush()
 
         while True:
@@ -196,8 +203,10 @@ def select_indices_interactive(matches: list[tuple[str, str, str]]) -> list[int]
                 header_title = "Select deps:"
                 header_hint = header_plain[len(header_title):]
                 lines.append(
-                    _style(header_title, (ANSI_BOLD, FG_CYAN), True)
-                    + _style(header_hint, (FG_WHITE,), True)
+                    colorize(
+                        header_title, STYLE["bld"], STYLE["cyn"], enabled=True
+                    )
+                    + colorize(header_hint, STYLE["wht"], enabled=True)
                 )
             else:
                 lines.append(header_plain)
@@ -206,22 +215,32 @@ def select_indices_interactive(matches: list[tuple[str, str, str]]) -> list[int]
             for item_index in range(top, end):
                 fnode, title, path = matches[item_index]
                 marker = ">>" if item_index == current else "  "
-                checked = GLYPH_SELECTED if item_index in selected else GLYPH_UNSELECTED
+                checked = (
+                    STYLE["glyph_selected"]
+                    if item_index in selected
+                    else STYLE["glyph_unselected"]
+                )
                 raw_line = f"{marker} {item_index + 1:>3}. {checked} {short_fnode(fnode)}  {title}  ({path})"
                 line = _clip(raw_line, width)
-                base_codes: tuple[str, ...] = (FG_BLUE,) if item_index in selected else ()
+                base_codes: tuple[str, ...] = (
+                    STYLE["blu"],) if item_index in selected else ()
                 if item_index == current:
-                    lines.append(_style(line, (ANSI_BOLD, *base_codes), use_color))
+                    lines.append(
+                        colorize(
+                            line, STYLE["bld"], *base_codes, enabled=use_color
+                        )
+                    )
                 else:
-                    lines.append(_style(line, base_codes, use_color))
+                    lines.append(
+                        colorize(line, *base_codes, enabled=use_color))
 
             if len(matches) > max_visible:
                 lines.append(
-                    _style(
+                    colorize(
                         _clip(
                             f"showing {top + 1}-{end} of {len(matches)}", width),
-                        (FG_BLUE,),
-                        use_color,
+                        STYLE["blu"],
+                        enabled=use_color,
                     )
                 )
 
@@ -229,7 +248,11 @@ def select_indices_interactive(matches: list[tuple[str, str, str]]) -> list[int]
                 f"selected {len(selected)}/{len(matches)}",
                 width,
             )
-            lines.append(_style(footer, (ANSI_BOLD, FG_CYAN), use_color))
+            lines.append(
+                colorize(
+                    footer, STYLE["bld"], STYLE["cyn"], enabled=use_color
+                )
+            )
 
             rendered_lines = _render_block(lines, rendered_lines)
 
@@ -262,5 +285,5 @@ def select_indices_interactive(matches: list[tuple[str, str, str]]) -> list[int]
                 return None
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-        sys.stdout.write("\x1b[?25h")
+        sys.stdout.write("\033[?25h")
         sys.stdout.flush()
