@@ -217,6 +217,32 @@ def _upsert_mdoc_row(conn: sqlite3.Connection, root: Path, file_path: Path) -> N
     conn.commit()
 
 
+def _refresh_accessed_dep_rows(
+    conn: sqlite3.Connection,
+    root: Path,
+    rows: list[tuple[str, str, str]],
+    action: str,
+) -> None:
+    rel_paths: list[str] = []
+    seen_paths: set[str] = set()
+    for _, _, rel_path in rows:
+        if rel_path.startswith("<") and rel_path.endswith(">"):
+            continue
+        if rel_path in seen_paths:
+            continue
+        seen_paths.add(rel_path)
+        rel_paths.append(rel_path)
+
+    warned = False
+    for rel_path in rel_paths:
+        try:
+            _upsert_mdoc_row(conn, root, root / rel_path)
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            if not warned:
+                _warn_index_failure(action, exc)
+                warned = True
+
+
 def _search_mdocs(conn: sqlite3.Connection, query: str) -> list[tuple[str, str, str]]:
     query_lc = query.casefold()
     like = f"%{query_lc}%"
@@ -661,9 +687,8 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
             print(f"Error: {exc}")
             return 1
         matches = _search_mdocs(conn, query)
-
-    matches = [row for row in matches if row[0] != node.fnode]
-    matches = matches[:args.max_results]
+        matches = [row for row in matches if row[0] != node.fnode]
+        matches = matches[:args.max_results]
     if not matches:
         print(f"No dependency candidates for: {args.query}")
         return 0
@@ -683,6 +708,22 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
 
     selected_rows = [matches[idx] for idx in selected_indices]
     selected_by_fnode = {row[0]: row for row in selected_rows}
+    selected_fnodes = list(selected_by_fnode.keys())
+
+    with _open_indexed_conn(mdoc_root) as conn:
+        _refresh_accessed_dep_rows(
+            conn,
+            mdoc_root,
+            list(selected_by_fnode.values()),
+            "dependencies were inspected",
+        )
+        refreshed_by_fnode = _lookup_mdocs_by_fnode(conn, selected_fnodes)
+
+    for dep_fnode in selected_fnodes:
+        refreshed = refreshed_by_fnode.get(dep_fnode)
+        if refreshed is None:
+            continue
+        selected_by_fnode[dep_fnode] = (dep_fnode, refreshed[0], refreshed[1])
 
     added: list[str] = []
     skipped_existing: list[str] = []
@@ -731,6 +772,14 @@ def _cmd_dep_show(args: argparse.Namespace) -> int:
             return 1
 
         dep_rows = _dep_rows_from_fnode_list(conn, node.depens)
+        if dep_rows:
+            _refresh_accessed_dep_rows(
+                conn,
+                mdoc_root,
+                dep_rows,
+                "dependencies were inspected",
+            )
+            dep_rows = _dep_rows_from_fnode_list(conn, node.depens)
 
     print(
         f"source: {_format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
@@ -776,12 +825,30 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
 
     selected_fnodes: list[str] = []
     selected_set: set[str] = set()
+    selected_rows_by_fnode: dict[str, tuple[str, str, str]] = {}
     for idx in selected_indices:
-        dep_fnode = dep_rows[idx][0]
+        row = dep_rows[idx]
+        dep_fnode = row[0]
         if dep_fnode in selected_set:
             continue
         selected_set.add(dep_fnode)
         selected_fnodes.append(dep_fnode)
+        selected_rows_by_fnode[dep_fnode] = row
+
+    with _open_indexed_conn(mdoc_root) as conn:
+        _refresh_accessed_dep_rows(
+            conn,
+            mdoc_root,
+            list(selected_rows_by_fnode.values()),
+            "dependencies were inspected",
+        )
+        refreshed_by_fnode = _lookup_mdocs_by_fnode(conn, selected_fnodes)
+
+    for dep_fnode in selected_fnodes:
+        refreshed = refreshed_by_fnode.get(dep_fnode)
+        if refreshed is None:
+            continue
+        selected_rows_by_fnode[dep_fnode] = (dep_fnode, refreshed[0], refreshed[1])
 
     old_len = len(node.depens)
     node.depens = [dep for dep in node.depens if dep not in selected_set]
@@ -799,9 +866,8 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
     print(
         f"source: {_format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
     print(f"removed: {removed_count}")
-    dep_row_by_fnode = {row[0]: row for row in dep_rows}
     for dep_fnode in selected_fnodes:
-        row = dep_row_by_fnode.get(dep_fnode)
+        row = selected_rows_by_fnode.get(dep_fnode)
         if row is None:
             continue
         print(_format_mdoc_item(row[0], row[1], row[2], marker="-"))

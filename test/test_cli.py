@@ -113,6 +113,20 @@ def _extract_created_mdoc(output: str) -> tuple[str, str]:
     return fnode_match.group(1), path_match.group(1)
 
 
+def _rewrite_title(mdoc_path: str, new_title: str) -> None:
+    path = Path(mdoc_path)
+    content = path.read_text(encoding="utf-8")
+    updated = re.sub(
+        r"(?m)^@title:\s*.*$",
+        f"@title: {new_title}",
+        content,
+        count=1,
+    )
+    if updated == content:
+        raise AssertionError(f"Failed to rewrite title for {mdoc_path}")
+    path.write_text(updated, encoding="utf-8")
+
+
 class TestMdcCli(unittest.TestCase):
     def test_init_new_search_and_path_boundary(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_basic.") as tmp:
@@ -221,6 +235,105 @@ class TestMdcCli(unittest.TestCase):
                 child_search_parent.returncode, 0, child_search_parent.stdout + child_search_parent.stderr
             )
             self.assertIn("No results for: Parent Only", child_search_parent.stdout)
+
+    def test_dep_show_refreshes_accessed_dependency_index(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_show_refresh.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_src = _run_cli(["new", "-t", "Source For Show", "-f", "."], repo)
+            self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
+            _, src_path = _extract_created_mdoc(new_src.stdout)
+
+            new_dep = _run_cli(["new", "-t", "Show Dep Old", "-f", "."], repo)
+            self.assertEqual(new_dep.returncode, 0, new_dep.stdout + new_dep.stderr)
+            _, dep_path = _extract_created_mdoc(new_dep.stdout)
+
+            rc_add, out_add = _run_cli_tty(["dep", "add", src_path, "Show Dep Old"], repo, b" \r")
+            self.assertEqual(rc_add, 0, out_add)
+            self.assertIn("added: 1", out_add)
+
+            _rewrite_title(dep_path, "Show Dep New")
+
+            show_run = _run_cli(["dep", "show", src_path], repo)
+            self.assertEqual(show_run.returncode, 0, show_run.stdout + show_run.stderr)
+            self.assertIn("Show Dep New", show_run.stdout)
+
+            search_new = _run_cli(["search", "Show Dep New"], repo)
+            self.assertEqual(search_new.returncode, 0, search_new.stdout + search_new.stderr)
+            self.assertIn("Show Dep New", search_new.stdout)
+
+    def test_dep_add_refreshes_accessed_dependency_index(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_add_refresh.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_src = _run_cli(["new", "-t", "Source For Add", "-f", "."], repo)
+            self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
+            _, src_path = _extract_created_mdoc(new_src.stdout)
+
+            dep1_new = _run_cli(["new", "-t", "Add Old One", "-f", "."], repo)
+            self.assertEqual(dep1_new.returncode, 0, dep1_new.stdout + dep1_new.stderr)
+            _, dep1_path = _extract_created_mdoc(dep1_new.stdout)
+
+            dep2_new = _run_cli(["new", "-t", "Add Old Two", "-f", "."], repo)
+            self.assertEqual(dep2_new.returncode, 0, dep2_new.stdout + dep2_new.stderr)
+            _, dep2_path = _extract_created_mdoc(dep2_new.stdout)
+
+            _rewrite_title(dep1_path, "Add New One")
+            _rewrite_title(dep2_path, "Add New Two")
+
+            rc_add, out_add = _run_cli_tty(["dep", "add", src_path, "Add Old"], repo, b" \r")
+            self.assertEqual(rc_add, 0, out_add)
+            self.assertIn("added: 1", out_add)
+
+            search_new = _run_cli(["search", "Add New"], repo)
+            self.assertEqual(search_new.returncode, 0, search_new.stdout + search_new.stderr)
+            self.assertIn("results: 1", search_new.stdout)
+            self.assertTrue(
+                ("Add New One" in search_new.stdout) ^ ("Add New Two" in search_new.stdout),
+                search_new.stdout,
+            )
+
+    def test_dep_rm_refreshes_accessed_dependency_index(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_rm_refresh.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_src = _run_cli(["new", "-t", "Source For Rm", "-f", "."], repo)
+            self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
+            _, src_path = _extract_created_mdoc(new_src.stdout)
+
+            dep1_new = _run_cli(["new", "-t", "Rm Old One", "-f", "."], repo)
+            self.assertEqual(dep1_new.returncode, 0, dep1_new.stdout + dep1_new.stderr)
+            _, dep1_path = _extract_created_mdoc(dep1_new.stdout)
+
+            dep2_new = _run_cli(["new", "-t", "Rm Old Two", "-f", "."], repo)
+            self.assertEqual(dep2_new.returncode, 0, dep2_new.stdout + dep2_new.stderr)
+            _, dep2_path = _extract_created_mdoc(dep2_new.stdout)
+
+            rc_add_1, out_add_1 = _run_cli_tty(["dep", "add", src_path, "Rm Old One"], repo, b" \r")
+            self.assertEqual(rc_add_1, 0, out_add_1)
+            self.assertIn("added: 1", out_add_1)
+
+            rc_add_2, out_add_2 = _run_cli_tty(["dep", "add", src_path, "Rm Old Two"], repo, b" \r")
+            self.assertEqual(rc_add_2, 0, out_add_2)
+            self.assertIn("added: 1", out_add_2)
+
+            _rewrite_title(dep1_path, "Rm New One")
+            _rewrite_title(dep2_path, "Rm New Two")
+
+            rc_rm, out_rm = _run_cli_tty(["dep", "rm", src_path], repo, b" \r")
+            self.assertEqual(rc_rm, 0, out_rm)
+            self.assertIn("removed: 1", out_rm)
+
+            search_new = _run_cli(["search", "Rm New"], repo)
+            self.assertEqual(search_new.returncode, 0, search_new.stdout + search_new.stderr)
+            self.assertIn("results: 1", search_new.stdout)
+            self.assertTrue(
+                ("Rm New One" in search_new.stdout) ^ ("Rm New Two" in search_new.stdout),
+                search_new.stdout,
+            )
 
     def test_incremental_index_with_edit_and_sync(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_incremental.") as tmp:
