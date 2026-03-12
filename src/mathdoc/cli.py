@@ -222,6 +222,19 @@ def _resolve_mdoc_by_ref(
     return str(row[0]), str(row[1]), root / rel_path
 
 
+def _lookup_mdocs_by_fnode(
+    conn: sqlite3.Connection, fnodes: list[str]
+) -> dict[str, tuple[str, str]]:
+    if not fnodes:
+        return {}
+    placeholders = ",".join("?" for _ in fnodes)
+    rows = conn.execute(
+        f"SELECT fnode, title, path FROM mdocs WHERE fnode IN ({placeholders})",
+        tuple(fnodes),
+    ).fetchall()
+    return {str(row[0]): (str(row[1]), str(row[2])) for row in rows}
+
+
 def _select_indices_interactive(matches: list[tuple[str, str, str]]) -> list[int] | None:
     if not matches:
         return []
@@ -551,6 +564,120 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_dep_show(args: argparse.Namespace) -> int:
+    mdoc_root = _find_mdoc_root(Path.cwd())
+    if mdoc_root is None:
+        print("Error: not inside an mdoc directory, run `mdc init` first")
+        return 1
+
+    db_path = _index_db_path(mdoc_root)
+    with sqlite3.connect(db_path) as conn:
+        _ensure_index_schema(conn)
+        _refresh_search_index(conn, mdoc_root)
+        try:
+            _, _, src_path = _resolve_mdoc_by_ref(conn, mdoc_root, args.source)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            return 1
+
+        node = MdocNode(path=src_path, title="")
+        try:
+            node.load()
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            print(f"Error: failed to load mdoc: {exc}")
+            return 1
+
+        dep_meta = _lookup_mdocs_by_fnode(conn, node.depens)
+
+    print(f"source: {node.fnode[:8]}\t{node.title}")
+    print(f"dependencies: {len(node.depens)}")
+    for dep_fnode in node.depens:
+        dep = dep_meta.get(dep_fnode)
+        if dep is None:
+            print(f"- {dep_fnode[:8]}\t<missing> (<not indexed>)")
+            continue
+        print(f"- {dep_fnode[:8]}\t{dep[0]} ({dep[1]})")
+    return 0
+
+
+def _cmd_dep_rm(args: argparse.Namespace) -> int:
+    mdoc_root = _find_mdoc_root(Path.cwd())
+    if mdoc_root is None:
+        print("Error: not inside an mdoc directory, run `mdc init` first")
+        return 1
+
+    db_path = _index_db_path(mdoc_root)
+    with sqlite3.connect(db_path) as conn:
+        _ensure_index_schema(conn)
+        _refresh_search_index(conn, mdoc_root)
+        try:
+            _, _, src_path = _resolve_mdoc_by_ref(conn, mdoc_root, args.source)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            return 1
+
+        node = MdocNode(path=src_path, title="")
+        try:
+            node.load()
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            print(f"Error: failed to load mdoc: {exc}")
+            return 1
+
+        if not node.depens:
+            print(f"source: {node.fnode[:8]}\t{node.title}")
+            print("No dependencies to remove")
+            return 0
+
+        dep_meta = _lookup_mdocs_by_fnode(conn, node.depens)
+
+    dep_rows: list[tuple[str, str, str]] = []
+    for dep_fnode in node.depens:
+        meta = dep_meta.get(dep_fnode, ("<missing>", "<not indexed>"))
+        dep_rows.append((dep_fnode, meta[0], meta[1]))
+
+    try:
+        selected_indices = _select_indices_interactive(dep_rows)
+    except RuntimeError as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    if selected_indices is None:
+        print("Canceled")
+        return 0
+    if not selected_indices:
+        print("No dependencies selected")
+        return 0
+
+    selected_fnodes: list[str] = []
+    selected_set: set[str] = set()
+    for idx in selected_indices:
+        dep_fnode = dep_rows[idx][0]
+        if dep_fnode in selected_set:
+            continue
+        selected_set.add(dep_fnode)
+        selected_fnodes.append(dep_fnode)
+
+    old_len = len(node.depens)
+    node.depens = [dep for dep in node.depens if dep not in selected_set]
+    removed_count = old_len - len(node.depens)
+    if removed_count <= 0:
+        print("No dependencies removed")
+        return 0
+
+    try:
+        node.save()
+    except OSError as exc:
+        print(f"Error: failed to save mdoc: {exc}")
+        return 1
+
+    print(f"source: {node.fnode[:8]}\t{node.title}")
+    print(f"removed: {removed_count}")
+    for dep_fnode in selected_fnodes:
+        meta = dep_meta.get(dep_fnode, ("<missing>", "<not indexed>"))
+        print(f"- {dep_fnode[:8]}\t{meta[0]} ({meta[1]})")
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mdc", description="MathDoc CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -579,7 +706,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "add", help="Search and add dependencies to a mdoc")
     dep_add_parser.add_argument(
         "source",
-        help="Source modc to modify (fnode or .mdoc path)",
+        help="Source mdoc to modify (fnode or .mdoc path)",
     )
     dep_add_parser.add_argument(
         "query",
@@ -593,6 +720,22 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Maximum dependency candidates to show (default: 200)",
     )
     dep_add_parser.set_defaults(func=_cmd_dep_add)
+
+    dep_show_parser = dep_subparsers.add_parser(
+        "show", help="Show dependencies of a mdoc")
+    dep_show_parser.add_argument(
+        "source",
+        help="Source mdoc to inspect (fnode or .mdoc path)",
+    )
+    dep_show_parser.set_defaults(func=_cmd_dep_show)
+
+    dep_rm_parser = dep_subparsers.add_parser(
+        "rm", help="Interactively remove dependencies from a mdoc")
+    dep_rm_parser.add_argument(
+        "source",
+        help="Source mdoc to modify (fnode or .mdoc path)",
+    )
+    dep_rm_parser.set_defaults(func=_cmd_dep_rm)
 
     return parser
 
