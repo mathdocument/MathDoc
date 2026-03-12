@@ -9,6 +9,7 @@ if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
 from mathdoc.mdocnode import MdocNode
+from mathdoc.codeblock import CodeBlock
 
 
 class TestMdocNode(unittest.TestCase):
@@ -17,7 +18,9 @@ class TestMdocNode(unittest.TestCase):
             root = Path(tmp)
             node = MdocNode.create(folder=str(root), title="Roundtrip")
             node.add_dependency("dep-a")
-            node.add_block("text", "hello\nworld", {"lang": "en"})
+            node.blocks.append(
+                CodeBlock(codetype="text", content="hello\nworld", metadata={"lang": "en"})
+            )
             node.save()
 
             loaded = MdocNode(path=node.path, title="")
@@ -55,8 +58,8 @@ class TestMdocNode(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="mdoc_node_eval.") as tmp:
             root = Path(tmp)
             node = MdocNode.create(folder=str(root), title="Eval")
-            node.add_block("natl", "hello", {})
-            node.add_block("py", "print('hi')", {})
+            node.blocks.append(CodeBlock(codetype="natl", content="hello", metadata={}))
+            node.blocks.append(CodeBlock(codetype="py", content="print('hi')", metadata={}))
             node.save()
 
             loaded = MdocNode(path=node.path, title="")

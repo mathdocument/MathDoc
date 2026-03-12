@@ -341,7 +341,8 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
             dep_fnode, refreshed[0], refreshed[1])
 
     old_len = len(node.depens)
-    node.depens = [dep for dep in node.depens if dep not in selected_set]
+    for dep_fnode in selected_fnodes:
+        node.rmv_dependency(dep_fnode)
     removed_count = old_len - len(node.depens)
     if removed_count <= 0:
         print("No dependencies removed")

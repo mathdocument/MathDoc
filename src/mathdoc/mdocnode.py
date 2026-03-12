@@ -36,20 +36,6 @@ class MdocNode:
         node.path = folder_path / f"{node.fnode}.mdoc"
         return node
 
-    def add_block(self, codetype: str, content: str, metadata: dict[str, str]) -> CodeBlock:
-        """Append a new content block and return it."""
-        block = CodeBlock(
-            codetype=codetype,
-            content=content,
-            metadata=dict(metadata),
-        )
-        self.blocks.append(block)
-        return block
-
-    def rmv_block(self, index: int) -> None:
-        """Remove a block by index."""
-        del self.blocks[index]
-
     def add_dependency(self, dep_fnode: str) -> None:
         """Register a dependency by MdocNode id."""
         if dep_fnode not in self.depens:
