@@ -48,7 +48,7 @@ def _write_fake_imgcat(bin_dir: Path) -> Path:
 class TestCodeBlock(unittest.TestCase):
     def test_compile_natl(self) -> None:
         block = CodeBlock(codetype="natl", content="hello natl\n")
-        result = block.compile()
+        result = block.compile(mdoc_root=Path.cwd(), fnode="test-fnode")
         self.assertTrue(result.ok)
         self.assertEqual(result.codetype, "natl")
         self.assertEqual(result.stdout, "hello natl")
@@ -56,7 +56,7 @@ class TestCodeBlock(unittest.TestCase):
 
     def test_compile_py_success(self) -> None:
         block = CodeBlock(codetype="py", content="print('hello py')")
-        result = block.compile()
+        result = block.compile(mdoc_root=Path.cwd(), fnode="test-fnode")
         self.assertTrue(result.ok)
         self.assertEqual(result.codetype, "py")
         self.assertEqual(result.stdout.strip(), "hello py")
@@ -64,7 +64,7 @@ class TestCodeBlock(unittest.TestCase):
 
     def test_compile_py_failure(self) -> None:
         block = CodeBlock(codetype="py", content="1/0")
-        result = block.compile()
+        result = block.compile(mdoc_root=Path.cwd(), fnode="test-fnode")
         self.assertFalse(result.ok)
         self.assertEqual(result.codetype, "py")
         self.assertNotEqual(result.returncode, 0)
@@ -72,7 +72,7 @@ class TestCodeBlock(unittest.TestCase):
 
     def test_compile_unsupported_codetype(self) -> None:
         block = CodeBlock(codetype="cpp", content="int main() { return 0; }")
-        result = block.compile()
+        result = block.compile(mdoc_root=Path.cwd(), fnode="test-fnode")
         self.assertFalse(result.ok)
         self.assertEqual(result.returncode, 127)
         self.assertIn("unsupported codetype", result.stderr)
@@ -83,6 +83,7 @@ class TestCodeBlock(unittest.TestCase):
         if missing:
             self.skipTest(f"missing tools: {', '.join(missing)}")
         block = CodeBlock(codetype="latex", content=r"$a^2+b^2=c^2$")
+        fnode = "abc12345-0000-1111-2222-fedcba987654"
         with tempfile.TemporaryDirectory(prefix="mdc_codeblock_latex.") as tmp:
             tmp_path = Path(tmp)
             bin_dir = tmp_path / "bin"
@@ -90,9 +91,10 @@ class TestCodeBlock(unittest.TestCase):
             _write_fake_imgcat(bin_dir)
             path_env = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
             with patch.dict(os.environ, {"PATH": path_env}, clear=False):
-                result = block.compile(mdoc_root=tmp_path)
+                result = block.compile(mdoc_root=tmp_path, fnode=fnode)
         self.assertTrue(result.ok, result.stderr)
         self.assertEqual(result.returncode, 0)
+        self.assertIn(f"snippet_{fnode}.tex", result.stdout)
         self.assertIn("artifact tex:", result.stdout)
         self.assertIn("artifact pdf:", result.stdout)
         self.assertIn("\x1b]1337;File=name=fake.png;inline=1:", result.stdout)
@@ -104,7 +106,7 @@ class TestCodeBlock(unittest.TestCase):
         try:
             shutil.which = lambda name: None if name == "xelatex" else original_which(name)  # type: ignore[assignment]
             block = CodeBlock(codetype="latex", content=r"$x$")
-            result = block.compile()
+            result = block.compile(mdoc_root=Path.cwd(), fnode="test-fnode")
         finally:
             shutil.which = original_which  # type: ignore[assignment]
         self.assertFalse(result.ok)
@@ -118,12 +120,28 @@ class TestCodeBlock(unittest.TestCase):
         try:
             shutil.which = lambda name: None if name == "imgcat" else original_which(name)  # type: ignore[assignment]
             block = CodeBlock(codetype="latex", content=r"$x$")
-            result = block.compile()
+            result = block.compile(mdoc_root=Path.cwd(), fnode="test-fnode")
         finally:
             shutil.which = original_which  # type: ignore[assignment]
         self.assertFalse(result.ok)
         self.assertEqual(result.returncode, 127)
         self.assertIn("imgcat not found", result.stderr)
+
+    def test_compile_latex_requires_non_empty_fnode(self) -> None:
+        if shutil.which("xelatex") is None or shutil.which("pdftoppm") is None:
+            self.skipTest("xelatex/pdftoppm is not available in PATH")
+        block = CodeBlock(codetype="latex", content=r"$x$")
+        result = block.compile(mdoc_root=Path.cwd(), fnode="   ")
+        self.assertFalse(result.ok)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("fnode is required", result.stderr)
+
+    def test_compile_requires_mdoc_root(self) -> None:
+        block = CodeBlock(codetype="natl", content="x")
+        result = block.compile(mdoc_root=None, fnode="test-fnode")  # type: ignore[arg-type]
+        self.assertFalse(result.ok)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("mdoc_root is required", result.stderr)
 
 
 if __name__ == "__main__":

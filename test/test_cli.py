@@ -178,6 +178,10 @@ class TestMdcCli(unittest.TestCase):
             init_1 = _run_cli(["init"], repo)
             self.assertEqual(init_1.returncode, 0, init_1.stdout + init_1.stderr)
             self.assertTrue((repo / ".mdc").is_dir())
+            config_text = (repo / ".mdc" / "config.toml").read_text(encoding="utf-8")
+            self.assertIn("[src.latex]", config_text)
+            self.assertIn("preamble", config_text)
+            self.assertIn("postamble", config_text)
 
             init_2 = _run_cli(["init"], repo)
             self.assertEqual(init_2.returncode, 0, init_2.stdout + init_2.stderr)
@@ -261,7 +265,21 @@ class TestMdcCli(unittest.TestCase):
 
             new_src = _run_cli(["new", "-t", "Eval Latex Source", "-f", "."], repo)
             self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
-            _, src_path = _extract_created_mdoc(new_src.stdout)
+            src_fnode, src_path = _extract_created_mdoc(new_src.stdout)
+
+            (repo / ".mdc" / "config.toml").write_text(
+                "[src.latex]\n"
+                "preamble = '''\n"
+                "\\documentclass[varwidth=true, border=5pt, crop]{standalone}\n"
+                "\\newcommand{\\MDCMARK}{MARK}\n"
+                "\\begin{document}\n"
+                "'''\n"
+                "postamble = '''\n"
+                "\\end{document}\n"
+                "% cfg-tail\n"
+                "'''\n",
+                encoding="utf-8",
+            )
 
             _append_src_block(src_path, "latex", r"$\int_0^1 x^2\,dx=\frac{1}{3}$")
 
@@ -272,9 +290,17 @@ class TestMdcCli(unittest.TestCase):
             eval_run = _run_cli(["eval", src_path], repo, env_extra=env_extra)
             self.assertEqual(eval_run.returncode, 0, eval_run.stdout + eval_run.stderr)
             self.assertIn("[1] latex: ok", eval_run.stdout)
+            self.assertIn(f"snippet_{src_fnode}.tex", eval_run.stdout)
             self.assertIn("artifact tex:", eval_run.stdout)
             self.assertIn("artifact pdf:", eval_run.stdout)
             self.assertIn("\x1b]1337;File=name=fake.png;inline=1:", eval_run.stdout)
+            tex_match = re.search(r"(?m)^  artifact tex:\s*(.+\.tex)$", eval_run.stdout)
+            self.assertIsNotNone(tex_match, eval_run.stdout)
+            tex_path = Path(tex_match.group(1))
+            self.assertTrue(tex_path.is_file())
+            tex_payload = tex_path.read_text(encoding="utf-8")
+            self.assertIn("\\newcommand{\\MDCMARK}{MARK}", tex_payload)
+            self.assertIn("% cfg-tail", tex_payload)
 
     def test_dep_add_show_rm_interactive(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_dep.") as tmp:

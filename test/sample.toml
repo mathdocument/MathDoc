@@ -1,0 +1,8 @@
+[src.latex]
+preamble = """
+\\documentclass[varwidth=true, border=5pt, crop]{standalone}
+\\begin{document}\n
+"""
+postamble = """
+\\end{document}\n
+"""

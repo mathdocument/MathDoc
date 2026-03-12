@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
+from .config import init_mdoc_config
 from .indcache import IndCache
 from .mdocnode import MdocNode
 from .utils import (
@@ -28,14 +29,19 @@ def _get_mdoc_root_or_none() -> Path | None:
 
 
 def _cmd_init(_: argparse.Namespace) -> int:
-    local_mdc = Path.cwd() / ".mdc"
+    mdoc_root = Path.cwd()
+    local_mdc = mdoc_root / ".mdc"
 
     if local_mdc.is_dir():
         print(f"Already initialized as mdoc directory: {local_mdc}")
         return 0
 
     local_mdc.mkdir(parents=False, exist_ok=False)
-    (local_mdc / "config.toml").touch(exist_ok=True)
+    try:
+        init_mdoc_config(mdoc_root)
+    except OSError as exc:
+        print(f"Error: failed to write default config.toml: {exc}")
+        return 1
     print("mdoc folder initialized")
     return 0
 
@@ -125,7 +131,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     print("result:")
     failed = 0
     for index, block in enumerate(node.blocks, start=1):
-        result = block.compile(mdoc_root=mdoc_root)
+        result = block.compile(mdoc_root=mdoc_root, fnode=node.fnode)
         if result.ok:
             print(colorize(f"[{index}] {block.codetype}: ok", STYLE["grn"]))
         else:
@@ -140,12 +146,12 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         if result.stdout:
             for line in result.stdout.rstrip("\n").splitlines():
                 if line.startswith("\x1b"):
-                    print(f"  {line}")
+                    print(f"    {line}")
                 else:
-                    print(f"  {line}")
+                    print(f"    {line}")
         if result.stderr:
             for line in result.stderr.rstrip("\n").splitlines():
-                print(f"  ! {line}")
+                print(f"    ! {line}")
         print("")
 
     summary_color = STYLE["grn"] if failed == 0 else STYLE["red"]
