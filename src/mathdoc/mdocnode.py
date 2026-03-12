@@ -191,9 +191,6 @@ class MdocNode:
             # get src content
             if status == "@src":
                 if line == "@end":
-                    if not blocks[-1].content.strip():
-                        raise ValueError(
-                            f"line {index+1}: '@src' block must be non-empty in {self.path}")
                     status = ""
                     continue
                 blocks[-1].content += raw_line.rstrip() + "\n"
