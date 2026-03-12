@@ -178,7 +178,7 @@ class TestMdcCli(unittest.TestCase):
             self.assertIn("results: 1", search_title.stdout)
             self.assertRegex(
                 search_title.stdout,
-                r"(?m)^- [0-9a-f]{8}\tMatrix Rank \(.+\.mdoc\)$",
+                r"(?m)^- [0-9a-f]{8}\s+Matrix Rank \(.+\.mdoc\)$",
             )
 
             search_fnode = _run_cli(["search", fnode_1[:8]], repo)
@@ -222,6 +222,62 @@ class TestMdcCli(unittest.TestCase):
             self.assertIn("[1] py: failed (1)", eval_run.stdout)
             self.assertIn("boom", eval_run.stdout)
             self.assertIn("failed: 1", eval_run.stdout)
+
+    def test_eval_accepts_depth_and_reverse_flags(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_eval_depth_reverse.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_root = _run_cli(["new", "-t", "Root Card", "-f", "."], repo)
+            self.assertEqual(new_root.returncode, 0, new_root.stdout + new_root.stderr)
+            _, root_path = _extract_created_mdoc(new_root.stdout)
+
+            new_dep1 = _run_cli(["new", "-t", "Dep One", "-f", "."], repo)
+            self.assertEqual(new_dep1.returncode, 0, new_dep1.stdout + new_dep1.stderr)
+            _, dep1_path = _extract_created_mdoc(new_dep1.stdout)
+
+            new_dep2 = _run_cli(["new", "-t", "Dep Two", "-f", "."], repo)
+            self.assertEqual(new_dep2.returncode, 0, new_dep2.stdout + new_dep2.stderr)
+            _, dep2_path = _extract_created_mdoc(new_dep2.stdout)
+
+            _append_src_block(root_path, "natl", "root-body")
+            _append_src_block(dep1_path, "natl", "dep1-body")
+            _append_src_block(dep2_path, "natl", "dep2-body")
+
+            rc_add_root, out_add_root = _run_cli_tty(
+                ["dep", "add", root_path, "Dep One"], repo, b" \r"
+            )
+            self.assertEqual(rc_add_root, 0, out_add_root)
+            self.assertIn("added: 1", out_add_root)
+
+            rc_add_dep1, out_add_dep1 = _run_cli_tty(
+                ["dep", "add", dep1_path, "Dep Two"], repo, b" \r"
+            )
+            self.assertEqual(rc_add_dep1, 0, out_add_dep1)
+            self.assertIn("added: 1", out_add_dep1)
+
+            eval_depth_1 = _run_cli(["eval", "-d", "1", root_path], repo)
+            self.assertEqual(eval_depth_1.returncode, 0, eval_depth_1.stdout + eval_depth_1.stderr)
+            self.assertIn("dep1-body", eval_depth_1.stdout)
+            self.assertIn("root-body", eval_depth_1.stdout)
+            self.assertNotIn("dep2-body", eval_depth_1.stdout)
+
+            eval_depth_inf = _run_cli(["eval", "--depth", "-1", root_path], repo)
+            self.assertEqual(eval_depth_inf.returncode, 0, eval_depth_inf.stdout + eval_depth_inf.stderr)
+            self.assertIn("dep2-body", eval_depth_inf.stdout)
+            self.assertIn("dep1-body", eval_depth_inf.stdout)
+            self.assertIn("root-body", eval_depth_inf.stdout)
+
+            eval_reversed = _run_cli(["eval", "--depth", "-1", "--reverse", root_path], repo)
+            self.assertEqual(eval_reversed.returncode, 0, eval_reversed.stdout + eval_reversed.stderr)
+            root_pos = eval_reversed.stdout.find("root-body")
+            dep1_pos = eval_reversed.stdout.find("dep1-body")
+            dep2_pos = eval_reversed.stdout.find("dep2-body")
+            self.assertGreaterEqual(root_pos, 0, eval_reversed.stdout)
+            self.assertGreaterEqual(dep1_pos, 0, eval_reversed.stdout)
+            self.assertGreaterEqual(dep2_pos, 0, eval_reversed.stdout)
+            self.assertLess(root_pos, dep1_pos, eval_reversed.stdout)
+            self.assertLess(dep1_pos, dep2_pos, eval_reversed.stdout)
 
     def test_eval_runs_latex_block_with_xelatex(self) -> None:
         required = ("latexmk", "xelatex")
@@ -289,13 +345,22 @@ class TestMdcCli(unittest.TestCase):
             rc_add, out_add = _run_cli_tty(["dep", "add", src_path, "matrix"], repo, b" \r")
             self.assertEqual(rc_add, 0, out_add)
             self.assertIn("added: 1", out_add)
-            self.assertIn(f"+ {dep_fnode[:8]}\tMatrix Rank ({dep_rel})", out_add)
-            self.assertIn(f"source: {src_fnode[:8]}\tSource Card", out_add)
+            self.assertRegex(
+                out_add,
+                rf"\+ {dep_fnode[:8]}\s+Matrix Rank \({re.escape(dep_rel)}\)",
+            )
+            self.assertRegex(
+                out_add,
+                rf"source:\s+{src_fnode[:8]}\s+Source Card",
+            )
 
             show_1 = _run_cli(["dep", "show", src_path], repo)
             self.assertEqual(show_1.returncode, 0, show_1.stdout + show_1.stderr)
             self.assertIn("dependencies: 1", show_1.stdout)
-            self.assertIn(f"- {dep_fnode[:8]}\tMatrix Rank ({dep_rel})", show_1.stdout)
+            self.assertRegex(
+                show_1.stdout,
+                rf"- {dep_fnode[:8]}\s+Matrix Rank \({re.escape(dep_rel)}\)",
+            )
 
             rc_add_dup, out_add_dup = _run_cli_tty(["dep", "add", src_path, "matrix"], repo, b" \r")
             self.assertEqual(rc_add_dup, 0, out_add_dup)
@@ -305,7 +370,10 @@ class TestMdcCli(unittest.TestCase):
             rc_rm, out_rm = _run_cli_tty(["dep", "rm", src_path], repo, b" \r")
             self.assertEqual(rc_rm, 0, out_rm)
             self.assertIn("removed: 1", out_rm)
-            self.assertIn(f"- {dep_fnode[:8]}\tMatrix Rank ({dep_rel})", out_rm)
+            self.assertRegex(
+                out_rm,
+                rf"- {dep_fnode[:8]}\s+Matrix Rank \({re.escape(dep_rel)}\)",
+            )
 
             show_2 = _run_cli(["dep", "show", src_path], repo)
             self.assertEqual(show_2.returncode, 0, show_2.stdout + show_2.stderr)

@@ -192,7 +192,6 @@ class CodeBlock:
             )
 
         output_lines = [
-            f"artifact dir: {artifacts.tex_dir}",
             f"artifact tex: {artifacts.tex_path}",
             f"artifact pdf: {artifacts.pdf_path}",
         ]

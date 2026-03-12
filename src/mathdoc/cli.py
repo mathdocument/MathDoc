@@ -12,7 +12,6 @@ from .utils import (
     colorize,
     find_mdoc_root,
     format_mdoc_item,
-    load_mdoc_from_ref,
     select_indices_interactive,
     to_rel_path,
     warn_index_failure,
@@ -25,6 +24,13 @@ def _get_mdoc_root_or_none() -> Path | None:
         print("Error: not inside an mdoc directory, run `mdc init` first")
         return None
     return mdoc_root
+
+
+def _load_mdoc_from_ref(cache: IndCache, ref: str) -> tuple[MdocNode, str]:
+    _, _, src_path = cache.resolve_ref(ref, cwd=Path.cwd())
+    node = MdocNode(path=src_path, title="")
+    node.load()
+    return node, to_rel_path(cache.root, src_path)
 
 
 def _cmd_init(_: argparse.Namespace) -> int:
@@ -116,7 +122,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     cache = IndCache(mdoc_root)
     cache.bootstrap_if_needed()
     try:
-        node, src_rel = load_mdoc_from_ref(cache, args.source)
+        node, src_rel = _load_mdoc_from_ref(cache, args.source)
     except (FileNotFoundError, OSError, ValueError) as exc:
         print(f"Error: failed to load mdoc: {exc}")
         return 1
@@ -127,7 +133,15 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         print("No blocks to eval")
         return 0
 
-    block_results = node.eval_blocks(mdoc_root=mdoc_root)
+    try:
+        block_results = node.eval_blocks(
+            mdoc_root=mdoc_root,
+            depth=args.depth,
+            reverse_depens=args.reverse,
+        )
+    except ValueError as exc:
+        print(f"Error: failed to eval mdoc: {exc}")
+        return 1
     print(f"blocks: {len(block_results)}")
     print("result:")
     failed = 0
@@ -177,7 +191,7 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
     cache = IndCache(mdoc_root)
     cache.bootstrap_if_needed()
     try:
-        node, src_rel = load_mdoc_from_ref(cache, args.source)
+        node, src_rel = _load_mdoc_from_ref(cache, args.source)
     except (FileNotFoundError, OSError, ValueError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -259,7 +273,7 @@ def _cmd_dep_show(args: argparse.Namespace) -> int:
     cache = IndCache(mdoc_root)
     cache.bootstrap_if_needed()
     try:
-        node, src_rel = load_mdoc_from_ref(cache, args.source)
+        node, src_rel = _load_mdoc_from_ref(cache, args.source)
     except (FileNotFoundError, OSError, ValueError) as exc:
         print(f"Error: failed to load mdoc: {exc}")
         return 1
@@ -288,7 +302,7 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
     cache = IndCache(mdoc_root)
     cache.bootstrap_if_needed()
     try:
-        node, src_rel = load_mdoc_from_ref(cache, args.source)
+        node, src_rel = _load_mdoc_from_ref(cache, args.source)
     except (FileNotFoundError, OSError, ValueError) as exc:
         print(f"Error: failed to load mdoc: {exc}")
         return 1
@@ -455,6 +469,19 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_parser.add_argument(
         "source",
         help="Source mdoc to evaluate (fnode or .mdoc path)",
+    )
+    eval_parser.add_argument(
+        "-d",
+        "--depth",
+        type=int,
+        default=1,
+        help="Dependency traversal depth (-1 for unlimited, default: 1)",
+    )
+    eval_parser.add_argument(
+        "-r",
+        "--reverse",
+        action="store_true",
+        help="Reverse merged dependency order for depens-enabled block types",
     )
     eval_parser.set_defaults(func=_cmd_eval)
 

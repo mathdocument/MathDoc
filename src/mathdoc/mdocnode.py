@@ -1,9 +1,15 @@
+import sqlite3
 import shlex
+from collections import deque
 from pathlib import Path
 from uuid import uuid4
 from dataclasses import dataclass, field
+from typing import Any
 
 from .codeblock import CodeBlock
+from .config import load_config
+from .indcache import IndCache
+from .utils import format_mdoc_item, to_rel_path
 
 
 @dataclass(slots=True)
@@ -46,15 +52,302 @@ class MdocNode:
         if dep_fnode in self.depens:
             self.depens.remove(dep_fnode)
 
-    def eval_blocks(self, *, mdoc_root: Path) -> list["MdocNode.EvalBlockResult"]:
+    def eval_blocks(
+        self,
+        *,
+        mdoc_root: Path,
+        depth: int = 1,
+        reverse_depens: bool = False,
+    ) -> list["MdocNode.EvalBlockResult"]:
         if mdoc_root is None:
             raise ValueError("mdoc_root is required for eval_blocks")
+        if depth < -1:
+            raise ValueError("depth must be -1 (infinite) or >= 0")
+        if not self.blocks:
+            return []
+
+        try:
+            dep_graph, nodes_by_fnode = self._build_dependency_graph(
+                mdoc_root=mdoc_root,
+                depth=depth,
+            )
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            raise ValueError(
+                f"failed to build dependency graph: {exc}") from exc
+        cycle = self._find_cycle(dep_graph)
+        if cycle is not None:
+            raise ValueError(
+                self._format_cycle(
+                    cycle=cycle,
+                    nodes_by_fnode=nodes_by_fnode,
+                    mdoc_root=mdoc_root,
+                )
+            )
+
+        topo_fnodes = self._topo_dependencies_first(
+            root_fnode=self.fnode,
+            dep_graph=dep_graph,
+        )
+        if reverse_depens:
+            topo_fnodes = list(reversed(topo_fnodes))
+
+        try:
+            config = load_config(mdoc_root)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"failed to load config.toml: {exc}") from exc
+
+        src_cfg = config.get("src", {})
+        if not isinstance(src_cfg, dict):
+            raise ValueError("config key 'src' must be a table")
+
+        merged_blocks = self._merged_blocks_for_eval(
+            topo_fnodes=topo_fnodes,
+            nodes_by_fnode=nodes_by_fnode,
+            src_cfg=src_cfg,
+        )
+
         results: list[MdocNode.EvalBlockResult] = []
-        for block in self.blocks:
+        for block in merged_blocks:
             result = block.compile(mdoc_root=mdoc_root, fnode=self.fnode)
             results.append(MdocNode.EvalBlockResult(
                 block=block, result=result))
         return results
+
+    def _build_dependency_graph(
+        self,
+        *,
+        mdoc_root: Path,
+        depth: int,
+    ) -> tuple[dict[str, list[str]], dict[str, "MdocNode"]]:
+        mdc_dir = mdoc_root / ".mdc"
+        if not mdc_dir.is_dir():
+            raise ValueError(f"invalid mdoc root (missing .mdc): {mdc_dir}")
+        cache = IndCache(mdoc_root)
+        cache.bootstrap_if_needed()
+
+        dep_graph: dict[str, list[str]] = {self.fnode: []}
+        nodes_by_fnode: dict[str, MdocNode] = {self.fnode: self}
+        seen: set[str] = {self.fnode}
+        queue: deque[tuple[MdocNode, int]] = deque([(self, 0)])
+
+        while queue:
+            node, node_depth = queue.popleft()
+            dep_graph[node.fnode] = []
+            for dep_fnode in self._dedupe_keep_order(node.depens):
+                dep_node = nodes_by_fnode.get(dep_fnode)
+                if dep_node is None:
+                    if depth != -1 and node_depth >= depth:
+                        continue
+                    dep_node = self._load_dependency_node(
+                        cache=cache,
+                        dep_fnode=dep_fnode,
+                    )
+                    nodes_by_fnode[dep_fnode] = dep_node
+                dep_graph[node.fnode].append(dep_fnode)
+                if dep_fnode in seen:
+                    continue
+                seen.add(dep_fnode)
+                queue.append((dep_node, node_depth + 1))
+
+        for fnode in nodes_by_fnode:
+            dep_graph.setdefault(fnode, [])
+
+        return dep_graph, nodes_by_fnode
+
+    @staticmethod
+    def _load_dependency_node(*, cache: IndCache, dep_fnode: str) -> "MdocNode":
+        try:
+            _, _, dep_path = cache.resolve_ref(dep_fnode, cwd=cache.root)
+        except ValueError as exc:
+            raise ValueError(
+                f"failed to resolve dependency '{dep_fnode}': {exc}") from exc
+
+        node = MdocNode(path=dep_path, title="")
+        try:
+            node.load()
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            raise ValueError(
+                f"failed to load dependency '{dep_fnode}' from {dep_path}: {exc}"
+            ) from exc
+
+        if node.fnode != dep_fnode:
+            raise ValueError(
+                f"dependency fnode mismatch: expected '{dep_fnode}', got '{node.fnode}' from {dep_path}"
+            )
+        return node
+
+    @staticmethod
+    def _find_cycle(dep_graph: dict[str, list[str]]) -> list[str] | None:
+        state: dict[str, int] = {}
+        stack: list[str] = []
+        stack_idx: dict[str, int] = {}
+
+        def dfs(fnode: str) -> list[str] | None:
+            state[fnode] = 1
+            stack_idx[fnode] = len(stack)
+            stack.append(fnode)
+
+            for dep_fnode in dep_graph.get(fnode, []):
+                dep_state = state.get(dep_fnode, 0)
+                if dep_state == 0:
+                    cycle = dfs(dep_fnode)
+                    if cycle is not None:
+                        return cycle
+                elif dep_state == 1:
+                    start = stack_idx[dep_fnode]
+                    return stack[start:] + [dep_fnode]
+
+            stack.pop()
+            stack_idx.pop(fnode, None)
+            state[fnode] = 2
+            return None
+
+        for fnode in dep_graph:
+            if state.get(fnode, 0) != 0:
+                continue
+            cycle = dfs(fnode)
+            if cycle is not None:
+                return cycle
+        return None
+
+    @staticmethod
+    def _format_cycle(
+        *,
+        cycle: list[str],
+        nodes_by_fnode: dict[str, "MdocNode"],
+        mdoc_root: Path,
+    ) -> str:
+        if not cycle:
+            return "dependency cycle detected"
+        lines = ["dependency cycle detected:"]
+
+        cycle_nodes = cycle[:-1] if len(cycle) > 1 else cycle
+        total = len(cycle_nodes)
+        for idx, fnode in enumerate(cycle_nodes):
+            node = nodes_by_fnode.get(fnode)
+            if node is None:
+                item = format_mdoc_item(
+                    fnode, "<missing>", "<unknown>", marker="+")
+            else:
+                item = format_mdoc_item(
+                    node.fnode,
+                    node.title,
+                    to_rel_path(mdoc_root, node.path),
+                    marker="+",
+                )
+            if total == 1:
+                prefix = "┌─➤"
+            elif idx == 0:
+                prefix = "┌─➤"
+            elif idx == total - 1:
+                prefix = "└──"
+            else:
+                prefix = "│  "
+            lines.append(f"{prefix} {item}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _topo_dependencies_first(
+        *,
+        root_fnode: str,
+        dep_graph: dict[str, list[str]],
+    ) -> list[str]:
+        visited: set[str] = set()
+        order: list[str] = []
+
+        def dfs(fnode: str) -> None:
+            if fnode in visited:
+                return
+            visited.add(fnode)
+            for dep_fnode in dep_graph.get(fnode, []):
+                dfs(dep_fnode)
+            order.append(fnode)
+
+        dfs(root_fnode)
+        return order
+
+    def _merged_blocks_for_eval(
+        self,
+        *,
+        topo_fnodes: list[str],
+        nodes_by_fnode: dict[str, "MdocNode"],
+        src_cfg: dict[str, Any],
+    ) -> list[CodeBlock]:
+        merged: list[CodeBlock] = []
+
+        blocks_by_node: dict[str, dict[str, CodeBlock]] = {}
+        for fnode in topo_fnodes:
+            node = nodes_by_fnode[fnode]
+            by_codetype: dict[str, CodeBlock] = {}
+            for block in node.blocks:
+                by_codetype[block.codetype.casefold()] = block
+            blocks_by_node[fnode] = by_codetype
+
+        for root_block in self.blocks:
+            codetype_key = root_block.codetype.casefold()
+            depens_enabled = self._depens_enabled_for_codetype(
+                src_cfg=src_cfg,
+                codetype_key=codetype_key,
+            )
+            if not depens_enabled:
+                merged.append(root_block)
+                continue
+
+            ordered_blocks: list[CodeBlock] = []
+            for fnode in topo_fnodes:
+                candidate = blocks_by_node[fnode].get(codetype_key)
+                if candidate is not None:
+                    ordered_blocks.append(candidate)
+
+            merged.append(
+                CodeBlock(
+                    codetype=root_block.codetype,
+                    content=self._merge_block_content(ordered_blocks),
+                    metadata=dict(root_block.metadata),
+                )
+            )
+
+        return merged
+
+    @staticmethod
+    def _depens_enabled_for_codetype(
+        *,
+        src_cfg: dict[str, Any],
+        codetype_key: str,
+    ) -> bool:
+        compiler_cfg = src_cfg.get(codetype_key)
+        if compiler_cfg is None:
+            return False
+        if not isinstance(compiler_cfg, dict):
+            raise ValueError(
+                f"config key 'src.{codetype_key}' must be a table")
+        depens = compiler_cfg.get("depens", False)
+        if not isinstance(depens, bool):
+            raise ValueError(
+                f"config key 'src.{codetype_key}.depens' must be a boolean")
+        return depens
+
+    @staticmethod
+    def _merge_block_content(blocks: list[CodeBlock]) -> str:
+        parts: list[str] = []
+        for block in blocks:
+            text = block.content.rstrip("\n")
+            if text:
+                parts.append(text)
+        if not parts:
+            return ""
+        return "\n\n".join(parts) + "\n"
+
+    @staticmethod
+    def _dedupe_keep_order(items: list[str]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            if item in seen:
+                continue
+            seen.add(item)
+            out.append(item)
+        return out
 
     def load(self) -> None:
         """

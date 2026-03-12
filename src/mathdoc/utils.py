@@ -6,8 +6,6 @@ import termios
 import tty
 from pathlib import Path
 
-from .indcache import IndCache
-from .mdocnode import MdocNode
 
 STYLE: dict[str, str] = {
     # ANSI style/color codes (aligned with user's shell env naming)
@@ -42,7 +40,7 @@ def to_rel_path(root: Path, path: Path) -> str:
 
 def format_mdoc_item(fnode: str, title: str, path: str, marker: str = "-") -> str:
     prefix = f"{marker} " if marker else ""
-    return f"{prefix}{short_fnode(fnode)}\t{title} ({path})"
+    return f"{prefix}{short_fnode(fnode)}    {title} ({path})"
 
 
 def warn_index_failure(action: str, exc: Exception) -> None:
@@ -55,13 +53,6 @@ def find_mdoc_root(start: Path) -> Path | None:
         if (candidate / ".mdc").is_dir():
             return candidate
     return None
-
-
-def load_mdoc_from_ref(cache: IndCache, ref: str) -> tuple[MdocNode, str]:
-    _, _, src_path = cache.resolve_ref(ref, cwd=Path.cwd())
-    node = MdocNode(path=src_path, title="")
-    node.load()
-    return node, to_rel_path(cache.root, src_path)
 
 
 def _supports_color() -> bool:
