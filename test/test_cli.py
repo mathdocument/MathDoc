@@ -365,8 +365,8 @@ class TestMdcCli(unittest.TestCase):
 
             fake_bin = repo / "fake-bin"
             fake_bin.mkdir(parents=True, exist_ok=True)
-            fake_nvim = fake_bin / "nvim"
-            fake_nvim.write_text(
+            fake_editor = fake_bin / "fake-editor"
+            fake_editor.write_text(
                 "#!/bin/sh\n"
                 "set -eu\n"
                 "target=\"$1\"\n"
@@ -375,10 +375,14 @@ class TestMdcCli(unittest.TestCase):
                 "mv \"$tmp\" \"$target\"\n",
                 encoding="utf-8",
             )
-            fake_nvim.chmod(0o755)
+            fake_editor.chmod(0o755)
 
             env_path = f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}"
-            edit_run = _run_cli(["edit", alpha_path], repo, env_extra={"PATH": env_path})
+            edit_run = _run_cli(
+                ["edit", alpha_path],
+                repo,
+                env_extra={"PATH": env_path, "EDITOR": "fake-editor"},
+            )
             self.assertEqual(edit_run.returncode, 0, edit_run.stdout + edit_run.stderr)
             self.assertIn("edited:", edit_run.stdout)
 
