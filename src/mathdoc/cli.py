@@ -5,7 +5,6 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
-from .config import init_mdoc_config
 from .indcache import IndCache
 from .mdocnode import MdocNode
 from .utils import (
@@ -31,6 +30,7 @@ def _get_mdoc_root_or_none() -> Path | None:
 def _cmd_init(_: argparse.Namespace) -> int:
     mdoc_root = Path.cwd()
     local_mdc = mdoc_root / ".mdc"
+    config_path = local_mdc / "config.toml"
 
     if local_mdc.is_dir():
         print(f"Already initialized as mdoc directory: {local_mdc}")
@@ -38,9 +38,9 @@ def _cmd_init(_: argparse.Namespace) -> int:
 
     local_mdc.mkdir(parents=False, exist_ok=False)
     try:
-        init_mdoc_config(mdoc_root)
+        config_path.write_text("", encoding="utf-8")
     except OSError as exc:
-        print(f"Error: failed to write default config.toml: {exc}")
+        print(f"Error: failed to write config.toml: {exc}")
         return 1
     print("mdoc folder initialized")
     return 0
@@ -127,11 +127,13 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         print("No blocks to eval")
         return 0
 
-    print(f"blocks: {len(node.blocks)}")
+    block_results = node.eval_blocks(mdoc_root=mdoc_root)
+    print(f"blocks: {len(block_results)}")
     print("result:")
     failed = 0
-    for index, block in enumerate(node.blocks, start=1):
-        result = block.compile(mdoc_root=mdoc_root, fnode=node.fnode)
+    for index, eval_result in enumerate(block_results, start=1):
+        block = eval_result.block
+        result = eval_result.result
         if result.ok:
             print(colorize(f"[{index}] {block.codetype}: ok", STYLE["grn"]))
         else:

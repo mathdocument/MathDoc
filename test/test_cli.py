@@ -141,35 +141,6 @@ def _append_src_block(mdoc_path: str, codetype: str, body: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def _write_fake_imgcat(bin_dir: Path) -> None:
-    script = bin_dir / "imgcat"
-    script.write_text(
-        "#!/bin/sh\n"
-        "file=''\n"
-        "while [ \"$#\" -gt 0 ]; do\n"
-        "  case \"$1\" in\n"
-        "    --width|--height)\n"
-        "      shift 2\n"
-        "      ;;\n"
-        "    --*)\n"
-        "      shift\n"
-        "      ;;\n"
-        "    *)\n"
-        "      file=\"$1\"\n"
-        "      break\n"
-        "      ;;\n"
-        "  esac\n"
-        "done\n"
-        "if [ -z \"$file\" ]; then\n"
-        "  exit 2\n"
-        "fi\n"
-        "cat \"$file\" >/dev/null || exit 1\n"
-        "printf '\\033]1337;File=name=fake.png;inline=1:RkFLRQ==\\a\\n'\n",
-        encoding="utf-8",
-    )
-    script.chmod(0o755)
-
-
 class TestMdcCli(unittest.TestCase):
     def test_init_new_search_and_path_boundary(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_basic.") as tmp:
@@ -178,10 +149,9 @@ class TestMdcCli(unittest.TestCase):
             init_1 = _run_cli(["init"], repo)
             self.assertEqual(init_1.returncode, 0, init_1.stdout + init_1.stderr)
             self.assertTrue((repo / ".mdc").is_dir())
+            self.assertTrue((repo / ".mdc" / "config.toml").is_file())
             config_text = (repo / ".mdc" / "config.toml").read_text(encoding="utf-8")
-            self.assertIn("[src.latex]", config_text)
-            self.assertIn("preamble", config_text)
-            self.assertIn("postamble", config_text)
+            self.assertEqual(config_text, "")
 
             init_2 = _run_cli(["init"], repo)
             self.assertEqual(init_2.returncode, 0, init_2.stdout + init_2.stderr)
@@ -254,7 +224,7 @@ class TestMdcCli(unittest.TestCase):
             self.assertIn("failed: 1", eval_run.stdout)
 
     def test_eval_runs_latex_block_with_xelatex(self) -> None:
-        required = ("xelatex", "pdftoppm")
+        required = ("latexmk", "xelatex")
         missing = [name for name in required if shutil.which(name) is None]
         if missing:
             self.skipTest(f"missing tools: {', '.join(missing)}")
@@ -283,18 +253,14 @@ class TestMdcCli(unittest.TestCase):
 
             _append_src_block(src_path, "latex", r"$\int_0^1 x^2\,dx=\frac{1}{3}$")
 
-            bin_dir = repo / "bin"
-            bin_dir.mkdir(parents=True, exist_ok=True)
-            _write_fake_imgcat(bin_dir)
-            env_extra = {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
-            eval_run = _run_cli(["eval", src_path], repo, env_extra=env_extra)
+            eval_run = _run_cli(["eval", src_path], repo)
             self.assertEqual(eval_run.returncode, 0, eval_run.stdout + eval_run.stderr)
             self.assertIn("[1] latex: ok", eval_run.stdout)
             self.assertIn(f"snippet_{src_fnode}.tex", eval_run.stdout)
+            self.assertIn("artifact dir:", eval_run.stdout)
             self.assertIn("artifact tex:", eval_run.stdout)
             self.assertIn("artifact pdf:", eval_run.stdout)
-            self.assertIn("\x1b]1337;File=name=fake.png;inline=1:", eval_run.stdout)
-            tex_match = re.search(r"(?m)^  artifact tex:\s*(.+\.tex)$", eval_run.stdout)
+            tex_match = re.search(r"(?m)^\s+artifact tex:\s*(.+\.tex)$", eval_run.stdout)
             self.assertIsNotNone(tex_match, eval_run.stdout)
             tex_path = Path(tex_match.group(1))
             self.assertTrue(tex_path.is_file())

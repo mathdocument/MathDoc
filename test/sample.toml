@@ -1,8 +1,15 @@
+[src.natl]
+depens = true
+
 [src.latex]
-preamble = """
-\\documentclass[varwidth=true, border=5pt, crop]{standalone}
-\\begin{document}\n
-"""
+depens = true
+preamble = '''
+\documentclass{article}
+\begin{document}
+'''
 postamble = """
 \\end{document}\n
 """
+
+[src.python]
+depens = false

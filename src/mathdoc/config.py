@@ -1,47 +1,41 @@
+import copy
 import tomllib
-from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-DEFAULT_LATEX_PREAMBLE = (
-    "\\documentclass[varwidth=true, border=5pt, crop]{standalone}\n"
-    "\\begin{document}\n"
-)
-DEFAULT_LATEX_POSTAMBLE = "\\end{document}\n"
-
-
-@dataclass(slots=True)
-class LatexConfig:
-    preamble: str = DEFAULT_LATEX_PREAMBLE
-    postamble: str = DEFAULT_LATEX_POSTAMBLE
-
-
-def _default_latex_config() -> LatexConfig:
-    return LatexConfig(
-        preamble=DEFAULT_LATEX_PREAMBLE,
-        postamble=DEFAULT_LATEX_POSTAMBLE,
-    )
-
-
-def _toml_literal_multiline(value: str) -> str:
-    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
-    content = normalized.rstrip("\n")
-    return "'''\n" + content + "\n'''"
+DEFAULT_CONFIG: dict[str, Any] = {
+    "src": {
+        "natl": {
+            "depens": True,
+        },
+        "latex": {
+            "depens": True,
+            "timeout_sec": 30,
+            "preamble": "\\documentclass{article}\n\\begin{document}\n",
+            "postamble": "\\end{document}\n",
+        },
+        "py": {
+            "depens": False,
+            "timeout_sec": 30,
+        },
+    }
+}
 
 
-def build_default_config_toml() -> str:
-    latex = _default_latex_config()
-    return (
-        "[src.latex]\n"
-        f"preamble = {_toml_literal_multiline(latex.preamble)}\n"
-        f"postamble = {_toml_literal_multiline(latex.postamble)}\n"
-    )
+def _merge_dict(base: dict[str, Any], override: dict[str, Any]) -> None:
+    for key, value in override.items():
+        current = base.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            _merge_dict(current, value)
+            continue
+        base[key] = value
 
 
-def load_latex_config(mdoc_root: Path) -> LatexConfig:
-    default = _default_latex_config()
+def load_config(mdoc_root: Path) -> dict[str, Any]:
+    config = copy.deepcopy(DEFAULT_CONFIG)
     config_path = mdoc_root / ".mdc" / "config.toml"
     if not config_path.is_file():
-        return default
+        return config
 
     try:
         payload = config_path.read_text(encoding="utf-8")
@@ -49,33 +43,12 @@ def load_latex_config(mdoc_root: Path) -> LatexConfig:
         raise OSError(f"failed to read {config_path}: {exc}") from exc
 
     try:
-        raw = tomllib.loads(payload)
+        override = tomllib.loads(payload) if payload.strip() else {}
     except tomllib.TOMLDecodeError as exc:
         raise ValueError(f"invalid TOML in {config_path}: {exc}") from exc
 
-    src = raw.get("src")
-    if src is None:
-        return default
-    if not isinstance(src, dict):
-        raise ValueError("config key 'src' must be a table")
+    if not isinstance(override, dict):
+        raise ValueError("config.toml root must be a table")
 
-    latex = src.get("latex")
-    if latex is None:
-        return default
-    if not isinstance(latex, dict):
-        raise ValueError("config key 'src.latex' must be a table")
-
-    preamble = latex.get("preamble", default.preamble)
-    postamble = latex.get("postamble", default.postamble)
-    if not isinstance(preamble, str):
-        raise ValueError("config key 'src.latex.preamble' must be a string")
-    if not isinstance(postamble, str):
-        raise ValueError("config key 'src.latex.postamble' must be a string")
-
-    return LatexConfig(preamble=preamble, postamble=postamble)
-
-
-def init_mdoc_config(mdoc_root: Path) -> None:
-    config_path = mdoc_root / ".mdc" / "config.toml"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(build_default_config_toml(), encoding="utf-8")
+    _merge_dict(config, override)
+    return config

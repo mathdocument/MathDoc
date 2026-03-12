@@ -3,8 +3,9 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
-from .config import load_latex_config
+from .config import load_config
 
 
 @dataclass(slots=True)
@@ -28,8 +29,6 @@ class CodeBlock:
         tex_dir: Path
         tex_path: Path
         pdf_path: Path
-        png_prefix: Path
-        png_path: Path
 
     def compile(
         self,
@@ -42,13 +41,32 @@ class CodeBlock:
         if not fnode.strip():
             return self._fail("fnode is required for compile", 1)
 
+        try:
+            config = load_config(mdoc_root)
+        except (OSError, ValueError) as exc:
+            return self._fail(f"failed to load config.toml: {exc}", 1)
+
+        src_cfg = config.get("src", {})
+        if not isinstance(src_cfg, dict):
+            return self._fail("config key 'src' must be a table", 1)
+
         code_kind = self.codetype.strip().casefold()
+        compiler_cfg = src_cfg.get(code_kind, {})
+        if compiler_cfg is None:
+            compiler_cfg = {}
+        if not isinstance(compiler_cfg, dict):
+            return self._fail(f"config key 'src.{code_kind}' must be a table", 1)
+
         if code_kind == "natl":
             return self._compile_natl()
         if code_kind == "py":
-            return self._compile_py()
+            return self._compile_py(compiler_cfg)
         if code_kind == "latex":
-            return self._compile_latex(mdoc_root=mdoc_root, fnode=fnode)
+            return self._compile_latex(
+                mdoc_root=mdoc_root,
+                fnode=fnode,
+                config=compiler_cfg,
+            )
         return self._fail(f"unsupported codetype: {self.codetype}", 127)
 
     def _fail(self, message: str, returncode: int) -> CompileResult:
@@ -67,11 +85,19 @@ class CodeBlock:
             returncode=0,
         )
 
-    def _compile_py(self) -> CompileResult:
+    def _compile_py(self, config: dict[str, Any]) -> CompileResult:
+        timeout_sec, failed = self._read_positive_int(
+            config,
+            key="timeout_sec",
+            full_key="src.py.timeout_sec",
+        )
+        if failed is not None:
+            return failed
+
         proc, failed = self._run_process(
             [sys.executable, "-c", self.content],
             tool_name="python",
-            timeout_sec=30,
+            timeout_sec=timeout_sec,
         )
         if failed is not None:
             return failed
@@ -89,38 +115,47 @@ class CodeBlock:
         *,
         mdoc_root: Path,
         fnode: str,
+        config: dict[str, Any],
     ) -> CompileResult:
-        cfg = {
-            "latex_timeout_sec": 30,
-            "pdftoppm_timeout_sec": 15,
-            "imgcat_timeout_sec": 10,
-            "pdftoppm_dpi": "1200",
-            "imgcat_width": "60%",
-        }
+        timeout_sec, failed = self._read_positive_int(
+            config,
+            key="timeout_sec",
+            full_key="src.latex.timeout_sec",
+        )
+        if failed is not None:
+            return failed
 
+        preamble, failed = self._read_str(
+            config,
+            key="preamble",
+            full_key="src.latex.preamble",
+        )
+        if failed is not None:
+            return failed
+
+        postamble, failed = self._read_str(
+            config,
+            key="postamble",
+            full_key="src.latex.postamble",
+        )
+        if failed is not None:
+            return failed
+
+        latexmk = self._require_tool("latexmk")
+        if isinstance(latexmk, CodeBlock.CompileResult):
+            return latexmk
         xelatex = self._require_tool("xelatex")
         if isinstance(xelatex, CodeBlock.CompileResult):
             return xelatex
-        pdftoppm = self._require_tool("pdftoppm")
-        if isinstance(pdftoppm, CodeBlock.CompileResult):
-            return pdftoppm
-        imgcat = self._require_tool("imgcat")
-        if isinstance(imgcat, CodeBlock.CompileResult):
-            return imgcat
 
         artifacts, failed = self._prepare_latex_artifacts(mdoc_root, fnode)
         if failed is not None:
             return failed
         assert artifacts is not None
 
-        try:
-            latex_cfg = load_latex_config(mdoc_root)
-        except (OSError, ValueError) as exc:
-            return self._fail(f"failed to load config.toml: {exc}", 1)
-
         payload = self._latex_payload(
-            preamble=latex_cfg.preamble,
-            postamble=latex_cfg.postamble,
+            preamble=preamble,
+            postamble=postamble,
         )
         try:
             artifacts.tex_path.write_text(payload, encoding="utf-8")
@@ -129,15 +164,16 @@ class CodeBlock:
 
         tex_proc, failed = self._run_process(
             [
-                xelatex,
+                latexmk,
+                "-pdf",
+                "-xelatex",
                 "-interaction=nonstopmode",
                 "-halt-on-error",
-                "-output-directory",
-                str(artifacts.tex_dir),
-                str(artifacts.tex_path),
+                "-outdir=.",
+                artifacts.tex_path.name,
             ],
-            tool_name="xelatex",
-            timeout_sec=cfg["latex_timeout_sec"],
+            tool_name="latexmk",
+            timeout_sec=timeout_sec,
             cwd=artifacts.tex_dir,
         )
         if failed is not None:
@@ -149,43 +185,17 @@ class CodeBlock:
                 tex_proc.returncode,
             )
 
-        png_proc, failed = self._run_process(
-            [
-                pdftoppm,
-                "-png",
-                "-r",
-                cfg["pdftoppm_dpi"],
-                "-singlefile",
-                str(artifacts.pdf_path),
-                str(artifacts.png_prefix),
-            ],
-            tool_name="pdftoppm",
-            timeout_sec=cfg["pdftoppm_timeout_sec"],
-        )
-        if failed is not None:
-            return failed
-        assert png_proc is not None
-        if png_proc.returncode != 0 or not artifacts.png_path.is_file():
-            detail = (png_proc.stderr or png_proc.stdout or "").strip()
-            if not detail:
-                detail = "failed to convert pdf to png"
-            return self._fail(detail, png_proc.returncode or 1)
-
-        preview, failed = self._render_imgcat_preview(
-            imgcat,
-            artifacts.png_path,
-            width=cfg["imgcat_width"],
-            timeout_sec=cfg["imgcat_timeout_sec"],
-        )
-        if failed is not None:
-            return failed
+        if not artifacts.pdf_path.is_file():
+            return self._fail(
+                f"latexmk succeeded but pdf not found: {artifacts.pdf_path}",
+                1,
+            )
 
         output_lines = [
+            f"artifact dir: {artifacts.tex_dir}",
             f"artifact tex: {artifacts.tex_path}",
             f"artifact pdf: {artifacts.pdf_path}",
         ]
-        if preview:
-            output_lines.append(preview)
         return CodeBlock.CompileResult(
             ok=True,
             codetype=self.codetype,
@@ -219,8 +229,6 @@ class CodeBlock:
             tex_dir=tex_dir,
             tex_path=tex_dir / f"{stem}.tex",
             pdf_path=tex_dir / f"{stem}.pdf",
-            png_prefix=tex_dir / stem,
-            png_path=tex_dir / f"{stem}.png",
         )
         return artifacts, None
 
@@ -275,34 +283,30 @@ class CodeBlock:
             return None, self._fail(f"failed to run {tool_name}: {exc}", 127)
         return proc, None
 
-    def _render_imgcat_preview(
+    def _read_positive_int(
         self,
-        imgcat_path: str,
-        png_path: Path,
+        config: dict[str, Any],
         *,
-        width: str,
-        timeout_sec: int,
+        key: str,
+        full_key: str,
+    ) -> tuple[int, CompileResult | None]:
+        if key not in config:
+            return 0, self._fail(f"config key '{full_key}' is required", 1)
+        value = config[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            return 0, self._fail(f"config key '{full_key}' must be a positive integer", 1)
+        return value, None
+
+    def _read_str(
+        self,
+        config: dict[str, Any],
+        *,
+        key: str,
+        full_key: str,
     ) -> tuple[str, CompileResult | None]:
-        commands: list[list[str]] = []
-        imgcat_width = width.strip()
-        if imgcat_width:
-            commands.append([imgcat_path, "--width", imgcat_width, str(png_path)])
-        commands.append([imgcat_path, str(png_path)])
-
-        last_detail = ""
-        for command in commands:
-            proc, failed = self._run_process(
-                command,
-                tool_name="imgcat",
-                timeout_sec=timeout_sec,
-            )
-            if failed is not None:
-                return "", failed
-            assert proc is not None
-            if proc.returncode == 0:
-                return proc.stdout.rstrip("\n"), None
-            last_detail = (proc.stderr or proc.stdout or "").strip()
-
-        if not last_detail:
-            last_detail = "imgcat failed to render png"
-        return "", self._fail(last_detail, 1)
+        if key not in config:
+            return "", self._fail(f"config key '{full_key}' is required", 1)
+        value = config[key]
+        if not isinstance(value, str):
+            return "", self._fail(f"config key '{full_key}' must be a string", 1)
+        return value, None

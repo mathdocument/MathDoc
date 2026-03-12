@@ -51,6 +51,26 @@ class TestMdocNode(unittest.TestCase):
             with self.assertRaises(ValueError):
                 node.load()
 
+    def test_eval_blocks_runs_all_blocks(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdoc_node_eval.") as tmp:
+            root = Path(tmp)
+            node = MdocNode.create(folder=str(root), title="Eval")
+            node.add_block("natl", "hello", {})
+            node.add_block("py", "print('hi')", {})
+            node.save()
+
+            loaded = MdocNode(path=node.path, title="")
+            loaded.load()
+            block_results = loaded.eval_blocks(mdoc_root=root)
+
+            self.assertEqual(len(block_results), 2)
+            self.assertEqual(block_results[0].block.codetype, "natl")
+            self.assertTrue(block_results[0].result.ok)
+            self.assertEqual(block_results[0].result.stdout, "hello")
+            self.assertEqual(block_results[1].block.codetype, "py")
+            self.assertTrue(block_results[1].result.ok)
+            self.assertEqual(block_results[1].result.stdout.strip(), "hi")
+
 
 if __name__ == "__main__":
     unittest.main()

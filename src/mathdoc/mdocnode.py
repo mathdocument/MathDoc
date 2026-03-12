@@ -1,6 +1,5 @@
 import shlex
 from pathlib import Path
-from typing import Any
 from uuid import uuid4
 from dataclasses import dataclass, field
 
@@ -23,6 +22,11 @@ class MdocNode:
     fnode: str = field(default_factory=lambda: str(uuid4()), init=False)
     depens: list[str] = field(default_factory=list, init=False)
     blocks: list[CodeBlock] = field(default_factory=list, init=False)
+
+    @dataclass(slots=True)
+    class EvalBlockResult:
+        block: CodeBlock
+        result: CodeBlock.CompileResult
 
     @classmethod
     def create(cls, folder: str = ".", title: str = "Untitled") -> "MdocNode":
@@ -56,57 +60,15 @@ class MdocNode:
         if dep_fnode in self.depens:
             self.depens.remove(dep_fnode)
 
-    def to_dict(self) -> dict[str, Any]:
-        """
-        Convert this node into a serializable dict.
-
-        TODO: include strict schema/versioning when file format is finalized.
-        """
-        return {
-            "fnode": self.fnode,
-            "title": self.title,
-            "path": str(self.path),
-            "depens": list(self.depens),
-            "blocks": [
-                {
-                    "codetype": block.codetype,
-                    "content": block.content,
-                    "metadata": block.metadata,
-                }
-                for block in self.blocks
-            ]
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "MdocNode":
-        """
-        Build an MdocNode from dict data.
-
-        TODO: add strict input validation and migration for old schema.
-        """
-        raw_path = data.get("path")
-        if not raw_path:
-            raise ValueError("MdocNode.from_dict requires 'path'.")
-
-        node = cls(
-            title=str(data.get("title", "")),
-            path=Path(str(raw_path)),
-        )
-        raw_id = data.get("fnode")
-        if raw_id:
-            node.fnode = str(raw_id)
-
-        for block in data.get("blocks", []):
-            node.add_block(
-                codetype=str(block.get("codetype", "")),
-                content=str(block.get("content", "")),
-                metadata=dict(block.get("metadata", {})),
-            )
-
-        for dep in data.get("depens", []):
-            node.add_dependency(str(dep))
-
-        return node
+    def eval_blocks(self, *, mdoc_root: Path) -> list["MdocNode.EvalBlockResult"]:
+        if mdoc_root is None:
+            raise ValueError("mdoc_root is required for eval_blocks")
+        results: list[MdocNode.EvalBlockResult] = []
+        for block in self.blocks:
+            result = block.compile(mdoc_root=mdoc_root, fnode=self.fnode)
+            results.append(MdocNode.EvalBlockResult(
+                block=block, result=result))
+        return results
 
     def load(self) -> None:
         """
@@ -122,7 +84,7 @@ class MdocNode:
         blocks: list[CodeBlock] = []
 
         status = ""
-        for index, raw_line in enumerate(lines):
+        for index, raw_line in enumerate(lines, start=1):
             line = raw_line.strip()
 
             if not line:
@@ -131,48 +93,48 @@ class MdocNode:
             if line.startswith("@fnode:"):
                 if status:
                     raise ValueError(
-                        f"line {index+1}: unexpected '@fnode' after {status} block in {self.path}")
+                        f"line {index}: unexpected '@fnode' after {status} block in {self.path}")
                 if fnode:
                     raise ValueError(
-                        f"line {index+1}: Duplicate '@fnode' in {self.path}")
+                        f"line {index}: Duplicate '@fnode' in {self.path}")
                 fnode = line.split(":", 1)[1].strip()
                 if not fnode:
                     raise ValueError(
-                        f"line {index+1}: '@fnode' must be non-empty in {self.path}")
+                        f"line {index}: '@fnode' must be non-empty in {self.path}")
                 continue
             if line.startswith("@title:"):
                 if status:
                     raise ValueError(
-                        f"line {index+1}: unexpected '@title' after {status} block in {self.path}")
+                        f"line {index}: unexpected '@title' after {status} block in {self.path}")
                 if title:
                     raise ValueError(
-                        f"line {index+1}: Duplicate '@title' in {self.path}")
+                        f"line {index}: Duplicate '@title' in {self.path}")
                 title = line.split(":", 1)[1].strip()
                 if not title:
                     raise ValueError(
-                        f"line {index+1}: '@title' must be non-empty in {self.path}")
+                        f"line {index}: '@title' must be non-empty in {self.path}")
                 continue
 
             # depens is optional but must be unique and non-empty if exists
             if line.startswith("@dep:"):
                 if status:
                     raise ValueError(
-                        f"line {index+1}: unexpected '@dep' after {status} block in {self.path}")
+                        f"line {index}: unexpected '@dep' after {status} block in {self.path}")
                 if depens:
                     raise ValueError(
-                        f"line {index+1}: Duplicate '@dep' in {self.path}")
+                        f"line {index}: Duplicate '@dep' in {self.path}")
                 status = "@dep"
                 continue
             # src is optional and can have multiple blocks
             if line.startswith("@src:"):
                 if status:
                     raise ValueError(
-                        f"line {index+1}: unexpected '@src' after {status} block in {self.path}")
+                        f"line {index}: unexpected '@src' after {status} block in {self.path}")
                 codetype, metadata = self._parse_src_header(line)
                 for block in blocks:
                     if codetype == block.codetype:
                         raise ValueError(
-                            f"line {index+1}: Duplicate '@src' codetype '{codetype}' in {self.path}")
+                            f"line {index}: Duplicate '@src' codetype '{codetype}' in {self.path}")
                 blocks.append(CodeBlock(codetype=codetype,
                               content="", metadata=metadata))
                 status = "@src"
@@ -183,16 +145,16 @@ class MdocNode:
                 if line == "@end":
                     if not depens:
                         raise ValueError(
-                            f"line {index+1}: '@dep' block must be non-empty in {self.path}")
+                            f"line {index}: '@dep' block must be non-empty in {self.path}")
                     status = ""
                     continue
                 dep = line.split(":", 1)[0].strip()
                 if not dep:
                     raise ValueError(
-                        f"line {index+1}: Invalid dependency format in {self.path}: '{line}'")
+                        f"line {index}: Invalid dependency format in {self.path}: '{line}'")
                 if dep in depens:
                     raise ValueError(
-                        f"line {index+1}: Duplicate dependency '{dep}' in {self.path}")
+                        f"line {index}: Duplicate dependency '{dep}' in {self.path}")
                 depens.append(dep)
                 continue
             # get src content
@@ -203,7 +165,7 @@ class MdocNode:
                 blocks[-1].content += raw_line.rstrip() + "\n"
                 continue
             raise ValueError(
-                f"line {index+1}: Unrecognized line in {self.path}: '{line}'")
+                f"line {index}: Unrecognized line in {self.path}: '{line}'")
 
         if status:
             raise ValueError(
