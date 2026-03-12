@@ -3,12 +3,43 @@ import os
 import select
 import shutil
 import sqlite3
+import subprocess
 import sys
 import termios
 import tty
+from contextlib import contextmanager
 from pathlib import Path
 
 from .mdocnode import MdocNode
+
+
+def _short_fnode(fnode: str) -> str:
+    return fnode[:8]
+
+
+def _to_rel_path(root: Path, path: Path) -> str:
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _format_mdoc_item(fnode: str, title: str, path: str, marker: str = "-") -> str:
+    prefix = f"{marker} " if marker else ""
+    return f"{prefix}{_short_fnode(fnode)}\t{title} ({path})"
+
+
+def _warn_index_failure(action: str, exc: Exception) -> None:
+    print(f"Warning: {action}, but index refresh failed: {exc}")
+    print("Warning: search results may be stale, run `mdc sync` to rebuild the index.")
+
+
+def _get_mdoc_root_or_none() -> Path | None:
+    mdoc_root = _find_mdoc_root(Path.cwd())
+    if mdoc_root is None:
+        print("Error: not inside an mdoc directory, run `mdc init` first")
+        return None
+    return mdoc_root
 
 
 def _find_mdoc_root(start: Path) -> Path | None:
@@ -28,6 +59,13 @@ def _iter_mdoc_files(root: Path):
 
 def _index_db_path(root: Path) -> Path:
     return root / ".mdc" / "index.db"
+
+
+@contextmanager
+def _open_indexed_conn(root: Path):
+    with sqlite3.connect(_index_db_path(root)) as conn:
+        _ensure_index_schema(conn)
+        yield conn
 
 
 def _ensure_index_schema(conn: sqlite3.Connection) -> None:
@@ -65,7 +103,7 @@ def _read_mdoc_head(file_path: Path) -> tuple[str, str] | None:
     except OSError:
         return None
 
-    if not title:
+    if not fnode or not title:
         return None
     return fnode, title
 
@@ -121,6 +159,61 @@ def _refresh_search_index(conn: sqlite3.Connection, root: Path) -> None:
     for stale_path in stale_paths:
         conn.execute("DELETE FROM mdocs WHERE path = ?", (stale_path,))
 
+    conn.commit()
+
+
+def _index_is_empty(conn: sqlite3.Connection) -> bool:
+    row = conn.execute("SELECT 1 FROM mdocs LIMIT 1").fetchone()
+    return row is None
+
+
+def _bootstrap_index_if_needed(conn: sqlite3.Connection, root: Path) -> None:
+    if _index_is_empty(conn):
+        _refresh_search_index(conn, root)
+
+
+def _upsert_mdoc_row(conn: sqlite3.Connection, root: Path, file_path: Path) -> None:
+    try:
+        rel_path = file_path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        raise ValueError(
+            f"mdoc path must be under mdoc root: {root.resolve()}")
+
+    if not file_path.is_file():
+        conn.execute("DELETE FROM mdocs WHERE path = ?", (rel_path,))
+        conn.commit()
+        return
+
+    try:
+        stat = file_path.stat()
+    except OSError:
+        conn.execute("DELETE FROM mdocs WHERE path = ?", (rel_path,))
+        conn.commit()
+        return
+
+    head = _read_mdoc_head(file_path)
+    if head is None:
+        conn.execute("DELETE FROM mdocs WHERE path = ?", (rel_path,))
+        conn.commit()
+        return
+
+    fnode, title = head
+    conn.execute("DELETE FROM mdocs WHERE path = ? AND fnode != ?",
+                 (rel_path, fnode))
+    conn.execute(
+        """
+        INSERT INTO mdocs (fnode, path, title, title_lc, mtime_sec, size)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(fnode) DO UPDATE SET
+            path = excluded.path,
+            title = excluded.title,
+            title_lc = excluded.title_lc,
+            mtime_sec = excluded.mtime_sec,
+            size = excluded.size
+        """,
+        (fnode, rel_path, title, title.casefold(),
+         int(stat.st_mtime), int(stat.st_size)),
+    )
     conn.commit()
 
 
@@ -227,12 +320,78 @@ def _lookup_mdocs_by_fnode(
 ) -> dict[str, tuple[str, str]]:
     if not fnodes:
         return {}
-    placeholders = ",".join("?" for _ in fnodes)
-    rows = conn.execute(
-        f"SELECT fnode, title, path FROM mdocs WHERE fnode IN ({placeholders})",
-        tuple(fnodes),
-    ).fetchall()
-    return {str(row[0]): (str(row[1]), str(row[2])) for row in rows}
+    rows_by_fnode: dict[str, tuple[str, str]] = {}
+    # Keep below SQLite's parameter limit for IN (...) queries.
+    chunk_size = 500
+    for start in range(0, len(fnodes), chunk_size):
+        chunk = fnodes[start:start + chunk_size]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"SELECT fnode, title, path FROM mdocs WHERE fnode IN ({placeholders})",
+            tuple(chunk),
+        ).fetchall()
+        for row in rows:
+            rows_by_fnode[str(row[0])] = (str(row[1]), str(row[2]))
+    return rows_by_fnode
+
+
+def _dep_rows_from_fnode_list(
+    conn: sqlite3.Connection, depens: list[str]
+) -> list[tuple[str, str, str]]:
+    dep_meta = _lookup_mdocs_by_fnode(conn, depens)
+    rows: list[tuple[str, str, str]] = []
+    for dep_fnode in depens:
+        title, path = dep_meta.get(dep_fnode, ("<missing>", "<not indexed>"))
+        rows.append((dep_fnode, title, path))
+    return rows
+
+
+def _load_mdoc_from_ref(
+    conn: sqlite3.Connection, root: Path, ref: str
+) -> tuple[MdocNode, str]:
+    _, _, src_path = _resolve_mdoc_by_ref(conn, root, ref)
+    node = MdocNode(path=src_path, title="")
+    node.load()
+    return node, _to_rel_path(root, src_path)
+
+
+def _resolve_edit_target_path(conn: sqlite3.Connection, root: Path, ref: str) -> Path:
+    raw_ref = ref.strip()
+    if not raw_ref:
+        raise ValueError("mdoc reference cannot be empty")
+
+    root_resolved = root.resolve()
+    maybe_path = (
+        "/" in raw_ref) or raw_ref.endswith(".mdoc") or raw_ref.startswith(".")
+    if maybe_path:
+        raw_path = Path(raw_ref)
+        candidates: list[Path] = []
+        if raw_path.is_absolute():
+            candidates.append(raw_path.resolve())
+        else:
+            candidates.append((Path.cwd() / raw_path).resolve())
+            candidates.append((root / raw_path).resolve())
+
+        seen: set[Path] = set()
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if not candidate.is_file():
+                continue
+            try:
+                candidate.relative_to(root_resolved)
+            except ValueError as exc:
+                raise ValueError(
+                    f"mdoc path must be under mdoc root: {root_resolved}"
+                ) from exc
+            return candidate
+
+        if raw_path.suffix == ".mdoc":
+            raise ValueError(f"mdoc file not found: {raw_ref}")
+
+    _, _, resolved = _resolve_mdoc_by_ref(conn, root, raw_ref)
+    return resolved
 
 
 def _select_indices_interactive(matches: list[tuple[str, str, str]]) -> list[int] | None:
@@ -420,9 +579,8 @@ def _cmd_init(_: argparse.Namespace) -> int:
 
 
 def _cmd_new(args: argparse.Namespace) -> int:
-    mdoc_root = _find_mdoc_root(Path.cwd())
+    mdoc_root = _get_mdoc_root_or_none()
     if mdoc_root is None:
-        print("Error: not inside an mdoc directory, run `mdc init` first")
         return 1
 
     target = Path(args.folder).resolve()
@@ -444,6 +602,13 @@ def _cmd_new(args: argparse.Namespace) -> int:
         print(f"Error: failed to save mdoc file: {exc}")
         return 1
 
+    try:
+        with _open_indexed_conn(mdoc_root) as conn:
+            _bootstrap_index_if_needed(conn, mdoc_root)
+            _upsert_mdoc_row(conn, mdoc_root, node.path)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        _warn_index_failure("mdoc was created", exc)
+
     print(f"created: {node.path}")
     print(f"fnode: {node.fnode}")
     print(f"title: {node.title}")
@@ -451,9 +616,8 @@ def _cmd_new(args: argparse.Namespace) -> int:
 
 
 def _cmd_search(args: argparse.Namespace) -> int:
-    mdoc_root = _find_mdoc_root(Path.cwd())
+    mdoc_root = _get_mdoc_root_or_none()
     if mdoc_root is None:
-        print("Error: not inside an mdoc directory, run `mdc init` first")
         return 1
 
     query = args.query.strip()
@@ -461,26 +625,24 @@ def _cmd_search(args: argparse.Namespace) -> int:
         print("Error: query cannot be empty")
         return 1
 
-    db_path = _index_db_path(mdoc_root)
-    with sqlite3.connect(db_path) as conn:
-        _ensure_index_schema(conn)
-        _refresh_search_index(conn, mdoc_root)
+    with _open_indexed_conn(mdoc_root) as conn:
+        _bootstrap_index_if_needed(conn, mdoc_root)
         matches = _search_mdocs(conn, query)
 
     if not matches:
         print(f"No results for: {args.query}")
         return 0
 
+    print(f"results: {len(matches)}")
     for fnode, title, rel_path in matches:
-        print(f"{fnode:.8}  {title} ({rel_path})")
+        print(_format_mdoc_item(fnode, title, rel_path))
 
     return 0
 
 
 def _cmd_dep_add(args: argparse.Namespace) -> int:
-    mdoc_root = _find_mdoc_root(Path.cwd())
+    mdoc_root = _get_mdoc_root_or_none()
     if mdoc_root is None:
-        print("Error: not inside an mdoc directory, run `mdc init` first")
         return 1
 
     query = args.query.strip()
@@ -491,19 +653,16 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
         print("Error: --max-results must be >= 1")
         return 1
 
-    db_path = _index_db_path(mdoc_root)
-    with sqlite3.connect(db_path) as conn:
-        _ensure_index_schema(conn)
-        _refresh_search_index(conn, mdoc_root)
+    with _open_indexed_conn(mdoc_root) as conn:
+        _bootstrap_index_if_needed(conn, mdoc_root)
         try:
-            src_fnode, _, src_path = _resolve_mdoc_by_ref(
-                conn, mdoc_root, args.source)
-        except ValueError as exc:
+            node, src_rel = _load_mdoc_from_ref(conn, mdoc_root, args.source)
+        except (FileNotFoundError, OSError, ValueError) as exc:
             print(f"Error: {exc}")
             return 1
         matches = _search_mdocs(conn, query)
 
-    matches = [row for row in matches if row[0] != src_fnode]
+    matches = [row for row in matches if row[0] != node.fnode]
     matches = matches[:args.max_results]
     if not matches:
         print(f"No dependency candidates for: {args.query}")
@@ -525,13 +684,6 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
     selected_rows = [matches[idx] for idx in selected_indices]
     selected_by_fnode = {row[0]: row for row in selected_rows}
 
-    node = MdocNode(path=src_path, title="")
-    try:
-        node.load()
-    except (FileNotFoundError, OSError, ValueError) as exc:
-        print(f"Error: failed to load mdoc: {exc}")
-        return 1
-
     added: list[str] = []
     skipped_existing: list[str] = []
     skipped_self: list[str] = []
@@ -552,11 +704,12 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
             print(f"Error: failed to save mdoc: {exc}")
             return 1
 
-    print(f"source: {node.fnode[:8]}\t{node.title}")
+    print(
+        f"source: {_format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
     print(f"added: {len(added)}")
     for dep_fnode in added:
         dep_row = selected_by_fnode[dep_fnode]
-        print(f"+ {dep_fnode[:8]}\t{dep_row[1]}")
+        print(_format_mdoc_item(dep_fnode, dep_row[1], dep_row[2], marker="+"))
     if skipped_existing:
         print(f"skipped existing: {len(skipped_existing)}")
     if skipped_self:
@@ -565,75 +718,48 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
 
 
 def _cmd_dep_show(args: argparse.Namespace) -> int:
-    mdoc_root = _find_mdoc_root(Path.cwd())
+    mdoc_root = _get_mdoc_root_or_none()
     if mdoc_root is None:
-        print("Error: not inside an mdoc directory, run `mdc init` first")
         return 1
 
-    db_path = _index_db_path(mdoc_root)
-    with sqlite3.connect(db_path) as conn:
-        _ensure_index_schema(conn)
-        _refresh_search_index(conn, mdoc_root)
+    with _open_indexed_conn(mdoc_root) as conn:
+        _bootstrap_index_if_needed(conn, mdoc_root)
         try:
-            _, _, src_path = _resolve_mdoc_by_ref(conn, mdoc_root, args.source)
-        except ValueError as exc:
-            print(f"Error: {exc}")
-            return 1
-
-        node = MdocNode(path=src_path, title="")
-        try:
-            node.load()
+            node, src_rel = _load_mdoc_from_ref(conn, mdoc_root, args.source)
         except (FileNotFoundError, OSError, ValueError) as exc:
             print(f"Error: failed to load mdoc: {exc}")
             return 1
 
-        dep_meta = _lookup_mdocs_by_fnode(conn, node.depens)
+        dep_rows = _dep_rows_from_fnode_list(conn, node.depens)
 
-    print(f"source: {node.fnode[:8]}\t{node.title}")
+    print(
+        f"source: {_format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
     print(f"dependencies: {len(node.depens)}")
-    for dep_fnode in node.depens:
-        dep = dep_meta.get(dep_fnode)
-        if dep is None:
-            print(f"- {dep_fnode[:8]}\t<missing> (<not indexed>)")
-            continue
-        print(f"- {dep_fnode[:8]}\t{dep[0]} ({dep[1]})")
+    for dep_fnode, dep_title, dep_path in dep_rows:
+        print(_format_mdoc_item(dep_fnode, dep_title, dep_path))
     return 0
 
 
 def _cmd_dep_rm(args: argparse.Namespace) -> int:
-    mdoc_root = _find_mdoc_root(Path.cwd())
+    mdoc_root = _get_mdoc_root_or_none()
     if mdoc_root is None:
-        print("Error: not inside an mdoc directory, run `mdc init` first")
         return 1
 
-    db_path = _index_db_path(mdoc_root)
-    with sqlite3.connect(db_path) as conn:
-        _ensure_index_schema(conn)
-        _refresh_search_index(conn, mdoc_root)
+    with _open_indexed_conn(mdoc_root) as conn:
+        _bootstrap_index_if_needed(conn, mdoc_root)
         try:
-            _, _, src_path = _resolve_mdoc_by_ref(conn, mdoc_root, args.source)
-        except ValueError as exc:
-            print(f"Error: {exc}")
-            return 1
-
-        node = MdocNode(path=src_path, title="")
-        try:
-            node.load()
+            node, src_rel = _load_mdoc_from_ref(conn, mdoc_root, args.source)
         except (FileNotFoundError, OSError, ValueError) as exc:
             print(f"Error: failed to load mdoc: {exc}")
             return 1
 
         if not node.depens:
-            print(f"source: {node.fnode[:8]}\t{node.title}")
+            print(
+                f"source: {_format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
             print("No dependencies to remove")
             return 0
 
-        dep_meta = _lookup_mdocs_by_fnode(conn, node.depens)
-
-    dep_rows: list[tuple[str, str, str]] = []
-    for dep_fnode in node.depens:
-        meta = dep_meta.get(dep_fnode, ("<missing>", "<not indexed>"))
-        dep_rows.append((dep_fnode, meta[0], meta[1]))
+        dep_rows = _dep_rows_from_fnode_list(conn, node.depens)
 
     try:
         selected_indices = _select_indices_interactive(dep_rows)
@@ -670,11 +796,61 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
         print(f"Error: failed to save mdoc: {exc}")
         return 1
 
-    print(f"source: {node.fnode[:8]}\t{node.title}")
+    print(
+        f"source: {_format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
     print(f"removed: {removed_count}")
+    dep_row_by_fnode = {row[0]: row for row in dep_rows}
     for dep_fnode in selected_fnodes:
-        meta = dep_meta.get(dep_fnode, ("<missing>", "<not indexed>"))
-        print(f"- {dep_fnode[:8]}\t{meta[0]} ({meta[1]})")
+        row = dep_row_by_fnode.get(dep_fnode)
+        if row is None:
+            continue
+        print(_format_mdoc_item(row[0], row[1], row[2], marker="-"))
+    return 0
+
+
+def _cmd_sync(_: argparse.Namespace) -> int:
+    mdoc_root = _get_mdoc_root_or_none()
+    if mdoc_root is None:
+        return 1
+
+    with _open_indexed_conn(mdoc_root) as conn:
+        _refresh_search_index(conn, mdoc_root)
+        count_row = conn.execute("SELECT COUNT(*) FROM mdocs").fetchone()
+    total = int(count_row[0]) if count_row else 0
+    print(f"synced: {total}")
+    return 0
+
+
+def _cmd_edit(args: argparse.Namespace) -> int:
+    mdoc_root = _get_mdoc_root_or_none()
+    if mdoc_root is None:
+        return 1
+
+    with _open_indexed_conn(mdoc_root) as conn:
+        _bootstrap_index_if_needed(conn, mdoc_root)
+        try:
+            src_path = _resolve_edit_target_path(conn, mdoc_root, args.source)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            return 1
+
+    try:
+        edit_proc = subprocess.run(["nvim", str(src_path)], check=False)
+    except FileNotFoundError:
+        print("Error: nvim is not installed or not in PATH")
+        return 1
+
+    if edit_proc.returncode != 0:
+        print(f"Error: nvim exited with code {edit_proc.returncode}")
+        return edit_proc.returncode
+
+    try:
+        with _open_indexed_conn(mdoc_root) as conn:
+            _upsert_mdoc_row(conn, mdoc_root, src_path)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        _warn_index_failure("mdoc was edited", exc)
+
+    print(f"edited: {_to_rel_path(mdoc_root, src_path)}")
     return 0
 
 
@@ -692,6 +868,18 @@ def _build_parser() -> argparse.ArgumentParser:
     new_parser.add_argument("-f", "--folder", default=".",
                             help="Output folder for the mdoc file (optional)")
     new_parser.set_defaults(func=_cmd_new)
+
+    edit_parser = subparsers.add_parser(
+        "edit", help="Open a mdoc with nvim and refresh its index entry")
+    edit_parser.add_argument(
+        "source",
+        help="Source mdoc to edit (fnode or .mdoc path)",
+    )
+    edit_parser.set_defaults(func=_cmd_edit)
+
+    sync_parser = subparsers.add_parser(
+        "sync", help="Force refresh all index entries")
+    sync_parser.set_defaults(func=_cmd_sync)
 
     search_parser = subparsers.add_parser(
         "search", help="Search mdocs by title or fnode")

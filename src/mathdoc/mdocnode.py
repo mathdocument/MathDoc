@@ -186,6 +186,9 @@ class MdocNode:
                 if not dep:
                     raise ValueError(
                         f"line {index+1}: Invalid dependency format in {self.path}: '{line}'")
+                if dep in depens:
+                    raise ValueError(
+                        f"line {index+1}: Duplicate dependency '{dep}' in {self.path}")
                 depens.append(dep)
                 continue
             # get src content
