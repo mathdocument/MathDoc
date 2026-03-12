@@ -15,7 +15,7 @@ def _cmd_init(_: argparse.Namespace) -> int:
     local_mdc = Path.cwd() / ".mdc"
 
     if local_mdc.is_dir():
-        print(f"Already intialized as mdoc directory: {local_mdc}")
+        print(f"Already initialized as mdoc directory: {local_mdc}")
         return 0
 
     local_mdc.mkdir(parents=False, exist_ok=False)
@@ -38,8 +38,16 @@ def _cmd_new(args: argparse.Namespace) -> int:
             f"Error: target path must be under mdoc root {mdoc_root}")
         return 1
 
+    if target.exists() and not target.is_dir():
+        print(f"Error: target folder is a file: {target}")
+        return 1
+
     node = MdocNode.create(args.folder, args.title)
-    node.save()
+    try:
+        node.save()
+    except OSError as exc:
+        print(f"Error: failed to save mdoc file: {exc}")
+        return 1
 
     print(f"created: {node.path}")
     print(f"fnode: {node.fnode}")

@@ -19,24 +19,25 @@ class MdocNode:
     """
 
     path: Path
-    fnode: str = field(default_factory=str)
-    title: str = field(default_factory=str)
-    depens: list[str] = field(default_factory=list)
-    blocks: list[CodeBlock] = field(default_factory=list)
+    title: str
+    fnode: str = field(default_factory=lambda: str(uuid4()), init=False)
+    depens: list[str] = field(default_factory=list, init=False)
+    blocks: list[CodeBlock] = field(default_factory=list, init=False)
 
     @classmethod
     def create(cls, folder: str = ".", title: str = "Untitled") -> "MdocNode":
         """Create a new node with an auto-generated unique id."""
-        fnode = str(uuid4())
-        path = f"{folder}/{fnode}.mdoc"
-        return cls(path=Path(path).resolve(), fnode=fnode, title=title)
+        folder_path = Path(folder).resolve()
+        node = cls(path=folder_path, title=title)
+        node.path = folder_path / f"{node.fnode}.mdoc"
+        return node
 
-    def add_block(self, codetype: str, content: str, *, metadata: dict[str, str] = {}) -> CodeBlock:
+    def add_block(self, codetype: str, content: str, metadata: dict[str, str]) -> CodeBlock:
         """Append a new content block and return it."""
         block = CodeBlock(
             codetype=codetype,
             content=content,
-            metadata=metadata,
+            metadata=dict(metadata),
         )
         self.blocks.append(block)
         return block
@@ -87,12 +88,13 @@ class MdocNode:
         if not raw_path:
             raise ValueError("MdocNode.from_dict requires 'path'.")
 
-        raw_id = data.get("fnode")
         node = cls(
-            fnode=str(raw_id) if raw_id else str(uuid4()),
             title=str(data.get("title", "")),
             path=Path(str(raw_path)),
         )
+        raw_id = data.get("fnode")
+        if raw_id:
+            node.fnode = str(raw_id)
 
         for block in data.get("blocks", []):
             node.add_block(
@@ -283,5 +285,10 @@ class MdocNode:
         if not metadata:
             return f"@src: {codetype}"
 
-        meta_tokens = [f"{key}=\"{value}\"" for key, value in metadata.items()]
+        def _quote(value: str) -> str:
+            escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+            return f"\"{escaped}\""
+
+        meta_tokens = [
+            f"{key}={_quote(value)}" for key, value in metadata.items()]
         return f"@src: {codetype} " + " ".join(meta_tokens)
