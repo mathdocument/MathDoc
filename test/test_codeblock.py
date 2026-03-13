@@ -1,4 +1,5 @@
 from mathdoc.compiler.base import CompilerReq, CompilerRes, SrcCompiler
+from mathdoc.compiler.comp_latex import CompilerLatex
 from mathdoc.compiler.registry import CompilerRegistry
 from mathdoc.srcblock import SrcBlock
 import mathdoc.srcblock as SrcBlock_module
@@ -31,6 +32,13 @@ class TestSrcBlock(unittest.TestCase):
                 "postamble": "\\end{document}\n",
             },
         }
+
+    def test_compiler_res_defaults_to_not_compiled(self) -> None:
+        result = CompilerRes()
+        self.assertFalse(result.result)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "not compiled")
+        self.assertEqual(result.rtcode, 1)
 
     def test_compile_natl(self) -> None:
         block = SrcBlock(srctype="natl", content="hello natl\n")
@@ -120,10 +128,22 @@ class TestSrcBlock(unittest.TestCase):
             result = self._result(block.compile(mdcroot=tmp_path, src_cfg=self._config()))
         self.assertTrue(result.result, result.stderr)
         self.assertEqual(result.rtcode, 0)
-        self.assertIn("temp-latex.tex", result.stdout)
+        self.assertIn("temp-latex-", result.stdout)
         self.assertIn("artifact dir:", result.stdout)
         self.assertIn("artifact tex:", result.stdout)
         self.assertIn("artifact pdf:", result.stdout)
+
+    def test_latex_artifact_paths_are_unique(self) -> None:
+        compiler = CompilerLatex()
+        with tempfile.TemporaryDirectory(prefix="mdc_SrcBlock_latex.artifacts.") as tmp:
+            tmp_path = Path(tmp)
+            artifacts1 = compiler._prepare_latex_artifacts(mdcroot=tmp_path)
+            artifacts2 = compiler._prepare_latex_artifacts(mdcroot=tmp_path)
+
+        self.assertNotEqual(artifacts1.tex_path, artifacts2.tex_path)
+        self.assertNotEqual(artifacts1.pdf_path, artifacts2.pdf_path)
+        self.assertTrue(artifacts1.tex_path.name.startswith("temp-latex-"))
+        self.assertTrue(artifacts2.tex_path.name.startswith("temp-latex-"))
 
     def test_compile_latex_without_xelatex(self) -> None:
         # Simulate missing xelatex by using an unknown srctype path via monkeypatch.

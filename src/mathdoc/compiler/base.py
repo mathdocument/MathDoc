@@ -17,10 +17,10 @@ class CompilerReq:
 
 @dataclass(slots=True, kw_only=True)
 class CompilerRes:
-    result: bool = True
+    result: bool = False
     stdout: str = ""
-    stderr: str = ""
-    rtcode: int = 0
+    stderr: str = "not compiled"
+    rtcode: int = 1
 
 
 class SrcCompiler(ABC):

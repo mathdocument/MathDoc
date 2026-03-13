@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from .base import SrcCompiler
 from .base import CompilerReq
@@ -151,7 +152,7 @@ class CompilerLatex(SrcCompiler):
         except OSError as exc:
             raise RuntimeError(f"failed to create tex artifact dir: {exc}") from exc
 
-        stem = "temp-latex"
+        stem = f"temp-latex-{uuid4().hex[:8]}"
         artifacts = CompilerLatex.LatexArtifacts(
             tex_dir=tex_dir,
             tex_path=tex_dir / f"{stem}.tex",
