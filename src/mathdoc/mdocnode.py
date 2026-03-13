@@ -6,9 +6,9 @@ from uuid import uuid4
 from dataclasses import dataclass, field
 from typing import Any
 
-from .codeblock import CodeBlock
-from .config import load_config
+from .srcblock import SrcBlock
 from .indcache import IndCache
+from .config import load_config
 from .utils import format_mdoc_item, to_rel_path
 
 
@@ -28,7 +28,7 @@ class MdocNode:
     title: str
     fnode: str = field(default_factory=lambda: str(uuid4()), init=False)
     depens: list[str] = field(default_factory=list, init=False)
-    blocks: list[CodeBlock] = field(default_factory=list, init=False)
+    blocks: list[SrcBlock] = field(default_factory=list, init=False)
 
     @classmethod
     def create(
@@ -55,7 +55,7 @@ class MdocNode:
         if dep_fnode in self.depens:
             self.depens.remove(dep_fnode)
 
-    def eval_blocks(self, *, depth: int = 1, reverse_depens: bool = False) -> list[CodeBlock]:
+    def eval_blocks(self, *, depth: int = 1, reverse_depens: bool = False) -> list[SrcBlock]:
         if depth < -1:
             raise ValueError("depth must be -1 (infinite) or >= 0")
         if not self.blocks:
@@ -103,7 +103,7 @@ class MdocNode:
             block.compile(
                 mdoc_root=self.mdoc_root,
                 fnode=self.fnode,
-                config=config,
+                src_cfg=src_cfg,
             )
         return merged_blocks
 
@@ -227,36 +227,36 @@ class MdocNode:
 
     def _merged_blocks_for_eval(
         self, *, topo_fnodes: list[str], nodes_by_fnode: dict[str, "MdocNode"], src_cfg: dict[str, Any]
-    ) -> list[CodeBlock]:
-        merged: list[CodeBlock] = []
+    ) -> list[SrcBlock]:
+        merged: list[SrcBlock] = []
 
-        blocks_by_node: dict[str, dict[str, CodeBlock]] = {}
+        blocks_by_node: dict[str, dict[str, SrcBlock]] = {}
         for fnode in topo_fnodes:
             node = nodes_by_fnode[fnode]
-            by_codetype: dict[str, CodeBlock] = {}
+            by_srctype: dict[str, SrcBlock] = {}
             for block in node.blocks:
-                by_codetype[block.codetype.casefold()] = block
-            blocks_by_node[fnode] = by_codetype
+                by_srctype[block.srctype.casefold()] = block
+            blocks_by_node[fnode] = by_srctype
 
         for root_block in self.blocks:
-            codetype_key = root_block.codetype.casefold()
-            depens_enabled = self._depens_enabled_for_codetype(
+            srctype_key = root_block.srctype.casefold()
+            depens_enabled = self._depens_enabled_for_srctype(
                 src_cfg=src_cfg,
-                codetype_key=codetype_key,
+                srctype_key=srctype_key,
             )
             if not depens_enabled:
                 merged.append(root_block)
                 continue
 
-            ordered_blocks: list[CodeBlock] = []
+            ordered_blocks: list[SrcBlock] = []
             for fnode in topo_fnodes:
-                candidate = blocks_by_node[fnode].get(codetype_key)
+                candidate = blocks_by_node[fnode].get(srctype_key)
                 if candidate is not None:
                     ordered_blocks.append(candidate)
 
             merged.append(
-                CodeBlock(
-                    codetype=root_block.codetype,
+                SrcBlock(
+                    srctype=root_block.srctype,
                     content=self._merge_block_content(ordered_blocks),
                     metadata=dict(root_block.metadata),
                 )
@@ -265,25 +265,25 @@ class MdocNode:
         return merged
 
     @staticmethod
-    def _depens_enabled_for_codetype(
+    def _depens_enabled_for_srctype(
         *,
         src_cfg: dict[str, Any],
-        codetype_key: str,
+        srctype_key: str,
     ) -> bool:
-        compiler_cfg = src_cfg.get(codetype_key)
+        compiler_cfg = src_cfg.get(srctype_key)
         if compiler_cfg is None:
             return False
         if not isinstance(compiler_cfg, dict):
             raise ValueError(
-                f"config key 'src.{codetype_key}' must be a table")
+                f"config key 'src.{srctype_key}' must be a table")
         depens = compiler_cfg.get("depens", False)
         if not isinstance(depens, bool):
             raise ValueError(
-                f"config key 'src.{codetype_key}.depens' must be a boolean")
+                f"config key 'src.{srctype_key}.depens' must be a boolean")
         return depens
 
     @staticmethod
-    def _merge_block_content(blocks: list[CodeBlock]) -> str:
+    def _merge_block_content(blocks: list[SrcBlock]) -> str:
         parts: list[str] = []
         for block in blocks:
             text = block.content.rstrip("\n")
@@ -315,7 +315,7 @@ class MdocNode:
         fnode: str = ""
         title: str = ""
         depens: list[str] = []
-        blocks: list[CodeBlock] = []
+        blocks: list[SrcBlock] = []
 
         status = ""
         for index, raw_line in enumerate(lines, start=1):
@@ -364,12 +364,12 @@ class MdocNode:
                 if status:
                     raise ValueError(
                         f"line {index}: unexpected '@src' after {status} block in {self.path}")
-                codetype, metadata = self._parse_src_header(line)
+                srctype, metadata = self._parse_src_header(line)
                 for block in blocks:
-                    if codetype == block.codetype:
+                    if srctype == block.srctype:
                         raise ValueError(
-                            f"line {index}: Duplicate '@src' codetype '{codetype}' in {self.path}")
-                blocks.append(CodeBlock(codetype=codetype,
+                            f"line {index}: Duplicate '@src' srctype '{srctype}' in {self.path}")
+                blocks.append(SrcBlock(srctype=srctype,
                               content="", metadata=metadata))
                 status = "@src"
                 continue
@@ -439,7 +439,7 @@ class MdocNode:
 
         for block in self.blocks:
             output_lines.append(self._format_src_header(
-                block.codetype, block.metadata))
+                block.srctype, block.metadata))
             if block.content:
                 output_lines.extend(block.content.splitlines())
             output_lines.append("@end")
@@ -459,13 +459,13 @@ class MdocNode:
         """
         payload = line.split(":", 1)[1].strip()
         if not payload:
-            raise ValueError("Missing codetype after '@src:'.")
+            raise ValueError("Missing srctype after '@src:'.")
 
         tokens = shlex.split(payload)
         if not tokens:
             raise ValueError("Invalid '@src' header.")
 
-        codetype = tokens[0]
+        srctype = tokens[0]
         metadata: dict[str, str] = {}
         for token in tokens[1:]:
             if "=" not in token:
@@ -476,14 +476,14 @@ class MdocNode:
                 raise ValueError(f"Invalid src metadata token: '{token}'")
             metadata[key] = value
 
-        return codetype, metadata
+        return srctype, metadata
 
     @staticmethod
-    def _format_src_header(codetype: str, metadata: dict[str, str]) -> str:
+    def _format_src_header(srctype: str, metadata: dict[str, str]) -> str:
         """Format a src header line for saving."""
 
         if not metadata:
-            return f"@src: {codetype}"
+            return f"@src: {srctype}"
 
         def _quote(value: str) -> str:
             escaped = value.replace("\\", "\\\\").replace('"', '\\"')
@@ -491,4 +491,4 @@ class MdocNode:
 
         meta_tokens = [
             f"{key}={_quote(value)}" for key, value in metadata.items()]
-        return f"@src: {codetype} " + " ".join(meta_tokens)
+        return f"@src: {srctype} " + " ".join(meta_tokens)

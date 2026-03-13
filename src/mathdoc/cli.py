@@ -153,17 +153,18 @@ def _cmd_eval(args: argparse.Namespace) -> int:
             result = block.require_result()
         except AssertionError:
             failed += 1
-            print(colorize(f"[{index}] {block.codetype}: failed (1)", STYLE["red"]))
+            print(
+                colorize(f"[{index}] {block.srctype}: failed (1)", STYLE["red"]))
             print("    ! missing compile result")
             print("")
             continue
         if result.ok:
-            print(colorize(f"[{index}] {block.codetype}: ok", STYLE["grn"]))
+            print(colorize(f"[{index}] {block.srctype}: ok", STYLE["grn"]))
         else:
             failed += 1
             print(
                 colorize(
-                    f"[{index}] {block.codetype}: failed ({result.returncode})",
+                    f"[{index}] {block.srctype}: failed ({result.returncode})",
                     STYLE["red"],
                 )
             )

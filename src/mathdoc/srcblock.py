@@ -19,16 +19,14 @@ class CompileResult:
 class CompileContext:
     mdoc_root: Path
     fnode: str
-    config: dict[str, Any]
-    src_config: dict[str, Any]
-    compiler_config: dict[str, Any]
+    compiler_cfg: dict[str, Any]
 
 
 @dataclass(slots=True)
-class CodeBlock:
+class SrcBlock:
     """A typed content block in a knowledge card."""
 
-    codetype: str
+    srctype: str
     content: str
     metadata: dict[str, str] = field(default_factory=dict)
     result: CompileResult | None = field(
@@ -56,7 +54,7 @@ class CodeBlock:
             returncode=returncode,
         ))
 
-    def compile(self, *, mdoc_root: Path, fnode: str, config: dict[str, Any]) -> None:
+    def compile(self, *, mdoc_root: Path, fnode: str, src_cfg: dict[str, Any]) -> None:
         self.result = None
         self.context = None
 
@@ -67,31 +65,26 @@ class CodeBlock:
             self._set_fail("fnode is required for compile", 1)
             return
 
-        src_config = config.get("src", {})
-        if not isinstance(src_config, dict):
-            self._set_fail("config key 'src' must be a table", 1)
+        srctype_key = self.srctype.strip().casefold()
+        compiler_cfg = src_cfg.get(srctype_key, {})
+        if not isinstance(compiler_cfg, dict):
+            self._set_fail(
+                f"config key 'src.{srctype_key}' must be a table", 1)
             return
 
-        codetype_key = self.codetype.strip().casefold()
-        compiler_config = src_config.get(codetype_key, {})
-        if compiler_config is None:
-            compiler_config = {}
-        if not isinstance(compiler_config, dict):
-            self._set_fail(
-                f"config key 'src.{codetype_key}' must be a table", 1)
-            return
+        if self.metadata is not None:
+            # TODO: possible overwrite of compiler_cfg
+            pass
 
         self.context = CompileContext(
             mdoc_root=mdoc_root,
             fnode=fnode,
-            config=config,
-            src_config=src_config,
-            compiler_config=compiler_config,
+            compiler_cfg=compiler_cfg,
         )
 
-        compiler = DEFAULT_COMPILER_REGISTRY.resolve(codetype_key)
+        compiler = DEFAULT_COMPILER_REGISTRY.resolve(srctype_key)
         if compiler is None:
-            self._set_fail(f"unsupported codetype: {self.codetype}", 127)
+            self._set_fail(f"unsupported srctype: {self.srctype}", 127)
             return
         compiler.compile(self)
         if self.result is None:
@@ -101,21 +94,21 @@ class CodeBlock:
 class BlockCompiler(ABC):
     @property
     @abstractmethod
-    def codetype(self) -> str:
+    def srctype(self) -> str:
         raise NotImplementedError
 
     @abstractmethod
-    def compile(self, block: CodeBlock) -> None:
+    def compile(self, block: SrcBlock) -> None:
         raise NotImplementedError
 
     def _read_positive_int(
         self,
         *,
-        block: CodeBlock,
+        block: SrcBlock,
         key: str,
         full_key: str,
     ) -> int | None:
-        config = block.require_context().compiler_config
+        config = block.require_context().compiler_cfg
         if key not in config:
             block._set_fail(f"config key '{full_key}' is required", 1)
             return None
@@ -129,11 +122,11 @@ class BlockCompiler(ABC):
     def _read_str(
         self,
         *,
-        block: CodeBlock,
+        block: SrcBlock,
         key: str,
         full_key: str,
     ) -> str | None:
-        config = block.require_context().compiler_config
+        config = block.require_context().compiler_cfg
         if key not in config:
             block._set_fail(f"config key '{full_key}' is required", 1)
             return None
@@ -143,7 +136,7 @@ class BlockCompiler(ABC):
             return None
         return value
 
-    def _require_tool(self, block: CodeBlock, tool_name: str) -> str | None:
+    def _require_tool(self, block: SrcBlock, tool_name: str) -> str | None:
         path = shutil.which(tool_name)
         if path is None:
             block._set_fail(f"{tool_name} not found in PATH", 127)
@@ -152,7 +145,7 @@ class BlockCompiler(ABC):
 
     def _run_process(
         self,
-        block: CodeBlock,
+        block: SrcBlock,
         command: list[str],
         *,
         tool_name: str,
@@ -180,10 +173,10 @@ class BlockCompiler(ABC):
 
 class NatlCompiler(BlockCompiler):
     @property
-    def codetype(self) -> str:
+    def srctype(self) -> str:
         return "natl"
 
-    def compile(self, block: CodeBlock) -> None:
+    def compile(self, block: SrcBlock) -> None:
         block._set_result(
             CompileResult(
                 ok=True,
@@ -195,10 +188,10 @@ class NatlCompiler(BlockCompiler):
 
 class PyCompiler(BlockCompiler):
     @property
-    def codetype(self) -> str:
+    def srctype(self) -> str:
         return "py"
 
-    def compile(self, block: CodeBlock) -> None:
+    def compile(self, block: SrcBlock) -> None:
         timeout_sec = self._read_positive_int(
             block=block,
             key="timeout_sec",
@@ -234,10 +227,10 @@ class LatexCompiler(BlockCompiler):
         pdf_path: Path
 
     @property
-    def codetype(self) -> str:
+    def srctype(self) -> str:
         return "latex"
 
-    def compile(self, block: CodeBlock) -> None:
+    def compile(self, block: SrcBlock) -> None:
         timeout_sec = self._read_positive_int(
             block=block,
             key="timeout_sec",
@@ -336,7 +329,7 @@ class LatexCompiler(BlockCompiler):
     def _prepare_latex_artifacts(
         self,
         *,
-        block: CodeBlock,
+        block: SrcBlock,
         mdoc_root: Path,
         fnode: str,
     ) -> LatexArtifacts | None:
@@ -389,11 +382,11 @@ class LatexCompiler(BlockCompiler):
 
 class CompilerRegistry:
     def __init__(self, compilers: list[BlockCompiler]) -> None:
-        self._compilers = {compiler.codetype.casefold(
+        self._compilers = {compiler.srctype.casefold(
         ): compiler for compiler in compilers}
 
-    def resolve(self, codetype: str) -> BlockCompiler | None:
-        return self._compilers.get(codetype.casefold())
+    def resolve(self, srctype: str) -> BlockCompiler | None:
+        return self._compilers.get(srctype.casefold())
 
 
 DEFAULT_COMPILER_REGISTRY = CompilerRegistry(
