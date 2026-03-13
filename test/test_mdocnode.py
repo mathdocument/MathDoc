@@ -16,9 +16,8 @@ class TestMdocNode(unittest.TestCase):
     @staticmethod
     def _new_node(root: Path, title: str, srctype: str, content: str) -> MdocNode:
         (root / ".mdc").mkdir(parents=True, exist_ok=True)
-        node = MdocNode.create(mdoc_root=root, folder=str(root), title=title)
-        node.blocks.append(
-            SrcBlock(srctype=srctype, content=content, metadata={}))
+        node = MdocNode.create(mdcroot=root, folder=str(root), title=title)
+        node.blocks.append(SrcBlock(srctype=srctype, content=content, metadata={}))
         return node
 
     @staticmethod
@@ -28,16 +27,16 @@ class TestMdocNode(unittest.TestCase):
     def test_create_save_load_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdoc_node_roundtrip.") as tmp:
             root = Path(tmp)
-            node = MdocNode.create(
-                mdoc_root=root, folder=str(root), title="Roundtrip")
+            node = MdocNode.create(mdcroot=root, folder=str(root), title="Roundtrip")
             node.add_dependency("dep-a")
             node.blocks.append(
-                SrcBlock(srctype="text", content="hello\nworld",
-                         metadata={"lang": "en"})
+                SrcBlock(
+                    srctype="text", content="hello\nworld", metadata={"lang": "en"}
+                )
             )
             node.save()
 
-            loaded = MdocNode(mdoc_root=root, path=node.path, title="")
+            loaded = MdocNode(mdcroot=root, path=node.path, title="")
             loaded.load()
 
             self.assertEqual(loaded.title, "Roundtrip")
@@ -51,13 +50,12 @@ class TestMdocNode(unittest.TestCase):
     def test_add_dependency_is_unique(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdoc_node_dep.") as tmp:
             root = Path(tmp)
-            node = MdocNode.create(
-                mdoc_root=root, folder=str(root), title="Deps")
+            node = MdocNode.create(mdcroot=root, folder=str(root), title="Deps")
             node.add_dependency("x")
             node.add_dependency("x")
             node.save()
 
-            loaded = MdocNode(mdoc_root=root, path=node.path, title="")
+            loaded = MdocNode(mdcroot=root, path=node.path, title="")
             loaded.load()
             self.assertEqual(loaded.depens, ["x"])
 
@@ -65,7 +63,7 @@ class TestMdocNode(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="mdoc_node_invalid.") as tmp:
             file_path = Path(tmp) / "bad.mdoc"
             file_path.write_text("@title: no fnode\n", encoding="utf-8")
-            node = MdocNode(mdoc_root=Path(tmp), path=file_path, title="")
+            node = MdocNode(mdcroot=Path(tmp), path=file_path, title="")
             with self.assertRaises(ValueError):
                 node.load()
 
@@ -84,7 +82,7 @@ class TestMdocNode(unittest.TestCase):
                 "@end\n",
                 encoding="utf-8",
             )
-            node = MdocNode(mdoc_root=root, path=file_path, title="")
+            node = MdocNode(mdcroot=root, path=file_path, title="")
             node.load()
 
             self.assertEqual(len(node.blocks), 1)
@@ -98,15 +96,10 @@ class TestMdocNode(unittest.TestCase):
             root = Path(tmp)
             file_path = root / "dep-token.mdoc"
             file_path.write_text(
-                "@fnode: dep-node\n"
-                "@title: Dep Token\n"
-                "\n"
-                "@dep:\n"
-                "abc:def\n"
-                "@end\n",
+                "@fnode: dep-node\n@title: Dep Token\n\n@dep:\nabc:def\n@end\n",
                 encoding="utf-8",
             )
-            node = MdocNode(mdoc_root=root, path=file_path, title="")
+            node = MdocNode(mdcroot=root, path=file_path, title="")
             node.load()
 
             self.assertEqual(node.depens, ["abc:def"])
@@ -116,10 +109,11 @@ class TestMdocNode(unittest.TestCase):
             root = Path(tmp)
             node = self._new_node(root, "Eval", "natl", "hello")
             node.blocks.append(
-                SrcBlock(srctype="py", content="print('hi')", metadata={}))
+                SrcBlock(srctype="py", content="print('hi')", metadata={})
+            )
             node.save()
 
-            loaded = MdocNode(mdoc_root=root, path=node.path, title="")
+            loaded = MdocNode(mdcroot=root, path=node.path, title="")
             loaded.load()
             block_results = loaded.eval_blocks()
 
@@ -138,20 +132,22 @@ class TestMdocNode(unittest.TestCase):
             root = Path(tmp)
             node = self._new_node(root, "Eval", "natl", "hello")
             node.blocks.append(
-                SrcBlock(srctype="py", content="print('hi')", metadata={}))
+                SrcBlock(srctype="py", content="print('hi')", metadata={})
+            )
             node.save()
 
-            loaded = MdocNode(mdoc_root=root, path=node.path, title="")
+            loaded = MdocNode(mdcroot=root, path=node.path, title="")
             loaded.load()
 
             mdoc_calls = 0
             original_mdoc_load = mdocnode_module.load_config
 
             try:
-                def counted_mdoc_load(mdoc_root: Path) -> dict[str, object]:
+
+                def counted_mdoc_load(mdcroot: Path) -> dict[str, object]:
                     nonlocal mdoc_calls
                     mdoc_calls += 1
-                    return original_mdoc_load(mdoc_root)
+                    return original_mdoc_load(mdcroot)
 
                 # type: ignore[assignment]
                 mdocnode_module.load_config = counted_mdoc_load
@@ -162,21 +158,18 @@ class TestMdocNode(unittest.TestCase):
 
             self.assertEqual(mdoc_calls, 1)
 
-    def test_eval_blocks_requires_initialized_mdoc_root(self) -> None:
+    def test_eval_blocks_requires_initialized_mdcroot(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdoc_node_eval_need_root.") as tmp:
             root = Path(tmp)
-            node = MdocNode.create(
-                mdoc_root=root, folder=str(root), title="Eval")
-            node.blocks.append(
-                SrcBlock(srctype="natl", content="hello", metadata={}))
+            node = MdocNode.create(mdcroot=root, folder=str(root), title="Eval")
+            node.blocks.append(SrcBlock(srctype="natl", content="hello", metadata={}))
             node.save()
 
-            loaded = MdocNode(mdoc_root=root, path=node.path, title="")
+            loaded = MdocNode(mdcroot=root, path=node.path, title="")
             loaded.load()
             with self.assertRaises(ValueError) as ctx:
                 loaded.eval_blocks()
-            self.assertIn("invalid mdoc root (missing .mdc)",
-                          str(ctx.exception))
+            self.assertIn("invalid mdoc root (missing .mdc)", str(ctx.exception))
 
     def test_eval_blocks_merges_dependencies_with_default_depth(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdoc_node_eval_depth1.") as tmp:
@@ -192,7 +185,7 @@ class TestMdocNode(unittest.TestCase):
             src.add_dependency(dep1.fnode)
             src.save()
 
-            loaded = MdocNode(mdoc_root=root, path=src.path, title="")
+            loaded = MdocNode(mdcroot=root, path=src.path, title="")
             loaded.load()
             block_results = loaded.eval_blocks()
 
@@ -215,7 +208,7 @@ class TestMdocNode(unittest.TestCase):
             src.add_dependency(dep1.fnode)
             src.save()
 
-            loaded = MdocNode(mdoc_root=root, path=src.path, title="")
+            loaded = MdocNode(mdcroot=root, path=src.path, title="")
             loaded.load()
             block_results = loaded.eval_blocks(depth=-1)
 
@@ -238,7 +231,7 @@ class TestMdocNode(unittest.TestCase):
             src.add_dependency(dep1.fnode)
             src.save()
 
-            loaded = MdocNode(mdoc_root=root, path=src.path, title="")
+            loaded = MdocNode(mdcroot=root, path=src.path, title="")
             loaded.load()
             block_results = loaded.eval_blocks(
                 depth=-1,
@@ -260,7 +253,7 @@ class TestMdocNode(unittest.TestCase):
             src.add_dependency(dep.fnode)
             src.save()
 
-            loaded = MdocNode(mdoc_root=root, path=src.path, title="")
+            loaded = MdocNode(mdcroot=root, path=src.path, title="")
             loaded.load()
             block_results = loaded.eval_blocks(depth=-1)
 
@@ -282,7 +275,7 @@ class TestMdocNode(unittest.TestCase):
             dep.add_dependency(src.fnode)
             dep.save()
 
-            loaded = MdocNode(mdoc_root=root, path=src.path, title="")
+            loaded = MdocNode(mdcroot=root, path=src.path, title="")
             loaded.load()
             with self.assertRaises(ValueError) as ctx:
                 loaded.eval_blocks(depth=-1)
@@ -304,7 +297,7 @@ class TestMdocNode(unittest.TestCase):
             dep.add_dependency(src.fnode)
             dep.save()
 
-            loaded = MdocNode(mdoc_root=root, path=src.path, title="")
+            loaded = MdocNode(mdcroot=root, path=src.path, title="")
             loaded.load()
             with self.assertRaises(ValueError) as ctx:
                 loaded.eval_blocks(depth=1)

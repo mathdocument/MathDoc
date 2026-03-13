@@ -10,7 +10,7 @@ from .mdocnode import MdocNode
 from .utils import (
     STYLE,
     colorize,
-    find_mdoc_root,
+    find_mdcroot,
     format_mdoc_item,
     select_indices_interactive,
     to_rel_path,
@@ -18,17 +18,17 @@ from .utils import (
 )
 
 
-def _get_mdoc_root_or_none() -> Path | None:
-    mdoc_root = find_mdoc_root(Path.cwd())
-    if mdoc_root is None:
+def _get_mdcroot_or_none() -> Path | None:
+    mdcroot = find_mdcroot(Path.cwd())
+    if mdcroot is None:
         print("Error: not inside an mdoc directory, run `mdc init` first")
         return None
-    return mdoc_root
+    return mdcroot
 
 
 def _load_mdoc_from_ref(cache: IndCache, ref: str) -> tuple[MdocNode, str]:
     _, _, src_path = cache.resolve_ref(ref, cwd=Path.cwd())
-    node = MdocNode(mdoc_root=cache.root, path=src_path, title="")
+    node = MdocNode(mdcroot=cache.root, path=src_path, title="")
     node.load()
     return node, to_rel_path(cache.root, src_path)
 
@@ -51,8 +51,8 @@ def _bootstrap_cache(cache: IndCache, *, action: str) -> bool:
 
 
 def _cmd_init(_: argparse.Namespace) -> int:
-    mdoc_root = Path.cwd()
-    local_mdc = mdoc_root / ".mdc"
+    mdcroot = Path.cwd()
+    local_mdc = mdcroot / ".mdc"
     config_path = local_mdc / "config.toml"
 
     if local_mdc.is_dir():
@@ -70,15 +70,15 @@ def _cmd_init(_: argparse.Namespace) -> int:
 
 
 def _cmd_new(args: argparse.Namespace) -> int:
-    mdoc_root = _get_mdoc_root_or_none()
-    if mdoc_root is None:
+    mdcroot = _get_mdcroot_or_none()
+    if mdcroot is None:
         return 1
 
     target = Path(args.folder).resolve()
     try:
-        target.relative_to(mdoc_root.resolve())
+        target.relative_to(mdcroot.resolve())
     except ValueError:
-        print(f"Error: target path must be under mdoc root {mdoc_root}")
+        print(f"Error: target path must be under mdoc root {mdcroot}")
         return 1
 
     if target.exists() and not target.is_dir():
@@ -86,7 +86,7 @@ def _cmd_new(args: argparse.Namespace) -> int:
         return 1
 
     node = MdocNode.create(
-        mdoc_root=mdoc_root,
+        mdcroot=mdcroot,
         folder=args.folder,
         title=args.title,
     )
@@ -96,7 +96,7 @@ def _cmd_new(args: argparse.Namespace) -> int:
         print(f"Error: failed to save mdoc file: {exc}")
         return 1
 
-    cache = IndCache(mdoc_root)
+    cache = IndCache(mdcroot)
     try:
         cache.bootstrap_if_needed()
         cache.upsert_path(node.path)
@@ -110,8 +110,8 @@ def _cmd_new(args: argparse.Namespace) -> int:
 
 
 def _cmd_search(args: argparse.Namespace) -> int:
-    mdoc_root = _get_mdoc_root_or_none()
-    if mdoc_root is None:
+    mdcroot = _get_mdcroot_or_none()
+    if mdcroot is None:
         return 1
 
     query = args.query.strip()
@@ -119,7 +119,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
         print("Error: query cannot be empty")
         return 1
 
-    cache = IndCache(mdoc_root)
+    cache = IndCache(mdcroot)
     if not _bootstrap_cache(cache, action="prepare search index"):
         return 1
 
@@ -141,11 +141,11 @@ def _cmd_search(args: argparse.Namespace) -> int:
 
 
 def _cmd_eval(args: argparse.Namespace) -> int:
-    mdoc_root = _get_mdoc_root_or_none()
-    if mdoc_root is None:
+    mdcroot = _get_mdcroot_or_none()
+    if mdcroot is None:
         return 1
 
-    cache = IndCache(mdoc_root)
+    cache = IndCache(mdcroot)
     if not _bootstrap_cache(cache, action="prepare eval index"):
         return 1
 
@@ -208,8 +208,8 @@ def _cmd_eval(args: argparse.Namespace) -> int:
 
 
 def _cmd_dep_add(args: argparse.Namespace) -> int:
-    mdoc_root = _get_mdoc_root_or_none()
-    if mdoc_root is None:
+    mdcroot = _get_mdcroot_or_none()
+    if mdcroot is None:
         return 1
 
     query = args.query.strip()
@@ -220,7 +220,7 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
         print("Error: --max-results must be >= 1")
         return 1
 
-    cache = IndCache(mdoc_root)
+    cache = IndCache(mdcroot)
     if not _bootstrap_cache(cache, action="prepare dependency index"):
         return 1
 
@@ -303,11 +303,11 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
 
 
 def _cmd_dep_show(args: argparse.Namespace) -> int:
-    mdoc_root = _get_mdoc_root_or_none()
-    if mdoc_root is None:
+    mdcroot = _get_mdcroot_or_none()
+    if mdcroot is None:
         return 1
 
-    cache = IndCache(mdoc_root)
+    cache = IndCache(mdcroot)
     if not _bootstrap_cache(cache, action="prepare dependency index"):
         return 1
 
@@ -337,11 +337,11 @@ def _cmd_dep_show(args: argparse.Namespace) -> int:
 
 
 def _cmd_dep_rm(args: argparse.Namespace) -> int:
-    mdoc_root = _get_mdoc_root_or_none()
-    if mdoc_root is None:
+    mdcroot = _get_mdcroot_or_none()
+    if mdcroot is None:
         return 1
 
-    cache = IndCache(mdoc_root)
+    cache = IndCache(mdcroot)
     if not _bootstrap_cache(cache, action="prepare dependency index"):
         return 1
 
@@ -425,11 +425,11 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
 
 
 def _cmd_sync(_: argparse.Namespace) -> int:
-    mdoc_root = _get_mdoc_root_or_none()
-    if mdoc_root is None:
+    mdcroot = _get_mdcroot_or_none()
+    if mdcroot is None:
         return 1
 
-    cache = IndCache(mdoc_root)
+    cache = IndCache(mdcroot)
     try:
         cache.refresh_all()
         total = cache.count()
@@ -441,11 +441,11 @@ def _cmd_sync(_: argparse.Namespace) -> int:
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:
-    mdoc_root = _get_mdoc_root_or_none()
-    if mdoc_root is None:
+    mdcroot = _get_mdcroot_or_none()
+    if mdcroot is None:
         return 1
 
-    cache = IndCache(mdoc_root)
+    cache = IndCache(mdcroot)
     if not _bootstrap_cache(cache, action="prepare edit index"):
         return 1
 
@@ -479,7 +479,7 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     except (OSError, ValueError, sqlite3.Error) as exc:
         warn_index_failure("mdoc was edited", exc)
 
-    print(f"edited: {to_rel_path(mdoc_root, src_path)}")
+    print(f"edited: {to_rel_path(mdcroot, src_path)}")
     return 0
 
 

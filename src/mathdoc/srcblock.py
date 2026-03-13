@@ -22,7 +22,7 @@ class SrcBlock:
 
     @dataclass(slots=True)
     class CompileContext:
-        mdoc_root: Path
+        mdcroot: Path
         fnode: str
         compiler_cfg: dict[str, Any]
 
@@ -58,12 +58,12 @@ class SrcBlock:
             returncode=returncode,
         )
 
-    def compile(self, *, mdoc_root: Path, fnode: str, src_cfg: dict[str, Any]) -> None:
+    def compile(self, *, mdcroot: Path, fnode: str, src_cfg: dict[str, Any]) -> None:
         self.result = None
         self.context = None
 
-        if mdoc_root is None:
-            self._set_result_failed("mdoc_root is required for compile", 1)
+        if mdcroot is None:
+            self._set_result_failed("mdcroot is required for compile", 1)
             return
         if not fnode.strip():
             self._set_result_failed("fnode is required for compile", 1)
@@ -82,7 +82,7 @@ class SrcBlock:
             pass
 
         self.context = SrcBlock.CompileContext(
-            mdoc_root=mdoc_root,
+            mdcroot=mdcroot,
             fnode=fnode,
             compiler_cfg=compiler_cfg,
         )
@@ -91,6 +91,14 @@ class SrcBlock:
         if compiler is None:
             self._set_result_failed(f"unsupported srctype: {self.srctype}", 127)
             return
-        compiler.compile(self)
+
+        resp = compiler.compile(self)
+        self.result = SrcBlock.CompileResult(
+            ok=resp.result,
+            stdout=resp.stdout,
+            stderr=resp.stderr,
+            returncode=resp.rtcode,
+        )
+
         if self.result is None:
             self._set_result_failed("compiler did not set compile result", 1)

@@ -31,9 +31,9 @@ def _merge_dict(base: dict[str, Any], override: dict[str, Any]) -> None:
         base[key] = value
 
 
-def load_config(mdoc_root: Path) -> dict[str, Any]:
+def load_config(mdcroot: Path) -> dict[str, Any]:
     config = copy.deepcopy(DEFAULT_CONFIG)
-    config_path = mdoc_root / ".mdc" / "config.toml"
+    config_path = mdcroot / ".mdc" / "config.toml"
     if not config_path.is_file():
         return config
 

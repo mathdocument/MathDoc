@@ -47,7 +47,7 @@ def warn_index_failure(action: str, exc: Exception) -> None:
     print("Warning: search results may be stale, run `mdc sync` to rebuild the index.")
 
 
-def find_mdoc_root(start: Path) -> Path | None:
+def find_mdcroot(start: Path) -> Path | None:
     for candidate in [start, *start.parents]:
         if (candidate / ".mdc").is_dir():
             return candidate

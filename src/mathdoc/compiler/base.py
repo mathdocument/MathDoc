@@ -1,13 +1,29 @@
-from __future__ import annotations
+from dataclasses import dataclass, field
 
 import shutil
 import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..srcblock import SrcBlock
+
+
+@dataclass(slots=True, kw_only=True)
+class CompilerReq:
+    mdcroot: Path
+    srctype: str
+    content: str
+    compcfg: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True, kw_only=True)
+class CompilerRes:
+    result: bool = True
+    stdout: str = ""
+    stderr: str = ""
+    rtcode: int = 0
 
 
 class BlockCompiler(ABC):
@@ -17,7 +33,7 @@ class BlockCompiler(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def compile(self, block: SrcBlock) -> None:
+    def compile(self, block: SrcBlock) -> CompilerRes:
         raise NotImplementedError
 
     def _read_positive_int(

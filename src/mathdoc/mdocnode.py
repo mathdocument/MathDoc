@@ -23,7 +23,7 @@ class MdocNode:
     - `depens`: other MdocNode ids this node depends on.
     """
 
-    mdoc_root: Path
+    mdcroot: Path
     path: Path
     title: str
     fnode: str = field(default_factory=lambda: str(uuid4()), init=False)
@@ -34,14 +34,14 @@ class MdocNode:
     def create(
         cls,
         *,
-        mdoc_root: Path,
+        mdcroot: Path,
         folder: str = ".",
         title: str = "Untitled",
     ) -> "MdocNode":
         """Create a new node with an auto-generated unique id."""
-        root_path = Path(mdoc_root).resolve()
+        root_path = Path(mdcroot).resolve()
         folder_path = Path(folder).resolve()
-        node = cls(mdoc_root=root_path, path=folder_path, title=title)
+        node = cls(mdcroot=root_path, path=folder_path, title=title)
         node.path = folder_path / f"{node.fnode}.mdoc"
         return node
 
@@ -86,7 +86,7 @@ class MdocNode:
             topo_fnodes = list(reversed(topo_fnodes))
 
         try:
-            config = load_config(self.mdoc_root)
+            config = load_config(self.mdcroot)
         except (OSError, ValueError) as exc:
             raise ValueError(f"failed to load config.toml: {exc}") from exc
 
@@ -102,7 +102,7 @@ class MdocNode:
 
         for block in merged_blocks:
             block.compile(
-                mdoc_root=self.mdoc_root,
+                mdcroot=self.mdcroot,
                 fnode=self.fnode,
                 src_cfg=src_cfg,
             )
@@ -111,10 +111,10 @@ class MdocNode:
     def _build_dependency_graph(
         self, *, depth: int
     ) -> tuple[dict[str, list[str]], dict[str, "MdocNode"]]:
-        mdc_dir = self.mdoc_root / ".mdc"
+        mdc_dir = self.mdcroot / ".mdc"
         if not mdc_dir.is_dir():
             raise ValueError(f"invalid mdoc root (missing .mdc): {mdc_dir}")
-        cache = IndCache(self.mdoc_root)
+        cache = IndCache(self.mdcroot)
         cache.bootstrap_if_needed()
 
         dep_graph: dict[str, list[str]] = {self.fnode: []}
@@ -131,9 +131,7 @@ class MdocNode:
                     if depth != -1 and node_depth >= depth:
                         continue
                     _, _, dep_path = cache.resolve_ref(dep_fnode, cwd=cache.root)
-                    dep_node = MdocNode(
-                        mdoc_root=self.mdoc_root, path=dep_path, title=""
-                    )
+                    dep_node = MdocNode(mdcroot=self.mdcroot, path=dep_path, title="")
                     dep_node.load()
 
                     nodes_by_fnode[dep_fnode] = dep_node
@@ -199,7 +197,7 @@ class MdocNode:
                 item = format_mdoc_item(
                     node.fnode,
                     node.title,
-                    to_rel_path(self.mdoc_root, node.path),
+                    to_rel_path(self.mdcroot, node.path),
                     marker="+",
                 )
             if total == 1:

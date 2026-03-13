@@ -4,6 +4,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from .base import BlockCompiler
+from .base import CompilerRes
 
 if TYPE_CHECKING:
     from ..srcblock import SrcBlock
@@ -14,14 +15,19 @@ class CompilerPy(BlockCompiler):
     def srctype(self) -> str:
         return "py"
 
-    def compile(self, block: SrcBlock) -> None:
+    def compile(self, block: SrcBlock) -> CompilerRes:
         timeout_sec = self._read_positive_int(
             block=block,
             key="timeout_sec",
             full_key="src.py.timeout_sec",
         )
         if timeout_sec is None:
-            return
+            return CompilerRes(
+                result=False,
+                stdout="",
+                stderr="invalid timeout_sec config",
+                rtcode=1,
+            )
 
         proc = self._run_process(
             block,
@@ -30,11 +36,16 @@ class CompilerPy(BlockCompiler):
             timeout_sec=timeout_sec,
         )
         if proc is None:
-            return
+            return CompilerRes(
+                result=False,
+                stdout="",
+                stderr="timed out",
+                rtcode=124,
+            )
 
-        block._set_result(
-            ok=proc.returncode == 0,
+        return CompilerRes(
+            result=proc.returncode == 0,
             stdout=proc.stdout,
             stderr=proc.stderr,
-            returncode=proc.returncode,
+            rtcode=proc.returncode,
         )
