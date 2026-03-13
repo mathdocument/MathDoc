@@ -1,16 +1,24 @@
 import sqlite3
 import shlex
 from collections import deque
-from pathlib import Path
-from uuid import uuid4
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from .compiler import CompilerRes
+from .config import load_config
 from .indcache import IndCache
 from .srcblock import SrcBlock
-from .config import load_config
 from .utils import format_mdoc_item, to_rel_path
+
+
+@dataclass(slots=True, frozen=True)
+class DependencyItem:
+    depth: int
+    fnode: str
+    title: str
+    rel_path: str
 
 
 @dataclass(slots=True)
@@ -59,25 +67,10 @@ class MdocNode:
     def eval_blocks(
         self, *, depth: int = 1, reverse_depens: bool = False
     ) -> list[tuple[str, CompilerRes]]:
-        if depth < -1:
-            raise ValueError("depth must be -1 (infinite) or >= 0")
         if not self.blocks:
             return []
 
-        try:
-            dep_graph, nodes_by_fnode = self._build_dependency_graph(
-                depth=depth,
-            )
-        except (OSError, ValueError, sqlite3.Error) as exc:
-            raise ValueError(f"failed to build dependency graph: {exc}") from exc
-        cycle = self._find_cycle(dep_graph)
-        if cycle is not None:
-            raise ValueError(
-                self._format_cycle(
-                    cycle=cycle,
-                    nodes_by_fnode=nodes_by_fnode,
-                )
-            )
+        dep_graph, nodes_by_fnode = self._dependency_context(depth=depth)
 
         topo_fnodes = self._topo_dependencies_first(
             root_fnode=self.fnode,
@@ -113,6 +106,38 @@ class MdocNode:
                 )
             )
         return results
+
+    def dependency_items(self, *, depth: int = 1) -> list[DependencyItem]:
+        dep_graph, nodes_by_fnode = self._dependency_context(depth=depth)
+        return self._dependency_items_from_graph(
+            root_fnode=self.fnode,
+            dep_graph=dep_graph,
+            nodes_by_fnode=nodes_by_fnode,
+        )
+
+    def _dependency_context(
+        self, *, depth: int
+    ) -> tuple[dict[str, list[str]], dict[str, "MdocNode"]]:
+        if depth < -1:
+            raise ValueError("depth must be -1 (infinite) or >= 0")
+
+        try:
+            dep_graph, nodes_by_fnode = self._build_dependency_graph(
+                depth=depth,
+            )
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            raise ValueError(f"failed to build dependency graph: {exc}") from exc
+
+        cycle = self._find_cycle(dep_graph)
+        if cycle is not None:
+            raise ValueError(
+                self._format_cycle(
+                    cycle=cycle,
+                    nodes_by_fnode=nodes_by_fnode,
+                )
+            )
+
+        return dep_graph, nodes_by_fnode
 
     def _build_dependency_graph(
         self, *, depth: int
@@ -235,6 +260,50 @@ class MdocNode:
         dfs(root_fnode)
         return order
 
+    def _dependency_items_from_graph(
+        self,
+        *,
+        root_fnode: str,
+        dep_graph: dict[str, list[str]],
+        nodes_by_fnode: dict[str, "MdocNode"],
+    ) -> list[DependencyItem]:
+        items: list[DependencyItem] = []
+        seen: set[str] = set()
+        queue: deque[tuple[str, int]] = deque(
+            (dep_fnode, 1) for dep_fnode in dep_graph.get(root_fnode, [])
+        )
+
+        while queue:
+            fnode, node_depth = queue.popleft()
+            if fnode in seen:
+                continue
+            seen.add(fnode)
+
+            node = nodes_by_fnode.get(fnode)
+            if node is None:
+                items.append(
+                    DependencyItem(
+                        depth=node_depth,
+                        fnode=fnode,
+                        title="<missing>",
+                        rel_path="<unknown>",
+                    )
+                )
+            else:
+                items.append(
+                    DependencyItem(
+                        depth=node_depth,
+                        fnode=node.fnode,
+                        title=node.title,
+                        rel_path=to_rel_path(self.mdcroot, node.path),
+                    )
+                )
+
+            for dep_fnode in dep_graph.get(fnode, []):
+                queue.append((dep_fnode, node_depth + 1))
+
+        return items
+
     def _merged_blocks_for_eval(
         self,
         *,
@@ -336,10 +405,6 @@ class MdocNode:
             # get dep content
             if status == "@dep":
                 if line == "@end":
-                    if not depens:
-                        raise ValueError(
-                            f"line {index}: '@dep' block must be non-empty in {self.path}"
-                        )
                     status = ""
                     continue
                 dep = line

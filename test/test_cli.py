@@ -391,7 +391,7 @@ class TestMdcCli(unittest.TestCase):
             self.assertIn("dependencies: 1", show_1.stdout)
             self.assertRegex(
                 show_1.stdout,
-                rf"- {dep_fnode[:8]}\s+Matrix Rank \({re.escape(dep_rel)}\)",
+                rf"\[1\]\s+- {dep_fnode[:8]}\s+Matrix Rank \({re.escape(dep_rel)}\)",
             )
 
             rc_add_dup, out_add_dup = _run_cli_tty(
@@ -475,6 +475,70 @@ class TestMdcCli(unittest.TestCase):
             self.assertEqual(search_new.returncode, 0,
                              search_new.stdout + search_new.stderr)
             self.assertIn("Show Dep New", search_new.stdout)
+
+    def test_dep_show_accepts_depth_and_detects_cycles(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_show_depth.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_src = _run_cli(["new", "-t", "Source For Depth", "-f", "."], repo)
+            self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
+            src_fnode, src_path = _extract_created_mdoc(new_src.stdout)
+            src_rel = str(Path(src_path).relative_to(repo.resolve())).replace("\\", "/")
+
+            new_dep1 = _run_cli(["new", "-t", "Depth One", "-f", "."], repo)
+            self.assertEqual(new_dep1.returncode, 0, new_dep1.stdout + new_dep1.stderr)
+            dep1_fnode, dep1_path = _extract_created_mdoc(new_dep1.stdout)
+            dep1_rel = str(Path(dep1_path).relative_to(repo.resolve())).replace("\\", "/")
+
+            new_dep2 = _run_cli(["new", "-t", "Depth Two", "-f", "."], repo)
+            self.assertEqual(new_dep2.returncode, 0, new_dep2.stdout + new_dep2.stderr)
+            dep2_fnode, dep2_path = _extract_created_mdoc(new_dep2.stdout)
+            dep2_rel = str(Path(dep2_path).relative_to(repo.resolve())).replace("\\", "/")
+
+            rc_add_src, out_add_src = _run_cli_tty(
+                ["dep", "add", src_path, "Depth One"], repo, b" \r"
+            )
+            self.assertEqual(rc_add_src, 0, out_add_src)
+
+            rc_add_dep1, out_add_dep1 = _run_cli_tty(
+                ["dep", "add", dep1_path, "Depth Two"], repo, b" \r"
+            )
+            self.assertEqual(rc_add_dep1, 0, out_add_dep1)
+
+            show_default = _run_cli(["dep", "show", src_path], repo)
+            self.assertEqual(show_default.returncode, 0, show_default.stdout + show_default.stderr)
+            self.assertIn("dependencies: 1", show_default.stdout)
+            self.assertRegex(
+                show_default.stdout,
+                rf"\[1\]\s+- {dep1_fnode[:8]}\s+Depth One \({re.escape(dep1_rel)}\)",
+            )
+            self.assertNotIn(dep2_fnode[:8], show_default.stdout)
+
+            show_inf = _run_cli(["dep", "show", "--depth", "-1", src_path], repo)
+            self.assertEqual(show_inf.returncode, 0, show_inf.stdout + show_inf.stderr)
+            self.assertIn("dependencies: 2", show_inf.stdout)
+            self.assertRegex(
+                show_inf.stdout,
+                rf"\[1\]\s+- {dep1_fnode[:8]}\s+Depth One \({re.escape(dep1_rel)}\)",
+            )
+            self.assertRegex(
+                show_inf.stdout,
+                rf"\[2\]\s+- {dep2_fnode[:8]}\s+Depth Two \({re.escape(dep2_rel)}\)",
+            )
+
+            rc_add_cycle, out_add_cycle = _run_cli_tty(
+                ["dep", "add", dep2_path, src_fnode[:8]], repo, b" \r"
+            )
+            self.assertEqual(rc_add_cycle, 0, out_add_cycle)
+
+            show_cycle = _run_cli(["dep", "show", "--depth", "-1", src_path], repo)
+            combined = show_cycle.stdout + show_cycle.stderr
+            self.assertEqual(show_cycle.returncode, 1, combined)
+            self.assertIn("dependency cycle detected", combined)
+            self.assertIn(src_fnode, combined)
+            self.assertIn(dep1_fnode, combined)
+            self.assertIn(dep2_fnode, combined)
 
     def test_dep_add_refreshes_accessed_dependency_index(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_add_refresh.") as tmp:

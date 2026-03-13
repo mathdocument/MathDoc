@@ -1,4 +1,5 @@
 from mathdoc.compiler import CompilerRes
+from mathdoc.mdocnode import DependencyItem
 from mathdoc.srcblock import SrcBlock
 from mathdoc.mdocnode import MdocNode
 import mathdoc.mdocnode as mdocnode_module
@@ -262,6 +263,72 @@ class TestMdocNode(unittest.TestCase):
             result0 = self._result(block_results[0])
             self.assertTrue(result0.result)
             self.assertEqual(result0.stdout.strip(), "src")
+
+    def test_dependency_items_respect_default_depth(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdoc_node_dep_items_depth1.") as tmp:
+            root = Path(tmp)
+            dep2 = self._new_node(root, "Dep2", "natl", "dep2")
+            dep2.save()
+
+            dep1 = self._new_node(root, "Dep1", "natl", "dep1")
+            dep1.add_dependency(dep2.fnode)
+            dep1.save()
+
+            src = self._new_node(root, "Src", "natl", "src")
+            src.add_dependency(dep1.fnode)
+            src.save()
+
+            loaded = MdocNode(mdcroot=root, path=src.path, title="")
+            loaded.load()
+            items = loaded.dependency_items()
+
+            self.assertEqual(
+                items,
+                [
+                    DependencyItem(
+                        depth=1,
+                        fnode=dep1.fnode,
+                        title="Dep1",
+                        rel_path=dep1.path.resolve().relative_to(root.resolve()).as_posix(),
+                    )
+                ],
+            )
+
+    def test_dependency_items_expand_with_unbounded_depth(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdoc_node_dep_items_inf.") as tmp:
+            root = Path(tmp)
+            dep2 = self._new_node(root, "Dep2", "natl", "dep2")
+            dep2.save()
+
+            dep1 = self._new_node(root, "Dep1", "natl", "dep1")
+            dep1.add_dependency(dep2.fnode)
+            dep1.save()
+
+            src = self._new_node(root, "Src", "natl", "src")
+            src.add_dependency(dep1.fnode)
+            src.save()
+
+            loaded = MdocNode(mdcroot=root, path=src.path, title="")
+            loaded.load()
+            items = loaded.dependency_items(depth=-1)
+
+            self.assertEqual(
+                items,
+                [
+                    DependencyItem(
+                        depth=1,
+                        fnode=dep1.fnode,
+                        title="Dep1",
+                        rel_path=dep1.path.resolve().relative_to(root.resolve()).as_posix(),
+                    ),
+                    DependencyItem(
+                        depth=2,
+                        fnode=dep2.fnode,
+                        title="Dep2",
+                        rel_path=dep2.path.resolve().relative_to(root.resolve()).as_posix(),
+                    ),
+                ],
+            )
 
     def test_eval_blocks_raises_on_dependency_cycle(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdoc_node_eval_cycle.") as tmp:

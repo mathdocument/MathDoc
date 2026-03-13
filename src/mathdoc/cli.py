@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .indcache import IndCache
 from .mdocnode import MdocNode
+from .depgraph import DepGraph
 from .utils import (
     STYLE,
     colorize,
@@ -311,21 +312,24 @@ def _cmd_dep_show(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        dep_rows = cache.dep_rows(node.depens)
-    except (OSError, ValueError, sqlite3.Error) as exc:
-        _print_index_error(action="read dependency metadata", exc=exc)
+        dep_items = node.dependency_items(depth=args.depth)
+    except ValueError as exc:
+        print(f"Error: failed to inspect dependencies: {exc}")
         return 1
+
+    dep_rows = [(item.fnode, item.title, item.rel_path) for item in dep_items]
     if dep_rows:
         try:
             cache.refresh_rows(dep_rows)
-            dep_rows = cache.dep_rows(node.depens)
         except (OSError, ValueError, sqlite3.Error) as exc:
             warn_index_failure("dependencies were inspected", exc)
 
     print(f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
-    print(f"dependencies: {len(node.depens)}")
-    for dep_fnode, dep_title, dep_path in dep_rows:
-        print(format_mdoc_item(dep_fnode, dep_title, dep_path))
+    print(f"dependencies: {len(dep_items)}")
+    for item in dep_items:
+        print(
+            f"[{item.depth}] {format_mdoc_item(item.fnode, item.title, item.rel_path)}"
+        )
     return 0
 
 
@@ -561,6 +565,13 @@ def _build_parser() -> argparse.ArgumentParser:
     dep_show_parser.add_argument(
         "source",
         help="Source mdoc to inspect (fnode or .mdoc path)",
+    )
+    dep_show_parser.add_argument(
+        "-d",
+        "--depth",
+        type=int,
+        default=1,
+        help="Dependency traversal depth (-1 for unlimited, default: 1)",
     )
     dep_show_parser.set_defaults(func=_cmd_dep_show)
 
