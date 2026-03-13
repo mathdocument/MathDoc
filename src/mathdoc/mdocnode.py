@@ -6,8 +6,8 @@ from uuid import uuid4
 from dataclasses import dataclass, field
 from typing import Any
 
-from .srcblock import SrcBlock
 from .indcache import IndCache
+from .srcblock import SrcBlock
 from .config import load_config
 from .utils import format_mdoc_item, to_rel_path
 

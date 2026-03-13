@@ -1,8 +1,6 @@
-from mathdoc.srcblock import (
-    BlockCompiler,
-    SrcBlock,
-    CompilerRegistry,
-)
+from mathdoc.compiler.base import BlockCompiler
+from mathdoc.compiler.registry import CompilerRegistry
+from mathdoc.srcblock import SrcBlock
 import mathdoc.srcblock as SrcBlock_module
 import shutil
 import sys
@@ -103,9 +101,9 @@ class TestSrcBlock(unittest.TestCase):
             def compile(self, block: SrcBlock) -> None:
                 _ = block
 
-        original_registry = SrcBlock_module.DEFAULT_COMPILER_REGISTRY
+        original_registry = SrcBlock_module.COMPILER_REGISTRY
         try:
-            SrcBlock_module.DEFAULT_COMPILER_REGISTRY = CompilerRegistry(
+            SrcBlock_module.COMPILER_REGISTRY = CompilerRegistry(
                 [NoResultCompiler()]
             )
             block = SrcBlock(srctype="noop", content="hello")
@@ -113,7 +111,7 @@ class TestSrcBlock(unittest.TestCase):
                           fnode="test-fnode", src_cfg=self._config())
             result = self._result(block)
         finally:
-            SrcBlock_module.DEFAULT_COMPILER_REGISTRY = original_registry
+            SrcBlock_module.COMPILER_REGISTRY = original_registry
 
         self.assertFalse(result.ok)
         self.assertEqual(result.returncode, 1)
