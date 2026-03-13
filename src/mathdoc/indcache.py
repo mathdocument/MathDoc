@@ -230,10 +230,34 @@ class IndCache:
                 title TEXT NOT NULL,
                 title_lc TEXT NOT NULL,
                 mtime_sec INTEGER NOT NULL,
+                mtime_ns INTEGER NOT NULL,
                 size INTEGER NOT NULL
             )
             """
         )
+        columns = {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(mdocs)").fetchall()
+        }
+        if "mtime_ns" not in columns:
+            if "mtime_sec" not in columns:
+                raise sqlite3.DatabaseError(
+                    "mdocs table is missing required mtime columns"
+                )
+            conn.execute(
+                "ALTER TABLE mdocs ADD COLUMN mtime_ns INTEGER NOT NULL DEFAULT 0"
+            )
+            conn.execute(
+                "UPDATE mdocs SET mtime_ns = mtime_sec * 1000000000 WHERE mtime_ns = 0"
+            )
+            columns.add("mtime_ns")
+        if "mtime_sec" not in columns:
+            conn.execute(
+                "ALTER TABLE mdocs ADD COLUMN mtime_sec INTEGER NOT NULL DEFAULT 0"
+            )
+            conn.execute(
+                "UPDATE mdocs SET mtime_sec = CAST(mtime_ns / 1000000000 AS INTEGER)"
+            )
+
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_mdocs_title_lc ON mdocs(title_lc)"
         )
@@ -274,7 +298,7 @@ class IndCache:
 
     def _refresh_search_index(self, conn: sqlite3.Connection) -> None:
         rows = conn.execute(
-            "SELECT path, fnode, mtime_sec, size FROM mdocs"
+            "SELECT path, fnode, mtime_ns, size FROM mdocs"
         ).fetchall()
         cached_by_path = {
             str(row[0]): (str(row[1]), int(row[2]), int(row[3]))
@@ -291,10 +315,10 @@ class IndCache:
             except OSError:
                 continue
 
-            mtime_sec = int(stat.st_mtime)
+            mtime_ns = int(stat.st_mtime_ns)
             size = int(stat.st_size)
             cached = cached_by_path.get(rel_path)
-            if cached and cached[1] == mtime_sec and cached[2] == size:
+            if cached and cached[1] == mtime_ns and cached[2] == size:
                 continue
 
             head = self._read_mdoc_head(file_path)
@@ -308,16 +332,25 @@ class IndCache:
             )
             conn.execute(
                 """
-                INSERT INTO mdocs (fnode, path, title, title_lc, mtime_sec, size)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO mdocs (fnode, path, title, title_lc, mtime_sec, mtime_ns, size)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(fnode) DO UPDATE SET
                     path = excluded.path,
                     title = excluded.title,
                     title_lc = excluded.title_lc,
                     mtime_sec = excluded.mtime_sec,
+                    mtime_ns = excluded.mtime_ns,
                     size = excluded.size
                 """,
-                (fnode, rel_path, title, title.casefold(), mtime_sec, size),
+                (
+                    fnode,
+                    rel_path,
+                    title,
+                    title.casefold(),
+                    mtime_ns // 1_000_000_000,
+                    mtime_ns,
+                    size,
+                ),
             )
 
         stale_paths = set(cached_by_path.keys()) - seen_paths
@@ -366,17 +399,25 @@ class IndCache:
                      (rel_path, fnode))
         conn.execute(
             """
-            INSERT INTO mdocs (fnode, path, title, title_lc, mtime_sec, size)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO mdocs (fnode, path, title, title_lc, mtime_sec, mtime_ns, size)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(fnode) DO UPDATE SET
                 path = excluded.path,
                 title = excluded.title,
                 title_lc = excluded.title_lc,
                 mtime_sec = excluded.mtime_sec,
+                mtime_ns = excluded.mtime_ns,
                 size = excluded.size
             """,
-            (fnode, rel_path, title, title.casefold(),
-             int(stat.st_mtime), int(stat.st_size)),
+            (
+                fnode,
+                rel_path,
+                title,
+                title.casefold(),
+                int(stat.st_mtime),
+                int(stat.st_mtime_ns),
+                int(stat.st_size),
+            ),
         )
         if commit:
             conn.commit()

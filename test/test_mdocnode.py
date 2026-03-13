@@ -69,6 +69,48 @@ class TestMdocNode(unittest.TestCase):
             with self.assertRaises(ValueError):
                 node.load()
 
+    def test_load_preserves_blank_lines_in_src_blocks(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdoc_node_blank_src.") as tmp:
+            root = Path(tmp)
+            file_path = root / "blank.mdoc"
+            file_path.write_text(
+                "@fnode: blank-node\n"
+                "@title: Blank Lines\n"
+                "\n"
+                "@src: py\n"
+                "print('line1')\n"
+                "\n"
+                "print('line3')\n"
+                "@end\n",
+                encoding="utf-8",
+            )
+            node = MdocNode(mdoc_root=root, path=file_path, title="")
+            node.load()
+
+            self.assertEqual(len(node.blocks), 1)
+            self.assertEqual(
+                node.blocks[0].content,
+                "print('line1')\n\nprint('line3')\n",
+            )
+
+    def test_load_dependency_keeps_full_token(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdoc_node_dep_token.") as tmp:
+            root = Path(tmp)
+            file_path = root / "dep-token.mdoc"
+            file_path.write_text(
+                "@fnode: dep-node\n"
+                "@title: Dep Token\n"
+                "\n"
+                "@dep:\n"
+                "abc:def\n"
+                "@end\n",
+                encoding="utf-8",
+            )
+            node = MdocNode(mdoc_root=root, path=file_path, title="")
+            node.load()
+
+            self.assertEqual(node.depens, ["abc:def"])
+
     def test_eval_blocks_runs_all_blocks(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdoc_node_eval.") as tmp:
             root = Path(tmp)

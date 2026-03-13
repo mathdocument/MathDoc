@@ -654,6 +654,21 @@ class TestMdcCli(unittest.TestCase):
             _, created_path = _extract_created_mdoc(new_run.stdout)
             self.assertTrue(Path(created_path).is_file())
 
+    def test_search_handles_corrupted_index_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_corrupt_index.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            db_path = repo / ".mdc" / "index.db"
+            db_path.write_text("broken-db", encoding="utf-8")
+
+            search_run = _run_cli(["search", "anything"], repo)
+            combined = search_run.stdout + search_run.stderr
+            self.assertEqual(search_run.returncode, 1, combined)
+            self.assertIn("Error: failed to prepare search index", search_run.stdout)
+            self.assertIn("Hint: run `mdc sync`", search_run.stdout)
+            self.assertNotIn("Traceback", combined)
+
 
 if __name__ == "__main__":
     unittest.main()

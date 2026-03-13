@@ -382,7 +382,7 @@ class MdocNode:
                             f"line {index}: '@dep' block must be non-empty in {self.path}")
                     status = ""
                     continue
-                dep = line.split(":", 1)[0].strip()
+                dep = line
                 if not dep:
                     raise ValueError(
                         f"line {index}: Invalid dependency format in {self.path}: '{line}'")
@@ -396,7 +396,7 @@ class MdocNode:
                 if line == "@end":
                     status = ""
                     continue
-                blocks[-1].content += raw_line.rstrip() + "\n"
+                blocks[-1].content += raw_line + "\n"
                 continue
             raise ValueError(
                 f"line {index}: Unrecognized line in {self.path}: '{line}'")

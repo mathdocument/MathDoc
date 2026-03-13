@@ -33,6 +33,23 @@ def _load_mdoc_from_ref(cache: IndCache, ref: str) -> tuple[MdocNode, str]:
     return node, to_rel_path(cache.root, src_path)
 
 
+def _print_index_error(*, action: str, exc: Exception) -> None:
+    print(f"Error: failed to {action}: {exc}")
+    print(
+        "Hint: run `mdc sync` to rebuild the index; "
+        "if it still fails, remove `.mdc/index.db` and retry."
+    )
+
+
+def _bootstrap_cache(cache: IndCache, *, action: str) -> bool:
+    try:
+        cache.bootstrap_if_needed()
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        _print_index_error(action=action, exc=exc)
+        return False
+    return True
+
+
 def _cmd_init(_: argparse.Namespace) -> int:
     mdoc_root = Path.cwd()
     local_mdc = mdoc_root / ".mdc"
@@ -104,8 +121,14 @@ def _cmd_search(args: argparse.Namespace) -> int:
         return 1
 
     cache = IndCache(mdoc_root)
-    cache.bootstrap_if_needed()
-    matches = cache.search(query)
+    if not _bootstrap_cache(cache, action="prepare search index"):
+        return 1
+
+    try:
+        matches = cache.search(query)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        _print_index_error(action="search mdocs", exc=exc)
+        return 1
 
     if not matches:
         print(f"No results for: {args.query}")
@@ -124,10 +147,12 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         return 1
 
     cache = IndCache(mdoc_root)
-    cache.bootstrap_if_needed()
+    if not _bootstrap_cache(cache, action="prepare eval index"):
+        return 1
+
     try:
         node, src_rel = _load_mdoc_from_ref(cache, args.source)
-    except (FileNotFoundError, OSError, ValueError) as exc:
+    except (FileNotFoundError, OSError, ValueError, sqlite3.Error) as exc:
         print(f"Error: failed to load mdoc: {exc}")
         return 1
 
@@ -199,13 +224,19 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
         return 1
 
     cache = IndCache(mdoc_root)
-    cache.bootstrap_if_needed()
+    if not _bootstrap_cache(cache, action="prepare dependency index"):
+        return 1
+
     try:
         node, src_rel = _load_mdoc_from_ref(cache, args.source)
-    except (FileNotFoundError, OSError, ValueError) as exc:
+    except (FileNotFoundError, OSError, ValueError, sqlite3.Error) as exc:
         print(f"Error: {exc}")
         return 1
-    matches = cache.search(query)
+    try:
+        matches = cache.search(query)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        _print_index_error(action="search dependency candidates", exc=exc)
+        return 1
     matches = [row for row in matches if row[0] != node.fnode]
     matches = matches[:args.max_results]
     if not matches:
@@ -281,14 +312,20 @@ def _cmd_dep_show(args: argparse.Namespace) -> int:
         return 1
 
     cache = IndCache(mdoc_root)
-    cache.bootstrap_if_needed()
+    if not _bootstrap_cache(cache, action="prepare dependency index"):
+        return 1
+
     try:
         node, src_rel = _load_mdoc_from_ref(cache, args.source)
-    except (FileNotFoundError, OSError, ValueError) as exc:
+    except (FileNotFoundError, OSError, ValueError, sqlite3.Error) as exc:
         print(f"Error: failed to load mdoc: {exc}")
         return 1
 
-    dep_rows = cache.dep_rows(node.depens)
+    try:
+        dep_rows = cache.dep_rows(node.depens)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        _print_index_error(action="read dependency metadata", exc=exc)
+        return 1
     if dep_rows:
         try:
             cache.refresh_rows(dep_rows)
@@ -310,10 +347,12 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
         return 1
 
     cache = IndCache(mdoc_root)
-    cache.bootstrap_if_needed()
+    if not _bootstrap_cache(cache, action="prepare dependency index"):
+        return 1
+
     try:
         node, src_rel = _load_mdoc_from_ref(cache, args.source)
-    except (FileNotFoundError, OSError, ValueError) as exc:
+    except (FileNotFoundError, OSError, ValueError, sqlite3.Error) as exc:
         print(f"Error: failed to load mdoc: {exc}")
         return 1
 
@@ -323,7 +362,11 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
         print("No dependencies to remove")
         return 0
 
-    dep_rows = cache.dep_rows(node.depens)
+    try:
+        dep_rows = cache.dep_rows(node.depens)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        _print_index_error(action="read dependency metadata", exc=exc)
+        return 1
 
     try:
         selected_indices = select_indices_interactive(dep_rows)
@@ -395,8 +438,12 @@ def _cmd_sync(_: argparse.Namespace) -> int:
         return 1
 
     cache = IndCache(mdoc_root)
-    cache.refresh_all()
-    total = cache.count()
+    try:
+        cache.refresh_all()
+        total = cache.count()
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        _print_index_error(action="sync index", exc=exc)
+        return 1
     print(f"synced: {total}")
     return 0
 
@@ -407,10 +454,12 @@ def _cmd_edit(args: argparse.Namespace) -> int:
         return 1
 
     cache = IndCache(mdoc_root)
-    cache.bootstrap_if_needed()
+    if not _bootstrap_cache(cache, action="prepare edit index"):
+        return 1
+
     try:
         src_path = cache.resolve_edit_target_path(args.source, cwd=Path.cwd())
-    except ValueError as exc:
+    except (ValueError, sqlite3.Error) as exc:
         print(f"Error: {exc}")
         return 1
 
