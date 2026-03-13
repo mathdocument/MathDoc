@@ -143,6 +143,13 @@ def _append_src_block(mdoc_path: str, srctype: str, body: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _rename_mdoc(mdoc_path: str, new_name: str) -> str:
+    path = Path(mdoc_path)
+    target = path.with_name(new_name)
+    path.rename(target)
+    return str(target)
+
+
 class TestMdcCli(unittest.TestCase):
     def test_init_new_search_and_path_boundary(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_basic.") as tmp:
@@ -539,6 +546,117 @@ class TestMdcCli(unittest.TestCase):
             self.assertIn(src_fnode, combined)
             self.assertIn(dep1_fnode, combined)
             self.assertIn(dep2_fnode, combined)
+
+    def test_dep_show_warns_but_continues_on_missing_dependency(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_show_missing.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_src = _run_cli(["new", "-t", "Source Missing", "-f", "."], repo)
+            self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
+            _, src_path = _extract_created_mdoc(new_src.stdout)
+
+            new_dep = _run_cli(["new", "-t", "Gone Dep", "-f", "."], repo)
+            self.assertEqual(new_dep.returncode, 0, new_dep.stdout + new_dep.stderr)
+            dep_fnode, dep_path = _extract_created_mdoc(new_dep.stdout)
+
+            rc_add, out_add = _run_cli_tty(
+                ["dep", "add", src_path, "Gone Dep"], repo, b" \r"
+            )
+            self.assertEqual(rc_add, 0, out_add)
+
+            Path(dep_path).unlink()
+
+            show_run = _run_cli(["dep", "show", src_path], repo)
+            self.assertEqual(show_run.returncode, 0, show_run.stdout + show_run.stderr)
+            self.assertIn("dependencies: 1", show_run.stdout)
+            self.assertIn(f"[1] - {dep_fnode[:8]}", show_run.stdout)
+            self.assertIn("<missing> (<unknown>)", show_run.stdout)
+            self.assertIn("Warning: detected 1 broken dependency reference", show_run.stdout)
+
+    def test_dep_rm_can_remove_missing_dependency(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_rm_missing.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_src = _run_cli(["new", "-t", "Source Missing Rm", "-f", "."], repo)
+            self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
+            _, src_path = _extract_created_mdoc(new_src.stdout)
+
+            new_dep = _run_cli(["new", "-t", "Gone Dep Rm", "-f", "."], repo)
+            self.assertEqual(new_dep.returncode, 0, new_dep.stdout + new_dep.stderr)
+            _, dep_path = _extract_created_mdoc(new_dep.stdout)
+
+            rc_add, out_add = _run_cli_tty(
+                ["dep", "add", src_path, "Gone Dep Rm"], repo, b" \r"
+            )
+            self.assertEqual(rc_add, 0, out_add)
+
+            Path(dep_path).unlink()
+
+            rc_rm, out_rm = _run_cli_tty(["dep", "rm", src_path], repo, b" \r")
+            self.assertEqual(rc_rm, 0, out_rm)
+            self.assertIn("<missing>", out_rm)
+            self.assertIn("removed: 1", out_rm)
+
+            show_run = _run_cli(["dep", "show", src_path], repo)
+            self.assertEqual(show_run.returncode, 0, show_run.stdout + show_run.stderr)
+            self.assertIn("dependencies: 0", show_run.stdout)
+
+    def test_eval_prints_dependency_chain_and_blocks_on_missing_dependency(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_eval_missing.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_src = _run_cli(["new", "-t", "Eval Missing Source", "-f", "."], repo)
+            self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
+            _, src_path = _extract_created_mdoc(new_src.stdout)
+            _append_src_block(src_path, "natl", "root body")
+
+            new_dep = _run_cli(["new", "-t", "Eval Missing Dep", "-f", "."], repo)
+            self.assertEqual(new_dep.returncode, 0, new_dep.stdout + new_dep.stderr)
+            dep_fnode, dep_path = _extract_created_mdoc(new_dep.stdout)
+
+            rc_add, out_add = _run_cli_tty(
+                ["dep", "add", src_path, "Eval Missing Dep"], repo, b" \r"
+            )
+            self.assertEqual(rc_add, 0, out_add)
+
+            Path(dep_path).unlink()
+
+            eval_run = _run_cli(["eval", src_path], repo)
+            self.assertEqual(eval_run.returncode, 1, eval_run.stdout + eval_run.stderr)
+            self.assertIn("dependencies: 1", eval_run.stdout)
+            self.assertIn(dep_fnode[:8], eval_run.stdout)
+            self.assertIn("<missing>", eval_run.stdout)
+            self.assertIn("remove the broken references with `mdc dep rm` before eval", eval_run.stdout)
+            self.assertNotIn("blocks:", eval_run.stdout)
+
+    def test_dep_show_recovers_after_manual_file_rename(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_show_rename.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_src = _run_cli(["new", "-t", "Source Rename", "-f", "."], repo)
+            self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
+            _, src_path = _extract_created_mdoc(new_src.stdout)
+
+            new_dep = _run_cli(["new", "-t", "Rename Dep", "-f", "."], repo)
+            self.assertEqual(new_dep.returncode, 0, new_dep.stdout + new_dep.stderr)
+            _, dep_path = _extract_created_mdoc(new_dep.stdout)
+
+            rc_add, out_add = _run_cli_tty(
+                ["dep", "add", src_path, "Rename Dep"], repo, b" \r"
+            )
+            self.assertEqual(rc_add, 0, out_add)
+
+            renamed_path = _rename_mdoc(dep_path, "renamed-dep.mdoc")
+            renamed_rel = str(Path(renamed_path).relative_to(repo.resolve())).replace("\\", "/")
+
+            show_run = _run_cli(["dep", "show", src_path], repo)
+            self.assertEqual(show_run.returncode, 0, show_run.stdout + show_run.stderr)
+            self.assertIn("Rename Dep", show_run.stdout)
+            self.assertIn(renamed_rel, show_run.stdout)
 
     def test_dep_add_refreshes_accessed_dependency_index(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_add_refresh.") as tmp:

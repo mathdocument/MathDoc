@@ -153,7 +153,11 @@ def _clear_block(prev_count: int) -> None:
     sys.stdout.flush()
 
 
-def select_indices_interactive(matches: list[tuple[str, str, str]]) -> list[int] | None:
+def select_indices_interactive(
+    matches: list[tuple[str, str, str]],
+    *,
+    error_indices: set[int] | None = None,
+) -> list[int] | None:
     if not matches:
         return []
 
@@ -167,6 +171,7 @@ def select_indices_interactive(matches: list[tuple[str, str, str]]) -> list[int]
     current = 0
     top = 0
     selected: set[int] = set()
+    bad_rows = error_indices or set()
     rendered_lines = 0
 
     try:
@@ -210,15 +215,23 @@ def select_indices_interactive(matches: list[tuple[str, str, str]]) -> list[int]
                 )
                 raw_line = f"{marker} {item_index + 1:>3}. {checked} {short_fnode(fnode)}  {title}  ({path})"
                 line = _clip(raw_line, width)
-                base_codes: tuple[str, ...] = (
-                    (STYLE["blu"],) if item_index in selected else ()
-                )
-                if item_index == current:
-                    lines.append(
-                        colorize(line, STYLE["bld"], *base_codes, enabled=use_color)
-                    )
+                if item_index in bad_rows:
+                    if item_index == current:
+                        lines.append(
+                            colorize(line, STYLE["bld"], STYLE["red"], enabled=use_color)
+                        )
+                    else:
+                        lines.append(colorize(line, STYLE["red"], enabled=use_color))
                 else:
-                    lines.append(colorize(line, *base_codes, enabled=use_color))
+                    base_codes: tuple[str, ...] = (
+                        (STYLE["blu"],) if item_index in selected else ()
+                    )
+                    if item_index == current:
+                        lines.append(
+                            colorize(line, STYLE["bld"], *base_codes, enabled=use_color)
+                        )
+                    else:
+                        lines.append(colorize(line, *base_codes, enabled=use_color))
 
             if len(matches) > max_visible:
                 lines.append(

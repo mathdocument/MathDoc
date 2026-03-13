@@ -5,9 +5,10 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
-from .indcache import IndCache
-from .mdocnode import MdocNode
 from .depgraph import DepGraph
+from .indcache import IndCache
+from .mdocnode import DependencyItem
+from .mdocnode import MdocNode
 from .utils import (
     STYLE,
     colorize,
@@ -49,6 +50,54 @@ def _bootstrap_cache(cache: IndCache, *, action: str) -> bool:
         _print_index_error(action=action, exc=exc)
         return False
     return True
+
+
+def _is_missing_dependency_item(item: DependencyItem, *, graph: DepGraph) -> bool:
+    return item.fnode in graph.missing_fnodes
+
+
+def _format_dependency_line(item: DependencyItem, *, graph: DepGraph) -> str:
+    line = f"[{item.depth}] {format_mdoc_item(item.fnode, item.title, item.rel_path)}"
+    if _is_missing_dependency_item(item, graph=graph):
+        return colorize(line, STYLE["red"])
+    return line
+
+
+def _print_dependency_chain(
+    *,
+    node: MdocNode,
+    src_rel: str,
+    dep_items: list[DependencyItem],
+    graph: DepGraph,
+) -> None:
+    print(f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
+    print(f"dependencies: {len(dep_items)}")
+    for item in dep_items:
+        print(_format_dependency_line(item, graph=graph))
+
+
+def _print_missing_dependency_warning(
+    *,
+    dep_items: list[DependencyItem],
+    graph: DepGraph,
+    for_eval: bool,
+) -> None:
+    missing_count = sum(
+        1 for item in dep_items if _is_missing_dependency_item(item, graph=graph)
+    )
+    if missing_count <= 0:
+        return
+
+    if for_eval:
+        print(
+            "Error: missing dependency targets detected; "
+            "remove the broken references with `mdc dep rm` before eval."
+        )
+    else:
+        print(
+            f"Warning: detected {missing_count} broken dependency reference(s); "
+            "broken rows are highlighted in red when the terminal supports color."
+        )
 
 
 def _cmd_init(_: argparse.Namespace) -> int:
@@ -156,12 +205,33 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         print(f"Error: failed to load mdoc: {exc}")
         return 1
 
-    print(f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
+    graph = DepGraph(mdcroot=mdcroot, root_node=node, cache=cache)
+    try:
+        dep_items = graph.dependency_items(depth=args.depth)
+    except ValueError as exc:
+        print(f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
+        print(f"Error: failed to inspect dependencies: {exc}")
+        return 1
+
+    _print_dependency_chain(
+        node=node,
+        src_rel=src_rel,
+        dep_items=dep_items,
+        graph=graph,
+    )
+
     if not node.blocks:
         print("No blocks to eval")
         return 0
 
-    graph = DepGraph(mdcroot=mdcroot, root_node=node, cache=cache)
+    if any(_is_missing_dependency_item(item, graph=graph) for item in dep_items):
+        _print_missing_dependency_warning(
+            dep_items=dep_items,
+            graph=graph,
+            for_eval=True,
+        )
+        return 1
+
     try:
         block_results = graph.eval_blocks(
             depth=args.depth,
@@ -224,6 +294,7 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
     except (FileNotFoundError, OSError, ValueError, sqlite3.Error) as exc:
         print(f"Error: {exc}")
         return 1
+    graph = DepGraph(mdcroot=mdcroot, root_node=node, cache=cache)
     try:
         matches = cache.search(query)
     except (OSError, ValueError, sqlite3.Error) as exc:
@@ -268,11 +339,12 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
     added: list[str] = []
     skipped_existing: list[str] = []
     skipped_self: list[str] = []
+    existing_depens = set(graph.direct_dependency_fnodes())
     for dep_fnode in selected_by_fnode:
         if dep_fnode == node.fnode:
             skipped_self.append(dep_fnode)
             continue
-        if dep_fnode in node.depens:
+        if dep_fnode in existing_depens:
             skipped_existing.append(dep_fnode)
             continue
         node.add_dependency(dep_fnode)
@@ -326,12 +398,17 @@ def _cmd_dep_show(args: argparse.Namespace) -> int:
         except (OSError, ValueError, sqlite3.Error) as exc:
             warn_index_failure("dependencies were inspected", exc)
 
-    print(f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
-    print(f"dependencies: {len(dep_items)}")
-    for item in dep_items:
-        print(
-            f"[{item.depth}] {format_mdoc_item(item.fnode, item.title, item.rel_path)}"
-        )
+    _print_dependency_chain(
+        node=node,
+        src_rel=src_rel,
+        dep_items=dep_items,
+        graph=graph,
+    )
+    _print_missing_dependency_warning(
+        dep_items=dep_items,
+        graph=graph,
+        for_eval=False,
+    )
     return 0
 
 
@@ -350,19 +427,35 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
         print(f"Error: failed to load mdoc: {exc}")
         return 1
 
-    if not node.depens:
+    graph = DepGraph(mdcroot=mdcroot, root_node=node, cache=cache)
+    try:
+        dep_items = graph.direct_dependency_items()
+    except ValueError as exc:
+        print(f"Error: failed to inspect dependencies: {exc}")
+        return 1
+
+    if not dep_items:
         print(f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
         print("No dependencies to remove")
         return 0
 
-    try:
-        dep_rows = cache.dep_rows(node.depens)
-    except (OSError, ValueError, sqlite3.Error) as exc:
-        _print_index_error(action="read dependency metadata", exc=exc)
-        return 1
+    dep_rows = [(item.fnode, item.title, item.rel_path) for item in dep_items]
+    error_indices = {
+        idx
+        for idx, item in enumerate(dep_items)
+        if _is_missing_dependency_item(item, graph=graph)
+    }
+    _print_missing_dependency_warning(
+        dep_items=dep_items,
+        graph=graph,
+        for_eval=False,
+    )
 
     try:
-        selected_indices = select_indices_interactive(dep_rows)
+        selected_indices = select_indices_interactive(
+            dep_rows,
+            error_indices=error_indices,
+        )
     except RuntimeError as exc:
         print(f"Error: {exc}")
         return 1
@@ -388,16 +481,8 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
 
     try:
         cache.refresh_rows(list(selected_rows_by_fnode.values()))
-        refreshed_by_fnode = cache.lookup_by_fnode(selected_fnodes)
     except (OSError, ValueError, sqlite3.Error) as exc:
         warn_index_failure("dependencies were inspected", exc)
-        refreshed_by_fnode = {}
-
-    for dep_fnode in selected_fnodes:
-        refreshed = refreshed_by_fnode.get(dep_fnode)
-        if refreshed is None:
-            continue
-        selected_rows_by_fnode[dep_fnode] = (dep_fnode, refreshed[0], refreshed[1])
 
     old_len = len(node.depens)
     for dep_fnode in selected_fnodes:
@@ -419,7 +504,11 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
         row = selected_rows_by_fnode.get(dep_fnode)
         if row is None:
             continue
-        print(format_mdoc_item(row[0], row[1], row[2], marker="-"))
+        line = format_mdoc_item(row[0], row[1], row[2], marker="-")
+        if dep_fnode in graph.missing_fnodes:
+            print(colorize(line, STYLE["red"]))
+        else:
+            print(line)
     return 0
 
 

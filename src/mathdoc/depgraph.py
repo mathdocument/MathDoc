@@ -29,6 +29,7 @@ class DepGraph:
         self.root_fnode = ""
         self.dep_graph: dict[str, list[str]] = {}
         self.nodes_by_fnode: dict[str, MdocNode] = {}
+        self.missing_fnodes: set[str] = set()
 
         if root_node is not None:
             self.set_root_node(root_node)
@@ -162,6 +163,7 @@ class DepGraph:
         self._ensure_ready()
         self.dep_graph.clear()
         self.nodes_by_fnode.clear()
+        self.missing_fnodes.clear()
 
         for file_path in self._iter_mdoc_files():
             node = self._load_node_from_path(file_path)
@@ -171,8 +173,11 @@ class DepGraph:
             self.dep_graph[node.fnode] = []
             for dep_fnode in self._dedupe_keep_order(node.depens):
                 if dep_fnode not in self.nodes_by_fnode:
-                    self.nodes_by_fnode[dep_fnode] = self._load_node(dep_fnode)
+                    dep_node = self._load_node(dep_fnode, tolerate_missing=True)
+                    if dep_node is not None:
+                        self.nodes_by_fnode[dep_fnode] = dep_node
                 self.dep_graph[node.fnode].append(dep_fnode)
+                self.dep_graph.setdefault(dep_fnode, [])
 
         for fnode in self.nodes_by_fnode:
             self.dep_graph.setdefault(fnode, [])
@@ -230,10 +235,14 @@ class DepGraph:
                 if dep_node is None:
                     if depth != -1 and node_depth >= depth:
                         continue
-                    dep_node = self._load_node(dep_fnode)
-                    self.nodes_by_fnode[dep_fnode] = dep_node
+                    dep_node = self._load_node(dep_fnode, tolerate_missing=True)
+                    if dep_node is not None:
+                        self.nodes_by_fnode[dep_fnode] = dep_node
 
                 self.dep_graph[node.fnode].append(dep_fnode)
+                self.dep_graph.setdefault(dep_fnode, [])
+                if dep_node is None:
+                    continue
 
                 if dep_fnode in seen:
                     continue
@@ -254,14 +263,63 @@ class DepGraph:
         if node is not None:
             return node
         self._ensure_ready()
-        node = self._load_node(fnode)
+        node = self._load_node(fnode, tolerate_missing=False)
+        if node is None:
+            raise ValueError(f"no mdoc matched reference: {fnode}")
         self.nodes_by_fnode[fnode] = node
         self.dep_graph.setdefault(fnode, [])
         return node
 
-    def _load_node(self, fnode: str) -> MdocNode:
-        _, _, dep_path = self.cache.resolve_ref(fnode, cwd=self.cache.root)
-        return self._load_node_from_path(dep_path)
+    def _load_node(self, fnode: str, *, tolerate_missing: bool) -> MdocNode | None:
+        for attempt in range(2):
+            path = self._resolve_fnode_path(
+                fnode,
+                tolerate_missing=tolerate_missing,
+            )
+            if path is None:
+                if attempt == 0:
+                    self.cache.refresh_all()
+                    continue
+                self._mark_missing(fnode)
+                return None
+
+            try:
+                node = self._load_node_from_path(path)
+            except FileNotFoundError:
+                if attempt == 0:
+                    self.cache.refresh_all()
+                    continue
+                if tolerate_missing:
+                    self._mark_missing(fnode)
+                    return None
+                raise
+
+            self.missing_fnodes.discard(fnode)
+            return node
+
+        if tolerate_missing:
+            self._mark_missing(fnode)
+            return None
+        raise ValueError(f"no mdoc matched reference: {fnode}")
+
+    def _resolve_fnode_path(
+        self,
+        fnode: str,
+        *,
+        tolerate_missing: bool,
+    ) -> Path | None:
+        try:
+            _, _, path = self.cache.resolve_ref(fnode, cwd=self.cache.root)
+            return path
+        except ValueError as exc:
+            if tolerate_missing and str(exc).startswith("no mdoc matched reference:"):
+                return None
+            raise
+
+    def _mark_missing(self, fnode: str) -> None:
+        self.missing_fnodes.add(fnode)
+        self.nodes_by_fnode.pop(fnode, None)
+        self.dep_graph.setdefault(fnode, [])
 
     def _load_node_from_path(self, path: Path) -> MdocNode:
         node = MdocNode(mdcroot=self.mdcroot, path=path, title="")
