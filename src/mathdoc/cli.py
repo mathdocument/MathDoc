@@ -28,7 +28,7 @@ def _get_mdoc_root_or_none() -> Path | None:
 
 def _load_mdoc_from_ref(cache: IndCache, ref: str) -> tuple[MdocNode, str]:
     _, _, src_path = cache.resolve_ref(ref, cwd=Path.cwd())
-    node = MdocNode(path=src_path, title="")
+    node = MdocNode(mdoc_root=cache.root, path=src_path, title="")
     node.load()
     return node, to_rel_path(cache.root, src_path)
 
@@ -69,7 +69,11 @@ def _cmd_new(args: argparse.Namespace) -> int:
         print(f"Error: target folder is a file: {target}")
         return 1
 
-    node = MdocNode.create(args.folder, args.title)
+    node = MdocNode.create(
+        mdoc_root=mdoc_root,
+        folder=args.folder,
+        title=args.title,
+    )
     try:
         node.save()
     except OSError as exc:
@@ -135,7 +139,6 @@ def _cmd_eval(args: argparse.Namespace) -> int:
 
     try:
         block_results = node.eval_blocks(
-            mdoc_root=mdoc_root,
             depth=args.depth,
             reverse_depens=args.reverse,
         )
@@ -145,9 +148,15 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     print(f"blocks: {len(block_results)}")
     print("result:")
     failed = 0
-    for index, eval_result in enumerate(block_results, start=1):
-        block = eval_result.block
-        result = eval_result.result
+    for index, block in enumerate(block_results, start=1):
+        try:
+            result = block.require_result()
+        except AssertionError:
+            failed += 1
+            print(colorize(f"[{index}] {block.codetype}: failed (1)", STYLE["red"]))
+            print("    ! missing compile result")
+            print("")
+            continue
         if result.ok:
             print(colorize(f"[{index}] {block.codetype}: ok", STYLE["grn"]))
         else:

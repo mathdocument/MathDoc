@@ -23,22 +23,25 @@ class MdocNode:
     - `depens`: other MdocNode ids this node depends on.
     """
 
+    mdoc_root: Path
     path: Path
     title: str
     fnode: str = field(default_factory=lambda: str(uuid4()), init=False)
     depens: list[str] = field(default_factory=list, init=False)
     blocks: list[CodeBlock] = field(default_factory=list, init=False)
 
-    @dataclass(slots=True)
-    class EvalBlockResult:
-        block: CodeBlock
-        result: CodeBlock.CompileResult
-
     @classmethod
-    def create(cls, folder: str = ".", title: str = "Untitled") -> "MdocNode":
+    def create(
+        cls,
+        *,
+        mdoc_root: Path,
+        folder: str = ".",
+        title: str = "Untitled",
+    ) -> "MdocNode":
         """Create a new node with an auto-generated unique id."""
+        root_path = Path(mdoc_root).resolve()
         folder_path = Path(folder).resolve()
-        node = cls(path=folder_path, title=title)
+        node = cls(mdoc_root=root_path, path=folder_path, title=title)
         node.path = folder_path / f"{node.fnode}.mdoc"
         return node
 
@@ -52,15 +55,7 @@ class MdocNode:
         if dep_fnode in self.depens:
             self.depens.remove(dep_fnode)
 
-    def eval_blocks(
-        self,
-        *,
-        mdoc_root: Path,
-        depth: int = 1,
-        reverse_depens: bool = False,
-    ) -> list["MdocNode.EvalBlockResult"]:
-        if mdoc_root is None:
-            raise ValueError("mdoc_root is required for eval_blocks")
+    def eval_blocks(self, *, depth: int = 1, reverse_depens: bool = False) -> list[CodeBlock]:
         if depth < -1:
             raise ValueError("depth must be -1 (infinite) or >= 0")
         if not self.blocks:
@@ -68,7 +63,6 @@ class MdocNode:
 
         try:
             dep_graph, nodes_by_fnode = self._build_dependency_graph(
-                mdoc_root=mdoc_root,
                 depth=depth,
             )
         except (OSError, ValueError, sqlite3.Error) as exc:
@@ -80,7 +74,6 @@ class MdocNode:
                 self._format_cycle(
                     cycle=cycle,
                     nodes_by_fnode=nodes_by_fnode,
-                    mdoc_root=mdoc_root,
                 )
             )
 
@@ -92,7 +85,7 @@ class MdocNode:
             topo_fnodes = list(reversed(topo_fnodes))
 
         try:
-            config = load_config(mdoc_root)
+            config = load_config(self.mdoc_root)
         except (OSError, ValueError) as exc:
             raise ValueError(f"failed to load config.toml: {exc}") from exc
 
@@ -106,23 +99,19 @@ class MdocNode:
             src_cfg=src_cfg,
         )
 
-        results: list[MdocNode.EvalBlockResult] = []
         for block in merged_blocks:
-            result = block.compile(mdoc_root=mdoc_root, fnode=self.fnode)
-            results.append(MdocNode.EvalBlockResult(
-                block=block, result=result))
-        return results
+            block.compile(
+                mdoc_root=self.mdoc_root,
+                fnode=self.fnode,
+                config=config,
+            )
+        return merged_blocks
 
-    def _build_dependency_graph(
-        self,
-        *,
-        mdoc_root: Path,
-        depth: int,
-    ) -> tuple[dict[str, list[str]], dict[str, "MdocNode"]]:
-        mdc_dir = mdoc_root / ".mdc"
+    def _build_dependency_graph(self, *, depth: int) -> tuple[dict[str, list[str]], dict[str, "MdocNode"]]:
+        mdc_dir = self.mdoc_root / ".mdc"
         if not mdc_dir.is_dir():
             raise ValueError(f"invalid mdoc root (missing .mdc): {mdc_dir}")
-        cache = IndCache(mdoc_root)
+        cache = IndCache(self.mdoc_root)
         cache.bootstrap_if_needed()
 
         dep_graph: dict[str, list[str]] = {self.fnode: []}
@@ -138,10 +127,12 @@ class MdocNode:
                 if dep_node is None:
                     if depth != -1 and node_depth >= depth:
                         continue
-                    dep_node = self._load_dependency_node(
-                        cache=cache,
-                        dep_fnode=dep_fnode,
-                    )
+                    _, _, dep_path = cache.resolve_ref(
+                        dep_fnode, cwd=cache.root)
+                    dep_node = MdocNode(mdoc_root=self.mdoc_root,
+                                        path=dep_path, title="")
+                    dep_node.load()
+
                     nodes_by_fnode[dep_fnode] = dep_node
                 dep_graph[node.fnode].append(dep_fnode)
                 if dep_fnode in seen:
@@ -153,28 +144,6 @@ class MdocNode:
             dep_graph.setdefault(fnode, [])
 
         return dep_graph, nodes_by_fnode
-
-    @staticmethod
-    def _load_dependency_node(*, cache: IndCache, dep_fnode: str) -> "MdocNode":
-        try:
-            _, _, dep_path = cache.resolve_ref(dep_fnode, cwd=cache.root)
-        except ValueError as exc:
-            raise ValueError(
-                f"failed to resolve dependency '{dep_fnode}': {exc}") from exc
-
-        node = MdocNode(path=dep_path, title="")
-        try:
-            node.load()
-        except (FileNotFoundError, OSError, ValueError) as exc:
-            raise ValueError(
-                f"failed to load dependency '{dep_fnode}' from {dep_path}: {exc}"
-            ) from exc
-
-        if node.fnode != dep_fnode:
-            raise ValueError(
-                f"dependency fnode mismatch: expected '{dep_fnode}', got '{node.fnode}' from {dep_path}"
-            )
-        return node
 
     @staticmethod
     def _find_cycle(dep_graph: dict[str, list[str]]) -> list[str] | None:
@@ -210,13 +179,7 @@ class MdocNode:
                 return cycle
         return None
 
-    @staticmethod
-    def _format_cycle(
-        *,
-        cycle: list[str],
-        nodes_by_fnode: dict[str, "MdocNode"],
-        mdoc_root: Path,
-    ) -> str:
+    def _format_cycle(self, *, cycle: list[str], nodes_by_fnode: dict[str, "MdocNode"]) -> str:
         if not cycle:
             return "dependency cycle detected"
         lines = ["dependency cycle detected:"]
@@ -232,7 +195,7 @@ class MdocNode:
                 item = format_mdoc_item(
                     node.fnode,
                     node.title,
-                    to_rel_path(mdoc_root, node.path),
+                    to_rel_path(self.mdoc_root, node.path),
                     marker="+",
                 )
             if total == 1:
@@ -247,11 +210,7 @@ class MdocNode:
         return "\n".join(lines)
 
     @staticmethod
-    def _topo_dependencies_first(
-        *,
-        root_fnode: str,
-        dep_graph: dict[str, list[str]],
-    ) -> list[str]:
+    def _topo_dependencies_first(*, root_fnode: str, dep_graph: dict[str, list[str]]) -> list[str]:
         visited: set[str] = set()
         order: list[str] = []
 
@@ -267,11 +226,7 @@ class MdocNode:
         return order
 
     def _merged_blocks_for_eval(
-        self,
-        *,
-        topo_fnodes: list[str],
-        nodes_by_fnode: dict[str, "MdocNode"],
-        src_cfg: dict[str, Any],
+        self, *, topo_fnodes: list[str], nodes_by_fnode: dict[str, "MdocNode"], src_cfg: dict[str, Any]
     ) -> list[CodeBlock]:
         merged: list[CodeBlock] = []
 

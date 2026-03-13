@@ -1,11 +1,27 @@
 import shutil
 import subprocess
 import sys
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .config import load_config
+
+@dataclass(slots=True)
+class CompileResult:
+    ok: bool
+    stdout: str = ""
+    stderr: str = ""
+    returncode: int = 0
+
+
+@dataclass(slots=True)
+class CompileContext:
+    mdoc_root: Path
+    fnode: str
+    config: dict[str, Any]
+    src_config: dict[str, Any]
+    compiler_config: dict[str, Any]
 
 
 @dataclass(slots=True)
@@ -15,154 +31,266 @@ class CodeBlock:
     codetype: str
     content: str
     metadata: dict[str, str] = field(default_factory=dict)
+    result: CompileResult | None = field(
+        default=None, init=False, repr=False)
+    context: CompileContext | None = field(
+        default=None, init=False, repr=False)
 
-    @dataclass(slots=True)
-    class CompileResult:
-        ok: bool
-        codetype: str
-        stdout: str = ""
-        stderr: str = ""
-        returncode: int = 0
+    def require_result(self) -> CompileResult:
+        if self.result is None:
+            raise AssertionError("missing compile result")
+        return self.result
 
+    def require_context(self) -> CompileContext:
+        if self.context is None:
+            raise AssertionError("missing compile context")
+        return self.context
+
+    def _set_result(self, result: CompileResult) -> None:
+        self.result = result
+
+    def _set_fail(self, message: str, returncode: int) -> None:
+        self._set_result(CompileResult(
+            ok=False,
+            stderr=message,
+            returncode=returncode,
+        ))
+
+    def compile(self, *, mdoc_root: Path, fnode: str, config: dict[str, Any]) -> None:
+        self.result = None
+        self.context = None
+
+        if mdoc_root is None:
+            self._set_fail("mdoc_root is required for compile", 1)
+            return
+        if not fnode.strip():
+            self._set_fail("fnode is required for compile", 1)
+            return
+
+        src_config = config.get("src", {})
+        if not isinstance(src_config, dict):
+            self._set_fail("config key 'src' must be a table", 1)
+            return
+
+        codetype_key = self.codetype.strip().casefold()
+        compiler_config = src_config.get(codetype_key, {})
+        if compiler_config is None:
+            compiler_config = {}
+        if not isinstance(compiler_config, dict):
+            self._set_fail(
+                f"config key 'src.{codetype_key}' must be a table", 1)
+            return
+
+        self.context = CompileContext(
+            mdoc_root=mdoc_root,
+            fnode=fnode,
+            config=config,
+            src_config=src_config,
+            compiler_config=compiler_config,
+        )
+
+        compiler = DEFAULT_COMPILER_REGISTRY.resolve(codetype_key)
+        if compiler is None:
+            self._set_fail(f"unsupported codetype: {self.codetype}", 127)
+            return
+        compiler.compile(self)
+        if self.result is None:
+            self._set_fail("compiler did not set compile result", 1)
+
+
+class BlockCompiler(ABC):
+    @property
+    @abstractmethod
+    def codetype(self) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def compile(self, block: CodeBlock) -> None:
+        raise NotImplementedError
+
+    def _read_positive_int(
+        self,
+        *,
+        block: CodeBlock,
+        key: str,
+        full_key: str,
+    ) -> int | None:
+        config = block.require_context().compiler_config
+        if key not in config:
+            block._set_fail(f"config key '{full_key}' is required", 1)
+            return None
+        value = config[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            block._set_fail(
+                f"config key '{full_key}' must be a positive integer", 1)
+            return None
+        return value
+
+    def _read_str(
+        self,
+        *,
+        block: CodeBlock,
+        key: str,
+        full_key: str,
+    ) -> str | None:
+        config = block.require_context().compiler_config
+        if key not in config:
+            block._set_fail(f"config key '{full_key}' is required", 1)
+            return None
+        value = config[key]
+        if not isinstance(value, str):
+            block._set_fail(f"config key '{full_key}' must be a string", 1)
+            return None
+        return value
+
+    def _require_tool(self, block: CodeBlock, tool_name: str) -> str | None:
+        path = shutil.which(tool_name)
+        if path is None:
+            block._set_fail(f"{tool_name} not found in PATH", 127)
+            return None
+        return path
+
+    def _run_process(
+        self,
+        block: CodeBlock,
+        command: list[str],
+        *,
+        tool_name: str,
+        timeout_sec: int,
+        cwd: Path | None = None,
+    ) -> subprocess.CompletedProcess[str] | None:
+        try:
+            proc = subprocess.run(
+                command,
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=timeout_sec,
+                cwd=str(cwd) if cwd is not None else None,
+            )
+        except subprocess.TimeoutExpired:
+            block._set_fail(
+                f"{tool_name} timed out after {timeout_sec} seconds", 124)
+            return None
+        except OSError as exc:
+            block._set_fail(f"failed to run {tool_name}: {exc}", 127)
+            return None
+        return proc
+
+
+class NatlCompiler(BlockCompiler):
+    @property
+    def codetype(self) -> str:
+        return "natl"
+
+    def compile(self, block: CodeBlock) -> None:
+        block._set_result(
+            CompileResult(
+                ok=True,
+                stdout=block.content.rstrip("\n"),
+                returncode=0,
+            ),
+        )
+
+
+class PyCompiler(BlockCompiler):
+    @property
+    def codetype(self) -> str:
+        return "py"
+
+    def compile(self, block: CodeBlock) -> None:
+        timeout_sec = self._read_positive_int(
+            block=block,
+            key="timeout_sec",
+            full_key="src.py.timeout_sec",
+        )
+        if timeout_sec is None:
+            return
+
+        proc = self._run_process(
+            block,
+            [sys.executable, "-c", block.content],
+            tool_name="python",
+            timeout_sec=timeout_sec,
+        )
+        if proc is None:
+            return
+
+        block._set_result(
+            CompileResult(
+                ok=proc.returncode == 0,
+                stdout=proc.stdout,
+                stderr=proc.stderr,
+                returncode=proc.returncode,
+            ),
+        )
+
+
+class LatexCompiler(BlockCompiler):
     @dataclass(slots=True)
     class LatexArtifacts:
         tex_dir: Path
         tex_path: Path
         pdf_path: Path
 
-    def compile(
-        self,
-        *,
-        mdoc_root: Path,
-        fnode: str,
-    ) -> CompileResult:
-        if mdoc_root is None:
-            return self._fail("mdoc_root is required for compile", 1)
-        if not fnode.strip():
-            return self._fail("fnode is required for compile", 1)
+    @property
+    def codetype(self) -> str:
+        return "latex"
 
-        try:
-            config = load_config(mdoc_root)
-        except (OSError, ValueError) as exc:
-            return self._fail(f"failed to load config.toml: {exc}", 1)
-
-        src_cfg = config.get("src", {})
-        if not isinstance(src_cfg, dict):
-            return self._fail("config key 'src' must be a table", 1)
-
-        code_kind = self.codetype.strip().casefold()
-        compiler_cfg = src_cfg.get(code_kind, {})
-        if compiler_cfg is None:
-            compiler_cfg = {}
-        if not isinstance(compiler_cfg, dict):
-            return self._fail(f"config key 'src.{code_kind}' must be a table", 1)
-
-        if code_kind == "natl":
-            return self._compile_natl()
-        if code_kind == "py":
-            return self._compile_py(compiler_cfg)
-        if code_kind == "latex":
-            return self._compile_latex(
-                mdoc_root=mdoc_root,
-                fnode=fnode,
-                config=compiler_cfg,
-            )
-        return self._fail(f"unsupported codetype: {self.codetype}", 127)
-
-    def _fail(self, message: str, returncode: int) -> CompileResult:
-        return CodeBlock.CompileResult(
-            ok=False,
-            codetype=self.codetype,
-            stderr=message,
-            returncode=returncode,
-        )
-
-    def _compile_natl(self) -> CompileResult:
-        return CodeBlock.CompileResult(
-            ok=True,
-            codetype=self.codetype,
-            stdout=self.content.rstrip("\n"),
-            returncode=0,
-        )
-
-    def _compile_py(self, config: dict[str, Any]) -> CompileResult:
-        timeout_sec, failed = self._read_positive_int(
-            config,
-            key="timeout_sec",
-            full_key="src.py.timeout_sec",
-        )
-        if failed is not None:
-            return failed
-
-        proc, failed = self._run_process(
-            [sys.executable, "-c", self.content],
-            tool_name="python",
-            timeout_sec=timeout_sec,
-        )
-        if failed is not None:
-            return failed
-        assert proc is not None
-        return CodeBlock.CompileResult(
-            ok=proc.returncode == 0,
-            codetype=self.codetype,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
-            returncode=proc.returncode,
-        )
-
-    def _compile_latex(
-        self,
-        *,
-        mdoc_root: Path,
-        fnode: str,
-        config: dict[str, Any],
-    ) -> CompileResult:
-        timeout_sec, failed = self._read_positive_int(
-            config,
+    def compile(self, block: CodeBlock) -> None:
+        timeout_sec = self._read_positive_int(
+            block=block,
             key="timeout_sec",
             full_key="src.latex.timeout_sec",
         )
-        if failed is not None:
-            return failed
+        if timeout_sec is None:
+            return
 
-        preamble, failed = self._read_str(
-            config,
+        preamble = self._read_str(
+            block=block,
             key="preamble",
             full_key="src.latex.preamble",
         )
-        if failed is not None:
-            return failed
+        if preamble is None:
+            return
 
-        postamble, failed = self._read_str(
-            config,
+        postamble = self._read_str(
+            block=block,
             key="postamble",
             full_key="src.latex.postamble",
         )
-        if failed is not None:
-            return failed
+        if postamble is None:
+            return
 
-        latexmk = self._require_tool("latexmk")
-        if isinstance(latexmk, CodeBlock.CompileResult):
-            return latexmk
-        xelatex = self._require_tool("xelatex")
-        if isinstance(xelatex, CodeBlock.CompileResult):
-            return xelatex
+        latexmk = self._require_tool(block, "latexmk")
+        if latexmk is None:
+            return
+        xelatex = self._require_tool(block, "xelatex")
+        if xelatex is None:
+            return
 
-        artifacts, failed = self._prepare_latex_artifacts(mdoc_root, fnode)
-        if failed is not None:
-            return failed
-        assert artifacts is not None
+        context = block.require_context()
+        artifacts = self._prepare_latex_artifacts(
+            block=block,
+            mdoc_root=context.mdoc_root,
+            fnode=context.fnode,
+        )
+        if artifacts is None:
+            return
 
         payload = self._latex_payload(
+            content=block.content,
             preamble=preamble,
             postamble=postamble,
         )
         try:
             artifacts.tex_path.write_text(payload, encoding="utf-8")
         except OSError as exc:
-            return self._fail(f"failed to write latex source: {exc}", 1)
+            block._set_fail(f"failed to write latex source: {exc}", 1)
+            return
 
-        tex_proc, failed = self._run_process(
+        tex_proc = self._run_process(
+            block,
             [
                 latexmk,
                 "-pdf",
@@ -176,72 +304,73 @@ class CodeBlock:
             timeout_sec=timeout_sec,
             cwd=artifacts.tex_dir,
         )
-        if failed is not None:
-            return failed
-        assert tex_proc is not None
+        if tex_proc is None:
+            return
         if tex_proc.returncode != 0:
-            return self._fail(
+            block._set_fail(
                 self._summarize_latex_error(tex_proc.stdout, tex_proc.stderr),
                 tex_proc.returncode,
             )
+            return
 
         if not artifacts.pdf_path.is_file():
-            return self._fail(
+            block._set_fail(
                 f"latexmk succeeded but pdf not found: {artifacts.pdf_path}",
                 1,
             )
+            return
 
         output_lines = [
+            f"artifact dir: {artifacts.tex_dir}",
             f"artifact tex: {artifacts.tex_path}",
             f"artifact pdf: {artifacts.pdf_path}",
         ]
-        return CodeBlock.CompileResult(
-            ok=True,
-            codetype=self.codetype,
-            stdout="\n".join(output_lines),
-            returncode=0,
+        block._set_result(
+            CompileResult(
+                ok=True,
+                stdout="\n".join(output_lines),
+                returncode=0,
+            ),
         )
-
-    def _require_tool(self, tool_name: str) -> str | CompileResult:
-        path = shutil.which(tool_name)
-        if path is None:
-            return self._fail(f"{tool_name} not found in PATH", 127)
-        return path
 
     def _prepare_latex_artifacts(
         self,
+        *,
+        block: CodeBlock,
         mdoc_root: Path,
         fnode: str,
-    ) -> tuple[LatexArtifacts | None, CompileResult | None]:
+    ) -> LatexArtifacts | None:
         tex_dir = mdoc_root.resolve() / ".mdc" / ".tex"
         try:
             tex_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            return None, self._fail(f"failed to create tex artifact dir: {exc}", 1)
+            block._set_fail(f"failed to create tex artifact dir: {exc}", 1)
+            return None
 
         safe_fnode = "".join(
             ch if ch.isalnum() or ch in ("-", "_", ".") else "_"
             for ch in fnode.strip()
         )
         stem = f"snippet_{safe_fnode}"
-        artifacts = CodeBlock.LatexArtifacts(
+        artifacts = LatexCompiler.LatexArtifacts(
             tex_dir=tex_dir,
             tex_path=tex_dir / f"{stem}.tex",
             pdf_path=tex_dir / f"{stem}.pdf",
         )
-        return artifacts, None
+        return artifacts
 
+    @staticmethod
     def _latex_payload(
-        self,
         *,
+        content: str,
         preamble: str,
         postamble: str,
     ) -> str:
-        if "\\documentclass" in self.content:
-            return self.content
+        if "\\documentclass" in content:
+            return content
 
         preamble_text = preamble.rstrip("\n")
-        body = self.content.rstrip("\n")
+        body = content.rstrip("\n")
         postamble_text = postamble.strip("\n")
 
         parts = [preamble_text, body]
@@ -249,63 +378,28 @@ class CodeBlock:
             parts.append(postamble_text)
         return "\n".join(parts) + "\n"
 
-    def _summarize_latex_error(self, stdout: str, stderr: str) -> str:
+    @staticmethod
+    def _summarize_latex_error(stdout: str, stderr: str) -> str:
         combined = "\n".join([stdout or "", stderr or ""]).strip()
         lines = combined.splitlines()
         error_lines = [line for line in lines if line.startswith("! ")]
         summary_lines = error_lines[-8:] if error_lines else lines[-24:]
         return "\n".join(summary_lines).strip()
 
-    def _run_process(
-        self,
-        command: list[str],
-        *,
-        tool_name: str,
-        timeout_sec: int,
-        cwd: Path | None = None,
-    ) -> tuple[subprocess.CompletedProcess[str] | None, CompileResult | None]:
-        try:
-            proc = subprocess.run(
-                command,
-                check=False,
-                text=True,
-                capture_output=True,
-                timeout=timeout_sec,
-                cwd=str(cwd) if cwd is not None else None,
-            )
-        except subprocess.TimeoutExpired:
-            return None, self._fail(
-                f"{tool_name} timed out after {timeout_sec} seconds",
-                124,
-            )
-        except OSError as exc:
-            return None, self._fail(f"failed to run {tool_name}: {exc}", 127)
-        return proc, None
 
-    def _read_positive_int(
-        self,
-        config: dict[str, Any],
-        *,
-        key: str,
-        full_key: str,
-    ) -> tuple[int, CompileResult | None]:
-        if key not in config:
-            return 0, self._fail(f"config key '{full_key}' is required", 1)
-        value = config[key]
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            return 0, self._fail(f"config key '{full_key}' must be a positive integer", 1)
-        return value, None
+class CompilerRegistry:
+    def __init__(self, compilers: list[BlockCompiler]) -> None:
+        self._compilers = {compiler.codetype.casefold(
+        ): compiler for compiler in compilers}
 
-    def _read_str(
-        self,
-        config: dict[str, Any],
-        *,
-        key: str,
-        full_key: str,
-    ) -> tuple[str, CompileResult | None]:
-        if key not in config:
-            return "", self._fail(f"config key '{full_key}' is required", 1)
-        value = config[key]
-        if not isinstance(value, str):
-            return "", self._fail(f"config key '{full_key}' must be a string", 1)
-        return value, None
+    def resolve(self, codetype: str) -> BlockCompiler | None:
+        return self._compilers.get(codetype.casefold())
+
+
+DEFAULT_COMPILER_REGISTRY = CompilerRegistry(
+    [
+        NatlCompiler(),
+        PyCompiler(),
+        LatexCompiler(),
+    ]
+)
