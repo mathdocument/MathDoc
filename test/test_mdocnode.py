@@ -1,3 +1,4 @@
+from mathdoc.compiler import CompilerRes
 from mathdoc.srcblock import SrcBlock
 from mathdoc.mdocnode import MdocNode
 import mathdoc.mdocnode as mdocnode_module
@@ -21,8 +22,8 @@ class TestMdocNode(unittest.TestCase):
         return node
 
     @staticmethod
-    def _result(block: SrcBlock) -> SrcBlock.CompileResult:
-        return block.require_result()
+    def _result(entry: tuple[str, CompilerRes]) -> CompilerRes:
+        return entry[1]
 
     def test_create_save_load_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdoc_node_roundtrip.") as tmp:
@@ -120,11 +121,11 @@ class TestMdocNode(unittest.TestCase):
             self.assertEqual(len(block_results), 2)
             result0 = self._result(block_results[0])
             result1 = self._result(block_results[1])
-            self.assertEqual(block_results[0].srctype, "natl")
-            self.assertTrue(result0.ok)
+            self.assertEqual(block_results[0][0], "natl")
+            self.assertTrue(result0.result)
             self.assertEqual(result0.stdout, "hello")
-            self.assertEqual(block_results[1].srctype, "py")
-            self.assertTrue(result1.ok)
+            self.assertEqual(block_results[1][0], "py")
+            self.assertTrue(result1.result)
             self.assertEqual(result1.stdout.strip(), "hi")
 
     def test_eval_blocks_loads_config_once(self) -> None:
@@ -191,7 +192,7 @@ class TestMdocNode(unittest.TestCase):
 
             self.assertEqual(len(block_results), 1)
             result0 = self._result(block_results[0])
-            self.assertTrue(result0.ok)
+            self.assertTrue(result0.result)
             self.assertEqual(result0.stdout, "dep1\n\nsrc")
 
     def test_eval_blocks_merges_dependencies_with_unbounded_depth(self) -> None:
@@ -214,7 +215,7 @@ class TestMdocNode(unittest.TestCase):
 
             self.assertEqual(len(block_results), 1)
             result0 = self._result(block_results[0])
-            self.assertTrue(result0.ok)
+            self.assertTrue(result0.result)
             self.assertEqual(result0.stdout, "dep2\n\ndep1\n\nsrc")
 
     def test_eval_blocks_merges_dependencies_in_reverse_order(self) -> None:
@@ -240,7 +241,7 @@ class TestMdocNode(unittest.TestCase):
 
             self.assertEqual(len(block_results), 1)
             result0 = self._result(block_results[0])
-            self.assertTrue(result0.ok)
+            self.assertTrue(result0.result)
             self.assertEqual(result0.stdout, "src\n\ndep1\n\ndep2")
 
     def test_eval_blocks_does_not_merge_when_depens_disabled(self) -> None:
@@ -259,7 +260,7 @@ class TestMdocNode(unittest.TestCase):
 
             self.assertEqual(len(block_results), 1)
             result0 = self._result(block_results[0])
-            self.assertTrue(result0.ok)
+            self.assertTrue(result0.result)
             self.assertEqual(result0.stdout.strip(), "src")
 
     def test_eval_blocks_raises_on_dependency_cycle(self) -> None:

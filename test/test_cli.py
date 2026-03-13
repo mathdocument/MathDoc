@@ -337,7 +337,7 @@ class TestMdcCli(unittest.TestCase):
             self.assertEqual(eval_run.returncode, 0,
                              eval_run.stdout + eval_run.stderr)
             self.assertIn("[1] latex: ok", eval_run.stdout)
-            self.assertIn(f"snippet_{src_fnode}.tex", eval_run.stdout)
+            self.assertIn("temp-latex.tex", eval_run.stdout)
             self.assertIn("artifact dir:", eval_run.stdout)
             self.assertIn("artifact tex:", eval_run.stdout)
             self.assertIn("artifact pdf:", eval_run.stdout)

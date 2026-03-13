@@ -1,4 +1,4 @@
-from mathdoc.compiler.base import BlockCompiler, CompilerRes
+from mathdoc.compiler.base import CompilerReq, CompilerRes, SrcCompiler
 from mathdoc.compiler.registry import CompilerRegistry
 from mathdoc.srcblock import SrcBlock
 import mathdoc.srcblock as SrcBlock_module
@@ -17,8 +17,8 @@ if str(SRC_PATH) not in sys.path:
 
 class TestSrcBlock(unittest.TestCase):
     @staticmethod
-    def _result(block: SrcBlock) -> SrcBlock.CompileResult:
-        return block.require_result()
+    def _result(result: CompilerRes) -> CompilerRes:
+        return result
 
     @staticmethod
     def _config() -> dict[str, object]:
@@ -34,68 +34,56 @@ class TestSrcBlock(unittest.TestCase):
 
     def test_compile_natl(self) -> None:
         block = SrcBlock(srctype="natl", content="hello natl\n")
-        block.compile(mdcroot=Path.cwd(), fnode="test-fnode", src_cfg=self._config())
-        result = self._result(block)
-        self.assertTrue(result.ok)
+        result = self._result(block.compile(mdcroot=Path.cwd(), src_cfg=self._config()))
+        self.assertTrue(result.result)
         self.assertEqual(result.stdout, "hello natl")
-        self.assertEqual(result.returncode, 0)
-        self.assertIsNotNone(block.context)
+        self.assertEqual(result.rtcode, 0)
 
     def test_compile_natl_fails_when_src_config_is_not_table(self) -> None:
         block = SrcBlock(srctype="natl", content="hello natl\n")
-        block.compile(
-            mdcroot=Path.cwd(),
-            fnode="test-fnode",
-            src_cfg={"natl": "invalid"},
-        )
-        result = self._result(block)
-        self.assertFalse(result.ok)
-        self.assertEqual(result.returncode, 1)
+        result = self._result(block.compile(mdcroot=Path.cwd(), src_cfg={"natl": "invalid"}))
+        self.assertFalse(result.result)
+        self.assertEqual(result.rtcode, 1)
         self.assertIn("config key 'src.natl' must be a table", result.stderr)
-        self.assertIsNone(block.context)
 
     def test_compile_py_success(self) -> None:
         block = SrcBlock(srctype="py", content="print('hello py')")
-        block.compile(mdcroot=Path.cwd(), fnode="test-fnode", src_cfg=self._config())
-        result = self._result(block)
-        self.assertTrue(result.ok)
+        result = self._result(block.compile(mdcroot=Path.cwd(), src_cfg=self._config()))
+        self.assertTrue(result.result)
         self.assertEqual(result.stdout.strip(), "hello py")
-        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.rtcode, 0)
 
     def test_compile_py_failure(self) -> None:
         block = SrcBlock(srctype="py", content="1/0")
-        block.compile(mdcroot=Path.cwd(), fnode="test-fnode", src_cfg=self._config())
-        result = self._result(block)
-        self.assertFalse(result.ok)
-        self.assertNotEqual(result.returncode, 0)
+        result = self._result(block.compile(mdcroot=Path.cwd(), src_cfg=self._config()))
+        self.assertFalse(result.result)
+        self.assertNotEqual(result.rtcode, 0)
         self.assertIn("ZeroDivisionError", result.stderr)
 
     def test_compile_py_respects_timeout_from_config(self) -> None:
         block = SrcBlock(srctype="py", content="import time; time.sleep(2)")
         cfg = self._config()
         cfg["py"]["timeout_sec"] = 1  # type: ignore[index]
-        block.compile(mdcroot=Path.cwd(), fnode="test-fnode", src_cfg=cfg)
-        result = self._result(block)
-        self.assertFalse(result.ok)
-        self.assertEqual(result.returncode, 124)
+        result = self._result(block.compile(mdcroot=Path.cwd(), src_cfg=cfg))
+        self.assertFalse(result.result)
+        self.assertEqual(result.rtcode, 124)
         self.assertIn("timed out", result.stderr)
 
     def test_compile_unsupported_srctype(self) -> None:
         block = SrcBlock(srctype="cpp", content="int main() { return 0; }")
-        block.compile(mdcroot=Path.cwd(), fnode="test-fnode", src_cfg=self._config())
-        result = self._result(block)
-        self.assertFalse(result.ok)
-        self.assertEqual(result.returncode, 127)
+        result = self._result(block.compile(mdcroot=Path.cwd(), src_cfg=self._config()))
+        self.assertFalse(result.result)
+        self.assertEqual(result.rtcode, 127)
         self.assertIn("unsupported srctype", result.stderr)
 
     def test_compile_uses_returned_compiler_res(self) -> None:
-        class NoopCompiler(BlockCompiler):
+        class NoopCompiler(SrcCompiler):
             @property
             def srctype(self) -> str:
                 return "noop"
 
-            def compile(self, block: SrcBlock) -> CompilerRes:
-                _ = block
+            def compile(self, req: CompilerReq) -> CompilerRes:
+                _ = req
                 return CompilerRes(
                     result=False,
                     stdout="noop stdout",
@@ -107,17 +95,19 @@ class TestSrcBlock(unittest.TestCase):
         try:
             SrcBlock_module.COMPILER_REGISTRY = CompilerRegistry([NoopCompiler()])
             block = SrcBlock(srctype="noop", content="hello")
-            block.compile(
-                mdcroot=Path.cwd(), fnode="test-fnode", src_cfg=self._config()
+            result = self._result(
+                block.compile(
+                    mdcroot=Path.cwd(),
+                    src_cfg=self._config(),
+                )
             )
-            result = self._result(block)
         finally:
             SrcBlock_module.COMPILER_REGISTRY = original_registry
 
-        self.assertFalse(result.ok)
+        self.assertFalse(result.result)
         self.assertEqual(result.stdout, "noop stdout")
         self.assertEqual(result.stderr, "noop stderr")
-        self.assertEqual(result.returncode, 9)
+        self.assertEqual(result.rtcode, 9)
 
     def test_compile_latex_success_when_xelatex_exists(self) -> None:
         required = ("latexmk", "xelatex")
@@ -125,14 +115,12 @@ class TestSrcBlock(unittest.TestCase):
         if missing:
             self.skipTest(f"missing tools: {', '.join(missing)}")
         block = SrcBlock(srctype="latex", content=r"$a^2+b^2=c^2$")
-        fnode = "abc12345-0000-1111-2222-fedcba987654"
         with tempfile.TemporaryDirectory(prefix="mdc_SrcBlock_latex.") as tmp:
             tmp_path = Path(tmp)
-            block.compile(mdcroot=tmp_path, fnode=fnode, src_cfg=self._config())
-            result = self._result(block)
-        self.assertTrue(result.ok, result.stderr)
-        self.assertEqual(result.returncode, 0)
-        self.assertIn(f"snippet_{fnode}.tex", result.stdout)
+            result = self._result(block.compile(mdcroot=tmp_path, src_cfg=self._config()))
+        self.assertTrue(result.result, result.stderr)
+        self.assertEqual(result.rtcode, 0)
+        self.assertIn("temp-latex.tex", result.stdout)
         self.assertIn("artifact dir:", result.stdout)
         self.assertIn("artifact tex:", result.stdout)
         self.assertIn("artifact pdf:", result.stdout)
@@ -146,14 +134,16 @@ class TestSrcBlock(unittest.TestCase):
                 None if name == "xelatex" else original_which(name)
             )  # type: ignore[assignment]
             block = SrcBlock(srctype="latex", content=r"$x$")
-            block.compile(
-                mdcroot=Path.cwd(), fnode="test-fnode", src_cfg=self._config()
+            result = self._result(
+                block.compile(
+                    mdcroot=Path.cwd(),
+                    src_cfg=self._config(),
+                )
             )
-            result = self._result(block)
         finally:
             shutil.which = original_which  # type: ignore[assignment]
-        self.assertFalse(result.ok)
-        self.assertEqual(result.returncode, 127)
+        self.assertFalse(result.result)
+        self.assertEqual(result.rtcode, 127)
         self.assertIn("xelatex not found", result.stderr)
 
     def test_compile_latex_without_latexmk(self) -> None:
@@ -163,34 +153,28 @@ class TestSrcBlock(unittest.TestCase):
                 None if name == "latexmk" else original_which(name)
             )  # type: ignore[assignment]
             block = SrcBlock(srctype="latex", content=r"$x$")
-            block.compile(
-                mdcroot=Path.cwd(), fnode="test-fnode", src_cfg=self._config()
+            result = self._result(
+                block.compile(
+                    mdcroot=Path.cwd(),
+                    src_cfg=self._config(),
+                )
             )
-            result = self._result(block)
         finally:
             shutil.which = original_which  # type: ignore[assignment]
-        self.assertFalse(result.ok)
-        self.assertEqual(result.returncode, 127)
+        self.assertFalse(result.result)
+        self.assertEqual(result.rtcode, 127)
         self.assertIn("latexmk not found", result.stderr)
-
-    def test_compile_latex_requires_non_empty_fnode(self) -> None:
-        block = SrcBlock(srctype="latex", content=r"$x$")
-        block.compile(mdcroot=Path.cwd(), fnode="   ", src_cfg=self._config())
-        result = self._result(block)
-        self.assertFalse(result.ok)
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("fnode is required", result.stderr)
 
     def test_compile_requires_mdcroot(self) -> None:
         block = SrcBlock(srctype="natl", content="x")
-        block.compile(
-            mdcroot=None,  # type: ignore[arg-type]
-            fnode="test-fnode",
-            src_cfg=self._config(),
+        result = self._result(
+            block.compile(
+                mdcroot=None,  # type: ignore[arg-type]
+                src_cfg=self._config(),
+            )
         )
-        result = self._result(block)
-        self.assertFalse(result.ok)
-        self.assertEqual(result.returncode, 1)
+        self.assertFalse(result.result)
+        self.assertEqual(result.rtcode, 1)
         self.assertIn("mdcroot is required", result.stderr)
 
 

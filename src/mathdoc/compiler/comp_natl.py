@@ -1,23 +1,19 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-from .base import BlockCompiler
+from .base import SrcCompiler
+from .base import CompilerReq
 from .base import CompilerRes
 
-if TYPE_CHECKING:
-    from ..srcblock import SrcBlock
 
-
-class CompilerNatl(BlockCompiler):
+class CompilerNatl(SrcCompiler):
     @property
     def srctype(self) -> str:
         return "natl"
 
-    def compile(self, block: SrcBlock) -> CompilerRes:
+    def compile(self, req: CompilerReq) -> CompilerRes:
         return CompilerRes(
             result=True,
-            stdout=block.content.rstrip("\n"),
+            stdout=req.content.rstrip("\n"),
             stderr="",
             rtcode=0,
         )

@@ -172,21 +172,14 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     print("result:")
     failed = 0
     for index, block in enumerate(block_results, start=1):
-        try:
-            result = block.require_result()
-        except AssertionError:
-            failed += 1
-            print(colorize(f"[{index}] {block.srctype}: failed (1)", STYLE["red"]))
-            print("    ! missing compile result")
-            print("")
-            continue
-        if result.ok:
-            print(colorize(f"[{index}] {block.srctype}: ok", STYLE["grn"]))
+        result = block[1]
+        if result.result:
+            print(colorize(f"[{index}] {block[0]}: ok", STYLE["grn"]))
         else:
             failed += 1
             print(
                 colorize(
-                    f"[{index}] {block.srctype}: failed ({result.returncode})",
+                    f"[{index}] {block[0]}: failed ({result.rtcode})",
                     STYLE["red"],
                 )
             )

@@ -1,46 +1,49 @@
 from __future__ import annotations
 
 import sys
-from typing import TYPE_CHECKING
 
-from .base import BlockCompiler
+from .base import SrcCompiler
+from .base import CompilerReq
 from .base import CompilerRes
 
-if TYPE_CHECKING:
-    from ..srcblock import SrcBlock
 
-
-class CompilerPy(BlockCompiler):
+class CompilerPy(SrcCompiler):
     @property
     def srctype(self) -> str:
         return "py"
 
-    def compile(self, block: SrcBlock) -> CompilerRes:
-        timeout_sec = self._read_positive_int(
-            block=block,
-            key="timeout_sec",
-            full_key="src.py.timeout_sec",
-        )
-        if timeout_sec is None:
+    def compile(self, req: CompilerReq) -> CompilerRes:
+        try:
+            timeout_sec = self._read_positive_int(
+                compcfg=req.compcfg,
+                key="timeout_sec",
+                full_key="src.py.timeout_sec",
+            )
+            proc = self._run_process(
+                [sys.executable, "-c", req.content],
+                tool_name="python",
+                timeout_sec=timeout_sec,
+            )
+        except (KeyError, ValueError) as exc:
             return CompilerRes(
                 result=False,
                 stdout="",
-                stderr="invalid timeout_sec config",
+                stderr=exc.args[0] if exc.args else str(exc),
                 rtcode=1,
             )
-
-        proc = self._run_process(
-            block,
-            [sys.executable, "-c", block.content],
-            tool_name="python",
-            timeout_sec=timeout_sec,
-        )
-        if proc is None:
+        except TimeoutError as exc:
             return CompilerRes(
                 result=False,
                 stdout="",
-                stderr="timed out",
+                stderr=str(exc),
                 rtcode=124,
+            )
+        except RuntimeError as exc:
+            return CompilerRes(
+                result=False,
+                stdout="",
+                stderr=str(exc),
+                rtcode=127,
             )
 
         return CompilerRes(

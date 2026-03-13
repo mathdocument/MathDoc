@@ -4,10 +4,7 @@ import shutil
 import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from ..srcblock import SrcBlock
+from typing import Any
 
 
 @dataclass(slots=True, kw_only=True)
@@ -26,68 +23,60 @@ class CompilerRes:
     rtcode: int = 0
 
 
-class BlockCompiler(ABC):
+class SrcCompiler(ABC):
     @property
     @abstractmethod
     def srctype(self) -> str:
         raise NotImplementedError
 
     @abstractmethod
-    def compile(self, block: SrcBlock) -> CompilerRes:
+    def compile(self, req: CompilerReq) -> CompilerRes:
         raise NotImplementedError
 
     def _read_positive_int(
         self,
         *,
-        block: SrcBlock,
+        compcfg: dict[str, Any],
         key: str,
         full_key: str,
-    ) -> int | None:
-        config = block.require_context().compiler_cfg
+    ) -> int:
+        config = compcfg
         if key not in config:
-            block._set_result_failed(f"config key '{full_key}' is required", 1)
-            return None
+            raise KeyError(f"config key '{full_key}' is required")
         value = config[key]
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            block._set_result_failed(
-                f"config key '{full_key}' must be a positive integer", 1
-            )
-            return None
+            raise ValueError(f"config key '{full_key}' must be a positive integer")
         return value
 
     def _read_str(
         self,
         *,
-        block: SrcBlock,
+        compcfg: dict[str, Any],
         key: str,
         full_key: str,
-    ) -> str | None:
-        config = block.require_context().compiler_cfg
+    ) -> str:
+        config = compcfg
         if key not in config:
-            block._set_result_failed(f"config key '{full_key}' is required", 1)
-            return None
+            raise KeyError(f"config key '{full_key}' is required")
         value = config[key]
         if not isinstance(value, str):
-            block._set_result_failed(f"config key '{full_key}' must be a string", 1)
-            return None
+            raise ValueError(f"config key '{full_key}' must be a string")
         return value
 
-    def _require_tool(self, block: SrcBlock, tool_name: str) -> str | None:
+    def _require_tool(self, tool_name: str) -> str:
         path = shutil.which(tool_name)
         if path is None:
-            block._set_result_failed(f"{tool_name} not found in PATH", 127)
-            return None
+            raise FileNotFoundError(f"{tool_name} not found in PATH")
         return path
 
     def _run_process(
         self,
-        block: SrcBlock,
         command: list[str],
         *,
         tool_name: str,
         timeout_sec: int,
         cwd: Path | None = None,
-    ) -> subprocess.CompletedProcess[str] | None:
+    ) -> subprocess.CompletedProcess[str]:
         try:
             proc = subprocess.run(
                 command,
@@ -98,11 +87,7 @@ class BlockCompiler(ABC):
                 cwd=str(cwd) if cwd is not None else None,
             )
         except subprocess.TimeoutExpired:
-            block._set_result_failed(
-                f"{tool_name} timed out after {timeout_sec} seconds", 124
-            )
-            return None
+            raise TimeoutError(f"{tool_name} timed out after {timeout_sec} seconds")
         except OSError as exc:
-            block._set_result_failed(f"failed to run {tool_name}: {exc}", 127)
-            return None
+            raise RuntimeError(f"failed to run {tool_name}: {exc}")
         return proc

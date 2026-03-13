@@ -6,6 +6,7 @@ from uuid import uuid4
 from dataclasses import dataclass, field
 from typing import Any
 
+from .compiler import CompilerRes
 from .indcache import IndCache
 from .srcblock import SrcBlock
 from .config import load_config
@@ -57,7 +58,7 @@ class MdocNode:
 
     def eval_blocks(
         self, *, depth: int = 1, reverse_depens: bool = False
-    ) -> list[SrcBlock]:
+    ) -> list[tuple[str, CompilerRes]]:
         if depth < -1:
             raise ValueError("depth must be -1 (infinite) or >= 0")
         if not self.blocks:
@@ -100,13 +101,18 @@ class MdocNode:
             src_cfg=src_cfg,
         )
 
+        results: list[tuple[str, CompilerRes]] = []
         for block in merged_blocks:
-            block.compile(
-                mdcroot=self.mdcroot,
-                fnode=self.fnode,
-                src_cfg=src_cfg,
+            results.append(
+                (
+                    block.srctype,
+                    block.compile(
+                        mdcroot=self.mdcroot,
+                        src_cfg=src_cfg,
+                    ),
+                )
             )
-        return merged_blocks
+        return results
 
     def _build_dependency_graph(
         self, *, depth: int

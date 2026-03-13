@@ -2,16 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-from .base import BlockCompiler
+from .base import SrcCompiler
+from .base import CompilerReq
 from .base import CompilerRes
 
-if TYPE_CHECKING:
-    from ..srcblock import SrcBlock
 
-
-class CompilerLatex(BlockCompiler):
+class CompilerLatex(SrcCompiler):
     @dataclass(slots=True)
     class LatexArtifacts:
         tex_dir: Path
@@ -22,79 +19,57 @@ class CompilerLatex(BlockCompiler):
     def srctype(self) -> str:
         return "latex"
 
-    def compile(self, block: SrcBlock) -> CompilerRes:
-        timeout_sec = self._read_positive_int(
-            block=block,
-            key="timeout_sec",
-            full_key="src.latex.timeout_sec",
-        )
-        if timeout_sec is None:
+    def compile(self, req: CompilerReq) -> CompilerRes:
+        try:
+            timeout_sec = self._read_positive_int(
+                compcfg=req.compcfg,
+                key="timeout_sec",
+                full_key="src.latex.timeout_sec",
+            )
+            preamble = self._read_str(
+                compcfg=req.compcfg,
+                key="preamble",
+                full_key="src.latex.preamble",
+            )
+            postamble = self._read_str(
+                compcfg=req.compcfg,
+                key="postamble",
+                full_key="src.latex.postamble",
+            )
+        except (KeyError, ValueError) as exc:
             return CompilerRes(
                 result=False,
                 stdout="",
-                stderr="invalid timeout_sec config",
+                stderr=exc.args[0] if exc.args else str(exc),
                 rtcode=1,
             )
 
-        preamble = self._read_str(
-            block=block,
-            key="preamble",
-            full_key="src.latex.preamble",
-        )
-        if preamble is None:
+        try:
+            latexmk = self._require_tool("latexmk")
+            xelatex = self._require_tool("xelatex")
+            _ = xelatex
+        except FileNotFoundError as exc:
             return CompilerRes(
                 result=False,
                 stdout="",
-                stderr="invalid preamble config",
-                rtcode=1,
-            )
-
-        postamble = self._read_str(
-            block=block,
-            key="postamble",
-            full_key="src.latex.postamble",
-        )
-        if postamble is None:
-            return CompilerRes(
-                result=False,
-                stdout="",
-                stderr="invalid postamble config",
-                rtcode=1,
-            )
-
-        latexmk = self._require_tool(block, "latexmk")
-        if latexmk is None:
-            return CompilerRes(
-                result=False,
-                stdout="",
-                stderr="latexmk not found in PATH",
-                rtcode=127,
-            )
-        xelatex = self._require_tool(block, "xelatex")
-        if xelatex is None:
-            return CompilerRes(
-                result=False,
-                stdout="",
-                stderr="xelatex not found in PATH",
+                stderr=str(exc),
                 rtcode=127,
             )
 
-        context = block.require_context()
-        artifacts = self._prepare_latex_artifacts(
-            block=block,
-            mdcroot=context.mdcroot,
-            fnode=context.fnode,
-        )
-        if artifacts is None:
+        try:
+            artifacts = self._prepare_latex_artifacts(
+                mdcroot=req.mdcroot,
+            )
+        except RuntimeError as exc:
             return CompilerRes(
                 result=False,
                 stdout="",
-                stderr="failed to prepare latex artifacts",
+                stderr=str(exc),
                 rtcode=1,
             )
 
         payload = self._latex_payload(
-            content=block.content,
+            content=req.content,
             preamble=preamble,
             postamble=postamble,
         )
@@ -108,27 +83,34 @@ class CompilerLatex(BlockCompiler):
                 rtcode=1,
             )
 
-        tex_proc = self._run_process(
-            block,
-            [
-                latexmk,
-                "-pdf",
-                "-xelatex",
-                "-interaction=nonstopmode",
-                "-halt-on-error",
-                "-outdir=.",
-                artifacts.tex_path.name,
-            ],
-            tool_name="latexmk",
-            timeout_sec=timeout_sec,
-            cwd=artifacts.tex_dir,
-        )
-        if tex_proc is None:
+        try:
+            tex_proc = self._run_process(
+                [
+                    latexmk,
+                    "-pdf",
+                    "-xelatex",
+                    "-interaction=nonstopmode",
+                    "-halt-on-error",
+                    "-outdir=.",
+                    artifacts.tex_path.name,
+                ],
+                tool_name="latexmk",
+                timeout_sec=timeout_sec,
+                cwd=artifacts.tex_dir,
+            )
+        except TimeoutError as exc:
             return CompilerRes(
                 result=False,
                 stdout="",
-                stderr="latexmk execution failed",
-                rtcode=1,
+                stderr=str(exc),
+                rtcode=124,
+            )
+        except RuntimeError as exc:
+            return CompilerRes(
+                result=False,
+                stdout="",
+                stderr=str(exc),
+                rtcode=127,
             )
         if tex_proc.returncode != 0:
             return CompilerRes(
@@ -139,10 +121,6 @@ class CompilerLatex(BlockCompiler):
             )
 
         if not artifacts.pdf_path.is_file():
-            block._set_result_failed(
-                f"latexmk succeeded but pdf not found: {artifacts.pdf_path}",
-                1,
-            )
             return CompilerRes(
                 result=False,
                 stdout="",
@@ -165,21 +143,15 @@ class CompilerLatex(BlockCompiler):
     def _prepare_latex_artifacts(
         self,
         *,
-        block: SrcBlock,
         mdcroot: Path,
-        fnode: str,
-    ) -> LatexArtifacts | None:
+    ) -> LatexArtifacts:
         tex_dir = mdcroot.resolve() / ".mdc" / ".tex"
         try:
             tex_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            block._set_result_failed(f"failed to create tex artifact dir: {exc}", 1)
-            return None
+            raise RuntimeError(f"failed to create tex artifact dir: {exc}") from exc
 
-        safe_fnode = "".join(
-            ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in fnode.strip()
-        )
-        stem = f"snippet_{safe_fnode}"
+        stem = "temp-latex"
         artifacts = CompilerLatex.LatexArtifacts(
             tex_dir=tex_dir,
             tex_path=tex_dir / f"{stem}.tex",
