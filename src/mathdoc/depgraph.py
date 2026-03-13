@@ -1,21 +1,62 @@
-from __future__ import annotations
-
 import sqlite3
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .compiler import CompilerRes
 from .config import load_config
 from .indcache import IndCache
-from .mdocnode import DependencyItem
 from .mdocnode import MdocNode
 from .srcblock import SrcBlock
 from .utils import format_mdoc_item
 from .utils import to_rel_path
 
 
+@dataclass(slots=True, frozen=True)
+class DependencyItem:
+    depth: int
+    fnode: str
+    title: str
+    rel_path: str
+
+
 class DepGraph:
+    @classmethod
+    def from_ref(
+        cls,
+        *,
+        cache: IndCache,
+        ref: str,
+        cwd: Path | None = None,
+    ) -> tuple["DepGraph", str]:
+        base_cwd = (cwd or Path.cwd()).resolve()
+
+        for attempt in range(2):
+            try:
+                _, _, src_path = cache.resolve_ref(ref, cwd=base_cwd)
+            except ValueError:
+                if attempt == 0:
+                    cache.refresh_all()
+                    continue
+                raise
+
+            node = MdocNode(mdcroot=cache.root, path=src_path, title="")
+            try:
+                node.load()
+            except FileNotFoundError:
+                if attempt == 0:
+                    cache.refresh_all()
+                    continue
+                raise
+
+            return (
+                cls(mdcroot=cache.root, root_node=node, cache=cache),
+                to_rel_path(cache.root, src_path),
+            )
+
+        raise ValueError(f"failed to resolve mdoc reference: {ref}")
+
     def __init__(
         self,
         *,
@@ -44,9 +85,7 @@ class DepGraph:
         self.nodes_by_fnode[node.fnode] = node
         self.dep_graph.setdefault(node.fnode, [])
         if self.root_fnode and self.root_fnode != node.fnode:
-            raise ValueError(
-                f"root fnode mismatch: {self.root_fnode} != {node.fnode}"
-            )
+            raise ValueError(f"root fnode mismatch: {self.root_fnode} != {node.fnode}")
         self.root_fnode = node.fnode
 
     def set_root_fnode(self, fnode: str) -> None:
@@ -56,6 +95,10 @@ class DepGraph:
         if self.root_fnode and self.root_fnode != value:
             raise ValueError(f"root fnode mismatch: {self.root_fnode} != {value}")
         self.root_fnode = value
+
+    def get_root_node(self) -> MdocNode:
+        active_root = self._bind_root()
+        return self._ensure_node_loaded(active_root)
 
     def direct_dependency_fnodes(
         self,
@@ -78,6 +121,63 @@ class DepGraph:
             root_node=root_node,
             root_fnode=root_fnode,
         )
+
+    def add_direct_dependencies(
+        self,
+        dep_fnodes: list[str],
+        *,
+        root_node: MdocNode | None = None,
+        root_fnode: str | None = None,
+    ) -> tuple[list[str], list[str], list[str]]:
+        active_root = self._bind_root(root_node=root_node, root_fnode=root_fnode)
+        node = self._ensure_node_loaded(active_root)
+
+        added: list[str] = []
+        skipped_existing: list[str] = []
+        skipped_self: list[str] = []
+        existing = set(self.direct_dependency_fnodes(root_fnode=active_root))
+
+        for dep_fnode in self._dedupe_keep_order(dep_fnodes):
+            if dep_fnode == node.fnode:
+                skipped_self.append(dep_fnode)
+                continue
+            if dep_fnode in existing:
+                skipped_existing.append(dep_fnode)
+                continue
+            node.add_dependency(dep_fnode)
+            existing.add(dep_fnode)
+            added.append(dep_fnode)
+
+        if added:
+            node.save()
+            self.dep_graph[node.fnode] = self._dedupe_keep_order(node.depens)
+            for dep_fnode in added:
+                self.dep_graph.setdefault(dep_fnode, [])
+
+        return added, skipped_existing, skipped_self
+
+    def remove_direct_dependencies(
+        self,
+        dep_fnodes: list[str],
+        *,
+        root_node: MdocNode | None = None,
+        root_fnode: str | None = None,
+    ) -> list[str]:
+        active_root = self._bind_root(root_node=root_node, root_fnode=root_fnode)
+        node = self._ensure_node_loaded(active_root)
+
+        removed: list[str] = []
+        for dep_fnode in self._dedupe_keep_order(dep_fnodes):
+            if dep_fnode not in node.depens:
+                continue
+            node.rmv_dependency(dep_fnode)
+            removed.append(dep_fnode)
+
+        if removed:
+            node.save()
+            self.dep_graph[node.fnode] = self._dedupe_keep_order(node.depens)
+
+        return removed
 
     def dependency_items(
         self,

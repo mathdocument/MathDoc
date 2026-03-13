@@ -1,7 +1,9 @@
 from mathdoc.depgraph import DepGraph
-from mathdoc.mdocnode import DependencyItem
+from mathdoc.depgraph import DependencyItem
+from mathdoc.indcache import IndCache
 from mathdoc.mdocnode import MdocNode
 from mathdoc.srcblock import SrcBlock
+import mathdoc.depgraph as depgraph_module
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,6 +22,20 @@ class TestDepGraph(unittest.TestCase):
         node = MdocNode.create(mdcroot=root, folder=str(root), title=title)
         node.blocks.append(SrcBlock(srctype=srctype, content=content, metadata={}))
         return node
+
+    def test_from_ref_loads_root_graph(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_from_ref.") as tmp:
+            root = Path(tmp)
+            src = self._new_node(root, "Src", "natl", "src")
+            src.save()
+
+            cache = IndCache(root)
+            cache.bootstrap_if_needed()
+
+            graph, rel_path = DepGraph.from_ref(cache=cache, ref=src.fnode[:8], cwd=root)
+
+            self.assertEqual(rel_path, src.path.resolve().relative_to(root.resolve()).as_posix())
+            self.assertEqual(graph.get_root_node().fnode, src.fnode)
 
     def test_dependency_items_expand_incrementally_from_root_node(self) -> None:
         with tempfile.TemporaryDirectory(prefix="depgraph_incremental.") as tmp:
@@ -52,10 +68,7 @@ class TestDepGraph(unittest.TestCase):
                     )
                 ],
             )
-            self.assertEqual(
-                set(graph.nodes_by_fnode),
-                {src.fnode, dep1.fnode},
-            )
+            self.assertEqual(set(graph.nodes_by_fnode), {src.fnode, dep1.fnode})
 
             depth_inf = graph.dependency_items(depth=-1)
             self.assertEqual(
@@ -80,6 +93,141 @@ class TestDepGraph(unittest.TestCase):
                 {src.fnode, dep1.fnode, dep2.fnode},
             )
 
+    def test_eval_blocks_runs_all_blocks(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_eval_basic.") as tmp:
+            root = Path(tmp)
+            node = self._new_node(root, "Eval", "natl", "hello")
+            node.blocks.append(SrcBlock(srctype="py", content="print('hi')", metadata={}))
+            node.save()
+
+            graph = DepGraph(mdcroot=root, root_fnode=node.fnode)
+            block_results = graph.eval_blocks()
+
+            self.assertEqual(len(block_results), 2)
+            self.assertEqual(block_results[0][0], "natl")
+            self.assertTrue(block_results[0][1].result)
+            self.assertEqual(block_results[0][1].stdout, "hello")
+            self.assertEqual(block_results[1][0], "py")
+            self.assertTrue(block_results[1][1].result)
+            self.assertEqual(block_results[1][1].stdout.strip(), "hi")
+
+    def test_eval_blocks_loads_config_once(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_eval_cfg_once.") as tmp:
+            root = Path(tmp)
+            node = self._new_node(root, "Eval", "natl", "hello")
+            node.blocks.append(SrcBlock(srctype="py", content="print('hi')", metadata={}))
+            node.save()
+
+            graph = DepGraph(mdcroot=root, root_fnode=node.fnode)
+            calls = 0
+            original_load = depgraph_module.load_config
+
+            try:
+
+                def counted_load(mdcroot: Path) -> dict[str, object]:
+                    nonlocal calls
+                    calls += 1
+                    return original_load(mdcroot)
+
+                depgraph_module.load_config = counted_load
+                graph.eval_blocks(depth=-1)
+            finally:
+                depgraph_module.load_config = original_load
+
+            self.assertEqual(calls, 1)
+
+    def test_eval_blocks_requires_initialized_mdcroot(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_eval_need_root.") as tmp:
+            root = Path(tmp)
+            node = MdocNode.create(mdcroot=root, folder=str(root), title="Eval")
+            node.blocks.append(SrcBlock(srctype="natl", content="hello", metadata={}))
+            node.save()
+
+            graph = DepGraph(mdcroot=root, root_fnode=node.fnode)
+            with self.assertRaises(ValueError) as ctx:
+                graph.eval_blocks()
+            self.assertIn("invalid mdoc root (missing .mdc)", str(ctx.exception))
+
+    def test_eval_blocks_merges_dependencies_with_default_depth(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_eval_depth1.") as tmp:
+            root = Path(tmp)
+            dep2 = self._new_node(root, "Dep2", "natl", "dep2")
+            dep2.save()
+
+            dep1 = self._new_node(root, "Dep1", "natl", "dep1")
+            dep1.add_dependency(dep2.fnode)
+            dep1.save()
+
+            src = self._new_node(root, "Src", "natl", "src")
+            src.add_dependency(dep1.fnode)
+            src.save()
+
+            graph = DepGraph(mdcroot=root, root_fnode=src.fnode)
+            block_results = graph.eval_blocks()
+
+            self.assertEqual(len(block_results), 1)
+            self.assertTrue(block_results[0][1].result)
+            self.assertEqual(block_results[0][1].stdout, "dep1\n\nsrc")
+
+    def test_eval_blocks_merges_dependencies_with_unbounded_depth(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_eval_depth_inf.") as tmp:
+            root = Path(tmp)
+            dep2 = self._new_node(root, "Dep2", "natl", "dep2")
+            dep2.save()
+
+            dep1 = self._new_node(root, "Dep1", "natl", "dep1")
+            dep1.add_dependency(dep2.fnode)
+            dep1.save()
+
+            src = self._new_node(root, "Src", "natl", "src")
+            src.add_dependency(dep1.fnode)
+            src.save()
+
+            graph = DepGraph(mdcroot=root, root_fnode=src.fnode)
+            block_results = graph.eval_blocks(depth=-1)
+
+            self.assertEqual(len(block_results), 1)
+            self.assertTrue(block_results[0][1].result)
+            self.assertEqual(block_results[0][1].stdout, "dep2\n\ndep1\n\nsrc")
+
+    def test_eval_blocks_merges_dependencies_in_reverse_order(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_eval_reverse.") as tmp:
+            root = Path(tmp)
+            dep2 = self._new_node(root, "Dep2", "natl", "dep2")
+            dep2.save()
+
+            dep1 = self._new_node(root, "Dep1", "natl", "dep1")
+            dep1.add_dependency(dep2.fnode)
+            dep1.save()
+
+            src = self._new_node(root, "Src", "natl", "src")
+            src.add_dependency(dep1.fnode)
+            src.save()
+
+            graph = DepGraph(mdcroot=root, root_fnode=src.fnode)
+            block_results = graph.eval_blocks(depth=-1, reverse_depens=True)
+
+            self.assertEqual(len(block_results), 1)
+            self.assertTrue(block_results[0][1].result)
+            self.assertEqual(block_results[0][1].stdout, "src\n\ndep1\n\ndep2")
+
+    def test_eval_blocks_does_not_merge_when_depens_disabled(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_eval_no_merge.") as tmp:
+            root = Path(tmp)
+            dep = self._new_node(root, "Dep", "py", "print('dep')")
+            dep.save()
+
+            src = self._new_node(root, "Src", "py", "print('src')")
+            src.add_dependency(dep.fnode)
+            src.save()
+
+            graph = DepGraph(mdcroot=root, root_fnode=src.fnode)
+            block_results = graph.eval_blocks(depth=-1)
+
+            self.assertEqual(len(block_results), 1)
+            self.assertTrue(block_results[0][1].result)
+            self.assertEqual(block_results[0][1].stdout.strip(), "src")
+
     def test_eval_blocks_supports_root_fnode_lazy_loading(self) -> None:
         with tempfile.TemporaryDirectory(prefix="depgraph_root_fnode.") as tmp:
             root = Path(tmp)
@@ -101,6 +249,149 @@ class TestDepGraph(unittest.TestCase):
             self.assertEqual(block_results[0][0], "natl")
             self.assertTrue(block_results[0][1].result)
             self.assertEqual(block_results[0][1].stdout, "dep2\n\ndep1\n\nsrc")
+
+    def test_dependency_items_respect_default_depth(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_dep_items_depth1.") as tmp:
+            root = Path(tmp)
+            dep2 = self._new_node(root, "Dep2", "natl", "dep2")
+            dep2.save()
+
+            dep1 = self._new_node(root, "Dep1", "natl", "dep1")
+            dep1.add_dependency(dep2.fnode)
+            dep1.save()
+
+            src = self._new_node(root, "Src", "natl", "src")
+            src.add_dependency(dep1.fnode)
+            src.save()
+
+            graph = DepGraph(mdcroot=root, root_fnode=src.fnode)
+            items = graph.dependency_items()
+
+            self.assertEqual(
+                items,
+                [
+                    DependencyItem(
+                        depth=1,
+                        fnode=dep1.fnode,
+                        title="Dep1",
+                        rel_path=dep1.path.resolve().relative_to(root.resolve()).as_posix(),
+                    )
+                ],
+            )
+
+    def test_dependency_items_expand_with_unbounded_depth(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_dep_items_inf.") as tmp:
+            root = Path(tmp)
+            dep2 = self._new_node(root, "Dep2", "natl", "dep2")
+            dep2.save()
+
+            dep1 = self._new_node(root, "Dep1", "natl", "dep1")
+            dep1.add_dependency(dep2.fnode)
+            dep1.save()
+
+            src = self._new_node(root, "Src", "natl", "src")
+            src.add_dependency(dep1.fnode)
+            src.save()
+
+            graph = DepGraph(mdcroot=root, root_fnode=src.fnode)
+            items = graph.dependency_items(depth=-1)
+
+            self.assertEqual(
+                items,
+                [
+                    DependencyItem(
+                        depth=1,
+                        fnode=dep1.fnode,
+                        title="Dep1",
+                        rel_path=dep1.path.resolve().relative_to(root.resolve()).as_posix(),
+                    ),
+                    DependencyItem(
+                        depth=2,
+                        fnode=dep2.fnode,
+                        title="Dep2",
+                        rel_path=dep2.path.resolve().relative_to(root.resolve()).as_posix(),
+                    ),
+                ],
+            )
+
+    def test_eval_blocks_raises_on_dependency_cycle(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_eval_cycle.") as tmp:
+            root = Path(tmp)
+            dep = self._new_node(root, "Dep", "natl", "dep")
+            dep.save()
+
+            src = self._new_node(root, "Src", "natl", "src")
+            src.add_dependency(dep.fnode)
+            src.save()
+
+            dep.add_dependency(src.fnode)
+            dep.save()
+
+            graph = DepGraph(mdcroot=root, root_fnode=src.fnode)
+            with self.assertRaises(ValueError) as ctx:
+                graph.eval_blocks(depth=-1)
+            message = str(ctx.exception)
+            self.assertIn("dependency cycle detected", message)
+            self.assertIn(src.fnode, message)
+            self.assertIn(dep.fnode, message)
+
+    def test_eval_blocks_raises_on_cycle_with_depth_boundary(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_eval_cycle_depth1.") as tmp:
+            root = Path(tmp)
+            dep = self._new_node(root, "Dep", "natl", "dep")
+            dep.save()
+
+            src = self._new_node(root, "Src", "natl", "src")
+            src.add_dependency(dep.fnode)
+            src.save()
+
+            dep.add_dependency(src.fnode)
+            dep.save()
+
+            graph = DepGraph(mdcroot=root, root_fnode=src.fnode)
+            with self.assertRaises(ValueError) as ctx:
+                graph.eval_blocks(depth=1)
+            message = str(ctx.exception)
+            self.assertIn("dependency cycle detected", message)
+            self.assertIn(src.fnode, message)
+            self.assertIn(dep.fnode, message)
+
+    def test_direct_dependency_mutation_uses_graph_api(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_mutation.") as tmp:
+            root = Path(tmp)
+            src = self._new_node(root, "Src", "natl", "src")
+            src.save()
+
+            dep1 = self._new_node(root, "Dep1", "natl", "dep1")
+            dep1.save()
+
+            dep2 = self._new_node(root, "Dep2", "natl", "dep2")
+            dep2.save()
+
+            graph = DepGraph(mdcroot=root, root_fnode=src.fnode)
+            added, skipped_existing, skipped_self = graph.add_direct_dependencies(
+                [dep1.fnode, src.fnode, dep2.fnode]
+            )
+
+            self.assertEqual(added, [dep1.fnode, dep2.fnode])
+            self.assertEqual(skipped_existing, [])
+            self.assertEqual(skipped_self, [src.fnode])
+            self.assertEqual(graph.direct_dependency_fnodes(), [dep1.fnode, dep2.fnode])
+
+            added_again, skipped_existing_again, skipped_self_again = graph.add_direct_dependencies(
+                [dep1.fnode]
+            )
+            self.assertEqual(added_again, [])
+            self.assertEqual(skipped_existing_again, [dep1.fnode])
+            self.assertEqual(skipped_self_again, [])
+
+            removed = graph.remove_direct_dependencies([dep1.fnode, "missing", dep1.fnode])
+            self.assertEqual(removed, [dep1.fnode])
+            self.assertEqual(graph.direct_dependency_fnodes(), [dep2.fnode])
+
+            reloaded = MdocNode(mdcroot=root, path=src.path, title="")
+            reloaded.load()
+            self.assertEqual(reloaded.depens, [dep2.fnode])
 
     def test_scan_all_builds_global_graph(self) -> None:
         with tempfile.TemporaryDirectory(prefix="depgraph_scan_all.") as tmp:

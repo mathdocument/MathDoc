@@ -6,8 +6,8 @@ import subprocess
 from pathlib import Path
 
 from .depgraph import DepGraph
+from .depgraph import DependencyItem
 from .indcache import IndCache
-from .mdocnode import DependencyItem
 from .mdocnode import MdocNode
 from .utils import (
     STYLE,
@@ -28,11 +28,8 @@ def _get_mdcroot_or_none() -> Path | None:
     return mdcroot
 
 
-def _load_mdoc_from_ref(cache: IndCache, ref: str) -> tuple[MdocNode, str]:
-    _, _, src_path = cache.resolve_ref(ref, cwd=Path.cwd())
-    node = MdocNode(mdcroot=cache.root, path=src_path, title="")
-    node.load()
-    return node, to_rel_path(cache.root, src_path)
+def _load_graph_from_ref(cache: IndCache, ref: str) -> tuple[DepGraph, str]:
+    return DepGraph.from_ref(cache=cache, ref=ref, cwd=Path.cwd())
 
 
 def _print_index_error(*, action: str, exc: Exception) -> None:
@@ -200,12 +197,12 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        node, src_rel = _load_mdoc_from_ref(cache, args.source)
+        graph, src_rel = _load_graph_from_ref(cache, args.source)
     except (FileNotFoundError, OSError, ValueError, sqlite3.Error) as exc:
         print(f"Error: failed to load mdoc: {exc}")
         return 1
 
-    graph = DepGraph(mdcroot=mdcroot, root_node=node, cache=cache)
+    node = graph.get_root_node()
     try:
         dep_items = graph.dependency_items(depth=args.depth)
     except ValueError as exc:
@@ -290,11 +287,11 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        node, src_rel = _load_mdoc_from_ref(cache, args.source)
+        graph, src_rel = _load_graph_from_ref(cache, args.source)
     except (FileNotFoundError, OSError, ValueError, sqlite3.Error) as exc:
         print(f"Error: {exc}")
         return 1
-    graph = DepGraph(mdcroot=mdcroot, root_node=node, cache=cache)
+    node = graph.get_root_node()
     try:
         matches = cache.search(query)
     except (OSError, ValueError, sqlite3.Error) as exc:
@@ -336,26 +333,13 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
             continue
         selected_by_fnode[dep_fnode] = (dep_fnode, refreshed[0], refreshed[1])
 
-    added: list[str] = []
-    skipped_existing: list[str] = []
-    skipped_self: list[str] = []
-    existing_depens = set(graph.direct_dependency_fnodes())
-    for dep_fnode in selected_by_fnode:
-        if dep_fnode == node.fnode:
-            skipped_self.append(dep_fnode)
-            continue
-        if dep_fnode in existing_depens:
-            skipped_existing.append(dep_fnode)
-            continue
-        node.add_dependency(dep_fnode)
-        added.append(dep_fnode)
-
-    if added:
-        try:
-            node.save()
-        except OSError as exc:
-            print(f"Error: failed to save mdoc: {exc}")
-            return 1
+    try:
+        added, skipped_existing, skipped_self = graph.add_direct_dependencies(
+            list(selected_by_fnode),
+        )
+    except OSError as exc:
+        print(f"Error: failed to save mdoc: {exc}")
+        return 1
 
     print(f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
     print(f"added: {len(added)}")
@@ -379,12 +363,12 @@ def _cmd_dep_show(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        node, src_rel = _load_mdoc_from_ref(cache, args.source)
+        graph, src_rel = _load_graph_from_ref(cache, args.source)
     except (FileNotFoundError, OSError, ValueError, sqlite3.Error) as exc:
         print(f"Error: failed to load mdoc: {exc}")
         return 1
 
-    graph = DepGraph(mdcroot=mdcroot, root_node=node, cache=cache)
+    node = graph.get_root_node()
     try:
         dep_items = graph.dependency_items(depth=args.depth)
     except ValueError as exc:
@@ -422,12 +406,12 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        node, src_rel = _load_mdoc_from_ref(cache, args.source)
+        graph, src_rel = _load_graph_from_ref(cache, args.source)
     except (FileNotFoundError, OSError, ValueError, sqlite3.Error) as exc:
         print(f"Error: failed to load mdoc: {exc}")
         return 1
 
-    graph = DepGraph(mdcroot=mdcroot, root_node=node, cache=cache)
+    node = graph.get_root_node()
     try:
         dep_items = graph.direct_dependency_items()
     except ValueError as exc:
@@ -484,23 +468,19 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
     except (OSError, ValueError, sqlite3.Error) as exc:
         warn_index_failure("dependencies were inspected", exc)
 
-    old_len = len(node.depens)
-    for dep_fnode in selected_fnodes:
-        node.rmv_dependency(dep_fnode)
-    removed_count = old_len - len(node.depens)
+    try:
+        removed_fnodes = graph.remove_direct_dependencies(selected_fnodes)
+    except OSError as exc:
+        print(f"Error: failed to save mdoc: {exc}")
+        return 1
+    removed_count = len(removed_fnodes)
     if removed_count <= 0:
         print("No dependencies removed")
         return 0
 
-    try:
-        node.save()
-    except OSError as exc:
-        print(f"Error: failed to save mdoc: {exc}")
-        return 1
-
     print(f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
     print(f"removed: {removed_count}")
-    for dep_fnode in selected_fnodes:
+    for dep_fnode in removed_fnodes:
         row = selected_rows_by_fnode.get(dep_fnode)
         if row is None:
             continue

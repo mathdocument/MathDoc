@@ -1,24 +1,9 @@
-import sqlite3
 import shlex
-from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 from uuid import uuid4
 
-from .compiler import CompilerRes
-from .config import load_config
-from .indcache import IndCache
 from .srcblock import SrcBlock
-from .utils import format_mdoc_item, to_rel_path
-
-
-@dataclass(slots=True, frozen=True)
-class DependencyItem:
-    depth: int
-    fnode: str
-    title: str
-    rel_path: str
 
 
 @dataclass(slots=True)
@@ -64,327 +49,6 @@ class MdocNode:
         if dep_fnode in self.depens:
             self.depens.remove(dep_fnode)
 
-    def eval_blocks(
-        self, *, depth: int = 1, reverse_depens: bool = False
-    ) -> list[tuple[str, CompilerRes]]:
-        if not self.blocks:
-            return []
-
-        dep_graph, nodes_by_fnode = self._dependency_context(depth=depth)
-
-        topo_fnodes = self._topo_dependencies_first(
-            root_fnode=self.fnode,
-            dep_graph=dep_graph,
-        )
-        if reverse_depens:
-            topo_fnodes = list(reversed(topo_fnodes))
-
-        try:
-            config = load_config(self.mdcroot)
-        except (OSError, ValueError) as exc:
-            raise ValueError(f"failed to load config.toml: {exc}") from exc
-
-        src_cfg = config.get("src", {})
-        if not isinstance(src_cfg, dict):
-            raise ValueError("config key 'src' must be a table")
-
-        merged_blocks = self._merged_blocks_for_eval(
-            topo_fnodes=topo_fnodes,
-            nodes_by_fnode=nodes_by_fnode,
-            src_cfg=src_cfg,
-        )
-
-        results: list[tuple[str, CompilerRes]] = []
-        for block in merged_blocks:
-            results.append(
-                (
-                    block.srctype,
-                    block.compile(
-                        mdcroot=self.mdcroot,
-                        src_cfg=src_cfg,
-                    ),
-                )
-            )
-        return results
-
-    def dependency_items(self, *, depth: int = 1) -> list[DependencyItem]:
-        dep_graph, nodes_by_fnode = self._dependency_context(depth=depth)
-        return self._dependency_items_from_graph(
-            root_fnode=self.fnode,
-            dep_graph=dep_graph,
-            nodes_by_fnode=nodes_by_fnode,
-        )
-
-    def _dependency_context(
-        self, *, depth: int
-    ) -> tuple[dict[str, list[str]], dict[str, "MdocNode"]]:
-        if depth < -1:
-            raise ValueError("depth must be -1 (infinite) or >= 0")
-
-        try:
-            dep_graph, nodes_by_fnode = self._build_dependency_graph(
-                depth=depth,
-            )
-        except (OSError, ValueError, sqlite3.Error) as exc:
-            raise ValueError(f"failed to build dependency graph: {exc}") from exc
-
-        cycle = self._find_cycle(dep_graph)
-        if cycle is not None:
-            raise ValueError(
-                self._format_cycle(
-                    cycle=cycle,
-                    nodes_by_fnode=nodes_by_fnode,
-                )
-            )
-
-        return dep_graph, nodes_by_fnode
-
-    def _build_dependency_graph(
-        self, *, depth: int
-    ) -> tuple[dict[str, list[str]], dict[str, "MdocNode"]]:
-        mdc_dir = self.mdcroot / ".mdc"
-        if not mdc_dir.is_dir():
-            raise ValueError(f"invalid mdoc root (missing .mdc): {mdc_dir}")
-        cache = IndCache(self.mdcroot)
-        cache.bootstrap_if_needed()
-
-        dep_graph: dict[str, list[str]] = {self.fnode: []}
-        nodes_by_fnode: dict[str, MdocNode] = {self.fnode: self}
-        seen: set[str] = {self.fnode}
-        queue: deque[tuple[MdocNode, int]] = deque([(self, 0)])
-
-        while queue:
-            node, node_depth = queue.popleft()
-            dep_graph[node.fnode] = []
-            for dep_fnode in self._dedupe_keep_order(node.depens):
-                dep_node = nodes_by_fnode.get(dep_fnode)
-                if dep_node is None:
-                    if depth != -1 and node_depth >= depth:
-                        continue
-                    _, _, dep_path = cache.resolve_ref(dep_fnode, cwd=cache.root)
-                    dep_node = MdocNode(mdcroot=self.mdcroot, path=dep_path, title="")
-                    dep_node.load()
-
-                    nodes_by_fnode[dep_fnode] = dep_node
-                dep_graph[node.fnode].append(dep_fnode)
-                if dep_fnode in seen:
-                    continue
-                seen.add(dep_fnode)
-                queue.append((dep_node, node_depth + 1))
-
-        for fnode in nodes_by_fnode:
-            dep_graph.setdefault(fnode, [])
-
-        return dep_graph, nodes_by_fnode
-
-    @staticmethod
-    def _find_cycle(dep_graph: dict[str, list[str]]) -> list[str] | None:
-        state: dict[str, int] = {}
-        stack: list[str] = []
-        stack_idx: dict[str, int] = {}
-
-        def dfs(fnode: str) -> list[str] | None:
-            state[fnode] = 1
-            stack_idx[fnode] = len(stack)
-            stack.append(fnode)
-
-            for dep_fnode in dep_graph.get(fnode, []):
-                dep_state = state.get(dep_fnode, 0)
-                if dep_state == 0:
-                    cycle = dfs(dep_fnode)
-                    if cycle is not None:
-                        return cycle
-                elif dep_state == 1:
-                    start = stack_idx[dep_fnode]
-                    return stack[start:] + [dep_fnode]
-
-            stack.pop()
-            stack_idx.pop(fnode, None)
-            state[fnode] = 2
-            return None
-
-        for fnode in dep_graph:
-            if state.get(fnode, 0) != 0:
-                continue
-            cycle = dfs(fnode)
-            if cycle is not None:
-                return cycle
-        return None
-
-    def _format_cycle(
-        self, *, cycle: list[str], nodes_by_fnode: dict[str, "MdocNode"]
-    ) -> str:
-        if not cycle:
-            return "dependency cycle detected"
-        lines = ["dependency cycle detected:"]
-
-        cycle_nodes = cycle[:-1] if len(cycle) > 1 else cycle
-        total = len(cycle_nodes)
-        for idx, fnode in enumerate(cycle_nodes):
-            node = nodes_by_fnode.get(fnode)
-            if node is None:
-                item = format_mdoc_item(fnode, "<missing>", "<unknown>", marker="+")
-            else:
-                item = format_mdoc_item(
-                    node.fnode,
-                    node.title,
-                    to_rel_path(self.mdcroot, node.path),
-                    marker="+",
-                )
-            if total == 1:
-                prefix = "┌─➤"
-            elif idx == 0:
-                prefix = "┌─➤"
-            elif idx == total - 1:
-                prefix = "└──"
-            else:
-                prefix = "│  "
-            lines.append(f"{prefix} {item}")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _topo_dependencies_first(
-        *, root_fnode: str, dep_graph: dict[str, list[str]]
-    ) -> list[str]:
-        visited: set[str] = set()
-        order: list[str] = []
-
-        def dfs(fnode: str) -> None:
-            if fnode in visited:
-                return
-            visited.add(fnode)
-            for dep_fnode in dep_graph.get(fnode, []):
-                dfs(dep_fnode)
-            order.append(fnode)
-
-        dfs(root_fnode)
-        return order
-
-    def _dependency_items_from_graph(
-        self,
-        *,
-        root_fnode: str,
-        dep_graph: dict[str, list[str]],
-        nodes_by_fnode: dict[str, "MdocNode"],
-    ) -> list[DependencyItem]:
-        items: list[DependencyItem] = []
-        seen: set[str] = set()
-        queue: deque[tuple[str, int]] = deque(
-            (dep_fnode, 1) for dep_fnode in dep_graph.get(root_fnode, [])
-        )
-
-        while queue:
-            fnode, node_depth = queue.popleft()
-            if fnode in seen:
-                continue
-            seen.add(fnode)
-
-            node = nodes_by_fnode.get(fnode)
-            if node is None:
-                items.append(
-                    DependencyItem(
-                        depth=node_depth,
-                        fnode=fnode,
-                        title="<missing>",
-                        rel_path="<unknown>",
-                    )
-                )
-            else:
-                items.append(
-                    DependencyItem(
-                        depth=node_depth,
-                        fnode=node.fnode,
-                        title=node.title,
-                        rel_path=to_rel_path(self.mdcroot, node.path),
-                    )
-                )
-
-            for dep_fnode in dep_graph.get(fnode, []):
-                queue.append((dep_fnode, node_depth + 1))
-
-        return items
-
-    def _merged_blocks_for_eval(
-        self,
-        *,
-        topo_fnodes: list[str],
-        nodes_by_fnode: dict[str, "MdocNode"],
-        src_cfg: dict[str, Any],
-    ) -> list[SrcBlock]:
-        merged: list[SrcBlock] = []
-
-        blocks_by_node: dict[str, dict[str, SrcBlock]] = {}
-        for fnode in topo_fnodes:
-            node = nodes_by_fnode[fnode]
-            by_srctype: dict[str, SrcBlock] = {}
-            for block in node.blocks:
-                by_srctype[block.srctype.casefold()] = block
-            blocks_by_node[fnode] = by_srctype
-
-        for root_block in self.blocks:
-            srctype_key = root_block.srctype.casefold()
-            depens_enabled = self._depens_enabled_for_srctype(
-                src_cfg=src_cfg,
-                srctype_key=srctype_key,
-            )
-            if not depens_enabled:
-                merged.append(root_block)
-                continue
-
-            ordered_blocks: list[SrcBlock] = []
-            for fnode in topo_fnodes:
-                candidate = blocks_by_node[fnode].get(srctype_key)
-                if candidate is not None:
-                    ordered_blocks.append(candidate)
-
-            merged.append(
-                SrcBlock(
-                    srctype=root_block.srctype,
-                    content=self._merge_block_content(ordered_blocks),
-                    metadata=dict(root_block.metadata),
-                )
-            )
-
-        return merged
-
-    @staticmethod
-    def _depens_enabled_for_srctype(
-        *,
-        src_cfg: dict[str, Any],
-        srctype_key: str,
-    ) -> bool:
-        compiler_cfg = src_cfg.get(srctype_key)
-        if compiler_cfg is None:
-            return False
-        if not isinstance(compiler_cfg, dict):
-            raise ValueError(f"config key 'src.{srctype_key}' must be a table")
-        depens = compiler_cfg.get("depens", False)
-        if not isinstance(depens, bool):
-            raise ValueError(f"config key 'src.{srctype_key}.depens' must be a boolean")
-        return depens
-
-    @staticmethod
-    def _merge_block_content(blocks: list[SrcBlock]) -> str:
-        parts: list[str] = []
-        for block in blocks:
-            text = block.content.rstrip("\n")
-            if text:
-                parts.append(text)
-        if not parts:
-            return ""
-        return "\n\n".join(parts) + "\n"
-
-    @staticmethod
-    def _dedupe_keep_order(items: list[str]) -> list[str]:
-        out: list[str] = []
-        seen: set[str] = set()
-        for item in items:
-            if item in seen:
-                continue
-            seen.add(item)
-            out.append(item)
-        return out
-
     def load(self) -> None:
         """
         Load card content from file.
@@ -402,7 +66,6 @@ class MdocNode:
         for index, raw_line in enumerate(lines, start=1):
             line = raw_line.strip()
 
-            # get dep content
             if status == "@dep":
                 if line == "@end":
                     status = ""
@@ -418,7 +81,7 @@ class MdocNode:
                     )
                 depens.append(dep)
                 continue
-            # get src content
+
             if status == "@src":
                 if line == "@end":
                     status = ""
@@ -428,7 +91,7 @@ class MdocNode:
 
             if not line:
                 continue
-            # fnode and title must exist and be unique
+
             if line.startswith("@fnode:"):
                 if status:
                     raise ValueError(
@@ -442,6 +105,7 @@ class MdocNode:
                         f"line {index}: '@fnode' must be non-empty in {self.path}"
                     )
                 continue
+
             if line.startswith("@title:"):
                 if status:
                     raise ValueError(
@@ -456,7 +120,6 @@ class MdocNode:
                     )
                 continue
 
-            # depens is optional but must be unique and non-empty if exists
             if line.startswith("@dep:"):
                 if status:
                     raise ValueError(
@@ -466,7 +129,7 @@ class MdocNode:
                     raise ValueError(f"line {index}: Duplicate '@dep' in {self.path}")
                 status = "@dep"
                 continue
-            # src is optional and can have multiple blocks
+
             if line.startswith("@src:"):
                 if status:
                     raise ValueError(
