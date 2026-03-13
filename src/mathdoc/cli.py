@@ -161,8 +161,9 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         print("No blocks to eval")
         return 0
 
+    graph = DepGraph(mdcroot=mdcroot, root_node=node, cache=cache)
     try:
-        block_results = node.eval_blocks(
+        block_results = graph.eval_blocks(
             depth=args.depth,
             reverse_depens=args.reverse,
         )
@@ -311,8 +312,9 @@ def _cmd_dep_show(args: argparse.Namespace) -> int:
         print(f"Error: failed to load mdoc: {exc}")
         return 1
 
+    graph = DepGraph(mdcroot=mdcroot, root_node=node, cache=cache)
     try:
-        dep_items = node.dependency_items(depth=args.depth)
+        dep_items = graph.dependency_items(depth=args.depth)
     except ValueError as exc:
         print(f"Error: failed to inspect dependencies: {exc}")
         return 1
