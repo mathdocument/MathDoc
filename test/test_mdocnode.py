@@ -1,4 +1,4 @@
-from mathdoc.srcblock import SrcBlock, CompileResult
+from mathdoc.srcblock import SrcBlock
 from mathdoc.mdocnode import MdocNode
 import mathdoc.mdocnode as mdocnode_module
 import tempfile
@@ -22,7 +22,7 @@ class TestMdocNode(unittest.TestCase):
         return node
 
     @staticmethod
-    def _result(block: SrcBlock) -> CompileResult:
+    def _result(block: SrcBlock) -> SrcBlock.CompileResult:
         return block.require_result()
 
     def test_create_save_load_roundtrip(self) -> None:

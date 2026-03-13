@@ -55,7 +55,9 @@ class MdocNode:
         if dep_fnode in self.depens:
             self.depens.remove(dep_fnode)
 
-    def eval_blocks(self, *, depth: int = 1, reverse_depens: bool = False) -> list[SrcBlock]:
+    def eval_blocks(
+        self, *, depth: int = 1, reverse_depens: bool = False
+    ) -> list[SrcBlock]:
         if depth < -1:
             raise ValueError("depth must be -1 (infinite) or >= 0")
         if not self.blocks:
@@ -66,8 +68,7 @@ class MdocNode:
                 depth=depth,
             )
         except (OSError, ValueError, sqlite3.Error) as exc:
-            raise ValueError(
-                f"failed to build dependency graph: {exc}") from exc
+            raise ValueError(f"failed to build dependency graph: {exc}") from exc
         cycle = self._find_cycle(dep_graph)
         if cycle is not None:
             raise ValueError(
@@ -107,7 +108,9 @@ class MdocNode:
             )
         return merged_blocks
 
-    def _build_dependency_graph(self, *, depth: int) -> tuple[dict[str, list[str]], dict[str, "MdocNode"]]:
+    def _build_dependency_graph(
+        self, *, depth: int
+    ) -> tuple[dict[str, list[str]], dict[str, "MdocNode"]]:
         mdc_dir = self.mdoc_root / ".mdc"
         if not mdc_dir.is_dir():
             raise ValueError(f"invalid mdoc root (missing .mdc): {mdc_dir}")
@@ -127,10 +130,10 @@ class MdocNode:
                 if dep_node is None:
                     if depth != -1 and node_depth >= depth:
                         continue
-                    _, _, dep_path = cache.resolve_ref(
-                        dep_fnode, cwd=cache.root)
-                    dep_node = MdocNode(mdoc_root=self.mdoc_root,
-                                        path=dep_path, title="")
+                    _, _, dep_path = cache.resolve_ref(dep_fnode, cwd=cache.root)
+                    dep_node = MdocNode(
+                        mdoc_root=self.mdoc_root, path=dep_path, title=""
+                    )
                     dep_node.load()
 
                     nodes_by_fnode[dep_fnode] = dep_node
@@ -179,7 +182,9 @@ class MdocNode:
                 return cycle
         return None
 
-    def _format_cycle(self, *, cycle: list[str], nodes_by_fnode: dict[str, "MdocNode"]) -> str:
+    def _format_cycle(
+        self, *, cycle: list[str], nodes_by_fnode: dict[str, "MdocNode"]
+    ) -> str:
         if not cycle:
             return "dependency cycle detected"
         lines = ["dependency cycle detected:"]
@@ -189,8 +194,7 @@ class MdocNode:
         for idx, fnode in enumerate(cycle_nodes):
             node = nodes_by_fnode.get(fnode)
             if node is None:
-                item = format_mdoc_item(
-                    fnode, "<missing>", "<unknown>", marker="+")
+                item = format_mdoc_item(fnode, "<missing>", "<unknown>", marker="+")
             else:
                 item = format_mdoc_item(
                     node.fnode,
@@ -210,7 +214,9 @@ class MdocNode:
         return "\n".join(lines)
 
     @staticmethod
-    def _topo_dependencies_first(*, root_fnode: str, dep_graph: dict[str, list[str]]) -> list[str]:
+    def _topo_dependencies_first(
+        *, root_fnode: str, dep_graph: dict[str, list[str]]
+    ) -> list[str]:
         visited: set[str] = set()
         order: list[str] = []
 
@@ -226,7 +232,11 @@ class MdocNode:
         return order
 
     def _merged_blocks_for_eval(
-        self, *, topo_fnodes: list[str], nodes_by_fnode: dict[str, "MdocNode"], src_cfg: dict[str, Any]
+        self,
+        *,
+        topo_fnodes: list[str],
+        nodes_by_fnode: dict[str, "MdocNode"],
+        src_cfg: dict[str, Any],
     ) -> list[SrcBlock]:
         merged: list[SrcBlock] = []
 
@@ -274,12 +284,10 @@ class MdocNode:
         if compiler_cfg is None:
             return False
         if not isinstance(compiler_cfg, dict):
-            raise ValueError(
-                f"config key 'src.{srctype_key}' must be a table")
+            raise ValueError(f"config key 'src.{srctype_key}' must be a table")
         depens = compiler_cfg.get("depens", False)
         if not isinstance(depens, bool):
-            raise ValueError(
-                f"config key 'src.{srctype_key}.depens' must be a boolean")
+            raise ValueError(f"config key 'src.{srctype_key}.depens' must be a boolean")
         return depens
 
     @staticmethod
@@ -321,74 +329,24 @@ class MdocNode:
         for index, raw_line in enumerate(lines, start=1):
             line = raw_line.strip()
 
-            if not line:
-                continue
-            # fnode and title must exist and be unique
-            if line.startswith("@fnode:"):
-                if status:
-                    raise ValueError(
-                        f"line {index}: unexpected '@fnode' after {status} block in {self.path}")
-                if fnode:
-                    raise ValueError(
-                        f"line {index}: Duplicate '@fnode' in {self.path}")
-                fnode = line.split(":", 1)[1].strip()
-                if not fnode:
-                    raise ValueError(
-                        f"line {index}: '@fnode' must be non-empty in {self.path}")
-                continue
-            if line.startswith("@title:"):
-                if status:
-                    raise ValueError(
-                        f"line {index}: unexpected '@title' after {status} block in {self.path}")
-                if title:
-                    raise ValueError(
-                        f"line {index}: Duplicate '@title' in {self.path}")
-                title = line.split(":", 1)[1].strip()
-                if not title:
-                    raise ValueError(
-                        f"line {index}: '@title' must be non-empty in {self.path}")
-                continue
-
-            # depens is optional but must be unique and non-empty if exists
-            if line.startswith("@dep:"):
-                if status:
-                    raise ValueError(
-                        f"line {index}: unexpected '@dep' after {status} block in {self.path}")
-                if depens:
-                    raise ValueError(
-                        f"line {index}: Duplicate '@dep' in {self.path}")
-                status = "@dep"
-                continue
-            # src is optional and can have multiple blocks
-            if line.startswith("@src:"):
-                if status:
-                    raise ValueError(
-                        f"line {index}: unexpected '@src' after {status} block in {self.path}")
-                srctype, metadata = self._parse_src_header(line)
-                for block in blocks:
-                    if srctype == block.srctype:
-                        raise ValueError(
-                            f"line {index}: Duplicate '@src' srctype '{srctype}' in {self.path}")
-                blocks.append(SrcBlock(srctype=srctype,
-                              content="", metadata=metadata))
-                status = "@src"
-                continue
-
             # get dep content
             if status == "@dep":
                 if line == "@end":
                     if not depens:
                         raise ValueError(
-                            f"line {index}: '@dep' block must be non-empty in {self.path}")
+                            f"line {index}: '@dep' block must be non-empty in {self.path}"
+                        )
                     status = ""
                     continue
                 dep = line
                 if not dep:
                     raise ValueError(
-                        f"line {index}: Invalid dependency format in {self.path}: '{line}'")
+                        f"line {index}: Invalid dependency format in {self.path}: '{line}'"
+                    )
                 if dep in depens:
                     raise ValueError(
-                        f"line {index}: Duplicate dependency '{dep}' in {self.path}")
+                        f"line {index}: Duplicate dependency '{dep}' in {self.path}"
+                    )
                 depens.append(dep)
                 continue
             # get src content
@@ -398,18 +356,73 @@ class MdocNode:
                     continue
                 blocks[-1].content += raw_line + "\n"
                 continue
+
+            if not line:
+                continue
+            # fnode and title must exist and be unique
+            if line.startswith("@fnode:"):
+                if status:
+                    raise ValueError(
+                        f"line {index}: unexpected '@fnode' after {status} block in {self.path}"
+                    )
+                if fnode:
+                    raise ValueError(f"line {index}: Duplicate '@fnode' in {self.path}")
+                fnode = line.split(":", 1)[1].strip()
+                if not fnode:
+                    raise ValueError(
+                        f"line {index}: '@fnode' must be non-empty in {self.path}"
+                    )
+                continue
+            if line.startswith("@title:"):
+                if status:
+                    raise ValueError(
+                        f"line {index}: unexpected '@title' after {status} block in {self.path}"
+                    )
+                if title:
+                    raise ValueError(f"line {index}: Duplicate '@title' in {self.path}")
+                title = line.split(":", 1)[1].strip()
+                if not title:
+                    raise ValueError(
+                        f"line {index}: '@title' must be non-empty in {self.path}"
+                    )
+                continue
+
+            # depens is optional but must be unique and non-empty if exists
+            if line.startswith("@dep:"):
+                if status:
+                    raise ValueError(
+                        f"line {index}: unexpected '@dep' after {status} block in {self.path}"
+                    )
+                if depens:
+                    raise ValueError(f"line {index}: Duplicate '@dep' in {self.path}")
+                status = "@dep"
+                continue
+            # src is optional and can have multiple blocks
+            if line.startswith("@src:"):
+                if status:
+                    raise ValueError(
+                        f"line {index}: unexpected '@src' after {status} block in {self.path}"
+                    )
+                srctype, metadata = self._parse_src_header(line)
+                for block in blocks:
+                    if srctype == block.srctype:
+                        raise ValueError(
+                            f"line {index}: Duplicate '@src' srctype '{srctype}' in {self.path}"
+                        )
+                blocks.append(SrcBlock(srctype=srctype, content="", metadata=metadata))
+                status = "@src"
+                continue
+
             raise ValueError(
-                f"line {index}: Unrecognized line in {self.path}: '{line}'")
+                f"line {index}: Unrecognized line in {self.path}: '{line}'"
+            )
 
         if status:
-            raise ValueError(
-                f"Unclosed block '{status}' in {self.path}")
+            raise ValueError(f"Unclosed block '{status}' in {self.path}")
         if not fnode:
-            raise ValueError(
-                f"'@fnode' must exist and be non-empty in {self.path}")
+            raise ValueError(f"'@fnode' must exist and be non-empty in {self.path}")
         if not title:
-            raise ValueError(
-                f"'@title' must exist and be non-empty in {self.path}")
+            raise ValueError(f"'@title' must exist and be non-empty in {self.path}")
 
         self.fnode = fnode
         self.title = title
@@ -438,8 +451,7 @@ class MdocNode:
             output_lines.append("")
 
         for block in self.blocks:
-            output_lines.append(self._format_src_header(
-                block.srctype, block.metadata))
+            output_lines.append(self._format_src_header(block.srctype, block.metadata))
             if block.content:
                 output_lines.extend(block.content.splitlines())
             output_lines.append("@end")
@@ -487,8 +499,7 @@ class MdocNode:
 
         def _quote(value: str) -> str:
             escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-            return f"\"{escaped}\""
+            return f'"{escaped}"'
 
-        meta_tokens = [
-            f"{key}={_quote(value)}" for key, value in metadata.items()]
+        meta_tokens = [f"{key}={_quote(value)}" for key, value in metadata.items()]
         return f"@src: {srctype} " + " ".join(meta_tokens)

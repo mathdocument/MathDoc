@@ -2,7 +2,6 @@ from mathdoc.srcblock import (
     BlockCompiler,
     SrcBlock,
     CompilerRegistry,
-    CompileResult,
 )
 import mathdoc.srcblock as SrcBlock_module
 import shutil
@@ -20,7 +19,7 @@ if str(SRC_PATH) not in sys.path:
 
 class TestSrcBlock(unittest.TestCase):
     @staticmethod
-    def _result(block: SrcBlock) -> CompileResult:
+    def _result(block: SrcBlock) -> SrcBlock.CompileResult:
         return block.require_result()
 
     @staticmethod

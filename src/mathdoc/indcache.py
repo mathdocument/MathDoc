@@ -85,7 +85,8 @@ class IndCache:
         base_cwd = (cwd or Path.cwd()).resolve()
         root_resolved = self.root.resolve()
         maybe_path = (
-            "/" in raw_ref) or raw_ref.endswith(".mdoc") or raw_ref.startswith(".")
+            ("/" in raw_ref) or raw_ref.endswith(".mdoc") or raw_ref.startswith(".")
+        )
         with self._open_conn() as conn:
             if maybe_path:
                 raw_path = Path(raw_ref)
@@ -150,7 +151,8 @@ class IndCache:
         else:
             preview = ", ".join(f"{str(r[0])[:8]}:{r[1]}" for r in rows[:5])
             raise ValueError(
-                f"ambiguous mdoc reference '{raw_ref}', matches: {preview}")
+                f"ambiguous mdoc reference '{raw_ref}', matches: {preview}"
+            )
 
         rel_path = str(row[2])
         return str(row[0]), str(row[1]), self.root / rel_path
@@ -163,7 +165,8 @@ class IndCache:
         base_cwd = (cwd or Path.cwd()).resolve()
         root_resolved = self.root.resolve()
         maybe_path = (
-            "/" in raw_ref) or raw_ref.endswith(".mdoc") or raw_ref.startswith(".")
+            ("/" in raw_ref) or raw_ref.endswith(".mdoc") or raw_ref.startswith(".")
+        )
         if maybe_path:
             raw_path = Path(raw_ref)
             candidates: list[Path] = []
@@ -202,7 +205,7 @@ class IndCache:
         chunk_size = 500
         with self._open_conn() as conn:
             for start in range(0, len(fnodes), chunk_size):
-                chunk = fnodes[start:start + chunk_size]
+                chunk = fnodes[start : start + chunk_size]
                 placeholders = ",".join("?" for _ in chunk)
                 rows = conn.execute(
                     f"SELECT fnode, title, path FROM mdocs WHERE fnode IN ({placeholders})",
@@ -258,9 +261,7 @@ class IndCache:
                 "UPDATE mdocs SET mtime_sec = CAST(mtime_ns / 1000000000 AS INTEGER)"
             )
 
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_mdocs_title_lc ON mdocs(title_lc)"
-        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mdocs_title_lc ON mdocs(title_lc)")
 
     def _iter_mdoc_files(self) -> Iterator[Path]:
         for file_path in self.root.rglob("*.mdoc"):
@@ -297,12 +298,9 @@ class IndCache:
         return row is None
 
     def _refresh_search_index(self, conn: sqlite3.Connection) -> None:
-        rows = conn.execute(
-            "SELECT path, fnode, mtime_ns, size FROM mdocs"
-        ).fetchall()
+        rows = conn.execute("SELECT path, fnode, mtime_ns, size FROM mdocs").fetchall()
         cached_by_path = {
-            str(row[0]): (str(row[1]), int(row[2]), int(row[3]))
-            for row in rows
+            str(row[0]): (str(row[1]), int(row[2]), int(row[3])) for row in rows
         }
 
         seen_paths: set[str] = set()
@@ -395,8 +393,9 @@ class IndCache:
             return
 
         fnode, title = head
-        conn.execute("DELETE FROM mdocs WHERE path = ? AND fnode != ?",
-                     (rel_path, fnode))
+        conn.execute(
+            "DELETE FROM mdocs WHERE path = ? AND fnode != ?", (rel_path, fnode)
+        )
         conn.execute(
             """
             INSERT INTO mdocs (fnode, path, title, title_lc, mtime_sec, mtime_ns, size)

@@ -8,31 +8,28 @@ from typing import Any
 
 
 @dataclass(slots=True)
-class CompileResult:
-    ok: bool
-    stdout: str = ""
-    stderr: str = ""
-    returncode: int = 0
-
-
-@dataclass(slots=True)
-class CompileContext:
-    mdoc_root: Path
-    fnode: str
-    compiler_cfg: dict[str, Any]
-
-
-@dataclass(slots=True)
 class SrcBlock:
     """A typed content block in a knowledge card."""
 
     srctype: str
     content: str
     metadata: dict[str, str] = field(default_factory=dict)
-    result: CompileResult | None = field(
-        default=None, init=False, repr=False)
-    context: CompileContext | None = field(
-        default=None, init=False, repr=False)
+
+    @dataclass(slots=True)
+    class CompileResult:
+        ok: bool
+        stdout: str = ""
+        stderr: str = ""
+        returncode: int = 0
+
+    @dataclass(slots=True)
+    class CompileContext:
+        mdoc_root: Path
+        fnode: str
+        compiler_cfg: dict[str, Any]
+
+    result: CompileResult | None = field(default=None, init=False, repr=False)
+    context: CompileContext | None = field(default=None, init=False, repr=False)
 
     def require_result(self) -> CompileResult:
         if self.result is None:
@@ -44,39 +41,49 @@ class SrcBlock:
             raise AssertionError("missing compile context")
         return self.context
 
-    def _set_result(self, result: CompileResult) -> None:
-        self.result = result
+    def _set_result(
+        self, *, ok: bool, stdout: str = "", stderr: str = "", returncode: int
+    ) -> None:
+        if self.result is not None:
+            raise AssertionError("compile result already set")
+        self.result = SrcBlock.CompileResult(
+            ok=ok,
+            stdout=stdout,
+            stderr=stderr,
+            returncode=returncode,
+        )
 
-    def _set_fail(self, message: str, returncode: int) -> None:
-        self._set_result(CompileResult(
+    def _set_result_failed(self, message: str, returncode: int) -> None:
+        self._set_result(
             ok=False,
             stderr=message,
             returncode=returncode,
-        ))
+        )
 
     def compile(self, *, mdoc_root: Path, fnode: str, src_cfg: dict[str, Any]) -> None:
         self.result = None
         self.context = None
 
         if mdoc_root is None:
-            self._set_fail("mdoc_root is required for compile", 1)
+            self._set_result_failed("mdoc_root is required for compile", 1)
             return
         if not fnode.strip():
-            self._set_fail("fnode is required for compile", 1)
+            self._set_result_failed("fnode is required for compile", 1)
             return
 
         srctype_key = self.srctype.strip().casefold()
         compiler_cfg = src_cfg.get(srctype_key, {})
         if not isinstance(compiler_cfg, dict):
-            self._set_fail(
-                f"config key 'src.{srctype_key}' must be a table", 1)
+            self._set_result_failed(
+                f"config key 'src.{srctype_key}' must be a table", 1
+            )
             return
 
         if self.metadata is not None:
             # TODO: possible overwrite of compiler_cfg
             pass
 
-        self.context = CompileContext(
+        self.context = SrcBlock.CompileContext(
             mdoc_root=mdoc_root,
             fnode=fnode,
             compiler_cfg=compiler_cfg,
@@ -84,11 +91,11 @@ class SrcBlock:
 
         compiler = DEFAULT_COMPILER_REGISTRY.resolve(srctype_key)
         if compiler is None:
-            self._set_fail(f"unsupported srctype: {self.srctype}", 127)
+            self._set_result_failed(f"unsupported srctype: {self.srctype}", 127)
             return
         compiler.compile(self)
         if self.result is None:
-            self._set_fail("compiler did not set compile result", 1)
+            self._set_result_failed("compiler did not set compile result", 1)
 
 
 class BlockCompiler(ABC):
@@ -110,12 +117,13 @@ class BlockCompiler(ABC):
     ) -> int | None:
         config = block.require_context().compiler_cfg
         if key not in config:
-            block._set_fail(f"config key '{full_key}' is required", 1)
+            block._set_result_failed(f"config key '{full_key}' is required", 1)
             return None
         value = config[key]
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            block._set_fail(
-                f"config key '{full_key}' must be a positive integer", 1)
+            block._set_result_failed(
+                f"config key '{full_key}' must be a positive integer", 1
+            )
             return None
         return value
 
@@ -128,18 +136,18 @@ class BlockCompiler(ABC):
     ) -> str | None:
         config = block.require_context().compiler_cfg
         if key not in config:
-            block._set_fail(f"config key '{full_key}' is required", 1)
+            block._set_result_failed(f"config key '{full_key}' is required", 1)
             return None
         value = config[key]
         if not isinstance(value, str):
-            block._set_fail(f"config key '{full_key}' must be a string", 1)
+            block._set_result_failed(f"config key '{full_key}' must be a string", 1)
             return None
         return value
 
     def _require_tool(self, block: SrcBlock, tool_name: str) -> str | None:
         path = shutil.which(tool_name)
         if path is None:
-            block._set_fail(f"{tool_name} not found in PATH", 127)
+            block._set_result_failed(f"{tool_name} not found in PATH", 127)
             return None
         return path
 
@@ -162,11 +170,12 @@ class BlockCompiler(ABC):
                 cwd=str(cwd) if cwd is not None else None,
             )
         except subprocess.TimeoutExpired:
-            block._set_fail(
-                f"{tool_name} timed out after {timeout_sec} seconds", 124)
+            block._set_result_failed(
+                f"{tool_name} timed out after {timeout_sec} seconds", 124
+            )
             return None
         except OSError as exc:
-            block._set_fail(f"failed to run {tool_name}: {exc}", 127)
+            block._set_result_failed(f"failed to run {tool_name}: {exc}", 127)
             return None
         return proc
 
@@ -178,11 +187,9 @@ class NatlCompiler(BlockCompiler):
 
     def compile(self, block: SrcBlock) -> None:
         block._set_result(
-            CompileResult(
-                ok=True,
-                stdout=block.content.rstrip("\n"),
-                returncode=0,
-            ),
+            ok=True,
+            stdout=block.content.rstrip("\n"),
+            returncode=0,
         )
 
 
@@ -210,12 +217,10 @@ class PyCompiler(BlockCompiler):
             return
 
         block._set_result(
-            CompileResult(
-                ok=proc.returncode == 0,
-                stdout=proc.stdout,
-                stderr=proc.stderr,
-                returncode=proc.returncode,
-            ),
+            ok=proc.returncode == 0,
+            stdout=proc.stdout,
+            stderr=proc.stderr,
+            returncode=proc.returncode,
         )
 
 
@@ -279,7 +284,7 @@ class LatexCompiler(BlockCompiler):
         try:
             artifacts.tex_path.write_text(payload, encoding="utf-8")
         except OSError as exc:
-            block._set_fail(f"failed to write latex source: {exc}", 1)
+            block._set_result_failed(f"failed to write latex source: {exc}", 1)
             return
 
         tex_proc = self._run_process(
@@ -300,14 +305,14 @@ class LatexCompiler(BlockCompiler):
         if tex_proc is None:
             return
         if tex_proc.returncode != 0:
-            block._set_fail(
+            block._set_result_failed(
                 self._summarize_latex_error(tex_proc.stdout, tex_proc.stderr),
                 tex_proc.returncode,
             )
             return
 
         if not artifacts.pdf_path.is_file():
-            block._set_fail(
+            block._set_result_failed(
                 f"latexmk succeeded but pdf not found: {artifacts.pdf_path}",
                 1,
             )
@@ -319,11 +324,9 @@ class LatexCompiler(BlockCompiler):
             f"artifact pdf: {artifacts.pdf_path}",
         ]
         block._set_result(
-            CompileResult(
-                ok=True,
-                stdout="\n".join(output_lines),
-                returncode=0,
-            ),
+            ok=True,
+            stdout="\n".join(output_lines),
+            returncode=0,
         )
 
     def _prepare_latex_artifacts(
@@ -337,12 +340,11 @@ class LatexCompiler(BlockCompiler):
         try:
             tex_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            block._set_fail(f"failed to create tex artifact dir: {exc}", 1)
+            block._set_result_failed(f"failed to create tex artifact dir: {exc}", 1)
             return None
 
         safe_fnode = "".join(
-            ch if ch.isalnum() or ch in ("-", "_", ".") else "_"
-            for ch in fnode.strip()
+            ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in fnode.strip()
         )
         stem = f"snippet_{safe_fnode}"
         artifacts = LatexCompiler.LatexArtifacts(
@@ -382,8 +384,9 @@ class LatexCompiler(BlockCompiler):
 
 class CompilerRegistry:
     def __init__(self, compilers: list[BlockCompiler]) -> None:
-        self._compilers = {compiler.srctype.casefold(
-        ): compiler for compiler in compilers}
+        self._compilers = {
+            compiler.srctype.casefold(): compiler for compiler in compilers
+        }
 
     def resolve(self, srctype: str) -> BlockCompiler | None:
         return self._compilers.get(srctype.casefold())

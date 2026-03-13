@@ -78,8 +78,7 @@ def _cmd_new(args: argparse.Namespace) -> int:
     try:
         target.relative_to(mdoc_root.resolve())
     except ValueError:
-        print(
-            f"Error: target path must be under mdoc root {mdoc_root}")
+        print(f"Error: target path must be under mdoc root {mdoc_root}")
         return 1
 
     if target.exists() and not target.is_dir():
@@ -156,8 +155,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         print(f"Error: failed to load mdoc: {exc}")
         return 1
 
-    print(
-        f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
+    print(f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
     if not node.blocks:
         print("No blocks to eval")
         return 0
@@ -178,8 +176,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
             result = block.require_result()
         except AssertionError:
             failed += 1
-            print(
-                colorize(f"[{index}] {block.srctype}: failed (1)", STYLE["red"]))
+            print(colorize(f"[{index}] {block.srctype}: failed (1)", STYLE["red"]))
             print("    ! missing compile result")
             print("")
             continue
@@ -238,7 +235,7 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
         _print_index_error(action="search dependency candidates", exc=exc)
         return 1
     matches = [row for row in matches if row[0] != node.fnode]
-    matches = matches[:args.max_results]
+    matches = matches[: args.max_results]
     if not matches:
         print(f"No dependency candidates for: {args.query}")
         return 0
@@ -293,8 +290,7 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
             print(f"Error: failed to save mdoc: {exc}")
             return 1
 
-    print(
-        f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
+    print(f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
     print(f"added: {len(added)}")
     for dep_fnode in added:
         dep_row = selected_by_fnode[dep_fnode]
@@ -333,8 +329,7 @@ def _cmd_dep_show(args: argparse.Namespace) -> int:
         except (OSError, ValueError, sqlite3.Error) as exc:
             warn_index_failure("dependencies were inspected", exc)
 
-    print(
-        f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
+    print(f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
     print(f"dependencies: {len(node.depens)}")
     for dep_fnode, dep_title, dep_path in dep_rows:
         print(format_mdoc_item(dep_fnode, dep_title, dep_path))
@@ -357,8 +352,7 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
         return 1
 
     if not node.depens:
-        print(
-            f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
+        print(f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
         print("No dependencies to remove")
         return 0
 
@@ -404,8 +398,7 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
         refreshed = refreshed_by_fnode.get(dep_fnode)
         if refreshed is None:
             continue
-        selected_rows_by_fnode[dep_fnode] = (
-            dep_fnode, refreshed[0], refreshed[1])
+        selected_rows_by_fnode[dep_fnode] = (dep_fnode, refreshed[0], refreshed[1])
 
     old_len = len(node.depens)
     for dep_fnode in selected_fnodes:
@@ -421,8 +414,7 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
         print(f"Error: failed to save mdoc: {exc}")
         return 1
 
-    print(
-        f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
+    print(f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
     print(f"removed: {removed_count}")
     for dep_fnode in selected_fnodes:
         row = selected_rows_by_fnode.get(dep_fnode)
@@ -495,36 +487,39 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mdc", description="MathDoc CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    init_parser = subparsers.add_parser(
-        "init", help="Initialize a new MathDoc folder")
+    init_parser = subparsers.add_parser("init", help="Initialize a new MathDoc folder")
     init_parser.set_defaults(func=_cmd_init)
 
     new_parser = subparsers.add_parser("new", help="Create a new mdoc file")
-    new_parser.add_argument("-t", "--title", default="Untitled",
-                            help="Title of the new mdoc (optional)")
-    new_parser.add_argument("-f", "--folder", default=".",
-                            help="Output folder for the mdoc file (optional)")
+    new_parser.add_argument(
+        "-t", "--title", default="Untitled", help="Title of the new mdoc (optional)"
+    )
+    new_parser.add_argument(
+        "-f", "--folder", default=".", help="Output folder for the mdoc file (optional)"
+    )
     new_parser.set_defaults(func=_cmd_new)
 
     edit_parser = subparsers.add_parser(
-        "edit", help="Open a mdoc with $EDITOR and refresh its index entry")
+        "edit", help="Open a mdoc with $EDITOR and refresh its index entry"
+    )
     edit_parser.add_argument(
         "source",
         help="Source mdoc to edit (fnode or .mdoc path)",
     )
     edit_parser.set_defaults(func=_cmd_edit)
 
-    sync_parser = subparsers.add_parser(
-        "sync", help="Force refresh all index entries")
+    sync_parser = subparsers.add_parser("sync", help="Force refresh all index entries")
     sync_parser.set_defaults(func=_cmd_sync)
 
     search_parser = subparsers.add_parser(
-        "search", help="Search mdocs by title or fnode")
+        "search", help="Search mdocs by title or fnode"
+    )
     search_parser.add_argument("query", help="Query by title or fnode")
     search_parser.set_defaults(func=_cmd_search)
 
     eval_parser = subparsers.add_parser(
-        "eval", help="Compile and run all blocks in a mdoc")
+        "eval", help="Compile and run all blocks in a mdoc"
+    )
     eval_parser.add_argument(
         "source",
         help="Source mdoc to evaluate (fnode or .mdoc path)",
@@ -545,11 +540,11 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_parser.set_defaults(func=_cmd_eval)
 
     dep_parser = subparsers.add_parser("dep", help="Manage mdoc dependencies")
-    dep_subparsers = dep_parser.add_subparsers(
-        dest="dep_command", required=True)
+    dep_subparsers = dep_parser.add_subparsers(dest="dep_command", required=True)
 
     dep_add_parser = dep_subparsers.add_parser(
-        "add", help="Search and add dependencies to a mdoc")
+        "add", help="Search and add dependencies to a mdoc"
+    )
     dep_add_parser.add_argument(
         "source",
         help="Source mdoc to modify (fnode or .mdoc path)",
@@ -568,7 +563,8 @@ def _build_parser() -> argparse.ArgumentParser:
     dep_add_parser.set_defaults(func=_cmd_dep_add)
 
     dep_show_parser = dep_subparsers.add_parser(
-        "show", help="Show dependencies of a mdoc")
+        "show", help="Show dependencies of a mdoc"
+    )
     dep_show_parser.add_argument(
         "source",
         help="Source mdoc to inspect (fnode or .mdoc path)",
@@ -576,7 +572,8 @@ def _build_parser() -> argparse.ArgumentParser:
     dep_show_parser.set_defaults(func=_cmd_dep_show)
 
     dep_rm_parser = dep_subparsers.add_parser(
-        "rm", help="Interactively remove dependencies from a mdoc")
+        "rm", help="Interactively remove dependencies from a mdoc"
+    )
     dep_rm_parser.add_argument(
         "source",
         help="Source mdoc to modify (fnode or .mdoc path)",

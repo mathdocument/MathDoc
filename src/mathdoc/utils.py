@@ -8,7 +8,6 @@ from pathlib import Path
 
 
 STYLE: dict[str, str] = {
-    # ANSI style/color codes (aligned with user's shell env naming)
     "rst": "\033[0m",
     "bld": "\033[1m",
     "udl": "\033[4m",
@@ -22,8 +21,8 @@ STYLE: dict[str, str] = {
     "blu": "\033[34m",
     "ppl": "\033[35m",
     # Nerd font symbols
-    "glyph_unselected": "\U000F0131",
-    "glyph_selected": "\U000F0C52",
+    "glyph_unselected": "\U000f0131",
+    "glyph_selected": "\U000f0c52",
 }
 
 
@@ -192,11 +191,9 @@ def select_indices_interactive(matches: list[tuple[str, str, str]]) -> list[int]
             )
             if use_color and header_plain.startswith("Select deps:"):
                 header_title = "Select deps:"
-                header_hint = header_plain[len(header_title):]
+                header_hint = header_plain[len(header_title) :]
                 lines.append(
-                    colorize(
-                        header_title, STYLE["bld"], STYLE["cyn"], enabled=True
-                    )
+                    colorize(header_title, STYLE["bld"], STYLE["cyn"], enabled=True)
                     + colorize(header_hint, STYLE["wht"], enabled=True)
                 )
             else:
@@ -214,22 +211,19 @@ def select_indices_interactive(matches: list[tuple[str, str, str]]) -> list[int]
                 raw_line = f"{marker} {item_index + 1:>3}. {checked} {short_fnode(fnode)}  {title}  ({path})"
                 line = _clip(raw_line, width)
                 base_codes: tuple[str, ...] = (
-                    STYLE["blu"],) if item_index in selected else ()
+                    (STYLE["blu"],) if item_index in selected else ()
+                )
                 if item_index == current:
                     lines.append(
-                        colorize(
-                            line, STYLE["bld"], *base_codes, enabled=use_color
-                        )
+                        colorize(line, STYLE["bld"], *base_codes, enabled=use_color)
                     )
                 else:
-                    lines.append(
-                        colorize(line, *base_codes, enabled=use_color))
+                    lines.append(colorize(line, *base_codes, enabled=use_color))
 
             if len(matches) > max_visible:
                 lines.append(
                     colorize(
-                        _clip(
-                            f"showing {top + 1}-{end} of {len(matches)}", width),
+                        _clip(f"showing {top + 1}-{end} of {len(matches)}", width),
                         STYLE["blu"],
                         enabled=use_color,
                     )
@@ -240,9 +234,7 @@ def select_indices_interactive(matches: list[tuple[str, str, str]]) -> list[int]
                 width,
             )
             lines.append(
-                colorize(
-                    footer, STYLE["bld"], STYLE["cyn"], enabled=use_color
-                )
+                colorize(footer, STYLE["bld"], STYLE["cyn"], enabled=use_color)
             )
 
             rendered_lines = _render_block(lines, rendered_lines)
