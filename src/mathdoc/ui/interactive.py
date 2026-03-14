@@ -5,6 +5,7 @@ import sys
 import termios
 import tty
 
+from .models import NodeRef
 from .theme import STYLE
 from .theme import colorize
 from .theme import short_fnode
@@ -96,7 +97,7 @@ def _clear_block(prev_count: int) -> None:
 
 
 def select_indices_interactive(
-    matches: list[tuple[str, str, str]],
+    matches: list[NodeRef],
     *,
     error_indices: set[int] | None = None,
 ) -> list[int] | None:
@@ -148,14 +149,17 @@ def select_indices_interactive(
 
             end = min(len(matches), top + max_visible)
             for item_index in range(top, end):
-                fnode, title, path = matches[item_index]
+                item = matches[item_index]
                 marker = ">>" if item_index == current else "  "
                 checked = (
                     STYLE["glyph_selected"]
                     if item_index in selected
                     else STYLE["glyph_unselected"]
                 )
-                raw_line = f"{marker} {item_index + 1:>3}. {checked} {short_fnode(fnode)}  {title}  ({path})"
+                raw_line = (
+                    f"{marker} {item_index + 1:>3}. {checked} "
+                    f"{short_fnode(item.fnode)}  {item.title}  ({item.rel_path})"
+                )
                 line = _clip(raw_line, width)
                 if item_index in bad_rows:
                     if item_index == current:
