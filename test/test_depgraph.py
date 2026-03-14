@@ -1,4 +1,5 @@
 from mathdoc.depgraph import DepGraph
+from mathdoc.depgraph import DependencyCycleError
 from mathdoc.depgraph import DependencyItem
 import mathdoc.depgraph.evaluate as depgraph_evaluate_module
 from mathdoc.indcache import IndCache
@@ -336,12 +337,11 @@ class TestDepGraph(unittest.TestCase):
             dep.save()
 
             graph = DepGraph(mdcroot=root, root_fnode=src.fnode)
-            with self.assertRaises(ValueError) as ctx:
+            with self.assertRaises(DependencyCycleError) as ctx:
                 graph.eval_blocks(depth=-1)
-            message = str(ctx.exception)
-            self.assertIn("dependency cycle detected", message)
-            self.assertIn(src.fnode, message)
-            self.assertIn(dep.fnode, message)
+            self.assertIn("dependency cycle detected", str(ctx.exception))
+            self.assertIn(src.fnode, ctx.exception.cycle)
+            self.assertIn(dep.fnode, ctx.exception.cycle)
 
     def test_eval_blocks_raises_on_cycle_with_depth_boundary(self) -> None:
         with tempfile.TemporaryDirectory(prefix="depgraph_eval_cycle_depth1.") as tmp:
@@ -357,12 +357,39 @@ class TestDepGraph(unittest.TestCase):
             dep.save()
 
             graph = DepGraph(mdcroot=root, root_fnode=src.fnode)
-            with self.assertRaises(ValueError) as ctx:
+            with self.assertRaises(DependencyCycleError) as ctx:
                 graph.eval_blocks(depth=1)
-            message = str(ctx.exception)
-            self.assertIn("dependency cycle detected", message)
-            self.assertIn(src.fnode, message)
-            self.assertIn(dep.fnode, message)
+            self.assertIn("dependency cycle detected", str(ctx.exception))
+            self.assertIn(src.fnode, ctx.exception.cycle)
+            self.assertIn(dep.fnode, ctx.exception.cycle)
+
+    def test_direct_dependency_items_allow_cycle_repair(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_direct_cycle_repair.") as tmp:
+            root = Path(tmp)
+            dep = self._new_node(root, "Dep", "natl", "dep")
+            dep.save()
+
+            src = self._new_node(root, "Src", "natl", "src")
+            src.add_dependency(dep.fnode)
+            src.save()
+
+            dep.add_dependency(src.fnode)
+            dep.save()
+
+            graph = DepGraph(mdcroot=root, root_fnode=src.fnode)
+            items = graph.direct_dependency_items()
+
+            self.assertEqual(
+                items,
+                [
+                    DependencyItem(
+                        depth=1,
+                        fnode=dep.fnode,
+                        title="Dep",
+                        rel_path=dep.path.resolve().relative_to(root.resolve()).as_posix(),
+                    )
+                ],
+            )
 
     def test_direct_dependency_mutation_uses_graph_api(self) -> None:
         with tempfile.TemporaryDirectory(prefix="depgraph_mutation.") as tmp:

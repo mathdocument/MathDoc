@@ -4,11 +4,9 @@ from .algorithms import component_has_cycle
 from .algorithms import representative_cycle
 from .algorithms import strongly_connected_components
 from .issues import dedupe_issues
-from .issues import dependency_item_for_fnode
 from .issues import sorted_issues
 from .models import GraphCheckReport
 from .state import GraphState
-from ..utils import format_mdoc_item
 
 
 class GraphReporter:
@@ -45,37 +43,6 @@ class GraphReporter:
             invalid=invalid,
             cycles=cycles,
         )
-
-    def format_cycle(self, cycle: list[str]) -> str:
-        if not cycle:
-            return "dependency cycle detected"
-        lines = ["dependency cycle detected:"]
-
-        cycle_nodes = cycle[:-1] if len(cycle) > 1 else cycle
-        total = len(cycle_nodes)
-        for idx, fnode in enumerate(cycle_nodes):
-            dep_item = dependency_item_for_fnode(
-                mdcroot=self.mdcroot,
-                state=self.state,
-                fnode=fnode,
-                depth=0,
-            )
-            item = format_mdoc_item(
-                dep_item.fnode,
-                dep_item.title,
-                dep_item.rel_path,
-                marker="+",
-            )
-            if total == 1:
-                prefix = "┌─➤"
-            elif idx == 0:
-                prefix = "┌─➤"
-            elif idx == total - 1:
-                prefix = "└──"
-            else:
-                prefix = "│  "
-            lines.append(f"{prefix} {item}")
-        return "\n".join(lines)
 
     def _cycles_by_component(self) -> list[list[str]]:
         components = strongly_connected_components(self.state.dep_graph)

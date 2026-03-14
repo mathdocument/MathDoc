@@ -3,6 +3,8 @@ from pathlib import Path
 
 from .algorithms import find_cycle
 from .evaluate import GraphEvaluator
+from .exceptions import DependencyCycleError
+from .issues import dependency_item_for_fnode
 from .issues import is_broken_fnode
 from .issues import issue_for_fnode
 from .loading import GraphLoader
@@ -172,8 +174,13 @@ class DepGraph:
     def issue_for_fnode(self, fnode: str) -> GraphIssue | None:
         return issue_for_fnode(self.state, fnode)
 
-    def format_cycle(self, cycle: list[str]) -> str:
-        return self._reporter.format_cycle(cycle)
+    def ref_item_for_fnode(self, fnode: str, *, depth: int = 0) -> DependencyItem:
+        return dependency_item_for_fnode(
+            mdcroot=self.mdcroot,
+            state=self.state,
+            fnode=fnode,
+            depth=depth,
+        )
 
     def direct_dependency_fnodes(
         self,
@@ -191,11 +198,25 @@ class DepGraph:
         root_node: MdocNode | None = None,
         root_fnode: str | None = None,
     ) -> list[DependencyItem]:
-        return self.dependency_items(
-            depth=1,
-            root_node=root_node,
-            root_fnode=root_fnode,
-        )
+        active_root = self._bind_root(root_node=root_node, root_fnode=root_fnode)
+        node = self._loader.ensure_node_loaded(active_root)
+        dep_items: list[DependencyItem] = []
+
+        for dep_fnode in self._dedupe_keep_order(node.depens):
+            if dep_fnode not in self.state.nodes_by_fnode:
+                dep_node = self._loader.load_node(
+                    dep_fnode,
+                    tolerate_missing=True,
+                    tolerate_invalid=True,
+                )
+                if dep_node is not None:
+                    self.state.nodes_by_fnode[dep_fnode] = dep_node
+            self.state.dep_graph.setdefault(active_root, [])
+            self.state.dep_graph.setdefault(dep_fnode, [])
+            dep_items.append(self.ref_item_for_fnode(dep_fnode, depth=1))
+
+        self.state.dep_graph[active_root] = self._dedupe_keep_order(node.depens)
+        return dep_items
 
     def add_direct_dependencies(
         self,
@@ -359,7 +380,7 @@ class DepGraph:
 
         cycle = find_cycle(self.state.dep_graph, root_fnode=active_root)
         if cycle is not None:
-            raise ValueError(self._reporter.format_cycle(cycle))
+            raise DependencyCycleError(cycle)
 
         return active_root
 
