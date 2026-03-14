@@ -7,9 +7,31 @@ from .models import EvalReportView
 from .models import GraphCheckView
 from .models import IssueView
 from .models import NodeRef
+from .theme import LAYOUT
 from .theme import STYLE
 from .theme import colorize
 from .theme import short_fnode
+
+
+def _label_width(*labels: str) -> int:
+    return max((len(label) + 1 for label in labels), default=0)
+
+
+def _clip_text(text: str, width: int) -> str:
+    if width <= 0:
+        return ""
+    if len(text) <= width:
+        return text.ljust(width)
+    if width <= 1:
+        return text[:width]
+    return text[: width - 1] + "…"
+
+
+def _ref_prefix(*, marker: str, depth: int | None) -> str:
+    if depth is None:
+        prefix = f"{marker} " if marker else ""
+        return prefix.ljust(4)
+    return f"[{depth}] {marker} "
 
 
 class TerminalUI:
@@ -21,13 +43,36 @@ class TerminalUI:
             self.write(line)
 
     def error(self, message: str) -> None:
-        self.write(f"Error: {message}")
+        self.write(f"{self._status_tag('Error', STYLE['red'])} {message}")
 
     def warning(self, message: str) -> None:
-        self.write(f"Warning: {message}")
+        self.write(f"{self._status_tag('Warning', STYLE['org'])} {message}")
 
     def hint(self, message: str) -> None:
-        self.write(f"Hint: {message}")
+        self.write(f"{self._status_tag('Hint', STYLE['blu'])} {message}")
+
+    def _status_tag(self, text: str, tone: str) -> str:
+        return colorize(f"{text}:", STYLE["bld"], tone)
+
+    def _label(self, text: str, width: int, *, tone: str = STYLE["cyn"]) -> str:
+        cell = f"{text}:".ljust(width)
+        return colorize(cell, STYLE["bld"], tone)
+
+    def _metric(
+        self,
+        label: str,
+        value: int | str,
+        detail: str,
+        *,
+        width: int,
+        tone: str,
+    ) -> str:
+        value_text = colorize(str(value), STYLE["bld"], tone)
+        head = f"{self._label(label, width)} {value_text}"
+        return f"{head}  {detail}" if detail else head
+
+    def _render_fnode(self, fnode_text: str) -> str:
+        return colorize(fnode_text, STYLE["dim"])
 
     def format_node_ref(
         self,
@@ -36,13 +81,21 @@ class TerminalUI:
         marker: str = "-",
         include_depth: bool = False,
     ) -> str:
-        prefix = f"{marker} " if marker else ""
-        line = f"{prefix}{short_fnode(ref.fnode)}    {ref.title} ({ref.rel_path})"
-        if include_depth and ref.depth is not None:
-            line = f"[{ref.depth}] {line}"
+        prefix = _ref_prefix(
+            marker=marker,
+            depth=ref.depth if include_depth else None,
+        )
+        fnode_text = f"{short_fnode(ref.fnode):<{LAYOUT['ref_fnode_width']}}"
+        title_text = _clip_text(ref.title, LAYOUT["ref_title_width"])
+        line = f"{prefix}{fnode_text}{title_text}  ({ref.rel_path})"
         if ref.broken:
-            return colorize(line, STYLE["red"])
-        return line
+            return colorize(line, STYLE["bld"], STYLE["red"])
+
+        rendered_prefix = colorize(prefix, STYLE["blu"], STYLE["bld"]) if prefix else ""
+        rendered_fnode = self._render_fnode(fnode_text)
+        rendered_title = colorize(title_text, STYLE["bld"])
+        rendered_path = colorize(f"({ref.rel_path})", STYLE["dim"], STYLE["blu"])
+        return f"{rendered_prefix}{rendered_fnode}{rendered_title}  {rendered_path}"
 
     def format_issue(self, issue: IssueView) -> str:
         return self.format_node_ref(issue.ref)
@@ -57,7 +110,7 @@ class TerminalUI:
         return self.render_anchor_message_lines(
             label=label,
             item=item,
-            message=f"Error: {message}",
+            message=f"{self._status_tag('Error', STYLE['red'])} {message}",
         )
 
     def render_anchor_message_lines(
@@ -67,18 +120,27 @@ class TerminalUI:
         item: NodeRef,
         message: str,
     ) -> list[str]:
+        width = _label_width(label)
         return [
-            f"{label}: {self.format_node_ref(item, marker='')}",
+            f"{self._label(label, width)} {self.format_node_ref(item, marker='')}",
             message,
         ]
 
     def render_chain_lines(self, chain: ChainView) -> list[str]:
+        width = _label_width(chain.anchor_label, chain.count_label)
+        indent = " " * (width + 1)
         lines = [
-            f"{chain.anchor_label}: {self.format_node_ref(chain.anchor, marker='')}",
-            f"{chain.count_label}: {len(chain.items)}",
+            f"{self._label(chain.anchor_label, width)} {self.format_node_ref(chain.anchor, marker='')}",
+            self._metric(
+                chain.count_label,
+                len(chain.items),
+                "reachable node(s)",
+                width=width,
+                tone=STYLE["cyn"],
+            ),
         ]
         for item in chain.items:
-            lines.append(self.format_node_ref(item, include_depth=True))
+            lines.append(f"{indent}{self.format_node_ref(item, include_depth=True)}")
         return lines
 
     def render_broken_dependency_warning_lines(
@@ -99,28 +161,24 @@ class TerminalUI:
 
         if for_eval:
             return [
-                f"Error: broken dependency targets detected{detail}; "
+                f"{self._status_tag('Error', STYLE['red'])} broken dependency targets detected{detail}; "
                 "remove the broken references with `mdc dep rm` before eval."
             ]
         return [
-            f"Warning: detected {summary.total} broken dependency reference(s){detail}; "
+            f"{self._status_tag('Warning', STYLE['org'])} detected {summary.total} broken dependency reference(s){detail}; "
             "broken rows are highlighted in red when the terminal supports color."
         ]
 
     def render_index_error_lines(self, *, action: str, exc: Exception) -> list[str]:
         return [
-            f"Error: failed to {action}: {exc}",
-            "Hint: run `mdc sync` to rebuild the index; "
+            f"{self._status_tag('Error', STYLE['red'])} failed to {action}: {exc}",
+            f"{self._status_tag('Hint', STYLE['blu'])} run `mdc sync` to rebuild the index; "
             "if it still fails, remove `.mdc/index.db` and retry.",
         ]
 
     def warn_index_failure(self, action: str, exc: Exception) -> None:
-        self.write_lines(
-            [
-                f"Warning: {action}, but index refresh failed: {exc}",
-                "Warning: search results may be stale, run `mdc sync` to rebuild the index.",
-            ]
-        )
+        self.warning(f"{action}, but index refresh failed: {exc}")
+        self.warning("search results may be stale, run `mdc sync` to rebuild the index.")
 
     def render_search_results_lines(
         self,
@@ -130,45 +188,88 @@ class TerminalUI:
     ) -> list[str]:
         if not matches:
             return [f"No results for: {query}"]
-        lines = [f"results: {len(matches)}"]
+        lines = [
+            self._metric(
+                "results",
+                len(matches),
+                "matching mdoc(s)",
+                width=_label_width("results"),
+                tone=STYLE["grn"],
+            )
+        ]
         for match in matches:
             lines.append(self.format_node_ref(match))
         return lines
 
     def render_created_lines(self, *, path: str, root_item: NodeRef) -> list[str]:
+        width = _label_width("created", "fnode", "title")
         return [
-            f"created: {path}",
-            f"fnode: {root_item.fnode}",
-            f"title: {root_item.title}",
+            f"{self._label('created', width)} {colorize(path, STYLE['blu'], STYLE['bld'])}",
+            f"{self._label('fnode', width)} {self._render_fnode(root_item.fnode)}",
+            f"{self._label('title', width)} {colorize(root_item.title, STYLE['bld'])}",
         ]
 
     def render_dep_add_lines(self, report: DepAddView) -> list[str]:
+        source_width = _label_width("source")
+        metric_width = _label_width("added", "skipped existing", "skipped self")
+        indent = " " * (source_width + 1)
         lines = [
-            f"source: {self.format_node_ref(report.source, marker='')}",
-            f"added: {len(report.added)}",
+            f"{self._label('source', source_width)} {self.format_node_ref(report.source, marker='')}",
+            self._metric(
+                "added",
+                len(report.added),
+                "direct dependency update(s)",
+                width=metric_width,
+                tone=STYLE["grn"],
+            ),
         ]
         for dep in report.added:
-            lines.append(self.format_node_ref(dep, marker="+"))
+            lines.append(f"{indent}{self.format_node_ref(dep, marker='+')}")
         if report.skipped_existing:
-            lines.append(f"skipped existing: {report.skipped_existing}")
+            lines.append(
+                self._metric(
+                    "skipped existing",
+                    report.skipped_existing,
+                    "already linked",
+                    width=metric_width,
+                    tone=STYLE["ylw"],
+                )
+            )
         if report.skipped_self:
-            lines.append(f"skipped self: {report.skipped_self}")
+            lines.append(
+                self._metric(
+                    "skipped self",
+                    report.skipped_self,
+                    "self-reference rejected",
+                    width=metric_width,
+                    tone=STYLE["org"],
+                )
+            )
         return lines
 
     def render_dep_rm_lines(self, report: DepRmView) -> list[str]:
+        source_width = _label_width("source")
+        metric_width = _label_width("removed")
+        indent = " " * (source_width + 1)
         lines = [
-            f"source: {self.format_node_ref(report.source, marker='')}",
-            f"removed: {len(report.removed)}",
+            f"{self._label('source', source_width)} {self.format_node_ref(report.source, marker='')}",
+            self._metric(
+                "removed",
+                len(report.removed),
+                "direct dependency removed",
+                width=metric_width,
+                tone=STYLE["org"],
+            ),
         ]
         for dep in report.removed:
-            lines.append(self.format_node_ref(dep, marker="-"))
+            lines.append(f"{indent}{self.format_node_ref(dep, marker='-')}")
         return lines
 
     def render_cycle_lines(self, cycle: CycleView) -> list[str]:
         if not cycle.nodes:
             return ["dependency cycle detected"]
 
-        lines = ["dependency cycle detected:"]
+        lines = [f"{self._status_tag('Error', STYLE['red'])} dependency cycle detected"]
         total = len(cycle.nodes)
         for idx, item in enumerate(cycle.nodes):
             rendered = self.format_node_ref(item, marker="+")
@@ -178,50 +279,102 @@ class TerminalUI:
                 prefix = "└──"
             else:
                 prefix = "│  "
-            lines.append(f"{prefix} {rendered}")
+            lines.append(f"{colorize(prefix, STYLE['blu'], STYLE['bld'])} {rendered}")
         return lines
 
     def render_graph_check_lines(self, report: GraphCheckView) -> list[str]:
+        width = _label_width("nodes", "edges", "missing", "invalid", "cycles")
         lines = [
-            f"nodes: {report.nodes}",
-            f"edges: {report.edges}",
-            f"missing: {len(report.missing)}",
-            f"invalid: {len(report.invalid)}",
-            f"cycles: {len(report.cycles)}",
+            self._metric(
+                "nodes",
+                report.nodes,
+                "scanned mdoc file(s)",
+                width=width,
+                tone=STYLE["cyn"],
+            ),
+            self._metric(
+                "edges",
+                report.edges,
+                "dependency edge(s), broken refs included",
+                width=width,
+                tone=STYLE["cyn"],
+            ),
+            self._metric(
+                "missing",
+                len(report.missing),
+                "unresolved target(s)",
+                width=width,
+                tone=STYLE["org"] if report.missing else STYLE["grn"],
+            ),
+            self._metric(
+                "invalid",
+                len(report.invalid),
+                "invalid mdoc file(s)",
+                width=width,
+                tone=STYLE["org"] if report.invalid else STYLE["grn"],
+            ),
+            self._metric(
+                "cycles",
+                len(report.cycles),
+                "cyclic component(s)",
+                width=width,
+                tone=STYLE["red"] if report.cycles else STYLE["grn"],
+            ),
         ]
 
         if report.missing:
-            lines.append("missing dependencies:")
+            lines.append(colorize("missing dependencies:", STYLE["bld"], STYLE["org"]))
             for issue in report.missing:
-                lines.append(self.format_issue(issue))
-                lines.append(f"    ! {issue.error}")
+                lines.append(f"  {self.format_issue(issue)}")
+                lines.append(f"    {colorize('!', STYLE['bld'], STYLE['org'])} {issue.error}")
 
         if report.invalid:
-            lines.append("invalid mdocs:")
+            lines.append(colorize("invalid mdocs:", STYLE["bld"], STYLE["org"]))
             for issue in report.invalid:
-                lines.append(self.format_issue(issue))
-                lines.append(f"    ! {issue.error}")
+                lines.append(f"  {self.format_issue(issue)}")
+                lines.append(f"    {colorize('!', STYLE['bld'], STYLE['org'])} {issue.error}")
 
         if report.cycles:
-            lines.append("cycles:")
+            lines.append(colorize("cycles:", STYLE["bld"], STYLE["red"]))
             for index, cycle in enumerate(report.cycles, start=1):
-                lines.append(f"[{index}]")
-                lines.extend(self.render_cycle_lines(cycle))
+                cycle_lines = self.render_cycle_lines(cycle)
+                if not cycle_lines:
+                    continue
+                lines.append(
+                    f"{colorize(f'[{index}]', STYLE['bld'], STYLE['red'])} {cycle_lines[0]}"
+                )
+                for cycle_line in cycle_lines[1:]:
+                    lines.append(f"    {cycle_line}")
 
         return lines
 
     def render_eval_results_lines(self, report: EvalReportView) -> list[str]:
-        lines = [f"blocks: {len(report.blocks)}", "result:"]
+        width = _label_width("blocks", "failed")
+        lines = [
+            self._metric(
+                "blocks",
+                len(report.blocks),
+                "runnable block(s)",
+                width=width,
+                tone=STYLE["cyn"],
+            ),
+            colorize("result:", STYLE["bld"], STYLE["cyn"]),
+        ]
 
         for block in report.blocks:
             if block.ok:
                 lines.append(
-                    colorize(f"[{block.index}] {block.srctype}: ok", STYLE["grn"])
+                    colorize(
+                        f"[{block.index}] {block.srctype}: ok",
+                        STYLE["bld"],
+                        STYLE["grn"],
+                    )
                 )
             else:
                 lines.append(
                     colorize(
                         f"[{block.index}] {block.srctype}: failed ({block.rtcode})",
+                        STYLE["bld"],
                         STYLE["red"],
                     )
                 )
@@ -235,11 +388,20 @@ class TerminalUI:
             lines.append("")
 
         summary_color = STYLE["grn"] if report.failed == 0 else STYLE["red"]
-        lines.append(colorize(f"failed: {report.failed}", summary_color))
+        lines.append(
+            self._metric(
+                "failed",
+                report.failed,
+                "block(s) reported failure",
+                width=width,
+                tone=summary_color,
+            )
+        )
         return lines
 
     def render_synced_lines(self, total: int) -> list[str]:
         return [f"synced: {total}"]
 
     def render_edited_lines(self, rel_path: str) -> list[str]:
-        return [f"edited: {rel_path}"]
+        width = _label_width("edited")
+        return [f"{self._label('edited', width)} {colorize(rel_path, STYLE['blu'], STYLE['bld'])}"]
