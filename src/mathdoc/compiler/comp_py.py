@@ -1,10 +1,6 @@
-from __future__ import annotations
-
 import sys
 
-from .base import SrcCompiler
-from .base import CompilerReq
-from .base import CompilerRes
+from .base import SrcCompiler, CompilerReq, CompilerRes
 
 
 class CompilerPy(SrcCompiler):

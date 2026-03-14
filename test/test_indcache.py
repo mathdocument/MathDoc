@@ -3,6 +3,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 
@@ -12,6 +13,7 @@ if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
 from mathdoc.indcache import IndCache
+import mathdoc.indcache as indcache_module
 
 
 class TestIndCache(unittest.TestCase):
@@ -70,7 +72,7 @@ class TestIndCache(unittest.TestCase):
             )
 
             db_path = mdc_dir / "index.db"
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
                     """
                     CREATE TABLE mdocs (
@@ -110,7 +112,7 @@ class TestIndCache(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0][0], "legacy-node")
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn:
                 columns = {
                     str(row[1]) for row in conn.execute("PRAGMA table_info(mdocs)")
                 }
@@ -121,6 +123,40 @@ class TestIndCache(unittest.TestCase):
                 ).fetchone()
             self.assertIsNotNone(row)
             self.assertGreater(int(row[0]), 0)
+
+    def test_cache_operations_close_sqlite_connections(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_indcache_close.") as tmp:
+            root = Path(tmp)
+            (root / ".mdc").mkdir(parents=True, exist_ok=True)
+            (root / "card.mdoc").write_text(
+                "@fnode: node-close\n"
+                "@title: Close Check\n",
+                encoding="utf-8",
+            )
+
+            original_connect = indcache_module.sqlite3.connect
+            closed_count = 0
+
+            class TrackingConnection(sqlite3.Connection):
+                def close(self) -> None:
+                    nonlocal closed_count
+                    closed_count += 1
+                    super().close()
+
+            def tracking_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+                kwargs.setdefault("factory", TrackingConnection)
+                return original_connect(*args, **kwargs)
+
+            indcache_module.sqlite3.connect = tracking_connect
+            try:
+                cache = IndCache(root)
+                cache.count()
+                cache.refresh_all()
+                cache.search("close")
+            finally:
+                indcache_module.sqlite3.connect = original_connect
+
+            self.assertEqual(closed_count, 3)
 
 
 if __name__ == "__main__":

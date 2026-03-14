@@ -1,12 +1,8 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from .base import SrcCompiler
-from .base import CompilerReq
-from .base import CompilerRes
+from .base import SrcCompiler, CompilerReq, CompilerRes
 
 
 class CompilerLatex(SrcCompiler):

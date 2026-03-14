@@ -1,5 +1,3 @@
-"""Single source of truth for terminal colors, reset codes, and glyphs."""
-
 import os
 import sys
 

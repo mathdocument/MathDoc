@@ -1,16 +1,15 @@
-from .models import BrokenDependencySummary
-from .models import ChainView
-from .models import CycleView
-from .models import DepAddView
-from .models import DepRmView
-from .models import EvalReportView
-from .models import GraphCheckView
-from .models import IssueView
-from .models import NodeRef
-from .theme import LAYOUT
-from .theme import STYLE
-from .theme import colorize
-from .theme import short_fnode
+from .theme import short_fnode, colorize, STYLE, LAYOUT
+from .models import (
+    NodeRef,
+    IssueView,
+    GraphCheckView,
+    EvalReportView,
+    DepRmView,
+    DepAddView,
+    CycleView,
+    ChainView,
+    BrokenDependencySummary,
+)
 
 
 def _label_width(*labels: str) -> int:
@@ -130,13 +129,13 @@ class TerminalUI:
         width = _label_width(chain.anchor_label, chain.count_label)
         indent = " " * (width + 1)
         lines = [
-            f"{self._label(chain.anchor_label, width)} {self.format_node_ref(chain.anchor, marker='')}",
+            f"{self._label(chain.anchor_label, width)}   {self.format_node_ref(chain.anchor, marker='')}",
             self._metric(
                 chain.count_label,
                 len(chain.items),
                 "reachable node(s)",
-                width=width,
-                tone=STYLE["cyn"],
+                width=width + 1,
+                tone=STYLE["blu"],
             ),
         ]
         for item in chain.items:
@@ -178,7 +177,9 @@ class TerminalUI:
 
     def warn_index_failure(self, action: str, exc: Exception) -> None:
         self.warning(f"{action}, but index refresh failed: {exc}")
-        self.warning("search results may be stale, run `mdc sync` to rebuild the index.")
+        self.warning(
+            "search results may be stale, run `mdc sync` to rebuild the index."
+        )
 
     def render_search_results_lines(
         self,
@@ -290,14 +291,14 @@ class TerminalUI:
                 report.nodes,
                 "scanned mdoc file(s)",
                 width=width,
-                tone=STYLE["cyn"],
+                tone=STYLE["blu"],
             ),
             self._metric(
                 "edges",
                 report.edges,
                 "dependency edge(s), broken refs included",
                 width=width,
-                tone=STYLE["cyn"],
+                tone=STYLE["blu"],
             ),
             self._metric(
                 "missing",
@@ -326,13 +327,17 @@ class TerminalUI:
             lines.append(colorize("missing dependencies:", STYLE["bld"], STYLE["org"]))
             for issue in report.missing:
                 lines.append(f"  {self.format_issue(issue)}")
-                lines.append(f"    {colorize('!', STYLE['bld'], STYLE['org'])} {issue.error}")
+                lines.append(
+                    f"    {colorize('!', STYLE['bld'], STYLE['org'])} {issue.error}"
+                )
 
         if report.invalid:
             lines.append(colorize("invalid mdocs:", STYLE["bld"], STYLE["org"]))
             for issue in report.invalid:
                 lines.append(f"  {self.format_issue(issue)}")
-                lines.append(f"    {colorize('!', STYLE['bld'], STYLE['org'])} {issue.error}")
+                lines.append(
+                    f"    {colorize('!', STYLE['bld'], STYLE['org'])} {issue.error}"
+                )
 
         if report.cycles:
             lines.append(colorize("cycles:", STYLE["bld"], STYLE["red"]))
@@ -355,8 +360,8 @@ class TerminalUI:
                 "blocks",
                 len(report.blocks),
                 "runnable block(s)",
-                width=width,
-                tone=STYLE["cyn"],
+                width=width + 1,
+                tone=STYLE["blu"],
             ),
             colorize("result:", STYLE["bld"], STYLE["cyn"]),
         ]
@@ -393,7 +398,7 @@ class TerminalUI:
                 "failed",
                 report.failed,
                 "block(s) reported failure",
-                width=width,
+                width=width + 1,
                 tone=summary_color,
             )
         )
@@ -404,4 +409,6 @@ class TerminalUI:
 
     def render_edited_lines(self, rel_path: str) -> list[str]:
         width = _label_width("edited")
-        return [f"{self._label('edited', width)} {colorize(rel_path, STYLE['blu'], STYLE['bld'])}"]
+        return [
+            f"{self._label('edited', width)} {colorize(rel_path, STYLE['blu'], STYLE['bld'])}"
+        ]

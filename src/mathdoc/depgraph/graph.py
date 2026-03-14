@@ -4,17 +4,10 @@ from pathlib import Path
 from .algorithms import find_cycle
 from .evaluate import GraphEvaluator
 from .exceptions import DependencyCycleError
-from .issues import dependency_item_for_fnode
-from .issues import is_broken_fnode
-from .issues import issue_for_fnode
-from .loading import GraphLoader
-from .loading import create_root_node
-from .loading import load_root_node_from_ref
-from .models import DependencyItem
-from .models import GraphCheckReport
-from .models import GraphIssue
-from .query import dependency_items_from_graph
-from .query import referrer_items_from_graph
+from .issues import is_broken_fnode, issue_for_fnode, dependency_item_for_fnode
+from .loading import GraphLoader, create_root_node, load_root_node_from_ref
+from .models import DependencyItem, GraphCheckReport, GraphIssue
+from .query import dependency_items_from_graph, referrer_items_from_graph
 from .report import GraphReporter
 from .state import GraphState
 from ..compiler import CompilerRes
@@ -286,7 +279,9 @@ class DepGraph:
 
         active_target = target_fnode or self._bind_root()
         self.scan_all()
-        if active_target not in self.dep_graph and not self.is_broken_fnode(active_target):
+        if active_target not in self.dep_graph and not self.is_broken_fnode(
+            active_target
+        ):
             raise ValueError(f"no mdoc matched reference: {active_target}")
 
         return referrer_items_from_graph(

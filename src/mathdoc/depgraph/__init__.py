@@ -1,8 +1,12 @@
+"""dependecy graph package"""
+
 from .exceptions import DependencyCycleError
 from .graph import DepGraph
-from .models import DependencyItem
-from .models import GraphCheckReport
-from .models import GraphIssue
+from .models import (
+    GraphIssue,
+    GraphCheckReport,
+    DependencyItem,
+)
 
 __all__ = [
     "DependencyCycleError",

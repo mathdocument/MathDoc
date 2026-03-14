@@ -1,5 +1,5 @@
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Iterator
 
@@ -11,9 +11,14 @@ class IndCache:
 
     @contextmanager
     def _open_conn(self) -> Iterator[sqlite3.Connection]:
-        with sqlite3.connect(self.db_path) as conn:
-            self._ensure_index_schema(conn)
-            yield conn
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            try:
+                self._ensure_index_schema(conn)
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def bootstrap_if_needed(self) -> None:
         with self._open_conn() as conn:

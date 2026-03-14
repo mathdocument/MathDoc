@@ -5,27 +5,31 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
-from .depgraph import DepGraph
-from .depgraph import DependencyItem
-from .depgraph import GraphCheckReport
-from .depgraph import GraphIssue
-from .depgraph.exceptions import DependencyCycleError
 from .indcache import IndCache
-from .ui import BrokenDependencySummary
-from .ui import ChainView
-from .ui import CycleView
-from .ui import DepAddView
-from .ui import DepRmView
-from .ui import EvalBlockView
-from .ui import EvalReportView
-from .ui import GraphCheckView
-from .ui import IssueView
-from .ui import NodeRef
-from .ui import TerminalUI
-from .ui import select_indices_interactive
 from .utils import (
     find_mdcroot,
     to_rel_path,
+)
+from .depgraph import (
+    DepGraph,
+    DependencyItem,
+    GraphCheckReport,
+    GraphIssue,
+)
+from .depgraph.exceptions import DependencyCycleError
+from .ui import (
+    BrokenDependencySummary,
+    ChainView,
+    CycleView,
+    DepAddView,
+    DepRmView,
+    EvalBlockView,
+    EvalReportView,
+    GraphCheckView,
+    IssueView,
+    NodeRef,
+    TerminalUI,
+    select_indices_interactive,
 )
 
 
@@ -334,7 +338,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
             _chain_view(
                 anchor_label="source",
                 anchor=source_item,
-                count_label="dependencies",
+                count_label="depens",
                 items=dep_items,
                 graph=graph,
             )
@@ -508,7 +512,7 @@ def _cmd_dep_show(args: argparse.Namespace) -> int:
             _chain_view(
                 anchor_label="source",
                 anchor=source_item,
-                count_label="dependencies",
+                count_label="depens",
                 items=dep_items,
                 graph=graph,
             )
@@ -566,11 +570,7 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
         _node_ref_from_item(item, broken=graph.is_broken_fnode(item.fnode))
         for item in dep_items
     ]
-    error_indices = {
-        idx
-        for idx, item in enumerate(dep_refs)
-        if item.broken
-    }
+    error_indices = {idx for idx, item in enumerate(dep_refs) if item.broken}
     broken_lines = UI.render_broken_dependency_warning_lines(
         summary=_broken_dependency_summary(dep_items, graph),
         for_eval=False,

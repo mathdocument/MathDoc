@@ -2,9 +2,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .compiler import COMPILER_REGISTRY
-from .compiler import CompilerReq
-from .compiler import CompilerRes
+from .compiler import (
+    COMPILER_REGISTRY,
+    CompilerReq,
+    CompilerRes,
+)
 
 
 @dataclass(slots=True)

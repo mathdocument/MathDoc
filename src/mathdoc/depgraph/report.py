@@ -1,12 +1,13 @@
 from pathlib import Path
 
-from .algorithms import component_has_cycle
-from .algorithms import representative_cycle
-from .algorithms import strongly_connected_components
-from .issues import dedupe_issues
-from .issues import sorted_issues
-from .models import GraphCheckReport
 from .state import GraphState
+from .models import GraphCheckReport
+from .issues import dedupe_issues, sorted_issues
+from .algorithms import (
+    component_has_cycle,
+    representative_cycle,
+    strongly_connected_components,
+)
 
 
 class GraphReporter:

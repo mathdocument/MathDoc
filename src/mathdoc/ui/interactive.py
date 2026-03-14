@@ -6,10 +6,7 @@ import termios
 import tty
 
 from .models import NodeRef
-from .theme import STYLE
-from .theme import colorize
-from .theme import short_fnode
-from .theme import supports_color
+from .theme import STYLE, colorize, short_fnode, supports_color
 
 
 def _read_next_byte(fd: int, timeout_sec: float) -> bytes:
@@ -164,7 +161,9 @@ def select_indices_interactive(
                 if item_index in bad_rows:
                     if item_index == current:
                         lines.append(
-                            colorize(line, STYLE["bld"], STYLE["red"], enabled=use_color)
+                            colorize(
+                                line, STYLE["bld"], STYLE["red"], enabled=use_color
+                            )
                         )
                     else:
                         lines.append(colorize(line, STYLE["red"], enabled=use_color))

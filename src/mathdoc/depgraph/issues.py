@@ -1,7 +1,6 @@
 from pathlib import Path
 
-from .models import DependencyItem
-from .models import GraphIssue
+from .models import GraphIssue, DependencyItem
 from .state import GraphState
 from ..utils import to_rel_path
 
