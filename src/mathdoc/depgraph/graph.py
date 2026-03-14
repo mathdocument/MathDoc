@@ -1,42 +1,23 @@
 import sqlite3
 from collections import deque
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .compiler import CompilerRes
-from .config import load_config
-from .indcache import IndCache
-from .mdocnode import MdocNode
-from .srcblock import SrcBlock
-from .utils import format_mdoc_item
-from .utils import to_rel_path
-
-
-@dataclass(slots=True, frozen=True)
-class DependencyItem:
-    depth: int
-    fnode: str
-    title: str
-    rel_path: str
-
-
-@dataclass(slots=True, frozen=True)
-class GraphIssue:
-    kind: str
-    fnode: str
-    title: str
-    rel_path: str
-    error: str
-
-
-@dataclass(slots=True, frozen=True)
-class GraphCheckReport:
-    nodes: int
-    edges: int
-    missing: list[GraphIssue]
-    invalid: list[GraphIssue]
-    cycles: list[list[str]]
+from .algorithms import component_has_cycle
+from .algorithms import find_cycle
+from .algorithms import representative_cycle
+from .algorithms import strongly_connected_components
+from .algorithms import topo_dependencies_first
+from .models import DependencyItem
+from .models import GraphCheckReport
+from .models import GraphIssue
+from ..compiler import CompilerRes
+from ..config import load_config
+from ..indcache import IndCache
+from ..mdocnode import MdocNode
+from ..srcblock import SrcBlock
+from ..utils import format_mdoc_item
+from ..utils import to_rel_path
 
 
 class DepGraph:
@@ -263,7 +244,9 @@ class DepGraph:
 
         active_target = target_fnode or self._bind_root()
         self.scan_all()
-        if active_target not in self.dep_graph and not self.is_broken_fnode(active_target):
+        if active_target not in self.dep_graph and not self.is_broken_fnode(
+            active_target
+        ):
             raise ValueError(f"no mdoc matched reference: {active_target}")
 
         reverse_graph: dict[str, list[str]] = {}
@@ -302,7 +285,11 @@ class DepGraph:
         invalid = self._sorted_issues(
             self._dedupe_issues(
                 [
-                    *[issue for issue in self.broken_issues.values() if issue.kind == "invalid"],
+                    *[
+                        issue
+                        for issue in self.broken_issues.values()
+                        if issue.kind == "invalid"
+                    ],
                     *self.invalid_file_issues,
                 ]
             )
@@ -437,7 +424,10 @@ class DepGraph:
         for node in list(self.nodes_by_fnode.values()):
             self.dep_graph[node.fnode] = []
             for dep_fnode in self._dedupe_keep_order(node.depens):
-                if dep_fnode not in self.nodes_by_fnode and dep_fnode not in self.invalid_fnodes:
+                if (
+                    dep_fnode not in self.nodes_by_fnode
+                    and dep_fnode not in self.invalid_fnodes
+                ):
                     dep_node = self._load_node(
                         dep_fnode,
                         tolerate_missing=True,
@@ -652,40 +642,7 @@ class DepGraph:
         return node
 
     def _find_cycle(self, *, root_fnode: str | None = None) -> list[str] | None:
-        state: dict[str, int] = {}
-        stack: list[str] = []
-        stack_idx: dict[str, int] = {}
-
-        def dfs(fnode: str) -> list[str] | None:
-            state[fnode] = 1
-            stack_idx[fnode] = len(stack)
-            stack.append(fnode)
-
-            for dep_fnode in self.dep_graph.get(fnode, []):
-                dep_state = state.get(dep_fnode, 0)
-                if dep_state == 0:
-                    cycle = dfs(dep_fnode)
-                    if cycle is not None:
-                        return cycle
-                elif dep_state == 1:
-                    start = stack_idx[dep_fnode]
-                    return stack[start:] + [dep_fnode]
-
-            stack.pop()
-            stack_idx.pop(fnode, None)
-            state[fnode] = 2
-            return None
-
-        roots = [root_fnode] if root_fnode is not None else list(self.dep_graph)
-        for fnode in roots:
-            if fnode not in self.dep_graph:
-                continue
-            if state.get(fnode, 0) != 0:
-                continue
-            cycle = dfs(fnode)
-            if cycle is not None:
-                return cycle
-        return None
+        return find_cycle(self.dep_graph, root_fnode=root_fnode)
 
     def _format_cycle(self, cycle: list[str]) -> str:
         if not cycle:
@@ -714,19 +671,7 @@ class DepGraph:
         return "\n".join(lines)
 
     def _topo_dependencies_first(self, *, root_fnode: str) -> list[str]:
-        visited: set[str] = set()
-        order: list[str] = []
-
-        def dfs(fnode: str) -> None:
-            if fnode in visited:
-                return
-            visited.add(fnode)
-            for dep_fnode in self.dep_graph.get(fnode, []):
-                dfs(dep_fnode)
-            order.append(fnode)
-
-        dfs(root_fnode)
-        return order
+        return topo_dependencies_first(self.dep_graph, root_fnode=root_fnode)
 
     def _dependency_items_from_graph(self, *, root_fnode: str) -> list[DependencyItem]:
         items: list[DependencyItem] = []
@@ -924,103 +869,13 @@ class DepGraph:
         )
 
     def _cycles_by_component(self) -> list[list[str]]:
-        components = self._strongly_connected_components()
+        components = strongly_connected_components(self.dep_graph)
         cycles: list[list[str]] = []
         for component in components:
-            if not self._component_has_cycle(component):
+            if not component_has_cycle(self.dep_graph, component):
                 continue
-            cycle = self._representative_cycle(component)
+            cycle = representative_cycle(self.dep_graph, component)
             if cycle is not None:
                 cycles.append(cycle)
         cycles.sort(key=lambda cycle: tuple(cycle))
         return cycles
-
-    def _strongly_connected_components(self) -> list[list[str]]:
-        index = 0
-        stack: list[str] = []
-        on_stack: set[str] = set()
-        indices: dict[str, int] = {}
-        lowlinks: dict[str, int] = {}
-        components: list[list[str]] = []
-
-        def strongconnect(fnode: str) -> None:
-            nonlocal index
-            indices[fnode] = index
-            lowlinks[fnode] = index
-            index += 1
-            stack.append(fnode)
-            on_stack.add(fnode)
-
-            for dep_fnode in self.dep_graph.get(fnode, []):
-                if dep_fnode not in indices:
-                    strongconnect(dep_fnode)
-                    lowlinks[fnode] = min(lowlinks[fnode], lowlinks[dep_fnode])
-                elif dep_fnode in on_stack:
-                    lowlinks[fnode] = min(lowlinks[fnode], indices[dep_fnode])
-
-            if lowlinks[fnode] != indices[fnode]:
-                return
-
-            component: list[str] = []
-            while stack:
-                member = stack.pop()
-                on_stack.discard(member)
-                component.append(member)
-                if member == fnode:
-                    break
-            components.append(component)
-
-        for fnode in list(self.dep_graph):
-            if fnode not in indices:
-                strongconnect(fnode)
-        return components
-
-    def _component_has_cycle(self, component: list[str]) -> bool:
-        if len(component) > 1:
-            return True
-        if not component:
-            return False
-        fnode = component[0]
-        return fnode in self.dep_graph.get(fnode, [])
-
-    def _representative_cycle(self, component: list[str]) -> list[str] | None:
-        if not component:
-            return None
-        if len(component) == 1:
-            fnode = component[0]
-            if fnode in self.dep_graph.get(fnode, []):
-                return [fnode, fnode]
-            return None
-
-        component_set = set(component)
-        visited: set[str] = set()
-        stack: list[str] = []
-        stack_index: dict[str, int] = {}
-
-        def dfs(fnode: str) -> list[str] | None:
-            visited.add(fnode)
-            stack_index[fnode] = len(stack)
-            stack.append(fnode)
-
-            for dep_fnode in self.dep_graph.get(fnode, []):
-                if dep_fnode not in component_set:
-                    continue
-                if dep_fnode not in visited:
-                    cycle = dfs(dep_fnode)
-                    if cycle is not None:
-                        return cycle
-                elif dep_fnode in stack_index:
-                    start = stack_index[dep_fnode]
-                    return stack[start:] + [dep_fnode]
-
-            stack.pop()
-            stack_index.pop(fnode, None)
-            return None
-
-        for fnode in sorted(component):
-            if fnode in visited:
-                continue
-            cycle = dfs(fnode)
-            if cycle is not None:
-                return cycle
-        return None

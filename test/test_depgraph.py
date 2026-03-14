@@ -3,7 +3,7 @@ from mathdoc.depgraph import DependencyItem
 from mathdoc.indcache import IndCache
 from mathdoc.mdocnode import MdocNode
 from mathdoc.srcblock import SrcBlock
-import mathdoc.depgraph as depgraph_module
+import mathdoc.depgraph.graph as depgraph_graph_module
 import tempfile
 import unittest
 from pathlib import Path
@@ -128,7 +128,7 @@ class TestDepGraph(unittest.TestCase):
 
             graph = DepGraph(mdcroot=root, root_fnode=node.fnode)
             calls = 0
-            original_load = depgraph_module.load_config
+            original_load = depgraph_graph_module.load_config
 
             try:
 
@@ -137,10 +137,10 @@ class TestDepGraph(unittest.TestCase):
                     calls += 1
                     return original_load(mdcroot)
 
-                depgraph_module.load_config = counted_load
+                depgraph_graph_module.load_config = counted_load
                 graph.eval_blocks(depth=-1)
             finally:
-                depgraph_module.load_config = original_load
+                depgraph_graph_module.load_config = original_load
 
             self.assertEqual(calls, 1)
 
