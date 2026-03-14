@@ -23,6 +23,14 @@ class TestDepGraph(unittest.TestCase):
         node.blocks.append(SrcBlock(srctype=srctype, content=content, metadata={}))
         return node
 
+    @staticmethod
+    def _make_invalid(path: Path) -> None:
+        text = path.read_text(encoding="utf-8")
+        if not text.endswith("\n"):
+            text += "\n"
+        text += "@title: Duplicate Broken Title\n"
+        path.write_text(text, encoding="utf-8")
+
     def test_from_ref_loads_root_graph(self) -> None:
         with tempfile.TemporaryDirectory(prefix="depgraph_from_ref.") as tmp:
             root = Path(tmp)
@@ -429,6 +437,72 @@ class TestDepGraph(unittest.TestCase):
                     )
                 ],
             )
+
+    def test_dependency_items_show_invalid_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_invalid_placeholder.") as tmp:
+            root = Path(tmp)
+            dep = self._new_node(root, "Broken Dep", "natl", "dep")
+            dep.save()
+            self._make_invalid(dep.path)
+
+            src = self._new_node(root, "Src", "natl", "src")
+            src.add_dependency(dep.fnode)
+            src.save()
+
+            graph = DepGraph(mdcroot=root, root_fnode=src.fnode)
+            items = graph.dependency_items()
+
+            self.assertEqual(
+                items,
+                [
+                    DependencyItem(
+                        depth=1,
+                        fnode=dep.fnode,
+                        title="<invalid>",
+                        rel_path=dep.path.resolve().relative_to(root.resolve()).as_posix(),
+                    )
+                ],
+            )
+            self.assertIn(dep.fnode, graph.invalid_fnodes)
+            issue = graph.issue_for_fnode(dep.fnode)
+            self.assertIsNotNone(issue)
+            self.assertEqual(issue.kind, "invalid")
+
+    def test_graph_check_report_collects_missing_invalid_and_cycles(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_check_report.") as tmp:
+            root = Path(tmp)
+            bad = self._new_node(root, "Broken Node", "natl", "bad")
+            bad.save()
+            self._make_invalid(bad.path)
+
+            a = self._new_node(root, "Cycle A", "natl", "a")
+            a.save()
+
+            b = self._new_node(root, "Cycle B", "natl", "b")
+            b.save()
+
+            a.add_dependency(b.fnode)
+            a.save()
+            b.add_dependency(a.fnode)
+            b.save()
+
+            src = self._new_node(root, "Source", "natl", "src")
+            src.add_dependency("missing-target-001")
+            src.add_dependency(bad.fnode)
+            src.save()
+
+            graph = DepGraph(mdcroot=root)
+            report = graph.graph_check_report()
+
+            self.assertEqual(report.nodes, 4)
+            self.assertEqual(report.edges, 4)
+            self.assertEqual(len(report.missing), 1)
+            self.assertEqual(report.missing[0].fnode, "missing-target-001")
+            self.assertEqual(len(report.invalid), 1)
+            self.assertEqual(report.invalid[0].rel_path, bad.path.resolve().relative_to(root.resolve()).as_posix())
+            self.assertEqual(len(report.cycles), 1)
+            self.assertIn(a.fnode, report.cycles[0])
+            self.assertIn(b.fnode, report.cycles[0])
 
 
 if __name__ == "__main__":

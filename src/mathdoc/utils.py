@@ -27,6 +27,8 @@ STYLE: dict[str, str] = {
 
 
 def short_fnode(fnode: str) -> str:
+    if fnode.startswith("<") and fnode.endswith(">"):
+        return fnode
     return fnode[:8]
 
 

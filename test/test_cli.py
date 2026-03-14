@@ -150,6 +150,15 @@ def _rename_mdoc(mdoc_path: str, new_name: str) -> str:
     return str(target)
 
 
+def _make_mdoc_invalid(mdoc_path: str) -> None:
+    path = Path(mdoc_path)
+    text = path.read_text(encoding="utf-8")
+    if not text.endswith("\n"):
+        text += "\n"
+    text += "@title: Duplicate Broken Title\n"
+    path.write_text(text, encoding="utf-8")
+
+
 class TestMdcCli(unittest.TestCase):
     def test_init_new_search_and_path_boundary(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_basic.") as tmp:
@@ -631,6 +640,200 @@ class TestMdcCli(unittest.TestCase):
             self.assertIn("<missing>", eval_run.stdout)
             self.assertIn("remove the broken references with `mdc dep rm` before eval", eval_run.stdout)
             self.assertNotIn("blocks:", eval_run.stdout)
+
+    def test_dep_show_warns_but_continues_on_invalid_dependency(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_show_invalid.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_src = _run_cli(["new", "-t", "Source Invalid", "-f", "."], repo)
+            self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
+            _, src_path = _extract_created_mdoc(new_src.stdout)
+
+            new_dep = _run_cli(["new", "-t", "Broken Dep", "-f", "."], repo)
+            self.assertEqual(new_dep.returncode, 0, new_dep.stdout + new_dep.stderr)
+            dep_fnode, dep_path = _extract_created_mdoc(new_dep.stdout)
+            dep_rel = str(Path(dep_path).relative_to(repo.resolve())).replace("\\", "/")
+
+            rc_add, out_add = _run_cli_tty(
+                ["dep", "add", src_path, "Broken Dep"], repo, b" \r"
+            )
+            self.assertEqual(rc_add, 0, out_add)
+
+            _make_mdoc_invalid(dep_path)
+
+            show_run = _run_cli(["dep", "show", src_path], repo)
+            self.assertEqual(show_run.returncode, 0, show_run.stdout + show_run.stderr)
+            self.assertIn("dependencies: 1", show_run.stdout)
+            self.assertIn(dep_fnode[:8], show_run.stdout)
+            self.assertIn(f"<invalid> ({dep_rel})", show_run.stdout)
+            self.assertIn("Warning: detected 1 broken dependency reference(s) (1 invalid)", show_run.stdout)
+
+    def test_dep_rm_can_remove_invalid_dependency(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_rm_invalid.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_src = _run_cli(["new", "-t", "Source Invalid Rm", "-f", "."], repo)
+            self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
+            _, src_path = _extract_created_mdoc(new_src.stdout)
+
+            new_dep = _run_cli(["new", "-t", "Broken Dep Rm", "-f", "."], repo)
+            self.assertEqual(new_dep.returncode, 0, new_dep.stdout + new_dep.stderr)
+            _, dep_path = _extract_created_mdoc(new_dep.stdout)
+
+            rc_add, out_add = _run_cli_tty(
+                ["dep", "add", src_path, "Broken Dep Rm"], repo, b" \r"
+            )
+            self.assertEqual(rc_add, 0, out_add)
+
+            _make_mdoc_invalid(dep_path)
+
+            rc_rm, out_rm = _run_cli_tty(["dep", "rm", src_path], repo, b" \r")
+            self.assertEqual(rc_rm, 0, out_rm)
+            self.assertIn("<invalid>", out_rm)
+            self.assertIn("removed: 1", out_rm)
+
+            show_run = _run_cli(["dep", "show", src_path], repo)
+            self.assertEqual(show_run.returncode, 0, show_run.stdout + show_run.stderr)
+            self.assertIn("dependencies: 0", show_run.stdout)
+
+    def test_eval_prints_dependency_chain_and_blocks_on_invalid_dependency(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_eval_invalid.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_src = _run_cli(["new", "-t", "Eval Invalid Source", "-f", "."], repo)
+            self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
+            _, src_path = _extract_created_mdoc(new_src.stdout)
+            _append_src_block(src_path, "natl", "root body")
+
+            new_dep = _run_cli(["new", "-t", "Eval Invalid Dep", "-f", "."], repo)
+            self.assertEqual(new_dep.returncode, 0, new_dep.stdout + new_dep.stderr)
+            dep_fnode, dep_path = _extract_created_mdoc(new_dep.stdout)
+
+            rc_add, out_add = _run_cli_tty(
+                ["dep", "add", src_path, "Eval Invalid Dep"], repo, b" \r"
+            )
+            self.assertEqual(rc_add, 0, out_add)
+
+            _make_mdoc_invalid(dep_path)
+
+            eval_run = _run_cli(["eval", src_path], repo)
+            self.assertEqual(eval_run.returncode, 1, eval_run.stdout + eval_run.stderr)
+            self.assertIn("dependencies: 1", eval_run.stdout)
+            self.assertIn(dep_fnode[:8], eval_run.stdout)
+            self.assertIn("<invalid>", eval_run.stdout)
+            self.assertIn("remove the broken references with `mdc dep rm` before eval", eval_run.stdout)
+            self.assertNotIn("blocks:", eval_run.stdout)
+
+    def test_graph_check_reports_missing_invalid_and_cycle(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_graph_check.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_bad = _run_cli(["new", "-t", "Broken Graph Node", "-f", "."], repo)
+            self.assertEqual(new_bad.returncode, 0, new_bad.stdout + new_bad.stderr)
+            bad_fnode, bad_path = _extract_created_mdoc(new_bad.stdout)
+            bad_rel = str(Path(bad_path).relative_to(repo.resolve())).replace("\\", "/")
+            _make_mdoc_invalid(bad_path)
+
+            new_a = _run_cli(["new", "-t", "Cycle A", "-f", "."], repo)
+            self.assertEqual(new_a.returncode, 0, new_a.stdout + new_a.stderr)
+            a_fnode, a_path = _extract_created_mdoc(new_a.stdout)
+
+            new_b = _run_cli(["new", "-t", "Cycle B", "-f", "."], repo)
+            self.assertEqual(new_b.returncode, 0, new_b.stdout + new_b.stderr)
+            b_fnode, b_path = _extract_created_mdoc(new_b.stdout)
+
+            new_src = _run_cli(["new", "-t", "Graph Source", "-f", "."], repo)
+            self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
+            _, src_path = _extract_created_mdoc(new_src.stdout)
+
+            rc_add_bad, out_add_bad = _run_cli_tty(
+                ["dep", "add", src_path, "Broken Graph Node"], repo, b" \r"
+            )
+            self.assertEqual(rc_add_bad, 0, out_add_bad)
+
+            src_text = Path(src_path).read_text(encoding="utf-8")
+            Path(src_path).write_text(
+                src_text.replace("@end", "missing-target-001\n@end", 1),
+                encoding="utf-8",
+            )
+
+            rc_add_a, out_add_a = _run_cli_tty(
+                ["dep", "add", a_path, "Cycle B"], repo, b" \r"
+            )
+            self.assertEqual(rc_add_a, 0, out_add_a)
+
+            rc_add_b, out_add_b = _run_cli_tty(
+                ["dep", "add", b_path, "Cycle A"], repo, b" \r"
+            )
+            self.assertEqual(rc_add_b, 0, out_add_b)
+
+            check_run = _run_cli(["graph", "check"], repo)
+            self.assertEqual(check_run.returncode, 1, check_run.stdout + check_run.stderr)
+            self.assertIn("nodes: 4", check_run.stdout)
+            self.assertIn("edges: 4", check_run.stdout)
+            self.assertIn("missing: 1", check_run.stdout)
+            self.assertIn("invalid: 1", check_run.stdout)
+            self.assertIn("cycles: 1", check_run.stdout)
+            self.assertIn("missing-target-001", check_run.stdout)
+            self.assertIn(f"<invalid> ({bad_rel})", check_run.stdout)
+            self.assertIn("dependency cycle detected", check_run.stdout)
+            self.assertIn(a_fnode[:8], check_run.stdout)
+            self.assertIn(b_fnode[:8], check_run.stdout)
+            self.assertIn(bad_fnode[:8], check_run.stdout)
+
+    def test_dep_refs_reports_reverse_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_refs.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_root = _run_cli(["new", "-t", "Root Ref", "-f", "."], repo)
+            self.assertEqual(new_root.returncode, 0, new_root.stdout + new_root.stderr)
+            root_fnode, root_path = _extract_created_mdoc(new_root.stdout)
+
+            new_mid1 = _run_cli(["new", "-t", "Mid One", "-f", "."], repo)
+            self.assertEqual(new_mid1.returncode, 0, new_mid1.stdout + new_mid1.stderr)
+            mid1_fnode, mid1_path = _extract_created_mdoc(new_mid1.stdout)
+
+            new_mid2 = _run_cli(["new", "-t", "Mid Two", "-f", "."], repo)
+            self.assertEqual(new_mid2.returncode, 0, new_mid2.stdout + new_mid2.stderr)
+            mid2_fnode, mid2_path = _extract_created_mdoc(new_mid2.stdout)
+
+            new_leaf = _run_cli(["new", "-t", "Leaf Ref", "-f", "."], repo)
+            self.assertEqual(new_leaf.returncode, 0, new_leaf.stdout + new_leaf.stderr)
+            leaf_fnode, leaf_path = _extract_created_mdoc(new_leaf.stdout)
+
+            rc_add_root_1, out_add_root_1 = _run_cli_tty(
+                ["dep", "add", root_path, "Mid One"], repo, b" \r"
+            )
+            self.assertEqual(rc_add_root_1, 0, out_add_root_1)
+
+            rc_add_root_2, out_add_root_2 = _run_cli_tty(
+                ["dep", "add", root_path, "Mid Two"], repo, b" \r"
+            )
+            self.assertEqual(rc_add_root_2, 0, out_add_root_2)
+
+            rc_add_mid1, out_add_mid1 = _run_cli_tty(
+                ["dep", "add", mid1_path, "Leaf Ref"], repo, b" \r"
+            )
+            self.assertEqual(rc_add_mid1, 0, out_add_mid1)
+
+            rc_add_mid2, out_add_mid2 = _run_cli_tty(
+                ["dep", "add", mid2_path, "Leaf Ref"], repo, b" \r"
+            )
+            self.assertEqual(rc_add_mid2, 0, out_add_mid2)
+
+            refs_run = _run_cli(["dep", "refs", "--depth", "-1", leaf_path], repo)
+            self.assertEqual(refs_run.returncode, 0, refs_run.stdout + refs_run.stderr)
+            self.assertIn(f"target: {leaf_fnode[:8]}", refs_run.stdout)
+            self.assertIn("Leaf Ref", refs_run.stdout)
+            self.assertIn("referrers: 3", refs_run.stdout)
+            self.assertRegex(refs_run.stdout, rf"\[1\]\s+- {mid1_fnode[:8]}\s+Mid One")
+            self.assertRegex(refs_run.stdout, rf"\[1\]\s+- {mid2_fnode[:8]}\s+Mid Two")
+            self.assertRegex(refs_run.stdout, rf"\[2\]\s+- {root_fnode[:8]}\s+Root Ref")
 
     def test_dep_show_recovers_after_manual_file_rename(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_show_rename.") as tmp:

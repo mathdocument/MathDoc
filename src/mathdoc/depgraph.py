@@ -21,7 +21,44 @@ class DependencyItem:
     rel_path: str
 
 
+@dataclass(slots=True, frozen=True)
+class GraphIssue:
+    kind: str
+    fnode: str
+    title: str
+    rel_path: str
+    error: str
+
+
+@dataclass(slots=True, frozen=True)
+class GraphCheckReport:
+    nodes: int
+    edges: int
+    missing: list[GraphIssue]
+    invalid: list[GraphIssue]
+    cycles: list[list[str]]
+
+
 class DepGraph:
+    @classmethod
+    def create_root(
+        cls,
+        *,
+        mdcroot: Path,
+        folder: str = ".",
+        title: str = "Untitled",
+        cache: IndCache | None = None,
+    ) -> tuple["DepGraph", str]:
+        root_path = Path(mdcroot).resolve()
+        node = MdocNode.create(
+            mdcroot=root_path,
+            folder=folder,
+            title=title,
+        )
+        node.save()
+        graph = cls(mdcroot=root_path, root_node=node, cache=cache)
+        return graph, to_rel_path(root_path, node.path)
+
     @classmethod
     def from_ref(
         cls,
@@ -71,6 +108,10 @@ class DepGraph:
         self.dep_graph: dict[str, list[str]] = {}
         self.nodes_by_fnode: dict[str, MdocNode] = {}
         self.missing_fnodes: set[str] = set()
+        self.invalid_fnodes: set[str] = set()
+        self.broken_issues: dict[str, GraphIssue] = {}
+        self.invalid_file_issues: list[GraphIssue] = []
+        self.scanned_file_count = 0
 
         if root_node is not None:
             self.set_root_node(root_node)
@@ -99,6 +140,38 @@ class DepGraph:
     def get_root_node(self) -> MdocNode:
         active_root = self._bind_root()
         return self._ensure_node_loaded(active_root)
+
+    def root_path(self) -> Path:
+        return self.get_root_node().path
+
+    def root_has_blocks(self) -> bool:
+        return bool(self.get_root_node().blocks)
+
+    def root_item(self) -> DependencyItem:
+        issue = self.issue_for_fnode(self.root_fnode)
+        if issue is not None:
+            return DependencyItem(
+                depth=0,
+                fnode=issue.fnode,
+                title=issue.title,
+                rel_path=issue.rel_path,
+            )
+        node = self.get_root_node()
+        return DependencyItem(
+            depth=0,
+            fnode=node.fnode,
+            title=node.title,
+            rel_path=to_rel_path(self.mdcroot, node.path),
+        )
+
+    def is_broken_fnode(self, fnode: str) -> bool:
+        return fnode in self.missing_fnodes or fnode in self.invalid_fnodes
+
+    def issue_for_fnode(self, fnode: str) -> GraphIssue | None:
+        return self.broken_issues.get(fnode)
+
+    def format_cycle(self, cycle: list[str]) -> str:
+        return self._format_cycle(cycle)
 
     def direct_dependency_fnodes(
         self,
@@ -179,6 +252,70 @@ class DepGraph:
 
         return removed
 
+    def referrer_items(
+        self,
+        *,
+        depth: int = 1,
+        target_fnode: str | None = None,
+    ) -> list[DependencyItem]:
+        if depth < -1:
+            raise ValueError("depth must be -1 (infinite) or >= 0")
+
+        active_target = target_fnode or self._bind_root()
+        self.scan_all()
+        if active_target not in self.dep_graph and not self.is_broken_fnode(active_target):
+            raise ValueError(f"no mdoc matched reference: {active_target}")
+
+        reverse_graph: dict[str, list[str]] = {}
+        for src_fnode, dep_fnodes in self.dep_graph.items():
+            for dep_fnode in dep_fnodes:
+                reverse_graph.setdefault(dep_fnode, []).append(src_fnode)
+
+        items: list[DependencyItem] = []
+        seen: set[str] = {active_target}
+        queue: deque[tuple[str, int]] = deque(
+            (ref_fnode, 1) for ref_fnode in reverse_graph.get(active_target, [])
+        )
+
+        while queue:
+            fnode, item_depth = queue.popleft()
+            if fnode in seen:
+                continue
+            seen.add(fnode)
+            items.append(self._dependency_item_for_fnode(fnode=fnode, depth=item_depth))
+
+            if depth != -1 and item_depth >= depth:
+                continue
+            for ref_fnode in reverse_graph.get(fnode, []):
+                if ref_fnode == active_target:
+                    continue
+                queue.append((ref_fnode, item_depth + 1))
+
+        return items
+
+    def graph_check_report(self) -> GraphCheckReport:
+        self.scan_all()
+        edges = sum(len(dep_fnodes) for dep_fnodes in self.dep_graph.values())
+        missing = self._sorted_issues(
+            [issue for issue in self.broken_issues.values() if issue.kind == "missing"]
+        )
+        invalid = self._sorted_issues(
+            self._dedupe_issues(
+                [
+                    *[issue for issue in self.broken_issues.values() if issue.kind == "invalid"],
+                    *self.invalid_file_issues,
+                ]
+            )
+        )
+        cycles = self._cycles_by_component()
+        return GraphCheckReport(
+            nodes=self.scanned_file_count,
+            edges=edges,
+            missing=missing,
+            invalid=invalid,
+            cycles=cycles,
+        )
+
     def dependency_items(
         self,
         *,
@@ -209,7 +346,11 @@ class DepGraph:
         topo_fnodes = self._topo_dependencies_first(root_fnode=active_root)
         if reverse_depens:
             topo_fnodes = list(reversed(topo_fnodes))
-        return [self.nodes_by_fnode[fnode] for fnode in topo_fnodes]
+        return [
+            self.nodes_by_fnode[fnode]
+            for fnode in topo_fnodes
+            if fnode in self.nodes_by_fnode
+        ]
 
     def eval_blocks(
         self,
@@ -221,6 +362,16 @@ class DepGraph:
     ) -> list[tuple[str, CompilerRes]]:
         active_root = self._bind_root(root_node=root_node, root_fnode=root_fnode)
         root = self._ensure_node_loaded(active_root)
+        dep_items = self.dependency_items(
+            depth=depth,
+            root_node=root_node,
+            root_fnode=root_fnode,
+        )
+        if any(self.is_broken_fnode(item.fnode) for item in dep_items):
+            raise ValueError(
+                "broken dependency targets detected; "
+                "remove the broken references with `mdc dep rm` before eval"
+            )
         if not root.blocks:
             return []
 
@@ -264,16 +415,34 @@ class DepGraph:
         self.dep_graph.clear()
         self.nodes_by_fnode.clear()
         self.missing_fnodes.clear()
+        self.invalid_fnodes.clear()
+        self.broken_issues.clear()
+        self.invalid_file_issues.clear()
+        self.scanned_file_count = 0
 
         for file_path in self._iter_mdoc_files():
-            node = self._load_node_from_path(file_path)
+            self.scanned_file_count += 1
+            try:
+                node = self._load_node_from_path(file_path)
+            except ValueError as exc:
+                self._record_invalid_issue(
+                    self._invalid_issue_from_path(
+                        file_path,
+                        error=str(exc),
+                    )
+                )
+                continue
             self.nodes_by_fnode[node.fnode] = node
 
         for node in list(self.nodes_by_fnode.values()):
             self.dep_graph[node.fnode] = []
             for dep_fnode in self._dedupe_keep_order(node.depens):
-                if dep_fnode not in self.nodes_by_fnode:
-                    dep_node = self._load_node(dep_fnode, tolerate_missing=True)
+                if dep_fnode not in self.nodes_by_fnode and dep_fnode not in self.invalid_fnodes:
+                    dep_node = self._load_node(
+                        dep_fnode,
+                        tolerate_missing=True,
+                        tolerate_invalid=True,
+                    )
                     if dep_node is not None:
                         self.nodes_by_fnode[dep_fnode] = dep_node
                 self.dep_graph[node.fnode].append(dep_fnode)
@@ -335,7 +504,11 @@ class DepGraph:
                 if dep_node is None:
                     if depth != -1 and node_depth >= depth:
                         continue
-                    dep_node = self._load_node(dep_fnode, tolerate_missing=True)
+                    dep_node = self._load_node(
+                        dep_fnode,
+                        tolerate_missing=True,
+                        tolerate_invalid=True,
+                    )
                     if dep_node is not None:
                         self.nodes_by_fnode[dep_fnode] = dep_node
 
@@ -363,14 +536,24 @@ class DepGraph:
         if node is not None:
             return node
         self._ensure_ready()
-        node = self._load_node(fnode, tolerate_missing=False)
+        node = self._load_node(
+            fnode,
+            tolerate_missing=False,
+            tolerate_invalid=False,
+        )
         if node is None:
             raise ValueError(f"no mdoc matched reference: {fnode}")
         self.nodes_by_fnode[fnode] = node
         self.dep_graph.setdefault(fnode, [])
         return node
 
-    def _load_node(self, fnode: str, *, tolerate_missing: bool) -> MdocNode | None:
+    def _load_node(
+        self,
+        fnode: str,
+        *,
+        tolerate_missing: bool,
+        tolerate_invalid: bool,
+    ) -> MdocNode | None:
         for attempt in range(2):
             path = self._resolve_fnode_path(
                 fnode,
@@ -393,8 +576,17 @@ class DepGraph:
                     self._mark_missing(fnode)
                     return None
                 raise
+            except ValueError as exc:
+                if tolerate_invalid:
+                    self._mark_invalid(
+                        fnode,
+                        path=path,
+                        error=str(exc),
+                    )
+                    return None
+                raise
 
-            self.missing_fnodes.discard(fnode)
+            self._clear_broken_issue(fnode)
             return node
 
         if tolerate_missing:
@@ -418,8 +610,41 @@ class DepGraph:
 
     def _mark_missing(self, fnode: str) -> None:
         self.missing_fnodes.add(fnode)
+        self.invalid_fnodes.discard(fnode)
         self.nodes_by_fnode.pop(fnode, None)
         self.dep_graph.setdefault(fnode, [])
+        self.broken_issues[fnode] = GraphIssue(
+            kind="missing",
+            fnode=fnode,
+            title="<missing>",
+            rel_path="<unknown>",
+            error=f"no mdoc matched reference: {fnode}",
+        )
+
+    def _mark_invalid(
+        self,
+        fnode: str,
+        *,
+        path: Path,
+        error: str,
+    ) -> None:
+        issue = self._invalid_issue_from_path(path, error=error, fnode=fnode)
+        self._record_invalid_issue(issue)
+
+    def _record_invalid_issue(self, issue: GraphIssue) -> None:
+        self._upsert_issue(self.invalid_file_issues, issue)
+        if issue.fnode.startswith("<") and issue.fnode.endswith(">"):
+            return
+        self.invalid_fnodes.add(issue.fnode)
+        self.missing_fnodes.discard(issue.fnode)
+        self.nodes_by_fnode.pop(issue.fnode, None)
+        self.dep_graph.setdefault(issue.fnode, [])
+        self.broken_issues[issue.fnode] = issue
+
+    def _clear_broken_issue(self, fnode: str) -> None:
+        self.missing_fnodes.discard(fnode)
+        self.invalid_fnodes.discard(fnode)
+        self.broken_issues.pop(fnode, None)
 
     def _load_node_from_path(self, path: Path) -> MdocNode:
         node = MdocNode(mdcroot=self.mdcroot, path=path, title="")
@@ -470,16 +695,13 @@ class DepGraph:
         cycle_nodes = cycle[:-1] if len(cycle) > 1 else cycle
         total = len(cycle_nodes)
         for idx, fnode in enumerate(cycle_nodes):
-            node = self.nodes_by_fnode.get(fnode)
-            if node is None:
-                item = format_mdoc_item(fnode, "<missing>", "<unknown>", marker="+")
-            else:
-                item = format_mdoc_item(
-                    node.fnode,
-                    node.title,
-                    to_rel_path(self.mdcroot, node.path),
-                    marker="+",
-                )
+            dep_item = self._dependency_item_for_fnode(fnode=fnode, depth=0)
+            item = format_mdoc_item(
+                dep_item.fnode,
+                dep_item.title,
+                dep_item.rel_path,
+                marker="+",
+            )
             if total == 1:
                 prefix = "┌─➤"
             elif idx == 0:
@@ -519,25 +741,7 @@ class DepGraph:
                 continue
             seen.add(fnode)
 
-            node = self.nodes_by_fnode.get(fnode)
-            if node is None:
-                items.append(
-                    DependencyItem(
-                        depth=node_depth,
-                        fnode=fnode,
-                        title="<missing>",
-                        rel_path="<unknown>",
-                    )
-                )
-            else:
-                items.append(
-                    DependencyItem(
-                        depth=node_depth,
-                        fnode=node.fnode,
-                        title=node.title,
-                        rel_path=to_rel_path(self.mdcroot, node.path),
-                    )
-                )
+            items.append(self._dependency_item_for_fnode(fnode=fnode, depth=node_depth))
 
             for dep_fnode in self.dep_graph.get(fnode, []):
                 queue.append((dep_fnode, node_depth + 1))
@@ -632,3 +836,191 @@ class DepGraph:
             if file_path.is_file():
                 files.append(file_path)
         return files
+
+    def _dependency_item_for_fnode(self, *, fnode: str, depth: int) -> DependencyItem:
+        node = self.nodes_by_fnode.get(fnode)
+        if node is not None:
+            return DependencyItem(
+                depth=depth,
+                fnode=node.fnode,
+                title=node.title,
+                rel_path=to_rel_path(self.mdcroot, node.path),
+            )
+
+        issue = self.broken_issues.get(fnode)
+        if issue is not None:
+            return DependencyItem(
+                depth=depth,
+                fnode=issue.fnode,
+                title=issue.title,
+                rel_path=issue.rel_path,
+            )
+
+        return DependencyItem(
+            depth=depth,
+            fnode=fnode,
+            title="<missing>",
+            rel_path="<unknown>",
+        )
+
+    def _invalid_issue_from_path(
+        self,
+        path: Path,
+        *,
+        error: str,
+        fnode: str | None = None,
+    ) -> GraphIssue:
+        head_fnode, _ = self._read_mdoc_head(path)
+        issue_fnode = fnode or head_fnode or "<unknown>"
+        return GraphIssue(
+            kind="invalid",
+            fnode=issue_fnode,
+            title="<invalid>",
+            rel_path=to_rel_path(self.mdcroot, path),
+            error=error,
+        )
+
+    @staticmethod
+    def _read_mdoc_head(path: Path) -> tuple[str | None, str | None]:
+        fnode = ""
+        title = ""
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for raw_line in handle:
+                    line = raw_line.strip()
+                    lower = line.lower()
+                    if lower.startswith("@fnode:"):
+                        fnode = line.split(":", 1)[1].strip()
+                    elif lower.startswith("@title:"):
+                        title = line.split(":", 1)[1].strip()
+                    if fnode and title:
+                        break
+        except OSError:
+            return None, None
+        return (fnode or None, title or None)
+
+    @staticmethod
+    def _upsert_issue(issues: list[GraphIssue], issue: GraphIssue) -> None:
+        key = (issue.kind, issue.fnode, issue.rel_path)
+        for index, existing in enumerate(issues):
+            existing_key = (existing.kind, existing.fnode, existing.rel_path)
+            if existing_key == key:
+                issues[index] = issue
+                return
+        issues.append(issue)
+
+    @staticmethod
+    def _dedupe_issues(issues: list[GraphIssue]) -> list[GraphIssue]:
+        deduped: list[GraphIssue] = []
+        for issue in issues:
+            DepGraph._upsert_issue(deduped, issue)
+        return deduped
+
+    @staticmethod
+    def _sorted_issues(issues: list[GraphIssue]) -> list[GraphIssue]:
+        return sorted(
+            issues,
+            key=lambda issue: (issue.rel_path, issue.fnode, issue.error),
+        )
+
+    def _cycles_by_component(self) -> list[list[str]]:
+        components = self._strongly_connected_components()
+        cycles: list[list[str]] = []
+        for component in components:
+            if not self._component_has_cycle(component):
+                continue
+            cycle = self._representative_cycle(component)
+            if cycle is not None:
+                cycles.append(cycle)
+        cycles.sort(key=lambda cycle: tuple(cycle))
+        return cycles
+
+    def _strongly_connected_components(self) -> list[list[str]]:
+        index = 0
+        stack: list[str] = []
+        on_stack: set[str] = set()
+        indices: dict[str, int] = {}
+        lowlinks: dict[str, int] = {}
+        components: list[list[str]] = []
+
+        def strongconnect(fnode: str) -> None:
+            nonlocal index
+            indices[fnode] = index
+            lowlinks[fnode] = index
+            index += 1
+            stack.append(fnode)
+            on_stack.add(fnode)
+
+            for dep_fnode in self.dep_graph.get(fnode, []):
+                if dep_fnode not in indices:
+                    strongconnect(dep_fnode)
+                    lowlinks[fnode] = min(lowlinks[fnode], lowlinks[dep_fnode])
+                elif dep_fnode in on_stack:
+                    lowlinks[fnode] = min(lowlinks[fnode], indices[dep_fnode])
+
+            if lowlinks[fnode] != indices[fnode]:
+                return
+
+            component: list[str] = []
+            while stack:
+                member = stack.pop()
+                on_stack.discard(member)
+                component.append(member)
+                if member == fnode:
+                    break
+            components.append(component)
+
+        for fnode in list(self.dep_graph):
+            if fnode not in indices:
+                strongconnect(fnode)
+        return components
+
+    def _component_has_cycle(self, component: list[str]) -> bool:
+        if len(component) > 1:
+            return True
+        if not component:
+            return False
+        fnode = component[0]
+        return fnode in self.dep_graph.get(fnode, [])
+
+    def _representative_cycle(self, component: list[str]) -> list[str] | None:
+        if not component:
+            return None
+        if len(component) == 1:
+            fnode = component[0]
+            if fnode in self.dep_graph.get(fnode, []):
+                return [fnode, fnode]
+            return None
+
+        component_set = set(component)
+        visited: set[str] = set()
+        stack: list[str] = []
+        stack_index: dict[str, int] = {}
+
+        def dfs(fnode: str) -> list[str] | None:
+            visited.add(fnode)
+            stack_index[fnode] = len(stack)
+            stack.append(fnode)
+
+            for dep_fnode in self.dep_graph.get(fnode, []):
+                if dep_fnode not in component_set:
+                    continue
+                if dep_fnode not in visited:
+                    cycle = dfs(dep_fnode)
+                    if cycle is not None:
+                        return cycle
+                elif dep_fnode in stack_index:
+                    start = stack_index[dep_fnode]
+                    return stack[start:] + [dep_fnode]
+
+            stack.pop()
+            stack_index.pop(fnode, None)
+            return None
+
+        for fnode in sorted(component):
+            if fnode in visited:
+                continue
+            cycle = dfs(fnode)
+            if cycle is not None:
+                return cycle
+        return None

@@ -8,7 +8,6 @@ from pathlib import Path
 from .depgraph import DepGraph
 from .depgraph import DependencyItem
 from .indcache import IndCache
-from .mdocnode import MdocNode
 from .utils import (
     STYLE,
     colorize,
@@ -32,6 +31,16 @@ def _load_graph_from_ref(cache: IndCache, ref: str) -> tuple[DepGraph, str]:
     return DepGraph.from_ref(cache=cache, ref=ref, cwd=Path.cwd())
 
 
+def _resolve_ref_item(cache: IndCache, ref: str) -> DependencyItem:
+    fnode, title, path = cache.resolve_ref(ref, cwd=Path.cwd())
+    return DependencyItem(
+        depth=0,
+        fnode=fnode,
+        title=title,
+        rel_path=to_rel_path(cache.root, path),
+    )
+
+
 def _print_index_error(*, action: str, exc: Exception) -> None:
     print(f"Error: failed to {action}: {exc}")
     print(
@@ -49,52 +58,100 @@ def _bootstrap_cache(cache: IndCache, *, action: str) -> bool:
     return True
 
 
-def _is_missing_dependency_item(item: DependencyItem, *, graph: DepGraph) -> bool:
-    return item.fnode in graph.missing_fnodes
+def _is_broken_dependency_item(item: DependencyItem, *, graph: DepGraph) -> bool:
+    return graph.is_broken_fnode(item.fnode)
 
 
 def _format_dependency_line(item: DependencyItem, *, graph: DepGraph) -> str:
     line = f"[{item.depth}] {format_mdoc_item(item.fnode, item.title, item.rel_path)}"
-    if _is_missing_dependency_item(item, graph=graph):
+    if _is_broken_dependency_item(item, graph=graph):
         return colorize(line, STYLE["red"])
     return line
 
 
 def _print_dependency_chain(
     *,
-    node: MdocNode,
-    src_rel: str,
+    source_item: DependencyItem,
     dep_items: list[DependencyItem],
     graph: DepGraph,
 ) -> None:
-    print(f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
+    print(
+        f"source: {format_mdoc_item(source_item.fnode, source_item.title, source_item.rel_path, marker='')}"
+    )
     print(f"dependencies: {len(dep_items)}")
     for item in dep_items:
         print(_format_dependency_line(item, graph=graph))
 
 
-def _print_missing_dependency_warning(
+def _print_referrer_chain(
+    *,
+    target_item: DependencyItem,
+    ref_items: list[DependencyItem],
+    graph: DepGraph,
+) -> None:
+    print(
+        f"target: {format_mdoc_item(target_item.fnode, target_item.title, target_item.rel_path, marker='')}"
+    )
+    print(f"referrers: {len(ref_items)}")
+    for item in ref_items:
+        print(_format_dependency_line(item, graph=graph))
+
+
+def _broken_dependency_counts(
+    *,
+    dep_items: list[DependencyItem],
+    graph: DepGraph,
+) -> tuple[int, int]:
+    missing_count = 0
+    invalid_count = 0
+    for item in dep_items:
+        issue = graph.issue_for_fnode(item.fnode)
+        if issue is None:
+            continue
+        if issue.kind == "missing":
+            missing_count += 1
+        elif issue.kind == "invalid":
+            invalid_count += 1
+    return missing_count, invalid_count
+
+
+def _print_broken_dependency_warning(
     *,
     dep_items: list[DependencyItem],
     graph: DepGraph,
     for_eval: bool,
 ) -> None:
-    missing_count = sum(
-        1 for item in dep_items if _is_missing_dependency_item(item, graph=graph)
+    missing_count, invalid_count = _broken_dependency_counts(
+        dep_items=dep_items,
+        graph=graph,
     )
-    if missing_count <= 0:
+    total = missing_count + invalid_count
+    if total <= 0:
         return
+    parts: list[str] = []
+    if missing_count:
+        parts.append(f"{missing_count} missing")
+    if invalid_count:
+        parts.append(f"{invalid_count} invalid")
+    detail = f" ({', '.join(parts)})" if parts else ""
 
     if for_eval:
         print(
-            "Error: missing dependency targets detected; "
+            f"Error: broken dependency targets detected{detail}; "
             "remove the broken references with `mdc dep rm` before eval."
         )
     else:
         print(
-            f"Warning: detected {missing_count} broken dependency reference(s); "
+            f"Warning: detected {total} broken dependency reference(s){detail}; "
             "broken rows are highlighted in red when the terminal supports color."
         )
+
+
+def _format_issue_line(fnode: str, title: str, rel_path: str) -> str:
+    return colorize(
+        format_mdoc_item(fnode, title, rel_path),
+        STYLE["red"],
+    )
 
 
 def _cmd_init(_: argparse.Namespace) -> int:
@@ -132,13 +189,12 @@ def _cmd_new(args: argparse.Namespace) -> int:
         print(f"Error: target folder is a file: {target}")
         return 1
 
-    node = MdocNode.create(
-        mdcroot=mdcroot,
-        folder=args.folder,
-        title=args.title,
-    )
     try:
-        node.save()
+        graph, _ = DepGraph.create_root(
+            mdcroot=mdcroot,
+            folder=args.folder,
+            title=args.title,
+        )
     except OSError as exc:
         print(f"Error: failed to save mdoc file: {exc}")
         return 1
@@ -146,13 +202,14 @@ def _cmd_new(args: argparse.Namespace) -> int:
     cache = IndCache(mdcroot)
     try:
         cache.bootstrap_if_needed()
-        cache.upsert_path(node.path)
+        cache.upsert_path(graph.root_path())
     except (OSError, ValueError, sqlite3.Error) as exc:
         warn_index_failure("mdoc was created", exc)
 
-    print(f"created: {node.path}")
-    print(f"fnode: {node.fnode}")
-    print(f"title: {node.title}")
+    root_item = graph.root_item()
+    print(f"created: {graph.root_path()}")
+    print(f"fnode: {root_item.fnode}")
+    print(f"title: {root_item.title}")
     return 0
 
 
@@ -202,32 +259,33 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         print(f"Error: failed to load mdoc: {exc}")
         return 1
 
-    node = graph.get_root_node()
+    source_item = graph.root_item()
     try:
         dep_items = graph.dependency_items(depth=args.depth)
     except ValueError as exc:
-        print(f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
+        print(
+            f"source: {format_mdoc_item(source_item.fnode, source_item.title, src_rel, marker='')}"
+        )
         print(f"Error: failed to inspect dependencies: {exc}")
         return 1
 
     _print_dependency_chain(
-        node=node,
-        src_rel=src_rel,
+        source_item=source_item,
         dep_items=dep_items,
         graph=graph,
     )
 
-    if not node.blocks:
-        print("No blocks to eval")
-        return 0
-
-    if any(_is_missing_dependency_item(item, graph=graph) for item in dep_items):
-        _print_missing_dependency_warning(
+    if any(_is_broken_dependency_item(item, graph=graph) for item in dep_items):
+        _print_broken_dependency_warning(
             dep_items=dep_items,
             graph=graph,
             for_eval=True,
         )
         return 1
+
+    if not graph.root_has_blocks():
+        print("No blocks to eval")
+        return 0
 
     try:
         block_results = graph.eval_blocks(
@@ -291,13 +349,13 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
     except (FileNotFoundError, OSError, ValueError, sqlite3.Error) as exc:
         print(f"Error: {exc}")
         return 1
-    node = graph.get_root_node()
+    source_item = graph.root_item()
     try:
         matches = cache.search(query)
     except (OSError, ValueError, sqlite3.Error) as exc:
         _print_index_error(action="search dependency candidates", exc=exc)
         return 1
-    matches = [row for row in matches if row[0] != node.fnode]
+    matches = [row for row in matches if row[0] != source_item.fnode]
     matches = matches[: args.max_results]
     if not matches:
         print(f"No dependency candidates for: {args.query}")
@@ -341,7 +399,9 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
         print(f"Error: failed to save mdoc: {exc}")
         return 1
 
-    print(f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
+    print(
+        f"source: {format_mdoc_item(source_item.fnode, source_item.title, src_rel, marker='')}"
+    )
     print(f"added: {len(added)}")
     for dep_fnode in added:
         dep_row = selected_by_fnode[dep_fnode]
@@ -368,7 +428,7 @@ def _cmd_dep_show(args: argparse.Namespace) -> int:
         print(f"Error: failed to load mdoc: {exc}")
         return 1
 
-    node = graph.get_root_node()
+    source_item = graph.root_item()
     try:
         dep_items = graph.dependency_items(depth=args.depth)
     except ValueError as exc:
@@ -383,12 +443,11 @@ def _cmd_dep_show(args: argparse.Namespace) -> int:
             warn_index_failure("dependencies were inspected", exc)
 
     _print_dependency_chain(
-        node=node,
-        src_rel=src_rel,
+        source_item=source_item,
         dep_items=dep_items,
         graph=graph,
     )
-    _print_missing_dependency_warning(
+    _print_broken_dependency_warning(
         dep_items=dep_items,
         graph=graph,
         for_eval=False,
@@ -411,7 +470,7 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
         print(f"Error: failed to load mdoc: {exc}")
         return 1
 
-    node = graph.get_root_node()
+    source_item = graph.root_item()
     try:
         dep_items = graph.direct_dependency_items()
     except ValueError as exc:
@@ -419,7 +478,9 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
         return 1
 
     if not dep_items:
-        print(f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
+        print(
+            f"source: {format_mdoc_item(source_item.fnode, source_item.title, src_rel, marker='')}"
+        )
         print("No dependencies to remove")
         return 0
 
@@ -427,9 +488,9 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
     error_indices = {
         idx
         for idx, item in enumerate(dep_items)
-        if _is_missing_dependency_item(item, graph=graph)
+        if _is_broken_dependency_item(item, graph=graph)
     }
-    _print_missing_dependency_warning(
+    _print_broken_dependency_warning(
         dep_items=dep_items,
         graph=graph,
         for_eval=False,
@@ -478,18 +539,102 @@ def _cmd_dep_rm(args: argparse.Namespace) -> int:
         print("No dependencies removed")
         return 0
 
-    print(f"source: {format_mdoc_item(node.fnode, node.title, src_rel, marker='')}")
+    print(
+        f"source: {format_mdoc_item(source_item.fnode, source_item.title, src_rel, marker='')}"
+    )
     print(f"removed: {removed_count}")
     for dep_fnode in removed_fnodes:
         row = selected_rows_by_fnode.get(dep_fnode)
         if row is None:
             continue
         line = format_mdoc_item(row[0], row[1], row[2], marker="-")
-        if dep_fnode in graph.missing_fnodes:
+        if graph.is_broken_fnode(dep_fnode):
             print(colorize(line, STYLE["red"]))
         else:
             print(line)
     return 0
+
+
+def _cmd_dep_refs(args: argparse.Namespace) -> int:
+    mdcroot = _get_mdcroot_or_none()
+    if mdcroot is None:
+        return 1
+
+    cache = IndCache(mdcroot)
+    if not _bootstrap_cache(cache, action="prepare dependency index"):
+        return 1
+
+    try:
+        target_item = _resolve_ref_item(cache, args.target)
+    except (ValueError, sqlite3.Error) as exc:
+        print(f"Error: failed to resolve mdoc: {exc}")
+        return 1
+
+    graph = DepGraph(mdcroot=mdcroot, root_fnode=target_item.fnode, cache=cache)
+    try:
+        ref_items = graph.referrer_items(depth=args.depth)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        print(f"Error: failed to inspect referrers: {exc}")
+        return 1
+
+    broken_target = graph.issue_for_fnode(target_item.fnode)
+    if broken_target is not None:
+        target_item = DependencyItem(
+            depth=0,
+            fnode=broken_target.fnode,
+            title=broken_target.title,
+            rel_path=broken_target.rel_path,
+        )
+
+    _print_referrer_chain(
+        target_item=target_item,
+        ref_items=ref_items,
+        graph=graph,
+    )
+    return 0
+
+
+def _cmd_graph_check(_: argparse.Namespace) -> int:
+    mdcroot = _get_mdcroot_or_none()
+    if mdcroot is None:
+        return 1
+
+    cache = IndCache(mdcroot)
+    if not _bootstrap_cache(cache, action="prepare graph index"):
+        return 1
+
+    graph = DepGraph(mdcroot=mdcroot, cache=cache)
+    try:
+        report = graph.graph_check_report()
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        print(f"Error: failed to inspect graph: {exc}")
+        return 1
+
+    print(f"nodes: {report.nodes}")
+    print(f"edges: {report.edges}")
+    print(f"missing: {len(report.missing)}")
+    print(f"invalid: {len(report.invalid)}")
+    print(f"cycles: {len(report.cycles)}")
+
+    if report.missing:
+        print("missing dependencies:")
+        for issue in report.missing:
+            print(_format_issue_line(issue.fnode, issue.title, issue.rel_path))
+            print(f"    ! {issue.error}")
+
+    if report.invalid:
+        print("invalid mdocs:")
+        for issue in report.invalid:
+            print(_format_issue_line(issue.fnode, issue.title, issue.rel_path))
+            print(f"    ! {issue.error}")
+
+    if report.cycles:
+        print("cycles:")
+        for index, cycle in enumerate(report.cycles, start=1):
+            print(f"[{index}]")
+            print(graph.format_cycle(cycle))
+
+    return 1 if (report.missing or report.invalid or report.cycles) else 0
 
 
 def _cmd_sync(_: argparse.Namespace) -> int:
@@ -585,6 +730,20 @@ def _build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument("query", help="Query by title or fnode")
     search_parser.set_defaults(func=_cmd_search)
 
+    graph_parser = subparsers.add_parser(
+        "graph", help="Inspect the global dependency graph"
+    )
+    graph_subparsers = graph_parser.add_subparsers(
+        dest="graph_command",
+        required=True,
+    )
+
+    graph_check_parser = graph_subparsers.add_parser(
+        "check",
+        help="Scan the whole repo and report graph issues",
+    )
+    graph_check_parser.set_defaults(func=_cmd_graph_check)
+
     eval_parser = subparsers.add_parser(
         "eval", help="Compile and run all blocks in a mdoc"
     )
@@ -654,6 +813,22 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Source mdoc to modify (fnode or .mdoc path)",
     )
     dep_rm_parser.set_defaults(func=_cmd_dep_rm)
+
+    dep_refs_parser = dep_subparsers.add_parser(
+        "refs", help="Show reverse dependencies of a mdoc"
+    )
+    dep_refs_parser.add_argument(
+        "target",
+        help="Target mdoc to inspect (fnode or .mdoc path)",
+    )
+    dep_refs_parser.add_argument(
+        "-d",
+        "--depth",
+        type=int,
+        default=1,
+        help="Reverse dependency traversal depth (-1 for unlimited, default: 1)",
+    )
+    dep_refs_parser.set_defaults(func=_cmd_dep_refs)
 
     return parser
 
