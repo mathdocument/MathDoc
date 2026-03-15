@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "mathdoc"
-version = "0.6.0"
+version = "0.7.0"
 description = "math knowledge management tool"
 readme = "README.md"
 authors = [{ name = "sparkwenc", email = "sparkwenc@gmail.com" }]
