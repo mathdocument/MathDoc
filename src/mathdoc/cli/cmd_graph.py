@@ -2,16 +2,17 @@ import argparse
 import sqlite3
 
 from ..depgraph import DepGraph
-from .common import UI, prepare_cache_context
+from .common import UI, prepare_cache_env
 from .presenters import graph_check_view
 
 
 def cmd_graph_check(_: argparse.Namespace) -> int:
-    context = prepare_cache_context(action="prepare graph index")
-    if context is None:
+    env = prepare_cache_env(action="prepare graph index")
+    if env is None:
         return 1
+    mdcroot, cache = env
 
-    graph = DepGraph(mdcroot=context.mdcroot, cache=context.cache)
+    graph = DepGraph(mdcroot=mdcroot, cache=cache)
     try:
         report = graph.graph_check_report()
     except (OSError, ValueError, sqlite3.Error) as exc:

@@ -108,55 +108,20 @@ class IndCache:
             raise ValueError("mdoc reference cannot be empty")
 
         base_cwd = (cwd or Path.cwd()).resolve()
-        root_resolved = self.root.resolve()
-        maybe_path = (
-            ("/" in raw_ref) or raw_ref.endswith(".mdoc") or raw_ref.startswith(".")
-        )
+        existing_path = self._resolve_existing_ref_path(raw_ref, cwd=base_cwd)
         with self._open_conn() as conn:
-            if maybe_path:
-                raw_path = Path(raw_ref)
-                candidates: list[Path] = []
-                if raw_path.is_absolute():
-                    candidates.append(raw_path.resolve())
-                else:
-                    candidates.append((base_cwd / raw_path).resolve())
-                    candidates.append((self.root / raw_path).resolve())
+            if existing_path is not None:
+                candidate, rel_path = existing_path
+                row = conn.execute(
+                    "SELECT fnode, title FROM mdocs WHERE path = ?", (rel_path,)
+                ).fetchone()
+                if row is not None:
+                    return str(row[0]), str(row[1]), candidate
 
-                seen: set[Path] = set()
-                for candidate in candidates:
-                    if candidate in seen:
-                        continue
-                    seen.add(candidate)
-
-                    if not candidate.is_file():
-                        continue
-
-                    nested_root = find_nested_mdcroot(root_resolved, candidate.parent)
-                    if nested_root is not None:
-                        raise ValueError(
-                            f"mdoc path is inside nested mdoc root: {nested_root}"
-                        )
-
-                    try:
-                        rel_path = candidate.relative_to(root_resolved).as_posix()
-                    except ValueError as exc:
-                        raise ValueError(
-                            f"mdoc path must be under mdoc root: {root_resolved}"
-                        ) from exc
-
-                    row = conn.execute(
-                        "SELECT fnode, title FROM mdocs WHERE path = ?", (rel_path,)
-                    ).fetchone()
-                    if row is not None:
-                        return str(row[0]), str(row[1]), candidate
-
-                    head = self._read_mdoc_head(candidate)
-                    if head is None or not head[0]:
-                        raise ValueError(f"invalid mdoc file: {candidate}")
-                    return str(head[0]), str(head[1]), candidate
-
-                if raw_path.suffix == ".mdoc":
-                    raise ValueError(f"mdoc file not found: {raw_ref}")
+                head = self.read_mdoc_head(candidate)
+                if head is None or not head[0]:
+                    raise ValueError(f"invalid mdoc file: {candidate}")
+                return str(head[0]), str(head[1]), candidate
 
             query_lc = raw_ref.casefold()
             rows = conn.execute(
@@ -200,41 +165,9 @@ class IndCache:
             raise ValueError("mdoc reference cannot be empty")
 
         base_cwd = (cwd or Path.cwd()).resolve()
-        root_resolved = self.root.resolve()
-        maybe_path = (
-            ("/" in raw_ref) or raw_ref.endswith(".mdoc") or raw_ref.startswith(".")
-        )
-        if maybe_path:
-            raw_path = Path(raw_ref)
-            candidates: list[Path] = []
-            if raw_path.is_absolute():
-                candidates.append(raw_path.resolve())
-            else:
-                candidates.append((base_cwd / raw_path).resolve())
-                candidates.append((self.root / raw_path).resolve())
-
-            seen: set[Path] = set()
-            for candidate in candidates:
-                if candidate in seen:
-                    continue
-                seen.add(candidate)
-                if not candidate.is_file():
-                    continue
-                nested_root = find_nested_mdcroot(root_resolved, candidate.parent)
-                if nested_root is not None:
-                    raise ValueError(
-                        f"mdoc path is inside nested mdoc root: {nested_root}"
-                    )
-                try:
-                    candidate.relative_to(root_resolved)
-                except ValueError as exc:
-                    raise ValueError(
-                        f"mdoc path must be under mdoc root: {root_resolved}"
-                    ) from exc
-                return candidate
-
-            if raw_path.suffix == ".mdoc":
-                raise ValueError(f"mdoc file not found: {raw_ref}")
+        existing_path = self._resolve_existing_ref_path(raw_ref, cwd=base_cwd)
+        if existing_path is not None:
+            return existing_path[0]
 
         _, _, resolved = self.resolve_ref(raw_ref, cwd=base_cwd)
         return resolved
@@ -339,7 +272,7 @@ class IndCache:
         yield from iter_workspace_mdoc_files(self.root)
 
     @staticmethod
-    def _read_mdoc_head(file_path: Path) -> tuple[str, str] | None:
+    def read_mdoc_head(file_path: Path) -> tuple[str, str] | None:
         fnode = ""
         title = ""
         try:
@@ -387,7 +320,7 @@ class IndCache:
             if cached and cached[1] == mtime_ns and cached[2] == size:
                 continue
 
-            head = self._read_mdoc_head(file_path)
+            head = self.read_mdoc_head(file_path)
             if head is None:
                 conn.execute("DELETE FROM mdocs WHERE path = ?", (rel_path,))
                 continue
@@ -454,7 +387,7 @@ class IndCache:
                 conn.commit()
             return
 
-        head = self._read_mdoc_head(file_path)
+        head = self.read_mdoc_head(file_path)
         if head is None:
             conn.execute("DELETE FROM mdocs WHERE path = ?", (rel_path,))
             if commit:
@@ -490,3 +423,43 @@ class IndCache:
     @staticmethod
     def _format_ref_preview(rows: list[tuple[object, object, object]]) -> str:
         return ", ".join(f"{str(row[0])[:8]}:{row[2]}" for row in rows)
+
+    def _resolve_existing_ref_path(
+        self,
+        raw_ref: str,
+        *,
+        cwd: Path,
+    ) -> tuple[Path, str] | None:
+        if not self._looks_like_path_ref(raw_ref):
+            return None
+
+        raw_path = Path(raw_ref)
+        for candidate in self._path_ref_candidates(raw_path, cwd=cwd):
+            if not candidate.is_file():
+                continue
+            return candidate, self._workspace_rel_path(candidate)
+
+        if raw_path.suffix == ".mdoc":
+            raise ValueError(f"mdoc file not found: {raw_ref}")
+        return None
+
+    @staticmethod
+    def _looks_like_path_ref(raw_ref: str) -> bool:
+        return ("/" in raw_ref) or raw_ref.endswith(".mdoc") or raw_ref.startswith(".")
+
+    def _path_ref_candidates(self, raw_path: Path, *, cwd: Path) -> list[Path]:
+        if raw_path.is_absolute():
+            return [raw_path.resolve()]
+        return [(cwd / raw_path).resolve(), (self.root / raw_path).resolve()]
+
+    def _workspace_rel_path(self, candidate: Path) -> str:
+        root_resolved = self.root.resolve()
+        nested_root = find_nested_mdcroot(root_resolved, candidate.parent)
+        if nested_root is not None:
+            raise ValueError(f"mdoc path is inside nested mdoc root: {nested_root}")
+        try:
+            return candidate.relative_to(root_resolved).as_posix()
+        except ValueError as exc:
+            raise ValueError(
+                f"mdoc path must be under mdoc root: {root_resolved}"
+            ) from exc

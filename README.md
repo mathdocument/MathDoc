@@ -16,6 +16,7 @@ References to `.mdoc` files accepted by `mdc` commands are
 ```bash
 mdc init
 mdc new -t "Root Note" -f notes/root-note
+mdc edit notes/root-note.mdoc
 mdc new -t "Background Lemma" -f notes/background-lemma
 # use the created path or fnode reported by `mdc new` as <root>
 mdc dep add <root> background
@@ -151,7 +152,14 @@ This scan reports:
 
 #### `mdc eval`
 
-This will first merge all the dependent-enabled code blocks of the dependencies of a given source `.mdoc` file in topological order, and then compile them according to compiling configurations:
+One can write codeblocks in `.mdoc` files of the form
+```mdoc
+@src: [type]
+@end
+```
+where [type] for now could be natl/latex/lean/python.
+
+`mdc eval` will first merge all the dependent-enabled code blocks of the dependencies of a given source `.mdoc` file in topological order, and then compile them according to compiling configurations:
 ```bash
 mdc eval <source>
 mdc eval <source> --depth -1

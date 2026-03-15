@@ -1,21 +1,19 @@
 import argparse
 import sqlite3
 
-from ..depgraph.exceptions import DependencyCycleError
 from ..ui import DepAddView, DepRmView, NodeRef, select_indices_interactive
 from .common import (
     UI,
-    load_source_graph_context,
-    load_target_graph_context,
+    load_source_graph,
+    load_target_graph,
     prompt_create_dependency_row,
     refresh_rows_or_warn,
+    render_dependency_report,
     search_match_rows,
 )
 from .presenters import (
     broken_dependency_summary,
     chain_view,
-    cycle_view,
-    missing_referrer_views,
     node_ref,
     node_ref_from_item,
     node_ref_from_row,
@@ -23,15 +21,16 @@ from .presenters import (
 
 
 def cmd_dep_add(args: argparse.Namespace) -> int:
-    context = load_source_graph_context(
+    env = load_source_graph(
         source=args.source,
         action="prepare dependency index",
     )
-    if context is None:
+    if env is None:
         return 1
+    mdcroot, cache, graph, source_item = env
 
     raw_match_rows = search_match_rows(
-        context.cache,
+        cache,
         query=args.query,
         action="search dependency candidates",
     )
@@ -39,8 +38,8 @@ def cmd_dep_add(args: argparse.Namespace) -> int:
         return 1
 
     excluded_fnodes = {
-        context.source_item.fnode,
-        *context.graph.direct_dependency_fnodes(),
+        source_item.fnode,
+        *graph.direct_dependency_fnodes(),
     }
     match_rows = [row for row in raw_match_rows if row[0] not in excluded_fnodes][
         : args.max_results
@@ -52,8 +51,8 @@ def cmd_dep_add(args: argparse.Namespace) -> int:
             return 0
         try:
             created_row = prompt_create_dependency_row(
-                mdcroot=context.mdcroot,
-                cache=context.cache,
+                mdcroot=mdcroot,
+                cache=cache,
             )
         except ValueError as exc:
             UI.error(str(exc))
@@ -90,8 +89,8 @@ def cmd_dep_add(args: argparse.Namespace) -> int:
     selected_fnodes = list(selected_by_fnode.keys())
 
     try:
-        context.cache.refresh_rows(list(selected_by_fnode.values()))
-        refreshed_by_fnode = context.cache.lookup_by_fnode(selected_fnodes)
+        cache.refresh_rows(list(selected_by_fnode.values()))
+        refreshed_by_fnode = cache.lookup_by_fnode(selected_fnodes)
     except (OSError, ValueError, sqlite3.Error) as exc:
         UI.warn_index_failure("dependencies were inspected", exc)
         refreshed_by_fnode = {}
@@ -103,7 +102,7 @@ def cmd_dep_add(args: argparse.Namespace) -> int:
         selected_by_fnode[dep_fnode] = (dep_fnode, refreshed[0], refreshed[1])
 
     try:
-        added, _, _ = context.graph.add_direct_dependencies(list(selected_by_fnode))
+        added, _, _ = graph.add_direct_dependencies(list(selected_by_fnode))
     except OSError as exc:
         UI.error(f"failed to save mdoc: {exc}")
         return 1
@@ -111,7 +110,7 @@ def cmd_dep_add(args: argparse.Namespace) -> int:
     UI.write_lines(
         UI.render_dep_add_lines(
             DepAddView(
-                source=context.source_item,
+                source=source_item,
                 added=tuple(
                     node_ref_from_row(selected_by_fnode[dep_fnode], broken=False)
                     for dep_fnode in added
@@ -123,125 +122,71 @@ def cmd_dep_add(args: argparse.Namespace) -> int:
 
 
 def cmd_dep_show(args: argparse.Namespace) -> int:
-    context = load_source_graph_context(
+    env = load_source_graph(
         source=args.source,
         action="prepare dependency index",
     )
-    if context is None:
+    if env is None:
         return 1
+    _, cache, graph, source_item = env
 
-    try:
-        dep_items = context.graph.dependency_items(depth=args.depth)
-    except DependencyCycleError as exc:
-        UI.write_lines(UI.render_cycle_lines(cycle_view(context.graph, exc.cycle)))
-        return 1
-    except ValueError as exc:
-        UI.write_lines(
-            UI.render_anchor_error_lines(
-                label="source",
-                item=context.source_item,
-                message=f"failed to inspect dependencies: {exc}",
-            )
-        )
-        return 1
-
-    dep_rows = [(item.fnode, item.title, item.rel_path) for item in dep_items]
-    refresh_rows_or_warn(
-        context.cache,
-        dep_rows,
-        action="dependencies were inspected",
-    )
-
-    UI.write_lines(
-        UI.render_chain_lines(
-            chain_view(
-                anchor_label="source",
-                anchor=context.source_item,
-                count_label="depens",
-                items=dep_items,
-                graph=context.graph,
-            )
-        )
-    )
-    missing_lines = UI.render_missing_referrer_lines(
-        missing_referrer_views(dep_items, context.graph)
-    )
-    if missing_lines:
-        UI.write_lines(missing_lines)
-    broken_lines = UI.render_broken_dependency_warning_lines(
-        summary=broken_dependency_summary(dep_items, context.graph),
+    report = render_dependency_report(
+        cache=cache,
+        graph=graph,
+        source_item=source_item,
+        count_label="depens",
+        refresh_action="dependencies were inspected",
+        inspect_error_message="failed to inspect dependencies",
+        load_items=lambda: graph.dependency_items(depth=args.depth),
         for_eval=False,
+        show_missing_referrers=True,
     )
-    if broken_lines:
-        UI.write_lines(broken_lines)
+    if report is None:
+        return 1
     return 0
 
 
 def cmd_dep_leaf(args: argparse.Namespace) -> int:
-    context = load_source_graph_context(
+    env = load_source_graph(
         source=args.source,
         action="prepare dependency index",
     )
-    if context is None:
+    if env is None:
         return 1
+    _, cache, graph, source_item = env
 
-    try:
-        leaf_items = context.graph.leaf_dependency_items()
-    except DependencyCycleError as exc:
-        UI.write_lines(UI.render_cycle_lines(cycle_view(context.graph, exc.cycle)))
-        return 1
-    except ValueError as exc:
-        UI.write_lines(
-            UI.render_anchor_error_lines(
-                label="source",
-                item=context.source_item,
-                message=f"failed to inspect leaf dependencies: {exc}",
-            )
-        )
-        return 1
-
-    leaf_rows = [(item.fnode, item.title, item.rel_path) for item in leaf_items]
-    refresh_rows_or_warn(
-        context.cache,
-        leaf_rows,
-        action="leaf dependencies were inspected",
-    )
-
-    UI.write_lines(
-        UI.render_chain_lines(
-            chain_view(
-                anchor_label="source",
-                anchor=context.source_item,
-                count_label="leaves",
-                items=leaf_items,
-                graph=context.graph,
-            )
-        )
-    )
-    broken_lines = UI.render_broken_dependency_warning_lines(
-        summary=broken_dependency_summary(leaf_items, context.graph),
+    report = render_dependency_report(
+        cache=cache,
+        graph=graph,
+        source_item=source_item,
+        count_label="leaves",
+        refresh_action="leaf dependencies were inspected",
+        inspect_error_message="failed to inspect leaf dependencies",
+        load_items=graph.leaf_dependency_items,
         for_eval=False,
+        show_missing_referrers=False,
     )
-    if broken_lines:
-        UI.write_lines(broken_lines)
+    if report is None:
+        return 1
     return 0
 
 
 def cmd_dep_rm(args: argparse.Namespace) -> int:
-    context = load_source_graph_context(
+    env = load_source_graph(
         source=args.source,
         action="prepare dependency index",
     )
-    if context is None:
+    if env is None:
         return 1
+    _, cache, graph, source_item = env
 
     try:
-        dep_items = context.graph.direct_dependency_items()
+        dep_items = graph.direct_dependency_items()
     except ValueError as exc:
         UI.write_lines(
             UI.render_anchor_error_lines(
                 label="source",
-                item=context.source_item,
+                item=source_item,
                 message=f"failed to inspect dependencies: {exc}",
             )
         )
@@ -251,19 +196,19 @@ def cmd_dep_rm(args: argparse.Namespace) -> int:
         UI.write_lines(
             UI.render_anchor_message_lines(
                 label="source",
-                item=context.source_item,
+                item=source_item,
                 message="No dependencies to remove",
             )
         )
         return 0
 
     dep_refs = [
-        node_ref_from_item(item, broken=context.graph.is_broken_fnode(item.fnode))
+        node_ref_from_item(item, broken=graph.is_broken_fnode(item.fnode))
         for item in dep_items
     ]
     error_indices = {idx for idx, item in enumerate(dep_refs) if item.broken}
     broken_lines = UI.render_broken_dependency_warning_lines(
-        summary=broken_dependency_summary(dep_items, context.graph),
+        summary=broken_dependency_summary(dep_items, graph),
         for_eval=False,
     )
     if broken_lines:
@@ -298,7 +243,7 @@ def cmd_dep_rm(args: argparse.Namespace) -> int:
         selected_rows_by_fnode[dep_fnode] = row
 
     refresh_rows_or_warn(
-        context.cache,
+        cache,
         [
             (row.fnode, row.title, row.rel_path)
             for row in selected_rows_by_fnode.values()
@@ -307,7 +252,7 @@ def cmd_dep_rm(args: argparse.Namespace) -> int:
     )
 
     try:
-        removed_fnodes = context.graph.remove_direct_dependencies(selected_fnodes)
+        removed_fnodes = graph.remove_direct_dependencies(selected_fnodes)
     except OSError as exc:
         UI.error(f"failed to save mdoc: {exc}")
         return 1
@@ -318,7 +263,7 @@ def cmd_dep_rm(args: argparse.Namespace) -> int:
     UI.write_lines(
         UI.render_dep_rm_lines(
             DepRmView(
-                source=context.source_item,
+                source=source_item,
                 removed=tuple(
                     selected_rows_by_fnode[dep_fnode]
                     for dep_fnode in removed_fnodes
@@ -331,21 +276,21 @@ def cmd_dep_rm(args: argparse.Namespace) -> int:
 
 
 def cmd_dep_refs(args: argparse.Namespace) -> int:
-    context = load_target_graph_context(
+    env = load_target_graph(
         target=args.target,
         action="prepare dependency index",
     )
-    if context is None:
+    if env is None:
         return 1
+    _, _, graph, target_item = env
 
     try:
-        ref_items = context.graph.referrer_items(depth=args.depth)
+        ref_items = graph.referrer_items(depth=args.depth)
     except (OSError, ValueError, sqlite3.Error) as exc:
         UI.error(f"failed to inspect referrers: {exc}")
         return 1
 
-    target_item = context.target_item
-    broken_target = context.graph.issue_for_fnode(target_item.fnode)
+    broken_target = graph.issue_for_fnode(target_item.fnode)
     if broken_target is not None:
         target_item = node_ref(
             fnode=broken_target.fnode,
@@ -361,7 +306,7 @@ def cmd_dep_refs(args: argparse.Namespace) -> int:
                 anchor=target_item,
                 count_label="refers",
                 items=ref_items,
-                graph=context.graph,
+                graph=graph,
             )
         )
     )

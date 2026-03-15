@@ -189,7 +189,8 @@ class GraphLoader:
             try:
                 node = self._load_node_from_path(file_path)
             except ValueError as exc:
-                head_fnode, _ = self._read_mdoc_head(file_path)
+                head = self.cache.read_mdoc_head(file_path)
+                head_fnode = None if head is None else head[0]
                 issue = make_invalid_issue(
                     mdcroot=self.mdcroot,
                     path=file_path,
@@ -246,7 +247,7 @@ class GraphLoader:
                     fnode,
                     tolerate_missing=tolerate_missing,
                 )
-            except ValueError as exc:
+            except ValueError:
                 duplicate_paths = self.cache.duplicate_fnode_paths(fnode)
                 if tolerate_invalid and len(duplicate_paths) > 1:
                     self._record_duplicate_fnode(fnode=fnode, paths=duplicate_paths)
@@ -347,25 +348,6 @@ class GraphLoader:
             error=error,
             fnode=fnode,
         )
-
-    @staticmethod
-    def _read_mdoc_head(path: Path) -> tuple[str | None, str | None]:
-        fnode = ""
-        title = ""
-        try:
-            with path.open("r", encoding="utf-8") as handle:
-                for raw_line in handle:
-                    line = raw_line.strip()
-                    lower = line.lower()
-                    if lower.startswith("@fnode:"):
-                        fnode = line.split(":", 1)[1].strip()
-                    elif lower.startswith("@title:"):
-                        title = line.split(":", 1)[1].strip()
-                    if fnode and title:
-                        break
-        except OSError:
-            return None, None
-        return (fnode or None, title or None)
 
     @staticmethod
     def _dedupe_keep_order(items: list[str]) -> list[str]:

@@ -1,67 +1,38 @@
 import argparse
 
 from ..depgraph.exceptions import DependencyCycleError
-from .common import UI, load_source_graph_context
-from .presenters import (
-    broken_dependency_summary,
-    chain_view,
-    cycle_view,
-    eval_block_view,
-    missing_referrer_views,
-)
+from .common import UI, load_source_graph, render_dependency_report
+from .presenters import cycle_view, eval_block_view
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
-    context = load_source_graph_context(
+    env = load_source_graph(
         source=args.source,
         action="prepare eval index",
     )
-    if context is None:
+    if env is None:
         return 1
+    _, cache, graph, source_item = env
 
-    try:
-        dep_items = context.graph.dependency_items(depth=args.depth)
-    except DependencyCycleError as exc:
-        UI.write_lines(UI.render_cycle_lines(cycle_view(context.graph, exc.cycle)))
-        return 1
-    except ValueError as exc:
-        UI.write_lines(
-            UI.render_anchor_error_lines(
-                label="source",
-                item=context.source_item,
-                message=f"failed to inspect dependencies: {exc}",
-            )
-        )
-        return 1
-
-    UI.write_lines(
-        UI.render_chain_lines(
-            chain_view(
-                anchor_label="source",
-                anchor=context.source_item,
-                count_label="depens",
-                items=dep_items,
-                graph=context.graph,
-            )
-        )
+    report = render_dependency_report(
+        cache=cache,
+        graph=graph,
+        source_item=source_item,
+        count_label="depens",
+        refresh_action="dependencies were inspected",
+        inspect_error_message="failed to inspect dependencies",
+        load_items=lambda: graph.dependency_items(depth=args.depth),
+        for_eval=True,
+        show_missing_referrers=True,
     )
-    missing_lines = UI.render_missing_referrer_lines(
-        missing_referrer_views(dep_items, context.graph)
-    )
-    if missing_lines:
-        UI.write_lines(missing_lines)
+    if report is None:
+        return 1
+    _, broken_summary = report
 
-    broken_summary = broken_dependency_summary(dep_items, context.graph)
     if broken_summary.total > 0:
-        UI.write_lines(
-            UI.render_broken_dependency_warning_lines(
-                summary=broken_summary,
-                for_eval=True,
-            )
-        )
         return 1
 
-    if not context.graph.root_has_blocks():
+    if not graph.root_has_blocks():
         UI.write("No blocks to eval")
         return 0
 
@@ -96,14 +67,14 @@ def cmd_eval(args: argparse.Namespace) -> int:
             UI.write()
 
     try:
-        context.graph.eval_blocks(
+        graph.eval_blocks(
             depth=args.depth,
             progress=UI.info,
             on_start=_on_eval_start,
             on_result=_on_eval_result,
         )
     except DependencyCycleError as exc:
-        UI.write_lines(UI.render_cycle_lines(cycle_view(context.graph, exc.cycle)))
+        UI.write_lines(UI.render_cycle_lines(cycle_view(graph, exc.cycle)))
         return 1
     except ValueError as exc:
         UI.error(f"failed to eval mdoc: {exc}")

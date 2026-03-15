@@ -1,39 +1,24 @@
-from dataclasses import dataclass
+from collections.abc import Callable
 import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
-from ..depgraph import DepGraph
+from ..depgraph import DepGraph, DependencyItem
+from ..depgraph.exceptions import DependencyCycleError
 from ..indcache import IndCache
-from ..ui import NodeRef, TerminalUI, prompt_new_mdoc_interactive
+from ..ui import BrokenDependencySummary, NodeRef, TerminalUI, prompt_new_mdoc_interactive
 from ..ui.theme import short_fnode
 from ..utils import find_mdcroot, to_rel_path
-from .presenters import node_ref_from_item
+from .presenters import (
+    broken_dependency_summary,
+    chain_view,
+    cycle_view,
+    missing_referrer_views,
+    node_ref_from_item,
+)
 
 
 UI = TerminalUI()
-
-
-@dataclass(slots=True, frozen=True)
-class CacheContext:
-    mdcroot: Path
-    cache: IndCache
-
-
-@dataclass(slots=True, frozen=True)
-class SourceGraphContext:
-    mdcroot: Path
-    cache: IndCache
-    graph: DepGraph
-    source_item: NodeRef
-
-
-@dataclass(slots=True, frozen=True)
-class TargetGraphContext:
-    mdcroot: Path
-    cache: IndCache
-    graph: DepGraph
-    target_item: NodeRef
 
 
 def get_mdcroot_or_none() -> Path | None:
@@ -44,11 +29,11 @@ def get_mdcroot_or_none() -> Path | None:
     return mdcroot
 
 
-def get_cache_context_or_none() -> CacheContext | None:
+def get_cache_env_or_none() -> tuple[Path, IndCache] | None:
     mdcroot = get_mdcroot_or_none()
     if mdcroot is None:
         return None
-    return CacheContext(mdcroot=mdcroot, cache=IndCache(mdcroot))
+    return mdcroot, IndCache(mdcroot)
 
 
 def load_graph_from_ref(cache: IndCache, ref: str) -> tuple[DepGraph, str]:
@@ -73,60 +58,63 @@ def bootstrap_cache(cache: IndCache, *, action: str) -> bool:
     return True
 
 
-def prepare_cache_context(*, action: str) -> CacheContext | None:
-    context = get_cache_context_or_none()
-    if context is None:
+def prepare_cache_env(*, action: str) -> tuple[Path, IndCache] | None:
+    env = get_cache_env_or_none()
+    if env is None:
         return None
-    if not bootstrap_cache(context.cache, action=action):
+    mdcroot, cache = env
+    if not bootstrap_cache(cache, action=action):
         return None
-    return context
+    return mdcroot, cache
 
 
-def load_source_graph_context(
+def load_source_graph(
     *,
     source: str,
     action: str,
     error_prefix: str = "failed to load mdoc",
-) -> SourceGraphContext | None:
-    context = prepare_cache_context(action=action)
-    if context is None:
+) -> tuple[Path, IndCache, DepGraph, NodeRef] | None:
+    env = prepare_cache_env(action=action)
+    if env is None:
         return None
+    mdcroot, cache = env
     try:
-        graph, src_rel = load_graph_from_ref(context.cache, source)
+        graph, src_rel = load_graph_from_ref(cache, source)
     except (FileNotFoundError, OSError, ValueError, sqlite3.Error) as exc:
         UI.error(f"{error_prefix}: {exc}")
         return None
-    return SourceGraphContext(
-        mdcroot=context.mdcroot,
-        cache=context.cache,
-        graph=graph,
-        source_item=node_ref_from_item(graph.root_item(), rel_path=src_rel),
+    return (
+        mdcroot,
+        cache,
+        graph,
+        node_ref_from_item(graph.root_item(), rel_path=src_rel),
     )
 
 
-def load_target_graph_context(
+def load_target_graph(
     *,
     target: str,
     action: str,
     resolve_error_prefix: str = "failed to resolve mdoc",
-) -> TargetGraphContext | None:
-    context = prepare_cache_context(action=action)
-    if context is None:
+) -> tuple[Path, IndCache, DepGraph, NodeRef] | None:
+    env = prepare_cache_env(action=action)
+    if env is None:
         return None
+    mdcroot, cache = env
     try:
-        target_item = resolve_ref_item(context.cache, target)
+        target_item = resolve_ref_item(cache, target)
     except (ValueError, sqlite3.Error) as exc:
         UI.error(f"{resolve_error_prefix}: {exc}")
         return None
-    return TargetGraphContext(
-        mdcroot=context.mdcroot,
-        cache=context.cache,
-        graph=DepGraph(
-            mdcroot=context.mdcroot,
+    return (
+        mdcroot,
+        cache,
+        DepGraph(
+            mdcroot=mdcroot,
             root_fnode=target_item.fnode,
-            cache=context.cache,
+            cache=cache,
         ),
-        target_item=target_item,
+        target_item,
     )
 
 
@@ -142,6 +130,67 @@ def refresh_rows_or_warn(
         cache.refresh_rows(rows)
     except (OSError, ValueError, sqlite3.Error) as exc:
         UI.warn_index_failure(action, exc)
+
+
+def render_dependency_report(
+    *,
+    cache: IndCache,
+    graph: DepGraph,
+    source_item: NodeRef,
+    count_label: str,
+    refresh_action: str,
+    inspect_error_message: str,
+    load_items: Callable[[], list[DependencyItem]],
+    for_eval: bool,
+    show_missing_referrers: bool,
+) -> tuple[list[DependencyItem], BrokenDependencySummary] | None:
+    try:
+        items = load_items()
+    except DependencyCycleError as exc:
+        UI.write_lines(UI.render_cycle_lines(cycle_view(graph, exc.cycle)))
+        return None
+    except ValueError as exc:
+        UI.write_lines(
+            UI.render_anchor_error_lines(
+                label="source",
+                item=source_item,
+                message=f"{inspect_error_message}: {exc}",
+            )
+        )
+        return None
+
+    refresh_rows_or_warn(
+        cache,
+        [(item.fnode, item.title, item.rel_path) for item in items],
+        action=refresh_action,
+    )
+    UI.write_lines(
+        UI.render_chain_lines(
+            chain_view(
+                anchor_label="source",
+                anchor=source_item,
+                count_label=count_label,
+                items=items,
+                graph=graph,
+            )
+        )
+    )
+    if show_missing_referrers:
+        missing_lines = UI.render_missing_referrer_lines(
+            missing_referrer_views(items, graph)
+        )
+        if missing_lines:
+            UI.write_lines(missing_lines)
+
+    summary = broken_dependency_summary(items, graph)
+    if summary.total > 0:
+        UI.write_lines(
+            UI.render_broken_dependency_warning_lines(
+                summary=summary,
+                for_eval=for_eval,
+            )
+        )
+    return items, summary
 
 
 def search_match_rows(

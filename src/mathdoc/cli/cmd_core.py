@@ -9,8 +9,8 @@ from ..utils import to_rel_path
 from .common import (
     UI,
     create_mdoc,
-    get_cache_context_or_none,
-    prepare_cache_context,
+    get_cache_env_or_none,
+    prepare_cache_env,
     search_match_rows,
 )
 from .presenters import node_ref_from_item, node_ref_from_row
@@ -36,14 +36,15 @@ def cmd_init(_: argparse.Namespace) -> int:
 
 
 def cmd_new(args: argparse.Namespace) -> int:
-    context = get_cache_context_or_none()
-    if context is None:
+    env = get_cache_env_or_none()
+    if env is None:
         return 1
+    mdcroot, cache = env
 
     try:
         graph, _ = create_mdoc(
-            mdcroot=context.mdcroot,
-            cache=context.cache,
+            mdcroot=mdcroot,
+            cache=cache,
             file_path=args.file,
             title=args.title,
         )
@@ -68,12 +69,13 @@ def cmd_new(args: argparse.Namespace) -> int:
 
 
 def cmd_search(args: argparse.Namespace) -> int:
-    context = prepare_cache_context(action="prepare search index")
-    if context is None:
+    env = prepare_cache_env(action="prepare search index")
+    if env is None:
         return 1
+    _, cache = env
 
     matches = search_match_rows(
-        context.cache,
+        cache,
         query=args.query,
         max_results=args.max_results,
         action="search mdocs",
@@ -91,13 +93,14 @@ def cmd_search(args: argparse.Namespace) -> int:
 
 
 def cmd_sync(_: argparse.Namespace) -> int:
-    context = get_cache_context_or_none()
-    if context is None:
+    env = get_cache_env_or_none()
+    if env is None:
         return 1
+    _, cache = env
 
     try:
-        context.cache.refresh_all()
-        total = context.cache.count()
+        cache.refresh_all()
+        total = cache.count()
     except (OSError, ValueError, sqlite3.Error) as exc:
         UI.write_lines(UI.render_index_error_lines(action="sync index", exc=exc))
         return 1
@@ -106,12 +109,13 @@ def cmd_sync(_: argparse.Namespace) -> int:
 
 
 def cmd_edit(args: argparse.Namespace) -> int:
-    context = prepare_cache_context(action="prepare edit index")
-    if context is None:
+    env = prepare_cache_env(action="prepare edit index")
+    if env is None:
         return 1
+    mdcroot, cache = env
 
     try:
-        src_path = context.cache.resolve_edit_target_path(args.source, cwd=Path.cwd())
+        src_path = cache.resolve_edit_target_path(args.source, cwd=Path.cwd())
     except (ValueError, sqlite3.Error) as exc:
         UI.error(str(exc))
         return 1
@@ -136,9 +140,9 @@ def cmd_edit(args: argparse.Namespace) -> int:
         return edit_proc.returncode
 
     try:
-        context.cache.upsert_path(src_path)
+        cache.upsert_path(src_path)
     except (OSError, ValueError, sqlite3.Error) as exc:
         UI.warn_index_failure("mdoc was edited", exc)
 
-    UI.write_lines(UI.render_edited_lines(to_rel_path(context.mdcroot, src_path)))
+    UI.write_lines(UI.render_edited_lines(to_rel_path(mdcroot, src_path)))
     return 0
