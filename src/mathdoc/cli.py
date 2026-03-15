@@ -270,15 +270,15 @@ def _search_match_rows(
     cache: IndCache,
     *,
     query: str,
-    max_results: int,
     action: str,
+    max_results: int | None = None,
     exclude_fnodes: set[str] | None = None,
 ) -> list[tuple[str, str, str]] | None:
     normalized = query.strip()
     if not normalized:
         UI.error("query cannot be empty")
         return None
-    if max_results < 1:
+    if max_results is not None and max_results < 1:
         UI.error("--max-results must be >= 1")
         return None
 
@@ -290,6 +290,8 @@ def _search_match_rows(
 
     if exclude_fnodes:
         rows = [row for row in rows if row[0] not in exclude_fnodes]
+    if max_results is None:
+        return rows
     return rows[:max_results]
 
 
@@ -548,17 +550,23 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
         return 1
     root_item = graph.root_item()
     source_item = _node_ref_from_item(root_item, rel_path=src_rel)
-    match_rows = _search_match_rows(
+    raw_match_rows = _search_match_rows(
         cache,
         query=args.query,
-        max_results=args.max_results,
         action="search dependency candidates",
-        exclude_fnodes={source_item.fnode},
     )
-    if match_rows is None:
+    if raw_match_rows is None:
         return 1
 
+    excluded_fnodes = {source_item.fnode, *graph.direct_dependency_fnodes()}
+    match_rows = [
+        row for row in raw_match_rows if row[0] not in excluded_fnodes
+    ][: args.max_results]
+
     if not match_rows:
+        if raw_match_rows:
+            UI.write(f"No new dependency candidates for: {args.query}")
+            return 0
         try:
             created_row = _prompt_create_dependency_row(
                 mdcroot=mdcroot,
@@ -612,7 +620,7 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
         selected_by_fnode[dep_fnode] = (dep_fnode, refreshed[0], refreshed[1])
 
     try:
-        added, skipped_existing, skipped_self = graph.add_direct_dependencies(
+        added, _, _ = graph.add_direct_dependencies(
             list(selected_by_fnode),
         )
     except OSError as exc:
@@ -627,8 +635,6 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
                     _node_ref_from_row(selected_by_fnode[dep_fnode], broken=False)
                     for dep_fnode in added
                 ),
-                skipped_existing=len(skipped_existing),
-                skipped_self=len(skipped_self),
             )
         )
     )
@@ -907,7 +913,7 @@ def _cmd_dep_refs(args: argparse.Namespace) -> int:
             _chain_view(
                 anchor_label="target",
                 anchor=target_item,
-                count_label="referrers",
+                count_label="refers",
                 items=ref_items,
                 graph=graph,
             )

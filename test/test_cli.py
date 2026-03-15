@@ -518,17 +518,15 @@ class TestMdcCli(unittest.TestCase):
                 rf"\[1\] - {dep_fnode[:8]} Matrix Rank \({re.escape(dep_rel)}\)",
             )
 
-            rc_add_dup, out_add_dup = _run_cli_tty(
-                ["dep", "add", src_path, "matrix"], repo, b" \r")
-            self.assertEqual(rc_add_dup, 0, out_add_dup)
-            out_add_dup_text = _compact_cli_output(out_add_dup)
-            self.assertIn("added: 0", out_add_dup_text)
-            self.assertIn("skipped existing: 1", out_add_dup_text)
+            add_dup = _run_cli(["dep", "add", src_path, "matrix"], repo)
+            self.assertEqual(add_dup.returncode, 0, add_dup.stdout + add_dup.stderr)
+            out_add_dup_text = _compact_cli_output(add_dup.stdout)
+            self.assertIn("No new dependency candidates for: matrix", out_add_dup_text)
 
             rc_rm, out_rm = _run_cli_tty(["dep", "rm", src_path], repo, b" \r")
             self.assertEqual(rc_rm, 0, out_rm)
             out_rm_text = _compact_cli_output(out_rm)
-            self.assertIn("removed: 1", out_rm_text)
+            self.assertIn("remove: 1", out_rm_text)
             self.assertRegex(
                 out_rm_text,
                 rf"- {dep_fnode[:8]} Matrix Rank \({re.escape(dep_rel)}\)",
@@ -752,7 +750,7 @@ class TestMdcCli(unittest.TestCase):
             self.assertEqual(len(_chain_item_lines(show_run.stdout)), 1)
             self.assertIn(f"[1] - {dep_fnode[:8]}", show_run_text)
             self.assertIn("<missing> (<unknown>)", show_run_text)
-            self.assertIn("missing refs: 1 unresolved target(s)", show_run_text)
+            self.assertIn("missing: 1 unresolved target(s)", show_run_text)
             self.assertIn("referred by:", show_run_text)
             self.assertIn("Source Missing", show_run_text)
             self.assertIn("Warning: detected 1 broken dependency reference", show_run_text)
@@ -822,7 +820,7 @@ class TestMdcCli(unittest.TestCase):
             out_rm_text = _compact_cli_output(out_rm)
             self.assertIn("<missing>", out_rm_text)
             self.assertNotIn("referred by:", out_rm_text)
-            self.assertIn("removed: 1", out_rm_text)
+            self.assertIn("remove: 1", out_rm_text)
 
             show_run = _run_cli(["dep", "show", src_path], repo)
             self.assertEqual(show_run.returncode, 0, show_run.stdout + show_run.stderr)
@@ -912,7 +910,7 @@ class TestMdcCli(unittest.TestCase):
             self.assertEqual(rc_rm, 0, out_rm)
             out_rm_text = _compact_cli_output(out_rm)
             self.assertIn("<invalid>", out_rm_text)
-            self.assertIn("removed: 1", out_rm_text)
+            self.assertIn("remove: 1", out_rm_text)
 
             show_run = _run_cli(["dep", "show", src_path], repo)
             self.assertEqual(show_run.returncode, 0, show_run.stdout + show_run.stderr)
@@ -1242,7 +1240,7 @@ class TestMdcCli(unittest.TestCase):
 
             rc_rm, out_rm = _run_cli_tty(["dep", "rm", src_path], repo, b" \r")
             self.assertEqual(rc_rm, 0, out_rm)
-            self.assertIn("removed: 1", _compact_cli_output(out_rm))
+            self.assertIn("remove: 1", _compact_cli_output(out_rm))
 
             search_new = _run_cli(["search", "Rm New"], repo)
             self.assertEqual(search_new.returncode, 0,

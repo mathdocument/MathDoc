@@ -38,6 +38,19 @@ def _section(title: str, when: str) -> None:
     print("-" * 80)
 
 
+def _case(label: str) -> None:
+    print()
+    print(f"[Case] {label}")
+
+
+def _show_lines(lines: list[str]) -> None:
+    if not lines:
+        print("(no output)")
+        return
+    for line in lines:
+        print(line)
+
+
 def _sample_refs() -> dict[str, NodeRef]:
     return {
         "source": NodeRef(
@@ -146,9 +159,14 @@ def preview_terminal_ui() -> int:
         "Low-level single-node formatter used by search results, dependency chains, graph issues, and mutation summaries.",
     )
     covered.add("format_node_ref")
+    _case("plain row")
     ui.write(ui.format_node_ref(refs["dep_1"]))
+    _case("depth-prefixed row")
     ui.write(ui.format_node_ref(refs["dep_2"], include_depth=True))
+    _case("broken row")
     ui.write(ui.format_node_ref(refs["invalid"], include_depth=True))
+    _case("anchor-style row without marker")
+    ui.write(ui.format_node_ref(refs["source"], marker=""))
 
     _section(
         "format_issue",
@@ -195,13 +213,25 @@ def preview_terminal_ui() -> int:
         "Shared chain output for `mdc dep show`, `mdc dep refs`, and the dependency chain printed at the start of `mdc eval`.",
     )
     covered.add("render_chain_lines")
-    ui.write_lines(
+    _case("non-empty chain")
+    _show_lines(
         ui.render_chain_lines(
             ChainView(
                 anchor_label="source",
                 anchor=refs["source"],
                 count_label="dependencies",
                 items=(refs["dep_1"], refs["dep_2"], refs["invalid"]),
+            )
+        )
+    )
+    _case("empty chain")
+    _show_lines(
+        ui.render_chain_lines(
+            ChainView(
+                anchor_label="source",
+                anchor=refs["source"],
+                count_label="dependencies",
+                items=(),
             )
         )
     )
@@ -212,10 +242,19 @@ def preview_terminal_ui() -> int:
     )
     covered.add("render_broken_dependency_warning_lines")
     summary = BrokenDependencySummary(missing=1, invalid=1)
-    ui.write_lines(
+    _case("no broken targets")
+    _show_lines(
+        ui.render_broken_dependency_warning_lines(
+            summary=BrokenDependencySummary(),
+            for_eval=False,
+        )
+    )
+    _case("warning for dep show / dep refs")
+    _show_lines(
         ui.render_broken_dependency_warning_lines(summary=summary, for_eval=False)
     )
-    ui.write_lines(
+    _case("error for eval")
+    _show_lines(
         ui.render_broken_dependency_warning_lines(summary=summary, for_eval=True)
     )
 
@@ -224,12 +263,36 @@ def preview_terminal_ui() -> int:
         "Shown after dependency output when a missing target needs explicit referrer context.",
     )
     covered.add("render_missing_referrer_lines")
-    ui.write_lines(
+    _case("no missing referrer block")
+    _show_lines(ui.render_missing_referrer_lines(()))
+    _case("single missing target")
+    _show_lines(
         ui.render_missing_referrer_lines(
             (
                 MissingReferrerView(
                     target=refs["missing"],
                     referrers=(refs["dep_1"], refs["source"]),
+                ),
+            )
+        )
+    )
+    _case("multiple missing targets")
+    _show_lines(
+        ui.render_missing_referrer_lines(
+            (
+                MissingReferrerView(
+                    target=refs["missing"],
+                    referrers=(refs["dep_1"],),
+                ),
+                MissingReferrerView(
+                    target=NodeRef(
+                        fnode="missing-target-002",
+                        title="<missing>",
+                        rel_path="<unknown>",
+                        depth=2,
+                        broken=True,
+                    ),
+                    referrers=(refs["dep_2"], refs["source"]),
                 ),
             )
         )
@@ -261,12 +324,15 @@ def preview_terminal_ui() -> int:
         "Standard output for `mdc search <query>` when matches were found.",
     )
     covered.add("render_search_results_lines")
-    ui.write_lines(
+    _case("with matches")
+    _show_lines(
         ui.render_search_results_lines(
             query="dep",
             matches=[refs["dep_1"], refs["dep_2"]],
         )
     )
+    _case("no matches")
+    _show_lines(ui.render_search_results_lines(query="missing", matches=[]))
 
     _section(
         "render_created_lines",
@@ -285,7 +351,8 @@ def preview_terminal_ui() -> int:
         "Shown after `mdc dep add` writes one or more direct dependencies.",
     )
     covered.add("render_dep_add_lines")
-    ui.write_lines(
+    _case("multiple added rows")
+    _show_lines(
         ui.render_dep_add_lines(
             DepAddView(
                 source=refs["source"],
@@ -301,8 +368,21 @@ def preview_terminal_ui() -> int:
                         rel_path=refs["dep_2"].rel_path,
                     ),
                 ),
-                skipped_existing=1,
-                skipped_self=1,
+            )
+        )
+    )
+    _case("minimal add summary")
+    _show_lines(
+        ui.render_dep_add_lines(
+            DepAddView(
+                source=refs["source"],
+                added=(
+                    NodeRef(
+                        fnode=refs["dep_1"].fnode,
+                        title=refs["dep_1"].title,
+                        rel_path=refs["dep_1"].rel_path,
+                    ),
+                ),
             )
         )
     )
@@ -333,7 +413,10 @@ def preview_terminal_ui() -> int:
         "Used by `mdc dep show`, `mdc eval`, and `mdc graph check` when a dependency cycle is detected.",
     )
     covered.add("render_cycle_lines")
-    ui.write_lines(
+    _case("empty cycle payload")
+    _show_lines(ui.render_cycle_lines(CycleView()))
+    _case("multi-node cycle")
+    _show_lines(
         ui.render_cycle_lines(
             CycleView(nodes=(refs["cycle_a"], refs["cycle_b"], refs["cycle_c"]))
         )
@@ -344,7 +427,20 @@ def preview_terminal_ui() -> int:
         "Full report output for `mdc graph check`.",
     )
     covered.add("render_graph_check_lines")
-    ui.write_lines(
+    _case("clean graph")
+    _show_lines(
+        ui.render_graph_check_lines(
+            GraphCheckView(
+                nodes=3,
+                edges=2,
+                missing=(),
+                invalid=(),
+                cycles=(),
+            )
+        )
+    )
+    _case("graph with missing, invalid, and cycle sections")
+    _show_lines(
         ui.render_graph_check_lines(
             GraphCheckView(
                 nodes=7,
@@ -382,7 +478,8 @@ def preview_terminal_ui() -> int:
         "Non-streaming single-block rendering that includes both block header and completion status.",
     )
     covered.add("render_eval_block_lines")
-    ui.write_lines(
+    _case("successful block with stdout")
+    _show_lines(
         ui.render_eval_block_lines(
             EvalBlockView(
                 index=1,
@@ -395,13 +492,42 @@ def preview_terminal_ui() -> int:
             )
         )
     )
+    _case("failing block with stderr")
+    _show_lines(
+        ui.render_eval_block_lines(
+            EvalBlockView(
+                index=2,
+                total=2,
+                srctype="py",
+                ok=False,
+                rtcode=1,
+                stdout="",
+                stderr="RuntimeError: sample failure",
+            )
+        )
+    )
 
     _section(
         "render_eval_block_finish_lines",
         "Streaming block footer shown when a block finishes, after any block output.",
     )
     covered.add("render_eval_block_finish_lines")
-    ui.write_lines(
+    _case("successful finish without output")
+    _show_lines(
+        ui.render_eval_block_finish_lines(
+            EvalBlockView(
+                index=1,
+                total=2,
+                srctype="natl",
+                ok=True,
+                rtcode=0,
+                stdout="",
+                stderr="",
+            )
+        )
+    )
+    _case("failing finish with stderr")
+    _show_lines(
         ui.render_eval_block_finish_lines(
             EvalBlockView(
                 index=2,
@@ -420,7 +546,10 @@ def preview_terminal_ui() -> int:
         "Block execution summary shown after `mdc eval` actually compiles/runs blocks.",
     )
     covered.add("render_eval_results_lines")
-    ui.write_lines(
+    _case("no executed blocks")
+    _show_lines(ui.render_eval_results_lines(EvalReportView()))
+    _case("multiple executed blocks")
+    _show_lines(
         ui.render_eval_results_lines(
             EvalReportView(
                 blocks=(

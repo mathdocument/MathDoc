@@ -252,12 +252,12 @@ class TerminalUI:
 
     def render_dep_add_lines(self, report: DepAddView) -> list[str]:
         source_width = _label_width("source")
-        metric_width = _label_width("added", "skipped existing", "skipped self")
+        metric_width = _label_width("added ")
         indent = " " * (source_width + 1)
         lines = [
             f"{self._label('source', source_width)} {self.format_node_ref(report.source, marker='')}",
             self._metric(
-                "added",
+                "added ",
                 len(report.added),
                 "direct dependency update(s)",
                 width=metric_width,
@@ -266,26 +266,6 @@ class TerminalUI:
         ]
         for dep in report.added:
             lines.append(f"{indent}{self.format_node_ref(dep, marker='+')}")
-        if report.skipped_existing:
-            lines.append(
-                self._metric(
-                    "skipped existing",
-                    report.skipped_existing,
-                    "already linked",
-                    width=metric_width,
-                    tone=STYLE["ylw"],
-                )
-            )
-        if report.skipped_self:
-            lines.append(
-                self._metric(
-                    "skipped self",
-                    report.skipped_self,
-                    "self-reference rejected",
-                    width=metric_width,
-                    tone=STYLE["org"],
-                )
-            )
         return lines
 
     def render_dep_rm_lines(self, report: DepRmView) -> list[str]:

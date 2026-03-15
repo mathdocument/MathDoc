@@ -44,8 +44,6 @@ class BrokenDependencySummary:
 class DepAddView:
     source: NodeRef
     added: tuple[NodeRef, ...] = field(default_factory=tuple)
-    skipped_existing: int = 0
-    skipped_self: int = 0
 
 
 @dataclass(slots=True, frozen=True)
