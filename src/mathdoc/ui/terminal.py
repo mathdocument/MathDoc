@@ -58,8 +58,19 @@ class TerminalUI:
     def _status_tag(self, text: str, tone: str) -> str:
         return colorize(f"{text}:", STYLE["bld"], tone)
 
-    def _label(self, text: str, width: int, *, tone: str = STYLE["cyn"]) -> str:
-        cell = f"{text}:".ljust(width)
+    def _label(
+        self,
+        text: str,
+        width: int,
+        *,
+        tone: str = STYLE["cyn"],
+        align: str = "right",
+    ) -> str:
+        raw = f"{text}:"
+        if align == "right":
+            cell = raw.rjust(width)
+        else:
+            cell = raw.ljust(width)
         return colorize(cell, STYLE["bld"], tone)
 
     def _metric(
@@ -72,7 +83,7 @@ class TerminalUI:
         tone: str,
     ) -> str:
         value_text = colorize(str(value), STYLE["bld"], tone)
-        head = f"{self._label(label, width)} {value_text}"
+        head = f"{self._label(label, width, align='right')}  {value_text}"
         return f"{head}  {detail}" if detail else head
 
     def _render_fnode(self, fnode_text: str) -> str:
@@ -139,7 +150,7 @@ class TerminalUI:
                 chain.count_label,
                 len(chain.items),
                 "reachable node(s)",
-                width=width + 1,
+                width=width,
                 tone=STYLE["blu"],
             ),
         ]
@@ -155,14 +166,13 @@ class TerminalUI:
             return []
 
         width = _label_width("missing")
-        item_indent = " " * (width + 1)
-        detail_indent = " " * (width + 3)
+        indent = " " * (width + 1)
         lines = [
             self._metric(
                 "missing",
                 len(reports),
                 "unresolved target(s)",
-                width=width + 1,
+                width=width,
                 tone=STYLE["org"],
             )
         ]
@@ -170,16 +180,12 @@ class TerminalUI:
         for index, report in enumerate(reports):
             if index:
                 lines.append("")
+            lines.append(f"{indent}{self.format_node_ref(report.target, marker='-')}")
             lines.append(
-                f"{item_indent}{self.format_node_ref(report.target, marker='-')}"
-            )
-            lines.append(
-                f"{detail_indent}{colorize('referred by:', STYLE['bld'], STYLE['blu'])}"
+                f"{indent}{colorize('referred by:', STYLE['bld'], STYLE['blu'])}"
             )
             for referrer in report.referrers:
-                lines.append(
-                    f"{detail_indent}  {self.format_node_ref(referrer, marker='-')}"
-                )
+                lines.append(f"{indent}{self.format_node_ref(referrer, marker='-')}")
         return lines
 
     def render_broken_dependency_warning_lines(
@@ -251,16 +257,15 @@ class TerminalUI:
         ]
 
     def render_dep_add_lines(self, report: DepAddView) -> list[str]:
-        source_width = _label_width("source")
-        metric_width = _label_width("added ")
-        indent = " " * (source_width + 1)
+        width = _label_width("source", "added")
+        indent = " " * (width + 1)
         lines = [
-            f"{self._label('source', source_width)} {self.format_node_ref(report.source, marker='')}",
+            f"{self._label('source', width)} {self.format_node_ref(report.source, marker='')}",
             self._metric(
-                "added ",
+                "added",
                 len(report.added),
                 "direct dependency update(s)",
-                width=metric_width,
+                width=width,
                 tone=STYLE["grn"],
             ),
         ]
@@ -269,16 +274,15 @@ class TerminalUI:
         return lines
 
     def render_dep_rm_lines(self, report: DepRmView) -> list[str]:
-        source_width = _label_width("source")
-        metric_width = _label_width("remove")
-        indent = " " * (source_width + 1)
+        width = _label_width("source", "remove")
+        indent = " " * (width + 1)
         lines = [
-            f"{self._label('source', source_width)} {self.format_node_ref(report.source, marker='')}",
+            f"{self._label('source', width)} {self.format_node_ref(report.source, marker='')}",
             self._metric(
                 "remove",
                 len(report.removed),
                 "direct dependency removed",
-                width=metric_width + 1,
+                width=width,
                 tone=STYLE["org"],
             ),
         ]

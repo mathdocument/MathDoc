@@ -164,8 +164,8 @@ def _eval_block_lines(output: str) -> list[str]:
 
 def _extract_created_mdoc(output: str) -> tuple[str, str]:
     fnode_match = re.search(
-        r"^fnode:\s*([0-9a-fA-F-]+)$", output, re.MULTILINE)
-    path_match = re.search(r"^created:\s*(.+\.mdoc)$", output, re.MULTILINE)
+        r"^\s*fnode:\s*([0-9a-fA-F-]+)$", output, re.MULTILINE)
+    path_match = re.search(r"^\s*created:\s*(.+\.mdoc)$", output, re.MULTILINE)
     if not fnode_match or not path_match:
         raise AssertionError(f"Failed to parse creation output:\n{output}")
     return fnode_match.group(1), path_match.group(1)
