@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "mathdoc"
 version = "0.6.0"
-description = "dedicated math knowledge management tool"
+description = "math knowledge management tool"
 readme = "README.md"
 authors = [{ name = "sparkwenc", email = "sparkwenc@gmail.com" }]
 requires-python = ">=3.14"

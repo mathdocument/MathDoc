@@ -18,6 +18,9 @@ if str(SRC_PATH) not in sys.path:
 
 CLI_BOOTSTRAP = "from mathdoc.cli import main; raise SystemExit(main())"
 ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+SEARCH_RESULT_RE = re.compile(r"^- (?:[0-9a-f]{8}|<[^>]+>) ")
+CHAIN_ITEM_RE = re.compile(r"^\[\d+\] [+-] ")
+EVAL_BLOCK_RE = re.compile(r"^\[\d+\] [A-Za-z0-9_+-]+: (?:ok|failed \(\d+\))$")
 
 
 def _cli_base_cmd() -> list[str]:
@@ -47,7 +50,11 @@ def _run_cli(
     )
 
 
-def _run_cli_tty(args: list[str], cwd: Path, keys: bytes) -> tuple[int, str]:
+def _run_cli_tty_script(
+    args: list[str],
+    cwd: Path,
+    script: list[tuple[bytes, bytes]],
+) -> tuple[int, str]:
     master_fd, slave_fd = pty.openpty()
     try:
         proc = subprocess.Popen(
@@ -66,7 +73,7 @@ def _run_cli_tty(args: list[str], cwd: Path, keys: bytes) -> tuple[int, str]:
     os.close(slave_fd)
 
     output = bytearray()
-    sent = False
+    step_index = 0
     deadline = time.time() + 15.0
     try:
         while time.time() < deadline:
@@ -79,9 +86,12 @@ def _run_cli_tty(args: list[str], cwd: Path, keys: bytes) -> tuple[int, str]:
                 if not chunk:
                     break
                 output.extend(chunk)
-                if (b"Select deps:" in output) and not sent:
-                    os.write(master_fd, keys)
-                    sent = True
+                while step_index < len(script):
+                    trigger, response = script[step_index]
+                    if trigger not in output:
+                        break
+                    os.write(master_fd, response)
+                    step_index += 1
 
             if proc.poll() is not None:
                 while True:
@@ -97,9 +107,7 @@ def _run_cli_tty(args: list[str], cwd: Path, keys: bytes) -> tuple[int, str]:
                     output.extend(tail)
                 break
 
-        if proc.poll() is None and not sent:
-            os.write(master_fd, keys)
-            sent = True
+        if proc.poll() is None and step_index < len(script):
             proc.wait(timeout=5)
     finally:
         try:
@@ -113,6 +121,10 @@ def _run_cli_tty(args: list[str], cwd: Path, keys: bytes) -> tuple[int, str]:
     return proc.returncode, output.decode("utf-8", errors="replace")
 
 
+def _run_cli_tty(args: list[str], cwd: Path, keys: bytes) -> tuple[int, str]:
+    return _run_cli_tty_script(args, cwd, [(b"Select deps:", keys)])
+
+
 def _clean_cli_output(output: str) -> str:
     return ANSI_ESCAPE_RE.sub("", output).replace("\r\n", "\n").replace("\r", "\n")
 
@@ -122,6 +134,22 @@ def _compact_cli_output(output: str) -> str:
         re.sub(r"[ \t]+", " ", line).rstrip()
         for line in _clean_cli_output(output).splitlines()
     )
+
+
+def _nonempty_cli_lines(output: str) -> list[str]:
+    return [line.strip() for line in _compact_cli_output(output).splitlines() if line.strip()]
+
+
+def _search_result_lines(output: str) -> list[str]:
+    return [line for line in _nonempty_cli_lines(output) if SEARCH_RESULT_RE.match(line)]
+
+
+def _chain_item_lines(output: str) -> list[str]:
+    return [line for line in _nonempty_cli_lines(output) if CHAIN_ITEM_RE.match(line)]
+
+
+def _eval_block_lines(output: str) -> list[str]:
+    return [line for line in _nonempty_cli_lines(output) if EVAL_BLOCK_RE.match(line)]
 
 
 def _extract_created_mdoc(output: str) -> tuple[str, str]:
@@ -195,33 +223,62 @@ class TestMdcCli(unittest.TestCase):
                              init_2.stdout + init_2.stderr)
             self.assertIn("Already initialized", init_2.stdout)
 
-            new_1 = _run_cli(["new", "-t", "Linear Algebra", "-f", "."], repo)
+            new_1 = _run_cli(["new", "-t", "Linear Algebra"], repo)
             self.assertEqual(new_1.returncode, 0, new_1.stdout + new_1.stderr)
             fnode_1, path_1 = _extract_created_mdoc(new_1.stdout)
             self.assertTrue(Path(path_1).is_file())
+            self.assertEqual(Path(path_1).name, f"{fnode_1}.mdoc")
 
-            new_2 = _run_cli(["new", "-t", "Matrix Rank", "-f", "notes"], repo)
+            new_2 = _run_cli(
+                ["new", "-t", "Matrix Rank", "-f", "notes/matrix-rank"], repo
+            )
             self.assertEqual(new_2.returncode, 0, new_2.stdout + new_2.stderr)
             _, path_2 = _extract_created_mdoc(new_2.stdout)
             self.assertTrue(Path(path_2).is_file())
+            self.assertEqual(
+                Path(path_2).relative_to(repo.resolve()).as_posix(),
+                "notes/matrix-rank.mdoc",
+            )
+
+            new_3 = _run_cli(
+                ["new", "-t", "Matrix Factorization", "-f", "notes/factor.mdoc"], repo
+            )
+            self.assertEqual(new_3.returncode, 0, new_3.stdout + new_3.stderr)
+            _, path_3 = _extract_created_mdoc(new_3.stdout)
+            self.assertTrue(Path(path_3).is_file())
+            self.assertEqual(
+                Path(path_3).relative_to(repo.resolve()).as_posix(),
+                "notes/factor.mdoc.mdoc",
+            )
 
             outside = repo.parent / "outside"
             outside.mkdir(parents=True, exist_ok=True)
             new_outside = _run_cli(
                 ["new", "-t", "Bad", "-f", str(outside)], repo)
             self.assertEqual(new_outside.returncode, 1)
-            self.assertIn("target path must be under mdoc root",
+            self.assertIn("target path must be relative to the mdoc root",
                           new_outside.stdout)
 
             search_title = _run_cli(["search", "matrix"], repo)
             self.assertEqual(search_title.returncode, 0,
                              search_title.stdout + search_title.stderr)
             search_title_text = _compact_cli_output(search_title.stdout)
-            self.assertIn("results: 1", search_title_text)
+            self.assertEqual(len(_search_result_lines(search_title.stdout)), 2)
             self.assertRegex(
                 search_title_text,
                 r"(?m)^- [0-9a-f]{8} Matrix Rank \(.+\.mdoc\)$",
             )
+            self.assertIn("Matrix Factorization", search_title.stdout)
+
+            search_limited = _run_cli(
+                ["search", "matrix", "--max-results", "1"], repo
+            )
+            self.assertEqual(
+                search_limited.returncode,
+                0,
+                search_limited.stdout + search_limited.stderr,
+            )
+            self.assertEqual(len(_search_result_lines(search_limited.stdout)), 1)
 
             search_fnode = _run_cli(["search", fnode_1[:8]], repo)
             self.assertEqual(search_fnode.returncode, 0,
@@ -244,12 +301,14 @@ class TestMdcCli(unittest.TestCase):
             eval_run = _run_cli(["eval", src_path], repo)
             self.assertEqual(eval_run.returncode, 0,
                              eval_run.stdout + eval_run.stderr)
-            self.assertIn("blocks: 2", eval_run.stdout)
+            self.assertEqual(len(_eval_block_lines(eval_run.stdout)), 2)
             self.assertIn("[1] natl: ok", eval_run.stdout)
             self.assertIn("hello from natl", eval_run.stdout)
             self.assertIn("[2] py: ok", eval_run.stdout)
             self.assertIn("hello from py", eval_run.stdout)
-            self.assertIn("failed: 0", eval_run.stdout)
+            self.assertFalse(
+                any("failed" in line for line in _eval_block_lines(eval_run.stdout))
+            )
 
     def test_eval_returns_nonzero_when_py_block_fails(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_eval_fail.") as tmp:
@@ -266,9 +325,13 @@ class TestMdcCli(unittest.TestCase):
 
             eval_run = _run_cli(["eval", src_path], repo)
             self.assertEqual(eval_run.returncode, 1)
+            self.assertEqual(len(_eval_block_lines(eval_run.stdout)), 1)
             self.assertIn("[1] py: failed (1)", eval_run.stdout)
             self.assertIn("boom", eval_run.stdout)
-            self.assertIn("failed: 1", eval_run.stdout)
+            self.assertEqual(
+                sum("failed" in line for line in _eval_block_lines(eval_run.stdout)),
+                1,
+            )
 
     def test_eval_accepts_depth_and_reverse_flags(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_eval_depth_reverse.") as tmp:
@@ -404,7 +467,7 @@ class TestMdcCli(unittest.TestCase):
             show_0 = _run_cli(["dep", "show", src_path], repo)
             self.assertEqual(show_0.returncode, 0,
                              show_0.stdout + show_0.stderr)
-            self.assertIn("dependencies: 0", show_0.stdout)
+            self.assertEqual(len(_chain_item_lines(show_0.stdout)), 0)
 
             rc_add, out_add = _run_cli_tty(
                 ["dep", "add", src_path, "matrix"], repo, b" \r")
@@ -424,7 +487,7 @@ class TestMdcCli(unittest.TestCase):
             self.assertEqual(show_1.returncode, 0,
                              show_1.stdout + show_1.stderr)
             show_1_text = _compact_cli_output(show_1.stdout)
-            self.assertIn("dependencies: 1", show_1_text)
+            self.assertEqual(len(_chain_item_lines(show_1.stdout)), 1)
             self.assertRegex(
                 show_1_text,
                 rf"\[1\] - {dep_fnode[:8]} Matrix Rank \({re.escape(dep_rel)}\)",
@@ -449,7 +512,45 @@ class TestMdcCli(unittest.TestCase):
             show_2 = _run_cli(["dep", "show", src_path], repo)
             self.assertEqual(show_2.returncode, 0,
                              show_2.stdout + show_2.stderr)
-            self.assertIn("dependencies: 0", show_2.stdout)
+            self.assertEqual(len(_chain_item_lines(show_2.stdout)), 0)
+
+    def test_dep_add_can_create_missing_dependency_interactively(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_add_create.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_src = _run_cli(["new", "-t", "Source Card", "-f", "."], repo)
+            self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
+            _, src_path = _extract_created_mdoc(new_src.stdout)
+
+            rc_add, out_add = _run_cli_tty_script(
+                ["dep", "add", src_path, "Fresh Dep"],
+                repo,
+                [
+                    (b"[y/N]:", b"y\r"),
+                    (b"File path [.]:", b"notes/fresh-dep\r"),
+                    (b"Title [Untitled]:", b"Fresh Dep\r"),
+                ],
+            )
+            self.assertEqual(rc_add, 0, out_add)
+            out_add_text = _compact_cli_output(out_add)
+            self.assertIn("added: 1", out_add_text)
+            self.assertIn("Fresh Dep", out_add_text)
+            self.assertIn("notes/fresh-dep.mdoc", out_add_text)
+
+            created_path = repo / "notes" / "fresh-dep.mdoc"
+            self.assertTrue(created_path.is_file())
+
+            show_run = _run_cli(["dep", "show", src_path], repo)
+            self.assertEqual(show_run.returncode, 0, show_run.stdout + show_run.stderr)
+            self.assertEqual(len(_chain_item_lines(show_run.stdout)), 1)
+            self.assertIn("Fresh Dep", show_run.stdout)
+            self.assertIn("notes/fresh-dep.mdoc", show_run.stdout)
+
+            search_run = _run_cli(["search", "Fresh Dep"], repo)
+            self.assertEqual(search_run.returncode, 0, search_run.stdout + search_run.stderr)
+            self.assertEqual(len(_search_result_lines(search_run.stdout)), 1)
+            self.assertIn("Fresh Dep", search_run.stdout)
 
     def test_nested_repo_direction_parent_to_child_only(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_nested.") as tmp:
@@ -547,7 +648,7 @@ class TestMdcCli(unittest.TestCase):
             show_default = _run_cli(["dep", "show", src_path], repo)
             self.assertEqual(show_default.returncode, 0, show_default.stdout + show_default.stderr)
             show_default_text = _compact_cli_output(show_default.stdout)
-            self.assertIn("dependencies: 1", show_default_text)
+            self.assertEqual(len(_chain_item_lines(show_default.stdout)), 1)
             self.assertRegex(
                 show_default_text,
                 rf"\[1\] - {dep1_fnode[:8]} Depth One \({re.escape(dep1_rel)}\)",
@@ -557,7 +658,7 @@ class TestMdcCli(unittest.TestCase):
             show_inf = _run_cli(["dep", "show", "--depth", "-1", src_path], repo)
             self.assertEqual(show_inf.returncode, 0, show_inf.stdout + show_inf.stderr)
             show_inf_text = _compact_cli_output(show_inf.stdout)
-            self.assertIn("dependencies: 2", show_inf_text)
+            self.assertEqual(len(_chain_item_lines(show_inf.stdout)), 2)
             self.assertRegex(
                 show_inf_text,
                 rf"\[1\] - {dep1_fnode[:8]} Depth One \({re.escape(dep1_rel)}\)",
@@ -603,7 +704,7 @@ class TestMdcCli(unittest.TestCase):
             show_run = _run_cli(["dep", "show", src_path], repo)
             self.assertEqual(show_run.returncode, 0, show_run.stdout + show_run.stderr)
             show_run_text = _compact_cli_output(show_run.stdout)
-            self.assertIn("dependencies: 1", show_run_text)
+            self.assertEqual(len(_chain_item_lines(show_run.stdout)), 1)
             self.assertIn(f"[1] - {dep_fnode[:8]}", show_run_text)
             self.assertIn("<missing> (<unknown>)", show_run_text)
             self.assertIn("Warning: detected 1 broken dependency reference", show_run_text)
@@ -636,7 +737,7 @@ class TestMdcCli(unittest.TestCase):
 
             show_run = _run_cli(["dep", "show", src_path], repo)
             self.assertEqual(show_run.returncode, 0, show_run.stdout + show_run.stderr)
-            self.assertIn("dependencies: 0", show_run.stdout)
+            self.assertEqual(len(_chain_item_lines(show_run.stdout)), 0)
 
     def test_eval_prints_dependency_chain_and_blocks_on_missing_dependency(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_eval_missing.") as tmp:
@@ -661,11 +762,11 @@ class TestMdcCli(unittest.TestCase):
 
             eval_run = _run_cli(["eval", src_path], repo)
             self.assertEqual(eval_run.returncode, 1, eval_run.stdout + eval_run.stderr)
-            self.assertIn("dependencies: 1", eval_run.stdout)
+            self.assertEqual(len(_chain_item_lines(eval_run.stdout)), 1)
             self.assertIn(dep_fnode[:8], eval_run.stdout)
             self.assertIn("<missing>", eval_run.stdout)
             self.assertIn("remove the broken references with `mdc dep rm` before eval", eval_run.stdout)
-            self.assertNotIn("blocks:", eval_run.stdout)
+            self.assertEqual(len(_eval_block_lines(eval_run.stdout)), 0)
 
     def test_dep_show_warns_but_continues_on_invalid_dependency(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_show_invalid.") as tmp:
@@ -691,7 +792,7 @@ class TestMdcCli(unittest.TestCase):
             show_run = _run_cli(["dep", "show", src_path], repo)
             self.assertEqual(show_run.returncode, 0, show_run.stdout + show_run.stderr)
             show_run_text = _compact_cli_output(show_run.stdout)
-            self.assertIn("dependencies: 1", show_run_text)
+            self.assertEqual(len(_chain_item_lines(show_run.stdout)), 1)
             self.assertIn(dep_fnode[:8], show_run_text)
             self.assertIn(f"<invalid> ({dep_rel})", show_run_text)
             self.assertIn("Warning: detected 1 broken dependency reference(s) (1 invalid)", show_run_text)
@@ -724,7 +825,7 @@ class TestMdcCli(unittest.TestCase):
 
             show_run = _run_cli(["dep", "show", src_path], repo)
             self.assertEqual(show_run.returncode, 0, show_run.stdout + show_run.stderr)
-            self.assertIn("dependencies: 0", show_run.stdout)
+            self.assertEqual(len(_chain_item_lines(show_run.stdout)), 0)
 
     def test_eval_prints_dependency_chain_and_blocks_on_invalid_dependency(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_eval_invalid.") as tmp:
@@ -749,11 +850,11 @@ class TestMdcCli(unittest.TestCase):
 
             eval_run = _run_cli(["eval", src_path], repo)
             self.assertEqual(eval_run.returncode, 1, eval_run.stdout + eval_run.stderr)
-            self.assertIn("dependencies: 1", eval_run.stdout)
+            self.assertEqual(len(_chain_item_lines(eval_run.stdout)), 1)
             self.assertIn(dep_fnode[:8], eval_run.stdout)
             self.assertIn("<invalid>", eval_run.stdout)
             self.assertIn("remove the broken references with `mdc dep rm` before eval", eval_run.stdout)
-            self.assertNotIn("blocks:", eval_run.stdout)
+            self.assertEqual(len(_eval_block_lines(eval_run.stdout)), 0)
 
     def test_graph_check_reports_missing_invalid_and_cycle(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_graph_check.") as tmp:
@@ -860,7 +961,7 @@ class TestMdcCli(unittest.TestCase):
             refs_run_text = _compact_cli_output(refs_run.stdout)
             self.assertIn(f"target: {leaf_fnode[:8]}", refs_run_text)
             self.assertIn("Leaf Ref", refs_run_text)
-            self.assertIn("referrers: 3", refs_run_text)
+            self.assertEqual(len(_chain_item_lines(refs_run.stdout)), 3)
             self.assertRegex(refs_run_text, rf"\[1\] - {mid1_fnode[:8]} Mid One")
             self.assertRegex(refs_run_text, rf"\[1\] - {mid2_fnode[:8]} Mid Two")
             self.assertRegex(refs_run_text, rf"\[2\] - {root_fnode[:8]} Root Ref")
@@ -929,7 +1030,7 @@ class TestMdcCli(unittest.TestCase):
             leaf_run_text = _compact_cli_output(leaf_run.stdout)
             self.assertIn(f"source: {root_fnode[:8]}", leaf_run_text)
             self.assertIn("Root Leaf", leaf_run_text)
-            self.assertIn("leaves: 3", leaf_run_text)
+            self.assertEqual(len(_chain_item_lines(leaf_run.stdout)), 3)
             self.assertRegex(leaf_run_text, rf"\[1\] - {direct_fnode[:8]} Leaf Direct")
             self.assertRegex(leaf_run_text, rf"\[2\] - {shared_fnode[:8]} Leaf Shared")
             self.assertRegex(leaf_run_text, rf"\[2\] - {other_fnode[:8]} Leaf Other")
@@ -1008,7 +1109,7 @@ class TestMdcCli(unittest.TestCase):
             search_new = _run_cli(["search", "Add New"], repo)
             self.assertEqual(search_new.returncode, 0,
                              search_new.stdout + search_new.stderr)
-            self.assertIn("results: 1", search_new.stdout)
+            self.assertEqual(len(_search_result_lines(search_new.stdout)), 1)
             self.assertTrue(
                 ("Add New One" in search_new.stdout) ^ (
                     "Add New Two" in search_new.stdout),
@@ -1055,7 +1156,7 @@ class TestMdcCli(unittest.TestCase):
             search_new = _run_cli(["search", "Rm New"], repo)
             self.assertEqual(search_new.returncode, 0,
                              search_new.stdout + search_new.stderr)
-            self.assertIn("results: 1", search_new.stdout)
+            self.assertEqual(len(_search_result_lines(search_new.stdout)), 1)
             self.assertTrue(
                 ("Rm New One" in search_new.stdout) ^ (
                     "Rm New Two" in search_new.stdout),

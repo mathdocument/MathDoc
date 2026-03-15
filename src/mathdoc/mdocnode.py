@@ -39,6 +39,20 @@ class MdocNode:
         node.path = folder_path / f"{node.fnode}.mdoc"
         return node
 
+    @classmethod
+    def create_at_path(
+        cls,
+        *,
+        mdcroot: Path,
+        path: Path,
+        title: str = "Untitled",
+    ) -> "MdocNode":
+        """Create a new node at an explicit file path."""
+        root_path = Path(mdcroot).resolve()
+        node = cls(mdcroot=root_path, path=root_path, title=title)
+        node.path = Path(path).resolve()
+        return node
+
     def add_dependency(self, dep_fnode: str) -> None:
         """Register a dependency by MdocNode id."""
         if dep_fnode not in self.depens:

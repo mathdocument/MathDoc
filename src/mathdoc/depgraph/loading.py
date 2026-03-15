@@ -14,17 +14,51 @@ from ..utils import to_rel_path
 def create_root_node(
     *,
     mdcroot: Path,
-    folder: str = ".",
+    file_path: str = ".",
     title: str = "Untitled",
 ) -> tuple[MdocNode, str]:
     root_path = Path(mdcroot).resolve()
-    node = MdocNode.create(
+    node = MdocNode.create_at_path(
         mdcroot=root_path,
-        folder=folder,
+        path=root_path,
         title=title,
+    )
+    node.path = _resolve_new_node_path(
+        mdcroot=root_path,
+        raw_target=file_path,
+        fnode=node.fnode,
     )
     node.save()
     return node, to_rel_path(root_path, node.path)
+
+
+def _resolve_new_node_path(
+    *,
+    mdcroot: Path,
+    raw_target: str,
+    fnode: str,
+) -> Path:
+    root_path = Path(mdcroot).resolve()
+    target_text = raw_target.strip()
+
+    if target_text in ("", "."):
+        return root_path / f"{fnode}.mdoc"
+
+    target_rel = Path(target_text)
+    if target_rel.is_absolute():
+        raise ValueError("target path must be relative to the mdoc root")
+
+    target_path = (root_path / target_rel).resolve()
+    try:
+        target_path.relative_to(root_path)
+    except ValueError as exc:
+        raise ValueError(f"target path must be under mdoc root {root_path}") from exc
+
+    final_path = target_path.with_name(target_path.name + ".mdoc")
+    if final_path.exists():
+        raise FileExistsError(f"mdoc file already exists: {final_path}")
+
+    return final_path
 
 
 def load_root_node_from_ref(

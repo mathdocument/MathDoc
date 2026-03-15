@@ -93,6 +93,52 @@ def _clear_block(prev_count: int) -> None:
     sys.stdout.flush()
 
 
+def _require_tty() -> None:
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise RuntimeError("interactive prompt requires a TTY")
+
+
+def confirm_interactive(prompt: str, *, default: bool = False) -> bool:
+    _require_tty()
+    suffix = "[Y/n]" if default else "[y/N]"
+
+    while True:
+        sys.stdout.write(f"{prompt} {suffix}: ")
+        sys.stdout.flush()
+        raw = sys.stdin.readline()
+        if raw == "":
+            return default
+
+        value = raw.strip().casefold()
+        if not value:
+            return default
+        if value in {"y", "yes"}:
+            return True
+        if value in {"n", "no"}:
+            return False
+
+        sys.stdout.write("Please answer y or n.\n")
+        sys.stdout.flush()
+
+
+def prompt_text_interactive(
+    prompt: str,
+    *,
+    default: str = "",
+) -> str:
+    _require_tty()
+    default_label = f" [{default}]" if default else ""
+
+    sys.stdout.write(f"{prompt}{default_label}: ")
+    sys.stdout.flush()
+    raw = sys.stdin.readline()
+    if raw == "":
+        return default
+
+    value = raw.rstrip("\r\n")
+    return value if value else default
+
+
 def select_indices_interactive(
     matches: list[NodeRef],
     *,

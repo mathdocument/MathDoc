@@ -20,6 +20,7 @@ from .depgraph.exceptions import DependencyCycleError
 from .ui import (
     BrokenDependencySummary,
     ChainView,
+    confirm_interactive,
     CycleView,
     DepAddView,
     DepRmView,
@@ -28,6 +29,7 @@ from .ui import (
     GraphCheckView,
     IssueView,
     NodeRef,
+    prompt_text_interactive,
     TerminalUI,
     select_indices_interactive,
 )
@@ -211,6 +213,84 @@ def _bootstrap_cache(cache: IndCache, *, action: str) -> bool:
     return True
 
 
+def _search_match_rows(
+    cache: IndCache,
+    *,
+    query: str,
+    max_results: int,
+    action: str,
+    exclude_fnodes: set[str] | None = None,
+) -> list[tuple[str, str, str]] | None:
+    normalized = query.strip()
+    if not normalized:
+        UI.error("query cannot be empty")
+        return None
+    if max_results < 1:
+        UI.error("--max-results must be >= 1")
+        return None
+
+    try:
+        rows = cache.search(normalized)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        UI.write_lines(UI.render_index_error_lines(action=action, exc=exc))
+        return None
+
+    if exclude_fnodes:
+        rows = [row for row in rows if row[0] not in exclude_fnodes]
+    return rows[:max_results]
+
+
+def _create_mdoc(
+    *,
+    mdcroot: Path,
+    cache: IndCache,
+    file_path: str = ".",
+    title: str = "Untitled",
+) -> tuple[DepGraph, str]:
+    graph, rel_path = DepGraph.create_root(
+        mdcroot=mdcroot,
+        file_path=file_path,
+        title=title,
+        cache=cache,
+    )
+    try:
+        cache.bootstrap_if_needed()
+        cache.upsert_path(graph.root_path())
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        UI.warn_index_failure("mdoc was created", exc)
+    return graph, rel_path
+
+
+def _prompt_create_dependency_row(
+    *,
+    mdcroot: Path,
+    cache: IndCache,
+    query: str,
+) -> tuple[str, str, str] | None:
+    try:
+        should_create = confirm_interactive(
+            f"No dependency candidates for: {query}. Create a new mdoc and add it as a dependency",
+            default=False,
+        )
+    except RuntimeError:
+        return None
+
+    if not should_create:
+        return None
+
+    file_path = prompt_text_interactive("File path", default=".")
+    title = prompt_text_interactive("Title", default="Untitled")
+
+    created_graph, created_rel = _create_mdoc(
+        mdcroot=mdcroot,
+        cache=cache,
+        file_path=file_path,
+        title=title,
+    )
+    created_item = created_graph.root_item()
+    return (created_item.fnode, created_item.title, created_rel)
+
+
 def _cmd_init(_: argparse.Namespace) -> int:
     mdcroot = Path.cwd()
     local_mdc = mdcroot / ".mdc"
@@ -235,33 +315,23 @@ def _cmd_new(args: argparse.Namespace) -> int:
     if mdcroot is None:
         return 1
 
-    target = Path(args.folder).resolve()
+    cache = IndCache(mdcroot)
     try:
-        target.relative_to(mdcroot.resolve())
-    except ValueError:
-        UI.error(f"target path must be under mdoc root {mdcroot}")
-        return 1
-
-    if target.exists() and not target.is_dir():
-        UI.error(f"target folder is a file: {target}")
-        return 1
-
-    try:
-        graph, _ = DepGraph.create_root(
+        graph, _ = _create_mdoc(
             mdcroot=mdcroot,
-            folder=args.folder,
+            cache=cache,
+            file_path=args.file,
             title=args.title,
         )
+    except ValueError as exc:
+        UI.error(str(exc))
+        return 1
+    except FileExistsError as exc:
+        UI.error(str(exc))
+        return 1
     except OSError as exc:
         UI.error(f"failed to save mdoc file: {exc}")
         return 1
-
-    cache = IndCache(mdcroot)
-    try:
-        cache.bootstrap_if_needed()
-        cache.upsert_path(graph.root_path())
-    except (OSError, ValueError, sqlite3.Error) as exc:
-        UI.warn_index_failure("mdoc was created", exc)
 
     root_item = graph.root_item()
     UI.write_lines(
@@ -278,20 +348,19 @@ def _cmd_search(args: argparse.Namespace) -> int:
     if mdcroot is None:
         return 1
 
-    query = args.query.strip()
-    if not query:
-        UI.error("query cannot be empty")
-        return 1
-
     cache = IndCache(mdcroot)
     if not _bootstrap_cache(cache, action="prepare search index"):
         return 1
 
-    try:
-        matches = cache.search(query)
-    except (OSError, ValueError, sqlite3.Error) as exc:
-        UI.write_lines(UI.render_index_error_lines(action="search mdocs", exc=exc))
+    matches = _search_match_rows(
+        cache,
+        query=args.query,
+        max_results=args.max_results,
+        action="search mdocs",
+    )
+    if matches is None:
         return 1
+
     UI.write_lines(
         UI.render_search_results_lines(
             query=args.query,
@@ -380,14 +449,6 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
     if mdcroot is None:
         return 1
 
-    query = args.query.strip()
-    if not query:
-        UI.error("query cannot be empty")
-        return 1
-    if args.max_results < 1:
-        UI.error("--max-results must be >= 1")
-        return 1
-
     cache = IndCache(mdcroot)
     if not _bootstrap_cache(cache, action="prepare dependency index"):
         return 1
@@ -399,35 +460,54 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
         return 1
     root_item = graph.root_item()
     source_item = _node_ref_from_item(root_item, rel_path=src_rel)
-    try:
-        match_rows = cache.search(query)
-    except (OSError, ValueError, sqlite3.Error) as exc:
-        UI.write_lines(
-            UI.render_index_error_lines(action="search dependency candidates", exc=exc)
-        )
+    match_rows = _search_match_rows(
+        cache,
+        query=args.query,
+        max_results=args.max_results,
+        action="search dependency candidates",
+        exclude_fnodes={source_item.fnode},
+    )
+    if match_rows is None:
         return 1
-    match_rows = [row for row in match_rows if row[0] != source_item.fnode]
-    match_rows = match_rows[: args.max_results]
+
     if not match_rows:
-        UI.write(f"No dependency candidates for: {args.query}")
-        return 0
+        try:
+            created_row = _prompt_create_dependency_row(
+                mdcroot=mdcroot,
+                cache=cache,
+                query=args.query,
+            )
+        except ValueError as exc:
+            UI.error(str(exc))
+            return 1
+        except FileExistsError as exc:
+            UI.error(str(exc))
+            return 1
+        except OSError as exc:
+            UI.error(f"failed to save mdoc file: {exc}")
+            return 1
+        if created_row is None:
+            UI.write(f"No dependency candidates for: {args.query}")
+            return 0
+        selected_rows = [created_row]
+    else:
+        matches = [_node_ref_from_row(row) for row in match_rows]
 
-    matches = [_node_ref_from_row(row) for row in match_rows]
+        try:
+            selected_indices = select_indices_interactive(matches)
+        except RuntimeError as exc:
+            UI.error(str(exc))
+            return 1
 
-    try:
-        selected_indices = select_indices_interactive(matches)
-    except RuntimeError as exc:
-        UI.error(str(exc))
-        return 1
+        if selected_indices is None:
+            UI.write("Canceled")
+            return 0
+        if not selected_indices:
+            UI.write("No dependencies selected")
+            return 0
 
-    if selected_indices is None:
-        UI.write("Canceled")
-        return 0
-    if not selected_indices:
-        UI.write("No dependencies selected")
-        return 0
+        selected_rows = [match_rows[idx] for idx in selected_indices]
 
-    selected_rows = [match_rows[idx] for idx in selected_indices]
     selected_by_fnode = {row[0]: row for row in selected_rows}
     selected_fnodes = list(selected_by_fnode.keys())
 
@@ -836,7 +916,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "-t", "--title", default="Untitled", help="Title of the new mdoc (optional)"
     )
     new_parser.add_argument(
-        "-f", "--folder", default=".", help="Output folder for the mdoc file (optional)"
+        "-f",
+        "--file",
+        default=".",
+        help="Relative output file path without the forced .mdoc suffix (default: auto fnode at root)",
     )
     new_parser.set_defaults(func=_cmd_new)
 
@@ -856,6 +939,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "search", help="Search mdocs by title or fnode"
     )
     search_parser.add_argument("query", help="Query by title or fnode")
+    search_parser.add_argument(
+        "-n",
+        "--max-results",
+        type=int,
+        default=200,
+        help="Maximum search results to show (default: 200)",
+    )
     search_parser.set_defaults(func=_cmd_search)
 
     graph_parser = subparsers.add_parser(

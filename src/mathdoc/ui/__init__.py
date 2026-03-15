@@ -1,3 +1,5 @@
+from .interactive import confirm_interactive
+from .interactive import prompt_text_interactive
 from .interactive import select_indices_interactive
 from .models import BrokenDependencySummary
 from .models import ChainView
@@ -14,6 +16,7 @@ from .terminal import TerminalUI
 __all__ = [
     "BrokenDependencySummary",
     "ChainView",
+    "confirm_interactive",
     "CycleView",
     "DepAddView",
     "DepRmView",
@@ -22,6 +25,7 @@ __all__ = [
     "GraphCheckView",
     "IssueView",
     "NodeRef",
+    "prompt_text_interactive",
     "TerminalUI",
     "select_indices_interactive",
 ]
