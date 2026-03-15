@@ -8,7 +8,7 @@ from .issues import record_invalid_issue
 from .state import GraphState
 from ..indcache import IndCache
 from ..mdocnode import MdocNode
-from ..utils import to_rel_path
+from ..utils import find_nested_mdcroot, iter_workspace_mdoc_files, to_rel_path
 
 
 def create_root_node(
@@ -16,6 +16,7 @@ def create_root_node(
     mdcroot: Path,
     file_path: str = ".",
     title: str = "Untitled",
+    fnode: str | None = None,
 ) -> tuple[MdocNode, str]:
     root_path = Path(mdcroot).resolve()
     node = MdocNode.create_at_path(
@@ -23,6 +24,8 @@ def create_root_node(
         path=root_path,
         title=title,
     )
+    if fnode is not None:
+        node.fnode = fnode
     node.path = _resolve_new_node_path(
         mdcroot=root_path,
         raw_target=file_path,
@@ -55,6 +58,9 @@ def _resolve_new_node_path(
         raise ValueError(f"target path must be under mdoc root {root_path}") from exc
 
     final_path = target_path.with_name(target_path.name + ".mdoc")
+    nested_root = find_nested_mdcroot(root_path, final_path.parent)
+    if nested_root is not None:
+        raise ValueError(f"target path is inside nested mdoc root: {nested_root}")
     if final_path.exists():
         raise FileExistsError(f"mdoc file already exists: {final_path}")
 
@@ -272,13 +278,7 @@ class GraphLoader:
         return node
 
     def _iter_mdoc_files(self) -> list[Path]:
-        files: list[Path] = []
-        for file_path in self.mdcroot.rglob("*.mdoc"):
-            if ".mdc" in file_path.parts:
-                continue
-            if file_path.is_file():
-                files.append(file_path)
-        return files
+        return list(iter_workspace_mdoc_files(self.mdcroot))
 
     @staticmethod
     def _read_mdoc_head(path: Path) -> tuple[str | None, str | None]:

@@ -4,6 +4,7 @@ import shlex
 import sqlite3
 import subprocess
 from pathlib import Path
+from uuid import uuid4
 
 from .indcache import IndCache
 from .utils import (
@@ -20,7 +21,6 @@ from .depgraph.exceptions import DependencyCycleError
 from .ui import (
     BrokenDependencySummary,
     ChainView,
-    confirm_interactive,
     CycleView,
     DepAddView,
     DepRmView,
@@ -29,10 +29,11 @@ from .ui import (
     GraphCheckView,
     IssueView,
     NodeRef,
-    prompt_text_interactive,
+    prompt_new_mdoc_interactive,
     TerminalUI,
     select_indices_interactive,
 )
+from .ui.theme import short_fnode
 
 
 UI = TerminalUI()
@@ -246,11 +247,13 @@ def _create_mdoc(
     cache: IndCache,
     file_path: str = ".",
     title: str = "Untitled",
+    fnode: str | None = None,
 ) -> tuple[DepGraph, str]:
     graph, rel_path = DepGraph.create_root(
         mdcroot=mdcroot,
         file_path=file_path,
         title=title,
+        fnode=fnode,
         cache=cache,
     )
     try:
@@ -265,27 +268,25 @@ def _prompt_create_dependency_row(
     *,
     mdcroot: Path,
     cache: IndCache,
-    query: str,
 ) -> tuple[str, str, str] | None:
+    pending_fnode = str(uuid4())
     try:
-        should_create = confirm_interactive(
-            f"No dependency candidates for: {query}. Create a new mdoc and add it as a dependency",
-            default=False,
+        creation_input = prompt_new_mdoc_interactive(
+            default_filename_display=f"{short_fnode(pending_fnode)}...",
         )
     except RuntimeError:
         return None
 
-    if not should_create:
+    if creation_input is None:
         return None
 
-    file_path = prompt_text_interactive("File path", default=".")
-    title = prompt_text_interactive("Title", default="Untitled")
-
+    file_path, title = creation_input
     created_graph, created_rel = _create_mdoc(
         mdcroot=mdcroot,
         cache=cache,
         file_path=file_path,
         title=title,
+        fnode=pending_fnode,
     )
     created_item = created_graph.root_item()
     return (created_item.fnode, created_item.title, created_rel)
@@ -475,7 +476,6 @@ def _cmd_dep_add(args: argparse.Namespace) -> int:
             created_row = _prompt_create_dependency_row(
                 mdcroot=mdcroot,
                 cache=cache,
-                query=args.query,
             )
         except ValueError as exc:
             UI.error(str(exc))

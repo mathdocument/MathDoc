@@ -17,6 +17,30 @@ import mathdoc.indcache as indcache_module
 
 
 class TestIndCache(unittest.TestCase):
+    def test_refresh_all_skips_nested_workspace_files(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_indcache_nested.") as tmp:
+            parent = Path(tmp) / "parent"
+            child = parent / "child"
+            (parent / ".mdc").mkdir(parents=True, exist_ok=True)
+            (child / ".mdc").mkdir(parents=True, exist_ok=True)
+
+            (parent / "parent-card.mdoc").write_text(
+                "@fnode: parent-node\n"
+                "@title: Parent Card\n",
+                encoding="utf-8",
+            )
+            (child / "child-card.mdoc").write_text(
+                "@fnode: child-node\n"
+                "@title: Child Card\n",
+                encoding="utf-8",
+            )
+
+            cache = IndCache(parent)
+            cache.refresh_all()
+
+            self.assertEqual(len(cache.search("Parent Card")), 1)
+            self.assertEqual(len(cache.search("Child Card")), 0)
+
     def test_refresh_all_detects_same_second_changes_with_mtime_ns(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_indcache_ns.") as tmp:
             root = Path(tmp)

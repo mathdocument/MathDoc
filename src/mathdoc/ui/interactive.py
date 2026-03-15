@@ -98,45 +98,139 @@ def _require_tty() -> None:
         raise RuntimeError("interactive prompt requires a TTY")
 
 
-def confirm_interactive(prompt: str, *, default: bool = False) -> bool:
+def _render_confirm_prompt(prompt: str, suffix: str, *, use_color: bool) -> str:
+    if not use_color:
+        return f"{prompt} {suffix}: "
+    return (
+        colorize(prompt, STYLE["bld"], STYLE["cyn"], enabled=True)
+        + " "
+        + colorize(suffix, STYLE["dim"], STYLE["blu"], enabled=True)
+        + ": "
+    )
+
+
+def _render_text_prompt(
+    prompt: str,
+    *,
+    default_display: str,
+    use_color: bool,
+) -> str:
+    if not use_color:
+        return f"{prompt} [{default_display}]: "
+    return (
+        colorize(prompt, STYLE["bld"], STYLE["cyn"], enabled=True)
+        + colorize(f" [{default_display}]", STYLE["dim"], STYLE["blu"], enabled=True)
+        + ": "
+    )
+
+
+def _confirm_interactive_with_count(
+    prompt: str,
+    *,
+    default: bool = False,
+) -> tuple[bool, int]:
     _require_tty()
+    use_color = supports_color()
     suffix = "[Y/n]" if default else "[y/N]"
+    printed_lines = 0
 
     while True:
-        sys.stdout.write(f"{prompt} {suffix}: ")
+        sys.stdout.write(_render_confirm_prompt(prompt, suffix, use_color=use_color))
         sys.stdout.flush()
         raw = sys.stdin.readline()
+        printed_lines += 1
         if raw == "":
-            return default
+            return default, printed_lines
 
         value = raw.strip().casefold()
         if not value:
-            return default
+            return default, printed_lines
         if value in {"y", "yes"}:
-            return True
+            return True, printed_lines
         if value in {"n", "no"}:
-            return False
+            return False, printed_lines
 
         sys.stdout.write("Please answer y or n.\n")
         sys.stdout.flush()
+        printed_lines += 1
+
+
+def confirm_interactive(prompt: str, *, default: bool = False) -> bool:
+    value, _ = _confirm_interactive_with_count(prompt, default=default)
+    return value
+
+
+def _prompt_text_interactive_with_count(
+    prompt: str,
+    *,
+    default: str = "",
+    default_display: str | None = None,
+) -> tuple[str, int]:
+    _require_tty()
+    use_color = supports_color()
+    rendered_default = default if default_display is None else default_display
+
+    sys.stdout.write(
+        _render_text_prompt(
+            prompt,
+            default_display=rendered_default,
+            use_color=use_color,
+        )
+    )
+    sys.stdout.flush()
+    raw = sys.stdin.readline()
+    printed_lines = 1
+    if raw == "":
+        return default, printed_lines
+
+    value = raw.rstrip("\r\n")
+    return (value if value else default), printed_lines
 
 
 def prompt_text_interactive(
     prompt: str,
     *,
     default: str = "",
+    default_display: str | None = None,
 ) -> str:
-    _require_tty()
-    default_label = f" [{default}]" if default else ""
+    value, _ = _prompt_text_interactive_with_count(
+        prompt,
+        default=default,
+        default_display=default_display,
+    )
+    return value
 
-    sys.stdout.write(f"{prompt}{default_label}: ")
-    sys.stdout.flush()
-    raw = sys.stdin.readline()
-    if raw == "":
-        return default
 
-    value = raw.rstrip("\r\n")
-    return value if value else default
+def prompt_new_mdoc_interactive(
+    *,
+    default_filename_display: str,
+    default_title: str = "Untitled",
+) -> tuple[str, str] | None:
+    printed_lines = 0
+    try:
+        should_create, used_lines = _confirm_interactive_with_count(
+            "No dependency candidates found. Create a new mdoc and add it as a dependency",
+            default=False,
+        )
+        printed_lines += used_lines
+        if not should_create:
+            return None
+
+        filename, used_lines = _prompt_text_interactive_with_count(
+            "Filename",
+            default=".",
+            default_display=default_filename_display,
+        )
+        printed_lines += used_lines
+
+        title, used_lines = _prompt_text_interactive_with_count(
+            "Title",
+            default=default_title,
+        )
+        printed_lines += used_lines
+        return (filename, title)
+    finally:
+        _clear_block(printed_lines)
 
 
 def select_indices_interactive(

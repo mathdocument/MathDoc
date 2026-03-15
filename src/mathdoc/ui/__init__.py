@@ -1,4 +1,5 @@
 from .interactive import confirm_interactive
+from .interactive import prompt_new_mdoc_interactive
 from .interactive import prompt_text_interactive
 from .interactive import select_indices_interactive
 from .models import BrokenDependencySummary
@@ -25,6 +26,7 @@ __all__ = [
     "GraphCheckView",
     "IssueView",
     "NodeRef",
+    "prompt_new_mdoc_interactive",
     "prompt_text_interactive",
     "TerminalUI",
     "select_indices_interactive",

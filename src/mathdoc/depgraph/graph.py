@@ -28,12 +28,14 @@ class DepGraph:
         mdcroot: Path,
         file_path: str = ".",
         title: str = "Untitled",
+        fnode: str | None = None,
         cache: IndCache | None = None,
     ) -> tuple["DepGraph", str]:
         node, rel_path = create_root_node(
             mdcroot=mdcroot,
             file_path=file_path,
             title=title,
+            fnode=fnode,
         )
         graph = cls(mdcroot=mdcroot, root_node=node, cache=cache)
         return graph, rel_path

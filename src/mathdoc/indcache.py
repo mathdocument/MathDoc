@@ -3,6 +3,8 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from .utils import find_nested_mdcroot, iter_workspace_mdoc_files
+
 
 class IndCache:
     def __init__(self, root: Path) -> None:
@@ -111,6 +113,12 @@ class IndCache:
                     if not candidate.is_file():
                         continue
 
+                    nested_root = find_nested_mdcroot(root_resolved, candidate.parent)
+                    if nested_root is not None:
+                        raise ValueError(
+                            f"mdoc path is inside nested mdoc root: {nested_root}"
+                        )
+
                     try:
                         rel_path = candidate.relative_to(root_resolved).as_posix()
                     except ValueError as exc:
@@ -188,6 +196,11 @@ class IndCache:
                 seen.add(candidate)
                 if not candidate.is_file():
                     continue
+                nested_root = find_nested_mdcroot(root_resolved, candidate.parent)
+                if nested_root is not None:
+                    raise ValueError(
+                        f"mdoc path is inside nested mdoc root: {nested_root}"
+                    )
                 try:
                     candidate.relative_to(root_resolved)
                 except ValueError as exc:
@@ -269,11 +282,7 @@ class IndCache:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mdocs_title_lc ON mdocs(title_lc)")
 
     def _iter_mdoc_files(self) -> Iterator[Path]:
-        for file_path in self.root.rglob("*.mdoc"):
-            if ".mdc" in file_path.parts:
-                continue
-            if file_path.is_file():
-                yield file_path
+        yield from iter_workspace_mdoc_files(self.root)
 
     @staticmethod
     def _read_mdoc_head(file_path: Path) -> tuple[str, str] | None:
@@ -369,6 +378,10 @@ class IndCache:
         *,
         commit: bool,
     ) -> None:
+        nested_root = find_nested_mdcroot(self.root, file_path.resolve().parent)
+        if nested_root is not None:
+            raise ValueError(f"mdoc path is inside nested mdoc root: {nested_root}")
+
         try:
             rel_path = file_path.resolve().relative_to(self.root.resolve()).as_posix()
         except ValueError as exc:

@@ -18,6 +18,7 @@ if str(SRC_PATH) not in sys.path:
 
 CLI_BOOTSTRAP = "from mathdoc.cli import main; raise SystemExit(main())"
 ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+ANSI_ESCAPE_BYTES_RE = re.compile(br"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 SEARCH_RESULT_RE = re.compile(r"^- (?:[0-9a-f]{8}|<[^>]+>) ")
 CHAIN_ITEM_RE = re.compile(r"^\[\d+\] [+-] ")
 EVAL_BLOCK_RE = re.compile(r"^\[\d+\] [A-Za-z0-9_+-]+: (?:ok|failed \(\d+\))$")
@@ -88,7 +89,7 @@ def _run_cli_tty_script(
                 output.extend(chunk)
                 while step_index < len(script):
                     trigger, response = script[step_index]
-                    if trigger not in output:
+                    if trigger not in ANSI_ESCAPE_BYTES_RE.sub(b"", bytes(output)):
                         break
                     os.write(master_fd, response)
                     step_index += 1
@@ -108,7 +109,16 @@ def _run_cli_tty_script(
                 break
 
         if proc.poll() is None and step_index < len(script):
-            proc.wait(timeout=5)
+            pending_trigger = script[step_index][0].decode("utf-8", errors="replace")
+            cleaned_output = _clean_cli_output(
+                output.decode("utf-8", errors="replace")
+            )
+            proc.kill()
+            proc.wait()
+            raise AssertionError(
+                f"TTY script timed out waiting for trigger {pending_trigger!r}.\n"
+                f"Output so far:\n{cleaned_output}"
+            )
     finally:
         try:
             os.close(master_fd)
@@ -528,7 +538,7 @@ class TestMdcCli(unittest.TestCase):
                 repo,
                 [
                     (b"[y/N]:", b"y\r"),
-                    (b"File path [.]:", b"notes/fresh-dep\r"),
+                    (b"Filename [", b"notes/fresh-dep\r"),
                     (b"Title [Untitled]:", b"Fresh Dep\r"),
                 ],
             )
@@ -537,6 +547,9 @@ class TestMdcCli(unittest.TestCase):
             self.assertIn("added: 1", out_add_text)
             self.assertIn("Fresh Dep", out_add_text)
             self.assertIn("notes/fresh-dep.mdoc", out_add_text)
+            self.assertRegex(out_add_text, r"Filename \[[0-9a-f]{8}\.\.\.\]:")
+            self.assertIn("\x1b[3A", out_add)
+            self.assertIn("\x1b[3M", out_add)
 
             created_path = repo / "notes" / "fresh-dep.mdoc"
             self.assertTrue(created_path.is_file())
@@ -552,7 +565,7 @@ class TestMdcCli(unittest.TestCase):
             self.assertEqual(len(_search_result_lines(search_run.stdout)), 1)
             self.assertIn("Fresh Dep", search_run.stdout)
 
-    def test_nested_repo_direction_parent_to_child_only(self) -> None:
+    def test_nested_repos_are_fully_isolated(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_nested.") as tmp:
             parent = Path(tmp) / "parent"
             child = parent / "child"
@@ -564,15 +577,16 @@ class TestMdcCli(unittest.TestCase):
                 _run_cli(["new", "-t", "Parent Only", "-f", "."], parent).returncode, 0)
 
             self.assertEqual(_run_cli(["init"], child).returncode, 0)
-            self.assertEqual(
-                _run_cli(["new", "-t", "Child Only", "-f", "."], child).returncode, 0)
+            child_new = _run_cli(["new", "-t", "Child Only", "-f", "."], child)
+            self.assertEqual(child_new.returncode, 0, child_new.stdout + child_new.stderr)
+            _, child_path = _extract_created_mdoc(child_new.stdout)
 
             parent_search_child = _run_cli(["search", "Child Only"], parent)
             self.assertEqual(
                 parent_search_child.returncode, 0, parent_search_child.stdout +
                 parent_search_child.stderr
             )
-            self.assertIn("Child Only", parent_search_child.stdout)
+            self.assertIn("No results for: Child Only", parent_search_child.stdout)
 
             child_search_parent = _run_cli(["search", "Parent Only"], child)
             self.assertEqual(
@@ -581,6 +595,22 @@ class TestMdcCli(unittest.TestCase):
             )
             self.assertIn("No results for: Parent Only",
                           child_search_parent.stdout)
+
+            parent_graph = _run_cli(["graph", "check"], parent)
+            self.assertEqual(parent_graph.returncode, 0, parent_graph.stdout + parent_graph.stderr)
+            self.assertIn("nodes: 1", _compact_cli_output(parent_graph.stdout))
+
+            child_graph = _run_cli(["graph", "check"], child)
+            self.assertEqual(child_graph.returncode, 0, child_graph.stdout + child_graph.stderr)
+            self.assertIn("nodes: 1", _compact_cli_output(child_graph.stdout))
+
+            parent_show_child = _run_cli(["dep", "show", child_path], parent)
+            self.assertEqual(
+                parent_show_child.returncode,
+                1,
+                parent_show_child.stdout + parent_show_child.stderr,
+            )
+            self.assertIn("nested mdoc root", parent_show_child.stdout)
 
     def test_dep_show_refreshes_accessed_dependency_index(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_show_refresh.") as tmp:
