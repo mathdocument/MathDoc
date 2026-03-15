@@ -17,6 +17,7 @@ from mathdoc.ui import EvalBlockView
 from mathdoc.ui import EvalReportView
 from mathdoc.ui import GraphCheckView
 from mathdoc.ui import IssueView
+from mathdoc.ui import MissingReferrerView
 from mathdoc.ui import NodeRef
 from mathdoc.ui import TerminalUI
 
@@ -216,6 +217,22 @@ def preview_terminal_ui() -> int:
     )
     ui.write_lines(
         ui.render_broken_dependency_warning_lines(summary=summary, for_eval=True)
+    )
+
+    _section(
+        "render_missing_referrer_lines",
+        "Shown after dependency output when a missing target needs explicit referrer context.",
+    )
+    covered.add("render_missing_referrer_lines")
+    ui.write_lines(
+        ui.render_missing_referrer_lines(
+            (
+                MissingReferrerView(
+                    target=refs["missing"],
+                    referrers=(refs["dep_1"], refs["source"]),
+                ),
+            )
+        )
     )
 
     _section(

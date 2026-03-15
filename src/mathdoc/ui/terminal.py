@@ -4,11 +4,13 @@ from .models import (
     IssueView,
     GraphCheckView,
     EvalReportView,
+    EvalBlockView,
     DepRmView,
     DepAddView,
     CycleView,
     ChainView,
     BrokenDependencySummary,
+    MissingReferrerView,
 )
 
 
@@ -145,6 +147,41 @@ class TerminalUI:
             lines.append(f"{indent}{self.format_node_ref(item, include_depth=True)}")
         return lines
 
+    def render_missing_referrer_lines(
+        self,
+        reports: tuple[MissingReferrerView, ...],
+    ) -> list[str]:
+        if not reports:
+            return []
+
+        width = _label_width("missing")
+        item_indent = " " * (width + 1)
+        detail_indent = " " * (width + 3)
+        lines = [
+            self._metric(
+                "missing",
+                len(reports),
+                "unresolved target(s)",
+                width=width + 1,
+                tone=STYLE["org"],
+            )
+        ]
+
+        for index, report in enumerate(reports):
+            if index:
+                lines.append("")
+            lines.append(
+                f"{item_indent}{self.format_node_ref(report.target, marker='-')}"
+            )
+            lines.append(
+                f"{detail_indent}{colorize('referred by:', STYLE['bld'], STYLE['blu'])}"
+            )
+            for referrer in report.referrers:
+                lines.append(
+                    f"{detail_indent}  {self.format_node_ref(referrer, marker='-')}"
+                )
+        return lines
+
     def render_broken_dependency_warning_lines(
         self,
         *,
@@ -253,15 +290,15 @@ class TerminalUI:
 
     def render_dep_rm_lines(self, report: DepRmView) -> list[str]:
         source_width = _label_width("source")
-        metric_width = _label_width("removed")
+        metric_width = _label_width("remove")
         indent = " " * (source_width + 1)
         lines = [
             f"{self._label('source', source_width)} {self.format_node_ref(report.source, marker='')}",
             self._metric(
-                "removed",
+                "remove",
                 len(report.removed),
                 "direct dependency removed",
-                width=metric_width,
+                width=metric_width + 1,
                 tone=STYLE["org"],
             ),
         ]
@@ -327,7 +364,7 @@ class TerminalUI:
         ]
 
         if report.missing:
-            lines.append(colorize("missing dependencies:", STYLE["bld"], STYLE["org"]))
+            lines.append(colorize("missing:", STYLE["bld"], STYLE["org"]))
             for issue in report.missing:
                 lines.append(f"  {self.format_issue(issue)}")
                 lines.append(
@@ -335,7 +372,7 @@ class TerminalUI:
                 )
 
         if report.invalid:
-            lines.append(colorize("invalid mdocs:", STYLE["bld"], STYLE["org"]))
+            lines.append(colorize("invalid:", STYLE["bld"], STYLE["org"]))
             for issue in report.invalid:
                 lines.append(f"  {self.format_issue(issue)}")
                 lines.append(

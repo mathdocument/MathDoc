@@ -28,6 +28,7 @@ from .ui import (
     EvalReportView,
     GraphCheckView,
     IssueView,
+    MissingReferrerView,
     NodeRef,
     prompt_new_mdoc_interactive,
     TerminalUI,
@@ -158,6 +159,42 @@ def _broken_dependency_summary(
         elif issue.kind == "invalid":
             invalid += 1
     return BrokenDependencySummary(missing=missing, invalid=invalid)
+
+
+def _missing_referrer_views(
+    dep_items: list[DependencyItem],
+    graph: DepGraph,
+) -> tuple[MissingReferrerView, ...]:
+    reverse_graph: dict[str, list[str]] = {}
+    for src_fnode, dep_fnodes in graph.dep_graph.items():
+        for dep_fnode in dep_fnodes:
+            refs = reverse_graph.setdefault(dep_fnode, [])
+            if src_fnode not in refs:
+                refs.append(src_fnode)
+
+    views: list[MissingReferrerView] = []
+    seen_missing: set[str] = set()
+    for item in dep_items:
+        issue = graph.issue_for_fnode(item.fnode)
+        if issue is None or issue.kind != "missing" or item.fnode in seen_missing:
+            continue
+        seen_missing.add(item.fnode)
+        referrers = tuple(
+            _node_ref_from_item(
+                graph.ref_item_for_fnode(ref_fnode),
+                broken=graph.is_broken_fnode(ref_fnode),
+            )
+            for ref_fnode in reverse_graph.get(item.fnode, [])
+        )
+        if not referrers:
+            continue
+        views.append(
+            MissingReferrerView(
+                target=_node_ref_from_item(item, broken=True),
+                referrers=referrers,
+            )
+        )
+    return tuple(views)
 
 
 def _eval_report(
@@ -429,6 +466,11 @@ def _cmd_eval(args: argparse.Namespace) -> int:
             )
         )
     )
+    missing_referrer_lines = UI.render_missing_referrer_lines(
+        _missing_referrer_views(dep_items, graph)
+    )
+    if missing_referrer_lines:
+        UI.write_lines(missing_referrer_lines)
 
     broken_summary = _broken_dependency_summary(dep_items, graph)
     if broken_summary.total > 0:
@@ -643,6 +685,11 @@ def _cmd_dep_show(args: argparse.Namespace) -> int:
             )
         )
     )
+    missing_referrer_lines = UI.render_missing_referrer_lines(
+        _missing_referrer_views(dep_items, graph)
+    )
+    if missing_referrer_lines:
+        UI.write_lines(missing_referrer_lines)
     broken_lines = UI.render_broken_dependency_warning_lines(
         summary=_broken_dependency_summary(dep_items, graph),
         for_eval=False,

@@ -752,7 +752,50 @@ class TestMdcCli(unittest.TestCase):
             self.assertEqual(len(_chain_item_lines(show_run.stdout)), 1)
             self.assertIn(f"[1] - {dep_fnode[:8]}", show_run_text)
             self.assertIn("<missing> (<unknown>)", show_run_text)
+            self.assertIn("missing refs: 1 unresolved target(s)", show_run_text)
+            self.assertIn("referred by:", show_run_text)
+            self.assertIn("Source Missing", show_run_text)
             self.assertIn("Warning: detected 1 broken dependency reference", show_run_text)
+
+    def test_dep_show_reports_transitive_missing_referrer(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_show_missing_transitive.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_src = _run_cli(["new", "-t", "Source Root", "-f", "."], repo)
+            self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
+            _, src_path = _extract_created_mdoc(new_src.stdout)
+
+            new_mid = _run_cli(["new", "-t", "Middle Card", "-f", "."], repo)
+            self.assertEqual(new_mid.returncode, 0, new_mid.stdout + new_mid.stderr)
+            mid_fnode, mid_path = _extract_created_mdoc(new_mid.stdout)
+
+            new_leaf = _run_cli(["new", "-t", "Leaf Gone", "-f", "."], repo)
+            self.assertEqual(new_leaf.returncode, 0, new_leaf.stdout + new_leaf.stderr)
+            leaf_fnode, leaf_path = _extract_created_mdoc(new_leaf.stdout)
+
+            rc_add_mid, out_add_mid = _run_cli_tty(
+                ["dep", "add", mid_path, "Leaf Gone"], repo, b" \r"
+            )
+            self.assertEqual(rc_add_mid, 0, out_add_mid)
+
+            rc_add_src, out_add_src = _run_cli_tty(
+                ["dep", "add", src_path, "Middle Card"], repo, b" \r"
+            )
+            self.assertEqual(rc_add_src, 0, out_add_src)
+
+            Path(leaf_path).unlink()
+
+            show_run = _run_cli(["dep", "show", "--depth", "-1", src_path], repo)
+            self.assertEqual(show_run.returncode, 0, show_run.stdout + show_run.stderr)
+            show_run_text = _compact_cli_output(show_run.stdout)
+            self.assertIn(leaf_fnode[:8], show_run_text)
+            self.assertIn("<missing> (<unknown>)", show_run_text)
+            self.assertIn("referred by:", show_run_text)
+            self.assertRegex(
+                show_run_text,
+                rf"referred by:\n\s*- {mid_fnode[:8]} Middle Card",
+            )
 
     def test_dep_rm_can_remove_missing_dependency(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_rm_missing.") as tmp:
@@ -778,6 +821,7 @@ class TestMdcCli(unittest.TestCase):
             self.assertEqual(rc_rm, 0, out_rm)
             out_rm_text = _compact_cli_output(out_rm)
             self.assertIn("<missing>", out_rm_text)
+            self.assertNotIn("referred by:", out_rm_text)
             self.assertIn("removed: 1", out_rm_text)
 
             show_run = _run_cli(["dep", "show", src_path], repo)
@@ -810,6 +854,8 @@ class TestMdcCli(unittest.TestCase):
             self.assertEqual(len(_chain_item_lines(eval_run.stdout)), 1)
             self.assertIn(dep_fnode[:8], eval_run.stdout)
             self.assertIn("<missing>", eval_run.stdout)
+            self.assertIn("referred by:", eval_run.stdout)
+            self.assertIn("Eval Missing Source", eval_run.stdout)
             self.assertIn("remove the broken references with `mdc dep rm` before eval", eval_run.stdout)
             self.assertEqual(len(_eval_block_lines(eval_run.stdout)), 0)
 

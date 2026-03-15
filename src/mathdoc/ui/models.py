@@ -25,6 +25,12 @@ class ChainView:
 
 
 @dataclass(slots=True, frozen=True)
+class MissingReferrerView:
+    target: NodeRef
+    referrers: tuple[NodeRef, ...] = field(default_factory=tuple)
+
+
+@dataclass(slots=True, frozen=True)
 class BrokenDependencySummary:
     missing: int = 0
     invalid: int = 0

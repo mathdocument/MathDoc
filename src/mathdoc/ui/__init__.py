@@ -11,6 +11,7 @@ from .models import EvalBlockView
 from .models import EvalReportView
 from .models import GraphCheckView
 from .models import IssueView
+from .models import MissingReferrerView
 from .models import NodeRef
 from .terminal import TerminalUI
 
@@ -25,6 +26,7 @@ __all__ = [
     "EvalReportView",
     "GraphCheckView",
     "IssueView",
+    "MissingReferrerView",
     "NodeRef",
     "prompt_new_mdoc_interactive",
     "prompt_text_interactive",
