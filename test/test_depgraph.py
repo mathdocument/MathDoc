@@ -323,6 +323,60 @@ class TestDepGraph(unittest.TestCase):
                 ],
             )
 
+    def test_leaf_dependency_items_only_return_reachable_leaves(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_leaf_items.") as tmp:
+            root = Path(tmp)
+            leaf_direct = self._new_node(root, "Leaf Direct", "natl", "leaf_direct")
+            leaf_direct.save()
+
+            leaf_shared = self._new_node(root, "Leaf Shared", "natl", "leaf_shared")
+            leaf_shared.save()
+
+            leaf_other = self._new_node(root, "Leaf Other", "natl", "leaf_other")
+            leaf_other.save()
+
+            mid1 = self._new_node(root, "Mid1", "natl", "mid1")
+            mid1.add_dependency(leaf_shared.fnode)
+            mid1.save()
+
+            mid2 = self._new_node(root, "Mid2", "natl", "mid2")
+            mid2.add_dependency(leaf_shared.fnode)
+            mid2.add_dependency(leaf_other.fnode)
+            mid2.save()
+
+            src = self._new_node(root, "Src", "natl", "src")
+            src.add_dependency(mid1.fnode)
+            src.add_dependency(leaf_direct.fnode)
+            src.add_dependency(mid2.fnode)
+            src.save()
+
+            graph = DepGraph(mdcroot=root, root_fnode=src.fnode)
+            items = graph.leaf_dependency_items()
+
+            self.assertEqual(
+                items,
+                [
+                    DependencyItem(
+                        depth=1,
+                        fnode=leaf_direct.fnode,
+                        title="Leaf Direct",
+                        rel_path=leaf_direct.path.resolve().relative_to(root.resolve()).as_posix(),
+                    ),
+                    DependencyItem(
+                        depth=2,
+                        fnode=leaf_shared.fnode,
+                        title="Leaf Shared",
+                        rel_path=leaf_shared.path.resolve().relative_to(root.resolve()).as_posix(),
+                    ),
+                    DependencyItem(
+                        depth=2,
+                        fnode=leaf_other.fnode,
+                        title="Leaf Other",
+                        rel_path=leaf_other.path.resolve().relative_to(root.resolve()).as_posix(),
+                    ),
+                ],
+            )
+
     def test_eval_blocks_raises_on_dependency_cycle(self) -> None:
         with tempfile.TemporaryDirectory(prefix="depgraph_eval_cycle.") as tmp:
             root = Path(tmp)

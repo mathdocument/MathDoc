@@ -7,7 +7,11 @@ from .exceptions import DependencyCycleError
 from .issues import is_broken_fnode, issue_for_fnode, dependency_item_for_fnode
 from .loading import GraphLoader, create_root_node, load_root_node_from_ref
 from .models import DependencyItem, GraphCheckReport, GraphIssue
-from .query import dependency_items_from_graph, referrer_items_from_graph
+from .query import (
+    dependency_items_from_graph,
+    leaf_items_from_graph,
+    referrer_items_from_graph,
+)
 from .report import GraphReporter
 from .state import GraphState
 from ..compiler import CompilerRes
@@ -308,6 +312,23 @@ class DepGraph:
             root_fnode=root_fnode,
         )
         return dependency_items_from_graph(
+            mdcroot=self.mdcroot,
+            state=self.state,
+            root_fnode=active_root,
+        )
+
+    def leaf_dependency_items(
+        self,
+        *,
+        root_node: MdocNode | None = None,
+        root_fnode: str | None = None,
+    ) -> list[DependencyItem]:
+        active_root = self._dependency_context(
+            depth=-1,
+            root_node=root_node,
+            root_fnode=root_fnode,
+        )
+        return leaf_items_from_graph(
             mdcroot=self.mdcroot,
             state=self.state,
             root_fnode=active_root,

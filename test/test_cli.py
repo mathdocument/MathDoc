@@ -865,6 +865,89 @@ class TestMdcCli(unittest.TestCase):
             self.assertRegex(refs_run_text, rf"\[1\] - {mid2_fnode[:8]} Mid Two")
             self.assertRegex(refs_run_text, rf"\[2\] - {root_fnode[:8]} Root Ref")
 
+    def test_dep_leaf_reports_all_reachable_leaf_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_leaf.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_root = _run_cli(["new", "-t", "Root Leaf", "-f", "."], repo)
+            self.assertEqual(new_root.returncode, 0, new_root.stdout + new_root.stderr)
+            root_fnode, root_path = _extract_created_mdoc(new_root.stdout)
+
+            new_mid1 = _run_cli(["new", "-t", "Mid Leaf One", "-f", "."], repo)
+            self.assertEqual(new_mid1.returncode, 0, new_mid1.stdout + new_mid1.stderr)
+            mid1_fnode, mid1_path = _extract_created_mdoc(new_mid1.stdout)
+
+            new_mid2 = _run_cli(["new", "-t", "Mid Leaf Two", "-f", "."], repo)
+            self.assertEqual(new_mid2.returncode, 0, new_mid2.stdout + new_mid2.stderr)
+            mid2_fnode, mid2_path = _extract_created_mdoc(new_mid2.stdout)
+
+            new_direct = _run_cli(["new", "-t", "Leaf Direct", "-f", "."], repo)
+            self.assertEqual(new_direct.returncode, 0, new_direct.stdout + new_direct.stderr)
+            direct_fnode, direct_path = _extract_created_mdoc(new_direct.stdout)
+
+            new_shared = _run_cli(["new", "-t", "Leaf Shared", "-f", "."], repo)
+            self.assertEqual(new_shared.returncode, 0, new_shared.stdout + new_shared.stderr)
+            shared_fnode, shared_path = _extract_created_mdoc(new_shared.stdout)
+
+            new_other = _run_cli(["new", "-t", "Leaf Other", "-f", "."], repo)
+            self.assertEqual(new_other.returncode, 0, new_other.stdout + new_other.stderr)
+            other_fnode, other_path = _extract_created_mdoc(new_other.stdout)
+
+            rc_add_root_1, out_add_root_1 = _run_cli_tty(
+                ["dep", "add", root_path, "Mid Leaf One"], repo, b" \r"
+            )
+            self.assertEqual(rc_add_root_1, 0, out_add_root_1)
+
+            rc_add_root_2, out_add_root_2 = _run_cli_tty(
+                ["dep", "add", root_path, "Leaf Direct"], repo, b" \r"
+            )
+            self.assertEqual(rc_add_root_2, 0, out_add_root_2)
+
+            rc_add_root_3, out_add_root_3 = _run_cli_tty(
+                ["dep", "add", root_path, "Mid Leaf Two"], repo, b" \r"
+            )
+            self.assertEqual(rc_add_root_3, 0, out_add_root_3)
+
+            rc_add_mid1, out_add_mid1 = _run_cli_tty(
+                ["dep", "add", mid1_path, "Leaf Shared"], repo, b" \r"
+            )
+            self.assertEqual(rc_add_mid1, 0, out_add_mid1)
+
+            rc_add_mid2_1, out_add_mid2_1 = _run_cli_tty(
+                ["dep", "add", mid2_path, "Leaf Shared"], repo, b" \r"
+            )
+            self.assertEqual(rc_add_mid2_1, 0, out_add_mid2_1)
+
+            rc_add_mid2_2, out_add_mid2_2 = _run_cli_tty(
+                ["dep", "add", mid2_path, "Leaf Other"], repo, b" \r"
+            )
+            self.assertEqual(rc_add_mid2_2, 0, out_add_mid2_2)
+
+            leaf_run = _run_cli(["dep", "leaf", root_path], repo)
+            self.assertEqual(leaf_run.returncode, 0, leaf_run.stdout + leaf_run.stderr)
+            leaf_run_text = _compact_cli_output(leaf_run.stdout)
+            self.assertIn(f"source: {root_fnode[:8]}", leaf_run_text)
+            self.assertIn("Root Leaf", leaf_run_text)
+            self.assertIn("leaves: 3", leaf_run_text)
+            self.assertRegex(leaf_run_text, rf"\[1\] - {direct_fnode[:8]} Leaf Direct")
+            self.assertRegex(leaf_run_text, rf"\[2\] - {shared_fnode[:8]} Leaf Shared")
+            self.assertRegex(leaf_run_text, rf"\[2\] - {other_fnode[:8]} Leaf Other")
+            self.assertNotIn(mid1_fnode[:8], leaf_run_text)
+            self.assertNotIn(mid2_fnode[:8], leaf_run_text)
+            self.assertEqual(
+                len(
+                    re.findall(
+                        rf"\[2\] - {shared_fnode[:8]} Leaf Shared",
+                        leaf_run_text,
+                    )
+                ),
+                1,
+            )
+            self.assertIn(Path(direct_path).name, leaf_run.stdout)
+            self.assertIn(Path(shared_path).name, leaf_run.stdout)
+            self.assertIn(Path(other_path).name, leaf_run.stdout)
+
     def test_dep_show_recovers_after_manual_file_rename(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_show_rename.") as tmp:
             repo = Path(tmp)

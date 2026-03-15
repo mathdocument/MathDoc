@@ -527,6 +527,65 @@ def _cmd_dep_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_dep_leaf(args: argparse.Namespace) -> int:
+    mdcroot = _get_mdcroot_or_none()
+    if mdcroot is None:
+        return 1
+
+    cache = IndCache(mdcroot)
+    if not _bootstrap_cache(cache, action="prepare dependency index"):
+        return 1
+
+    try:
+        graph, src_rel = _load_graph_from_ref(cache, args.source)
+    except (FileNotFoundError, OSError, ValueError, sqlite3.Error) as exc:
+        UI.error(f"failed to load mdoc: {exc}")
+        return 1
+
+    root_item = graph.root_item()
+    source_item = _node_ref_from_item(root_item, rel_path=src_rel)
+    try:
+        leaf_items = graph.leaf_dependency_items()
+    except DependencyCycleError as exc:
+        UI.write_lines(UI.render_cycle_lines(_cycle_view(graph, exc.cycle)))
+        return 1
+    except ValueError as exc:
+        UI.write_lines(
+            UI.render_anchor_error_lines(
+                label="source",
+                item=source_item,
+                message=f"failed to inspect leaf dependencies: {exc}",
+            )
+        )
+        return 1
+
+    leaf_rows = [(item.fnode, item.title, item.rel_path) for item in leaf_items]
+    if leaf_rows:
+        try:
+            cache.refresh_rows(leaf_rows)
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            UI.warn_index_failure("leaf dependencies were inspected", exc)
+
+    UI.write_lines(
+        UI.render_chain_lines(
+            _chain_view(
+                anchor_label="source",
+                anchor=source_item,
+                count_label="leaves",
+                items=leaf_items,
+                graph=graph,
+            )
+        )
+    )
+    broken_lines = UI.render_broken_dependency_warning_lines(
+        summary=_broken_dependency_summary(leaf_items, graph),
+        for_eval=False,
+    )
+    if broken_lines:
+        UI.write_lines(broken_lines)
+    return 0
+
+
 def _cmd_dep_rm(args: argparse.Namespace) -> int:
     mdcroot = _get_mdcroot_or_none()
     if mdcroot is None:
@@ -873,6 +932,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Dependency traversal depth (-1 for unlimited, default: 1)",
     )
     dep_show_parser.set_defaults(func=_cmd_dep_show)
+
+    dep_leaf_parser = dep_subparsers.add_parser(
+        "leaf", help="Show all leaf dependencies of a mdoc"
+    )
+    dep_leaf_parser.add_argument(
+        "source",
+        help="Source mdoc to inspect (fnode or .mdoc path)",
+    )
+    dep_leaf_parser.set_defaults(func=_cmd_dep_leaf)
 
     dep_rm_parser = dep_subparsers.add_parser(
         "rm", help="Interactively remove dependencies from a mdoc"
