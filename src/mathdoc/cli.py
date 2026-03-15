@@ -432,6 +432,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     try:
         block_results = graph.eval_blocks(
             depth=args.depth,
+            progress=UI.info,
         )
     except DependencyCycleError as exc:
         UI.write_lines(UI.render_cycle_lines(_cycle_view(graph, exc.cycle)))

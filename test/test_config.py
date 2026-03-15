@@ -27,6 +27,18 @@ class TestConfig(unittest.TestCase):
             cfg["src"]["latex"]["reverse_depens"],
             DEFAULT_CONFIG["src"]["latex"]["reverse_depens"],
         )
+        self.assertEqual(
+            cfg["src"]["lean"]["imports"],
+            DEFAULT_CONFIG["src"]["lean"]["imports"],
+        )
+        self.assertEqual(
+            cfg["src"]["lean"]["setup_timeout_sec"],
+            DEFAULT_CONFIG["src"]["lean"]["setup_timeout_sec"],
+        )
+        self.assertEqual(
+            cfg["src"]["lean"]["timeout_sec"],
+            DEFAULT_CONFIG["src"]["lean"]["timeout_sec"],
+        )
 
     def test_load_config_reads_empty_file(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_config_empty.") as tmp:
@@ -56,6 +68,10 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(
             cfg["src"]["natl"]["reverse_depens"],
             DEFAULT_CONFIG["src"]["natl"]["reverse_depens"],
+        )
+        self.assertEqual(
+            cfg["src"]["lean"]["imports"],
+            DEFAULT_CONFIG["src"]["lean"]["imports"],
         )
 
     def test_load_config_invalid_toml_raises(self) -> None:

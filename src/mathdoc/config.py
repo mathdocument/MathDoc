@@ -21,6 +21,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "reverse_depens": False,
             "timeout_sec": 30,
         },
+        "lean": {
+            "depens": True,
+            "reverse_depens": False,
+            "timeout_sec": 300,
+            "setup_timeout_sec": 1800,
+            "imports": ["Mathlib"],
+            "preamble": "",
+        },
     }
 }
 

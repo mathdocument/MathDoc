@@ -1,4 +1,5 @@
 from .base import SrcCompiler
+from .comp_lean import CompilerLean
 from .comp_natl import CompilerNatl
 from .comp_py import CompilerPy
 from .comp_latex import CompilerLatex
@@ -19,5 +20,6 @@ COMPILER_REGISTRY = CompilerRegistry(
         CompilerNatl(),
         CompilerPy(),
         CompilerLatex(),
+        CompilerLean(),
     ]
 )

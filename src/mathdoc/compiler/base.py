@@ -1,5 +1,6 @@
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -12,6 +13,7 @@ class CompilerReq:
     srctype: str
     content: str
     compcfg: dict[str, Any] = field(default_factory=dict)
+    progress: Callable[[str], None] | None = None
 
 
 @dataclass(slots=True, kw_only=True)

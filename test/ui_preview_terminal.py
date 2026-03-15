@@ -134,6 +134,13 @@ def preview_terminal_ui() -> int:
     ui.hint("sample hint")
 
     _section(
+        "info",
+        "Long-running progress updates, such as Lean workspace setup or compilation steps.",
+    )
+    covered.add("info")
+    ui.info("sample progress update")
+
+    _section(
         "format_node_ref",
         "Low-level single-node formatter used by search results, dependency chains, graph issues, and mutation summaries.",
     )

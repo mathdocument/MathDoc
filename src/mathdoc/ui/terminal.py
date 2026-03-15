@@ -50,6 +50,9 @@ class TerminalUI:
     def hint(self, message: str) -> None:
         self.write(f"{self._status_tag('Hint', STYLE['blu'])} {message}")
 
+    def info(self, message: str) -> None:
+        self.write(f"{self._status_tag('Info', STYLE['cyn'])} {message}")
+
     def _status_tag(self, text: str, tone: str) -> str:
         return colorize(f"{text}:", STYLE["bld"], tone)
 

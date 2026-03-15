@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,13 @@ class SrcBlock:
     content: str
     metadata: dict[str, str] = field(default_factory=dict)
 
-    def compile(self, *, mdcroot: Path, src_cfg: dict[str, Any]) -> CompilerRes:
+    def compile(
+        self,
+        *,
+        mdcroot: Path,
+        src_cfg: dict[str, Any],
+        progress: Callable[[str], None] | None = None,
+    ) -> CompilerRes:
         if mdcroot is None:
             return CompilerRes(
                 result=False,
@@ -54,5 +61,6 @@ class SrcBlock:
             srctype=srctype,
             content=self.content,
             compcfg=compcfg,
+            progress=progress,
         )
         return compiler.compile(req)

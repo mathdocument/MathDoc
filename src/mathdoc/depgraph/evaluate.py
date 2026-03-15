@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,7 @@ class GraphEvaluator:
         root_node: MdocNode,
         root_fnode: str,
         dep_items: list[DependencyItem],
+        progress: Callable[[str], None] | None = None,
     ) -> list[tuple[str, CompilerRes]]:
         if any(is_broken_fnode(self.state, item.fnode) for item in dep_items):
             raise ValueError(
@@ -70,6 +72,7 @@ class GraphEvaluator:
                     block.compile(
                         mdcroot=self.mdcroot,
                         src_cfg=src_cfg,
+                        progress=progress,
                     ),
                 )
             )

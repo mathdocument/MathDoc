@@ -1,4 +1,5 @@
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 from .algorithms import find_cycle
@@ -358,6 +359,7 @@ class DepGraph:
         depth: int = 1,
         root_node: MdocNode | None = None,
         root_fnode: str | None = None,
+        progress: Callable[[str], None] | None = None,
     ) -> list[tuple[str, CompilerRes]]:
         active_root = self._bind_root(root_node=root_node, root_fnode=root_fnode)
         root = self._loader.ensure_node_loaded(active_root)
@@ -370,6 +372,7 @@ class DepGraph:
             root_node=root,
             root_fnode=active_root,
             dep_items=dep_items,
+            progress=progress,
         )
 
     def scan_all(self) -> None:
