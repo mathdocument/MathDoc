@@ -4,6 +4,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .srcblock import SrcBlock
+from .utils import find_nested_mdcroot
 
 
 @dataclass(slots=True)
@@ -34,7 +35,20 @@ class MdocNode:
     ) -> "MdocNode":
         """Create a new node with an auto-generated unique id."""
         root_path = Path(mdcroot).resolve()
-        folder_path = Path(folder).resolve()
+        folder_path = Path(folder)
+        if folder_path.is_absolute():
+            folder_path = folder_path.resolve()
+        else:
+            folder_path = (root_path / folder_path).resolve()
+        try:
+            folder_path.relative_to(root_path)
+        except ValueError as exc:
+            raise ValueError(
+                f"mdoc folder must be under mdoc root: {root_path}"
+            ) from exc
+        nested_root = find_nested_mdcroot(root_path, folder_path)
+        if nested_root is not None:
+            raise ValueError(f"mdoc path is inside nested mdoc root: {nested_root}")
         node = cls(mdcroot=root_path, path=folder_path, title=title)
         node.path = folder_path / f"{node.fnode}.mdoc"
         return node

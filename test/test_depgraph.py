@@ -105,6 +105,36 @@ class TestDepGraph(unittest.TestCase):
                 {src.fnode, dep1.fnode, dep2.fnode},
             )
 
+    def test_dependency_queries_do_not_leak_cached_deeper_nodes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_depth_reset.") as tmp:
+            root = Path(tmp)
+            dep2 = self._new_node(root, "Dep2", "natl", "dep2")
+            dep2.save()
+
+            dep1 = self._new_node(root, "Dep1", "natl", "dep1")
+            dep1.add_dependency(dep2.fnode)
+            dep1.save()
+
+            src = self._new_node(root, "Src", "natl", "src")
+            src.add_dependency(dep1.fnode)
+            src.save()
+
+            graph = DepGraph(mdcroot=root, root_fnode=src.fnode)
+
+            self.assertEqual(
+                [item.fnode for item in graph.dependency_items(depth=-1)],
+                [dep1.fnode, dep2.fnode],
+            )
+            self.assertEqual(graph.dependency_items(depth=0), [])
+            self.assertEqual(
+                [node.fnode for node in graph.ordered_nodes(depth=0)],
+                [src.fnode],
+            )
+
+            block_results = graph.eval_blocks(depth=0)
+            self.assertEqual(len(block_results), 1)
+            self.assertEqual(block_results[0][1].stdout, "src")
+
     def test_eval_blocks_runs_all_blocks(self) -> None:
         with tempfile.TemporaryDirectory(prefix="depgraph_eval_basic.") as tmp:
             root = Path(tmp)
@@ -636,6 +666,87 @@ class TestDepGraph(unittest.TestCase):
             self.assertEqual(len(report.cycles), 1)
             self.assertIn(a.fnode, report.cycles[0])
             self.assertIn(b.fnode, report.cycles[0])
+
+    def test_dependency_items_show_duplicate_fnode_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_duplicate_placeholder.") as tmp:
+            root = Path(tmp)
+            (root / ".mdc").mkdir(parents=True, exist_ok=True)
+            (root / "dup-a.mdoc").write_text(
+                "@fnode: dup-node\n@title: Dup A\n",
+                encoding="utf-8",
+            )
+            (root / "dup-b.mdoc").write_text(
+                "@fnode: dup-node\n@title: Dup B\n",
+                encoding="utf-8",
+            )
+
+            src = self._new_node(root, "Src", "natl", "src")
+            src.add_dependency("dup-node")
+            src.save()
+
+            graph = DepGraph(mdcroot=root, root_fnode=src.fnode)
+            items = graph.dependency_items()
+
+            self.assertEqual(
+                items,
+                [
+                    DependencyItem(
+                        depth=1,
+                        fnode="dup-node",
+                        title="<invalid>",
+                        rel_path="dup-a.mdoc",
+                    )
+                ],
+            )
+            issue = graph.issue_for_fnode("dup-node")
+            self.assertIsNotNone(issue)
+            self.assertIn("duplicate fnode 'dup-node'", issue.error)
+
+    def test_graph_check_report_collects_duplicate_fnode_issues(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_duplicate_report.") as tmp:
+            root = Path(tmp)
+            (root / ".mdc").mkdir(parents=True, exist_ok=True)
+            (root / "dup-a.mdoc").write_text(
+                "@fnode: dup-node\n@title: Dup A\n",
+                encoding="utf-8",
+            )
+            (root / "dup-b.mdoc").write_text(
+                "@fnode: dup-node\n@title: Dup B\n",
+                encoding="utf-8",
+            )
+
+            graph = DepGraph(mdcroot=root)
+            report = graph.graph_check_report()
+
+            self.assertEqual(report.nodes, 2)
+            self.assertEqual(report.edges, 0)
+            self.assertEqual(len(report.invalid), 2)
+            self.assertEqual(
+                {issue.rel_path for issue in report.invalid},
+                {"dup-a.mdoc", "dup-b.mdoc"},
+            )
+            for issue in report.invalid:
+                self.assertIn("duplicate fnode 'dup-node'", issue.error)
+
+    def test_from_ref_rejects_duplicate_root_fnode_even_by_path(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_duplicate_root.") as tmp:
+            root = Path(tmp)
+            (root / ".mdc").mkdir(parents=True, exist_ok=True)
+            (root / "dup-a.mdoc").write_text(
+                "@fnode: dup-node\n@title: Dup A\n",
+                encoding="utf-8",
+            )
+            (root / "dup-b.mdoc").write_text(
+                "@fnode: dup-node\n@title: Dup B\n",
+                encoding="utf-8",
+            )
+
+            cache = IndCache(root)
+            cache.bootstrap_if_needed()
+
+            with self.assertRaises(ValueError) as ctx:
+                DepGraph.from_ref(cache=cache, ref="dup-a.mdoc", cwd=root)
+            self.assertIn("duplicate fnode 'dup-node'", str(ctx.exception))
 
 
 if __name__ == "__main__":

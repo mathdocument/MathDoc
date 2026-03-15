@@ -74,6 +74,7 @@ def load_root_node_from_ref(
     cwd: Path | None = None,
 ) -> tuple[MdocNode, str]:
     base_cwd = (cwd or Path.cwd()).resolve()
+    cache.bootstrap_if_needed()
 
     for attempt in range(2):
         try:
@@ -92,6 +93,15 @@ def load_root_node_from_ref(
                 cache.refresh_all()
                 continue
             raise
+        duplicate_paths = cache.duplicate_fnode_paths(node.fnode)
+        if len(duplicate_paths) > 1:
+            raise ValueError(
+                _duplicate_fnode_error(
+                    mdcroot=cache.root,
+                    fnode=node.fnode,
+                    paths=duplicate_paths,
+                )
+            )
 
         return node, to_rel_path(cache.root, src_path)
 
@@ -144,10 +154,10 @@ class GraphLoader:
             self.state.dep_graph[node.fnode] = []
 
             for dep_fnode in self._dedupe_keep_order(node.depens):
+                if depth != -1 and node_depth >= depth and dep_fnode not in seen:
+                    continue
                 dep_node = self.state.nodes_by_fnode.get(dep_fnode)
                 if dep_node is None:
-                    if depth != -1 and node_depth >= depth:
-                        continue
                     dep_node = self.load_node(
                         dep_fnode,
                         tolerate_missing=True,
@@ -172,6 +182,7 @@ class GraphLoader:
     def scan_all(self) -> None:
         self.ensure_ready()
         self.state.reset_graph()
+        loaded_nodes: list[MdocNode] = []
 
         for file_path in self._iter_mdoc_files():
             self.state.scanned_file_count += 1
@@ -187,7 +198,20 @@ class GraphLoader:
                 )
                 record_invalid_issue(self.state, issue)
                 continue
-            self.state.nodes_by_fnode[node.fnode] = node
+            loaded_nodes.append(node)
+
+        nodes_by_fnode: dict[str, list[MdocNode]] = {}
+        for node in loaded_nodes:
+            nodes_by_fnode.setdefault(node.fnode, []).append(node)
+
+        for fnode, grouped_nodes in sorted(nodes_by_fnode.items()):
+            if len(grouped_nodes) == 1:
+                self.state.nodes_by_fnode[fnode] = grouped_nodes[0]
+                continue
+            self._record_duplicate_fnode(
+                fnode=fnode,
+                paths=[node.path for node in grouped_nodes],
+            )
 
         for node in list(self.state.nodes_by_fnode.values()):
             self.state.dep_graph[node.fnode] = []
@@ -217,10 +241,17 @@ class GraphLoader:
         tolerate_invalid: bool,
     ) -> MdocNode | None:
         for attempt in range(2):
-            path = self._resolve_fnode_path(
-                fnode,
-                tolerate_missing=tolerate_missing,
-            )
+            try:
+                path = self._resolve_fnode_path(
+                    fnode,
+                    tolerate_missing=tolerate_missing,
+                )
+            except ValueError as exc:
+                duplicate_paths = self.cache.duplicate_fnode_paths(fnode)
+                if tolerate_invalid and len(duplicate_paths) > 1:
+                    self._record_duplicate_fnode(fnode=fnode, paths=duplicate_paths)
+                    return None
+                raise
             if path is None:
                 if attempt == 0:
                     self.cache.refresh_all()
@@ -249,6 +280,21 @@ class GraphLoader:
                     record_invalid_issue(self.state, issue)
                     return None
                 raise
+            duplicate_paths = self.cache.duplicate_fnode_paths(node.fnode)
+            if len(duplicate_paths) > 1:
+                if tolerate_invalid:
+                    self._record_duplicate_fnode(
+                        fnode=node.fnode,
+                        paths=duplicate_paths,
+                    )
+                    return None
+                raise ValueError(
+                    _duplicate_fnode_error(
+                        mdcroot=self.mdcroot,
+                        fnode=node.fnode,
+                        paths=duplicate_paths,
+                    )
+                )
 
             clear_broken_issue(self.state, fnode)
             return node
@@ -280,6 +326,28 @@ class GraphLoader:
     def _iter_mdoc_files(self) -> list[Path]:
         return list(iter_workspace_mdoc_files(self.mdcroot))
 
+    def _record_duplicate_fnode(self, *, fnode: str, paths: list[Path]) -> None:
+        sorted_paths = sorted(path.resolve() for path in paths)
+        error = _duplicate_fnode_error(
+            mdcroot=self.mdcroot,
+            fnode=fnode,
+            paths=sorted_paths,
+        )
+        for path in sorted_paths:
+            issue = make_invalid_issue(
+                mdcroot=self.mdcroot,
+                path=path,
+                error=error,
+                fnode=fnode,
+            )
+            record_invalid_issue(self.state, issue)
+        self.state.broken_issues[fnode] = make_invalid_issue(
+            mdcroot=self.mdcroot,
+            path=sorted_paths[0],
+            error=error,
+            fnode=fnode,
+        )
+
     @staticmethod
     def _read_mdoc_head(path: Path) -> tuple[str | None, str | None]:
         fnode = ""
@@ -309,3 +377,13 @@ class GraphLoader:
             seen.add(item)
             out.append(item)
         return out
+
+
+def _duplicate_fnode_error(
+    *,
+    mdcroot: Path,
+    fnode: str,
+    paths: list[Path],
+) -> str:
+    rel_paths = ", ".join(to_rel_path(mdcroot, path) for path in paths)
+    return f"duplicate fnode '{fnode}' found in: {rel_paths}"

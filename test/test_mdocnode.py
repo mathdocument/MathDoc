@@ -1,3 +1,4 @@
+import os
 from mathdoc.mdocnode import MdocNode
 from mathdoc.srcblock import SrcBlock
 import tempfile
@@ -91,6 +92,28 @@ class TestMdocNode(unittest.TestCase):
             node.load()
 
             self.assertEqual(node.depens, ["abc:def"])
+
+    def test_create_relative_folder_is_anchored_to_mdcroot(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdoc_node_rel_folder_root.") as tmp_root:
+            with tempfile.TemporaryDirectory(prefix="mdoc_node_rel_folder_cwd.") as tmp_cwd:
+                root = Path(tmp_root)
+                cwd = Path(tmp_cwd)
+                old_cwd = Path.cwd()
+                try:
+                    os.chdir(cwd)
+                    node = MdocNode.create(mdcroot=root, folder="notes", title="Anchored")
+                finally:
+                    os.chdir(old_cwd)
+
+                self.assertEqual(node.path.parent, (root / "notes").resolve())
+                self.assertTrue(node.path.name.endswith(".mdoc"))
+
+    def test_create_rejects_folder_outside_mdcroot(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdoc_node_outside_root.") as tmp:
+            root = Path(tmp)
+            with self.assertRaises(ValueError) as ctx:
+                MdocNode.create(mdcroot=root, folder="../outside", title="Nope")
+            self.assertIn("mdoc folder must be under mdoc root", str(ctx.exception))
 
 
 if __name__ == "__main__":

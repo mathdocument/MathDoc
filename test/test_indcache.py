@@ -182,6 +182,46 @@ class TestIndCache(unittest.TestCase):
 
             self.assertEqual(closed_count, 3)
 
+    def test_search_and_resolve_surface_duplicate_fnodes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_indcache_dupe.") as tmp:
+            root = Path(tmp)
+            (root / ".mdc").mkdir(parents=True, exist_ok=True)
+            (root / "dup-a.mdoc").write_text(
+                "@fnode: dup-node\n"
+                "@title: Dup A\n",
+                encoding="utf-8",
+            )
+            (root / "dup-b.mdoc").write_text(
+                "@fnode: dup-node\n"
+                "@title: Dup B\n",
+                encoding="utf-8",
+            )
+
+            cache = IndCache(root)
+            cache.refresh_all()
+
+            self.assertEqual(
+                cache.search("dup-node"),
+                [
+                    ("dup-node", "Dup A", "dup-a.mdoc"),
+                    ("dup-node", "Dup B", "dup-b.mdoc"),
+                ],
+            )
+            self.assertEqual(
+                cache.search("Dup"),
+                [
+                    ("dup-node", "Dup A", "dup-a.mdoc"),
+                    ("dup-node", "Dup B", "dup-b.mdoc"),
+                ],
+            )
+            with self.assertRaises(ValueError) as ctx:
+                cache.resolve_ref("dup-node", cwd=root)
+            self.assertIn("ambiguous mdoc reference 'dup-node'", str(ctx.exception))
+            self.assertEqual(
+                cache.duplicate_fnode_paths("dup-node"),
+                [(root / "dup-a.mdoc").resolve(), (root / "dup-b.mdoc").resolve()],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

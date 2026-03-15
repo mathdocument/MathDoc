@@ -82,6 +82,24 @@ class IndCache:
             ).fetchall()
         return [(str(row[0]), str(row[1]), str(row[2])) for row in rows]
 
+    def duplicate_fnode_paths(self, fnode: str) -> list[Path]:
+        rows = self.exact_fnode_rows(fnode)
+        return [self.root / row[2] for row in rows]
+
+    def exact_fnode_rows(self, fnode: str) -> list[tuple[str, str, str]]:
+        query_lc = fnode.casefold()
+        with self._open_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT fnode, title, path
+                FROM mdocs
+                WHERE lower(fnode) = ?
+                ORDER BY path
+                """,
+                (query_lc,),
+            ).fetchall()
+        return [(str(row[0]), str(row[1]), str(row[2])) for row in rows]
+
     def resolve_ref(
         self, ref: str, *, cwd: Path | None = None
     ) -> tuple[str, str, Path]:
@@ -158,11 +176,17 @@ class IndCache:
 
         exact_rows = [row for row in rows if str(row[0]).casefold() == query_lc]
         if exact_rows:
-            row = exact_rows[0]
+            if len(exact_rows) == 1:
+                row = exact_rows[0]
+            else:
+                preview = self._format_ref_preview(exact_rows[:5])
+                raise ValueError(
+                    f"ambiguous mdoc reference '{raw_ref}', matches: {preview}"
+                )
         elif len(rows) == 1:
             row = rows[0]
         else:
-            preview = ", ".join(f"{str(r[0])[:8]}:{r[1]}" for r in rows[:5])
+            preview = self._format_ref_preview(rows[:5])
             raise ValueError(
                 f"ambiguous mdoc reference '{raw_ref}', matches: {preview}"
             )
@@ -220,6 +244,7 @@ class IndCache:
             return {}
 
         rows_by_fnode: dict[str, tuple[str, str]] = {}
+        duplicate_fnodes: set[str] = set()
         chunk_size = 500
         with self._open_conn() as conn:
             for start in range(0, len(fnodes), chunk_size):
@@ -230,7 +255,17 @@ class IndCache:
                     tuple(chunk),
                 ).fetchall()
                 for row in rows:
-                    rows_by_fnode[str(row[0])] = (str(row[1]), str(row[2]))
+                    fnode = str(row[0])
+                    if fnode in duplicate_fnodes:
+                        continue
+                    entry = (str(row[1]), str(row[2]))
+                    existing = rows_by_fnode.get(fnode)
+                    if existing is None:
+                        rows_by_fnode[fnode] = entry
+                        continue
+                    if existing != entry:
+                        duplicate_fnodes.add(fnode)
+                        rows_by_fnode.pop(fnode, None)
         return rows_by_fnode
 
     def dep_rows(self, depens: list[str]) -> list[tuple[str, str, str]]:
@@ -243,22 +278,24 @@ class IndCache:
 
     @staticmethod
     def _ensure_index_schema(conn: sqlite3.Connection) -> None:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS mdocs (
-                fnode TEXT PRIMARY KEY,
-                path TEXT NOT NULL UNIQUE,
-                title TEXT NOT NULL,
-                title_lc TEXT NOT NULL,
-                mtime_sec INTEGER NOT NULL,
-                mtime_ns INTEGER NOT NULL,
-                size INTEGER NOT NULL
-            )
-            """
+        column_rows = conn.execute("PRAGMA table_info(mdocs)").fetchall()
+        if not column_rows:
+            IndCache._create_index_table(conn)
+            column_rows = conn.execute("PRAGMA table_info(mdocs)").fetchall()
+
+        columns = {str(row[1]) for row in column_rows}
+        fnode_is_primary = any(
+            str(row[1]) == "fnode" and int(row[5]) == 1 for row in column_rows
         )
-        columns = {
-            str(row[1]) for row in conn.execute("PRAGMA table_info(mdocs)").fetchall()
-        }
+        path_is_primary = any(
+            str(row[1]) == "path" and int(row[5]) == 1 for row in column_rows
+        )
+        if fnode_is_primary or not path_is_primary:
+            conn.execute("DROP TABLE mdocs")
+            IndCache._create_index_table(conn)
+            columns = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(mdocs)").fetchall()
+            }
         if "mtime_ns" not in columns:
             if "mtime_sec" not in columns:
                 raise sqlite3.DatabaseError(
@@ -280,6 +317,23 @@ class IndCache:
             )
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mdocs_title_lc ON mdocs(title_lc)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mdocs_fnode ON mdocs(fnode)")
+
+    @staticmethod
+    def _create_index_table(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mdocs (
+                path TEXT PRIMARY KEY,
+                fnode TEXT NOT NULL,
+                title TEXT NOT NULL,
+                title_lc TEXT NOT NULL,
+                mtime_sec INTEGER NOT NULL,
+                mtime_ns INTEGER NOT NULL,
+                size INTEGER NOT NULL
+            )
+            """
+        )
 
     def _iter_mdoc_files(self) -> Iterator[Path]:
         yield from iter_workspace_mdoc_files(self.root)
@@ -340,14 +394,11 @@ class IndCache:
 
             fnode, title = head
             conn.execute(
-                "DELETE FROM mdocs WHERE path = ? AND fnode != ?", (rel_path, fnode)
-            )
-            conn.execute(
                 """
-                INSERT INTO mdocs (fnode, path, title, title_lc, mtime_sec, mtime_ns, size)
+                INSERT INTO mdocs (path, fnode, title, title_lc, mtime_sec, mtime_ns, size)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(fnode) DO UPDATE SET
-                    path = excluded.path,
+                ON CONFLICT(path) DO UPDATE SET
+                    fnode = excluded.fnode,
                     title = excluded.title,
                     title_lc = excluded.title_lc,
                     mtime_sec = excluded.mtime_sec,
@@ -355,8 +406,8 @@ class IndCache:
                     size = excluded.size
                 """,
                 (
-                    fnode,
                     rel_path,
+                    fnode,
                     title,
                     title.casefold(),
                     mtime_ns // 1_000_000_000,
@@ -412,14 +463,11 @@ class IndCache:
 
         fnode, title = head
         conn.execute(
-            "DELETE FROM mdocs WHERE path = ? AND fnode != ?", (rel_path, fnode)
-        )
-        conn.execute(
             """
-            INSERT INTO mdocs (fnode, path, title, title_lc, mtime_sec, mtime_ns, size)
+            INSERT INTO mdocs (path, fnode, title, title_lc, mtime_sec, mtime_ns, size)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(fnode) DO UPDATE SET
-                path = excluded.path,
+            ON CONFLICT(path) DO UPDATE SET
+                fnode = excluded.fnode,
                 title = excluded.title,
                 title_lc = excluded.title_lc,
                 mtime_sec = excluded.mtime_sec,
@@ -427,8 +475,8 @@ class IndCache:
                 size = excluded.size
             """,
             (
-                fnode,
                 rel_path,
+                fnode,
                 title,
                 title.casefold(),
                 int(stat.st_mtime),
@@ -438,3 +486,7 @@ class IndCache:
         )
         if commit:
             conn.commit()
+
+    @staticmethod
+    def _format_ref_preview(rows: list[tuple[object, object, object]]) -> str:
+        return ", ".join(f"{str(row[0])[:8]}:{row[2]}" for row in rows)
