@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import sqlite3
 from pathlib import Path
 from uuid import uuid4
@@ -7,9 +8,32 @@ from ..indcache import IndCache
 from ..ui import NodeRef, TerminalUI, prompt_new_mdoc_interactive
 from ..ui.theme import short_fnode
 from ..utils import find_mdcroot, to_rel_path
+from .presenters import node_ref_from_item
 
 
 UI = TerminalUI()
+
+
+@dataclass(slots=True, frozen=True)
+class CacheContext:
+    mdcroot: Path
+    cache: IndCache
+
+
+@dataclass(slots=True, frozen=True)
+class SourceGraphContext:
+    mdcroot: Path
+    cache: IndCache
+    graph: DepGraph
+    source_item: NodeRef
+
+
+@dataclass(slots=True, frozen=True)
+class TargetGraphContext:
+    mdcroot: Path
+    cache: IndCache
+    graph: DepGraph
+    target_item: NodeRef
 
 
 def get_mdcroot_or_none() -> Path | None:
@@ -18,6 +42,13 @@ def get_mdcroot_or_none() -> Path | None:
         UI.error("not inside an mdoc directory, run `mdc init` first")
         return None
     return mdcroot
+
+
+def get_cache_context_or_none() -> CacheContext | None:
+    mdcroot = get_mdcroot_or_none()
+    if mdcroot is None:
+        return None
+    return CacheContext(mdcroot=mdcroot, cache=IndCache(mdcroot))
 
 
 def load_graph_from_ref(cache: IndCache, ref: str) -> tuple[DepGraph, str]:
@@ -40,6 +71,77 @@ def bootstrap_cache(cache: IndCache, *, action: str) -> bool:
         UI.write_lines(UI.render_index_error_lines(action=action, exc=exc))
         return False
     return True
+
+
+def prepare_cache_context(*, action: str) -> CacheContext | None:
+    context = get_cache_context_or_none()
+    if context is None:
+        return None
+    if not bootstrap_cache(context.cache, action=action):
+        return None
+    return context
+
+
+def load_source_graph_context(
+    *,
+    source: str,
+    action: str,
+    error_prefix: str = "failed to load mdoc",
+) -> SourceGraphContext | None:
+    context = prepare_cache_context(action=action)
+    if context is None:
+        return None
+    try:
+        graph, src_rel = load_graph_from_ref(context.cache, source)
+    except (FileNotFoundError, OSError, ValueError, sqlite3.Error) as exc:
+        UI.error(f"{error_prefix}: {exc}")
+        return None
+    return SourceGraphContext(
+        mdcroot=context.mdcroot,
+        cache=context.cache,
+        graph=graph,
+        source_item=node_ref_from_item(graph.root_item(), rel_path=src_rel),
+    )
+
+
+def load_target_graph_context(
+    *,
+    target: str,
+    action: str,
+    resolve_error_prefix: str = "failed to resolve mdoc",
+) -> TargetGraphContext | None:
+    context = prepare_cache_context(action=action)
+    if context is None:
+        return None
+    try:
+        target_item = resolve_ref_item(context.cache, target)
+    except (ValueError, sqlite3.Error) as exc:
+        UI.error(f"{resolve_error_prefix}: {exc}")
+        return None
+    return TargetGraphContext(
+        mdcroot=context.mdcroot,
+        cache=context.cache,
+        graph=DepGraph(
+            mdcroot=context.mdcroot,
+            root_fnode=target_item.fnode,
+            cache=context.cache,
+        ),
+        target_item=target_item,
+    )
+
+
+def refresh_rows_or_warn(
+    cache: IndCache,
+    rows: list[tuple[str, str, str]],
+    *,
+    action: str,
+) -> None:
+    if not rows:
+        return
+    try:
+        cache.refresh_rows(rows)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        UI.warn_index_failure(action, exc)
 
 
 def search_match_rows(

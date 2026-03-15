@@ -2,21 +2,16 @@ import argparse
 import sqlite3
 
 from ..depgraph import DepGraph
-from ..indcache import IndCache
-from .common import UI, bootstrap_cache, get_mdcroot_or_none
+from .common import UI, prepare_cache_context
 from .presenters import graph_check_view
 
 
 def cmd_graph_check(_: argparse.Namespace) -> int:
-    mdcroot = get_mdcroot_or_none()
-    if mdcroot is None:
+    context = prepare_cache_context(action="prepare graph index")
+    if context is None:
         return 1
 
-    cache = IndCache(mdcroot)
-    if not bootstrap_cache(cache, action="prepare graph index"):
-        return 1
-
-    graph = DepGraph(mdcroot=mdcroot, cache=cache)
+    graph = DepGraph(mdcroot=context.mdcroot, cache=context.cache)
     try:
         report = graph.graph_check_report()
     except (OSError, ValueError, sqlite3.Error) as exc:
