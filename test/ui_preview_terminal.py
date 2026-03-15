@@ -354,6 +354,51 @@ def preview_terminal_ui() -> int:
     )
 
     _section(
+        "render_eval_block_start_lines",
+        "Streaming block header shown before each block begins execution.",
+    )
+    covered.add("render_eval_block_start_lines")
+    ui.write_lines(ui.render_eval_block_start_lines(index=1, total=2, srctype="natl"))
+
+    _section(
+        "render_eval_block_lines",
+        "Non-streaming single-block rendering that includes both block header and completion status.",
+    )
+    covered.add("render_eval_block_lines")
+    ui.write_lines(
+        ui.render_eval_block_lines(
+            EvalBlockView(
+                index=1,
+                total=2,
+                srctype="natl",
+                ok=True,
+                rtcode=0,
+                stdout="merged natural-language body",
+                stderr="",
+            )
+        )
+    )
+
+    _section(
+        "render_eval_block_finish_lines",
+        "Streaming block footer shown when a block finishes, after any block output.",
+    )
+    covered.add("render_eval_block_finish_lines")
+    ui.write_lines(
+        ui.render_eval_block_finish_lines(
+            EvalBlockView(
+                index=2,
+                total=2,
+                srctype="py",
+                ok=False,
+                rtcode=1,
+                stdout="",
+                stderr="RuntimeError: sample failure",
+            )
+        )
+    )
+
+    _section(
         "render_eval_results_lines",
         "Block execution summary shown after `mdc eval` actually compiles/runs blocks.",
     )
@@ -364,6 +409,7 @@ def preview_terminal_ui() -> int:
                 blocks=(
                     EvalBlockView(
                         index=1,
+                        total=2,
                         srctype="natl",
                         ok=True,
                         rtcode=0,
@@ -372,6 +418,7 @@ def preview_terminal_ui() -> int:
                     ),
                     EvalBlockView(
                         index=2,
+                        total=2,
                         srctype="py",
                         ok=False,
                         rtcode=1,

@@ -357,54 +357,62 @@ class TerminalUI:
         return lines
 
     def render_eval_results_lines(self, report: EvalReportView) -> list[str]:
-        width = _label_width("blocks", "failed")
-        lines = [
-            self._metric(
-                "blocks",
-                len(report.blocks),
-                "runnable block(s)",
-                width=width + 1,
-                tone=STYLE["blu"],
-            ),
-            colorize("result:", STYLE["bld"], STYLE["cyn"]),
+        lines: list[str] = []
+        for index, block in enumerate(report.blocks, start=1):
+            lines.extend(self.render_eval_block_lines(block))
+            if index < len(report.blocks):
+                lines.append("")
+        return lines
+
+    def render_eval_block_start_lines(
+        self,
+        *,
+        index: int,
+        total: int,
+        srctype: str,
+    ) -> list[str]:
+        return [
+            colorize(
+                f"[{index}/{total}] {srctype}:",
+                STYLE["bld"],
+                STYLE["cyn"],
+            )
         ]
 
-        for block in report.blocks:
-            if block.ok:
-                lines.append(
-                    colorize(
-                        f"[{block.index}] {block.srctype}: ok",
-                        STYLE["bld"],
-                        STYLE["grn"],
-                    )
-                )
-            else:
-                lines.append(
-                    colorize(
-                        f"[{block.index}] {block.srctype}: failed ({block.rtcode})",
-                        STYLE["bld"],
-                        STYLE["red"],
-                    )
-                )
-
-            if block.stdout:
-                for line in block.stdout.rstrip("\n").splitlines():
-                    lines.append(f"    {line}")
-            if block.stderr:
-                for line in block.stderr.rstrip("\n").splitlines():
-                    lines.append(f"    ! {line}")
-            lines.append("")
-
-        summary_color = STYLE["grn"] if report.failed == 0 else STYLE["red"]
-        lines.append(
-            self._metric(
-                "failed",
-                report.failed,
-                "block(s) reported failure",
-                width=width + 1,
-                tone=summary_color,
-            )
+    def render_eval_block_lines(self, block: EvalBlockView) -> list[str]:
+        lines = self.render_eval_block_start_lines(
+            index=block.index,
+            total=block.total,
+            srctype=block.srctype,
         )
+        lines.extend(self.render_eval_block_finish_lines(block))
+        return lines
+
+    def render_eval_block_finish_lines(self, block: EvalBlockView) -> list[str]:
+        lines: list[str] = []
+        if block.stdout:
+            for line in block.stdout.rstrip("\n").splitlines():
+                lines.append(f"    {line}")
+        if block.stderr:
+            for line in block.stderr.rstrip("\n").splitlines():
+                lines.append(f"    ! {line}")
+
+        if block.ok:
+            lines.append(
+                colorize(
+                    f"[{block.index}/{block.total}] OK",
+                    STYLE["bld"],
+                    STYLE["grn"],
+                )
+            )
+        else:
+            lines.append(
+                colorize(
+                    f"[{block.index}/{block.total}] FAIL ({block.rtcode})",
+                    STYLE["bld"],
+                    STYLE["red"],
+                )
+            )
         return lines
 
     def render_synced_lines(self, total: int) -> list[str]:

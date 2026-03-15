@@ -360,6 +360,8 @@ class DepGraph:
         root_node: MdocNode | None = None,
         root_fnode: str | None = None,
         progress: Callable[[str], None] | None = None,
+        on_start: Callable[[int, int, str], None] | None = None,
+        on_result: Callable[[int, int, str, CompilerRes], None] | None = None,
     ) -> list[tuple[str, CompilerRes]]:
         active_root = self._bind_root(root_node=root_node, root_fnode=root_fnode)
         root = self._loader.ensure_node_loaded(active_root)
@@ -373,6 +375,8 @@ class DepGraph:
             root_fnode=active_root,
             dep_items=dep_items,
             progress=progress,
+            on_start=on_start,
+            on_result=on_result,
         )
 
     def scan_all(self) -> None:

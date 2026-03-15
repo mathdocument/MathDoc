@@ -165,23 +165,38 @@ def _eval_report(
 ) -> EvalReportView:
     blocks: list[EvalBlockView] = []
     failed = 0
+    total = len(block_results)
 
     for index, (srctype, result) in enumerate(block_results, start=1):
-        ok = bool(getattr(result, "result"))
-        if not ok:
-            failed += 1
-        blocks.append(
-            EvalBlockView(
-                index=index,
-                srctype=srctype,
-                ok=ok,
-                rtcode=int(getattr(result, "rtcode")),
-                stdout=str(getattr(result, "stdout")),
-                stderr=str(getattr(result, "stderr")),
-            )
+        block = _eval_block_view(
+            index=index,
+            total=total,
+            srctype=srctype,
+            result=result,
         )
+        if not block.ok:
+            failed += 1
+        blocks.append(block)
 
     return EvalReportView(blocks=tuple(blocks), failed=failed)
+
+
+def _eval_block_view(
+    *,
+    index: int,
+    total: int,
+    srctype: str,
+    result: object,
+) -> EvalBlockView:
+    return EvalBlockView(
+        index=index,
+        total=total,
+        srctype=srctype,
+        ok=bool(getattr(result, "result")),
+        rtcode=int(getattr(result, "rtcode")),
+        stdout=str(getattr(result, "stdout")),
+        stderr=str(getattr(result, "stderr")),
+    )
 
 
 def _get_mdcroot_or_none() -> Path | None:
@@ -429,10 +444,42 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         UI.write("No blocks to eval")
         return 0
 
+    failed = 0
+
+    def _on_eval_start(index: int, total: int, srctype: str) -> None:
+        UI.write_lines(
+            UI.render_eval_block_start_lines(
+                index=index,
+                total=total,
+                srctype=srctype,
+            )
+        )
+
+    def _on_eval_result(
+        index: int,
+        total: int,
+        srctype: str,
+        result: object,
+    ) -> None:
+        nonlocal failed
+        block_view = _eval_block_view(
+            index=index,
+            total=total,
+            srctype=srctype,
+            result=result,
+        )
+        if not block_view.ok:
+            failed += 1
+        UI.write_lines(UI.render_eval_block_finish_lines(block_view))
+        if index < total:
+            UI.write()
+
     try:
-        block_results = graph.eval_blocks(
+        graph.eval_blocks(
             depth=args.depth,
             progress=UI.info,
+            on_start=_on_eval_start,
+            on_result=_on_eval_result,
         )
     except DependencyCycleError as exc:
         UI.write_lines(UI.render_cycle_lines(_cycle_view(graph, exc.cycle)))
@@ -440,9 +487,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     except ValueError as exc:
         UI.error(f"failed to eval mdoc: {exc}")
         return 1
-    report = _eval_report(block_results)
-    UI.write_lines(UI.render_eval_results_lines(report))
-    return 1 if report.failed else 0
+    return 1 if failed else 0
 
 
 def _cmd_dep_add(args: argparse.Namespace) -> int:

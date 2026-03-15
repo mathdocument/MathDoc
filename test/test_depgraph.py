@@ -2,9 +2,12 @@ from mathdoc.depgraph import DepGraph
 from mathdoc.depgraph import DependencyCycleError
 from mathdoc.depgraph import DependencyItem
 import mathdoc.depgraph.evaluate as depgraph_evaluate_module
+from mathdoc.compiler.base import CompilerReq, CompilerRes, SrcCompiler
+from mathdoc.compiler.registry import CompilerRegistry
 from mathdoc.indcache import IndCache
 from mathdoc.mdocnode import MdocNode
 from mathdoc.srcblock import SrcBlock
+import mathdoc.srcblock as srcblock_module
 import tempfile
 import unittest
 from pathlib import Path
@@ -119,6 +122,49 @@ class TestDepGraph(unittest.TestCase):
             self.assertEqual(block_results[1][0], "py")
             self.assertTrue(block_results[1][1].result)
             self.assertEqual(block_results[1][1].stdout.strip(), "hi")
+
+    def test_eval_blocks_streams_plan_progress_and_results_in_order(self) -> None:
+        class ProgressCompiler(SrcCompiler):
+            @property
+            def srctype(self) -> str:
+                return "noop"
+
+            def compile(self, req: CompilerReq) -> CompilerRes:
+                if req.progress is not None:
+                    req.progress("warming up")
+                return CompilerRes(result=True, stdout="noop ok", stderr="", rtcode=0)
+
+        original_registry = srcblock_module.COMPILER_REGISTRY
+        try:
+            srcblock_module.COMPILER_REGISTRY = CompilerRegistry([ProgressCompiler()])
+            with tempfile.TemporaryDirectory(prefix="depgraph_eval_stream.") as tmp:
+                root = Path(tmp)
+                node = self._new_node(root, "Eval", "noop", "ignored")
+                node.save()
+
+                graph = DepGraph(mdcroot=root, root_fnode=node.fnode)
+                events: list[str] = []
+                block_results = graph.eval_blocks(
+                    on_start=lambda index, total, srctype: events.append(
+                        f"start:{index}/{total}:{srctype}"
+                    ),
+                    progress=lambda message: events.append(f"progress:{message}"),
+                    on_result=lambda index, total, srctype, result: events.append(
+                        f"result:{index}/{total}:{srctype}:{int(result.result)}"
+                    ),
+                )
+        finally:
+            srcblock_module.COMPILER_REGISTRY = original_registry
+
+        self.assertEqual(len(block_results), 1)
+        self.assertEqual(
+            events,
+            [
+                "start:1/1:noop",
+                "progress:warming up",
+                "result:1/1:noop:1",
+            ],
+        )
 
     def test_eval_blocks_loads_config_once(self) -> None:
         with tempfile.TemporaryDirectory(prefix="depgraph_eval_cfg_once.") as tmp:

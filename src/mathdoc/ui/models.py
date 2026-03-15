@@ -65,6 +65,7 @@ class GraphCheckView:
 @dataclass(slots=True, frozen=True)
 class EvalBlockView:
     index: int
+    total: int
     srctype: str
     ok: bool
     rtcode: int

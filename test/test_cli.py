@@ -21,7 +21,7 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 ANSI_ESCAPE_BYTES_RE = re.compile(br"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 SEARCH_RESULT_RE = re.compile(r"^- (?:[0-9a-f]{8}|<[^>]+>) ")
 CHAIN_ITEM_RE = re.compile(r"^\[\d+\] [+-] ")
-EVAL_BLOCK_RE = re.compile(r"^\[\d+\] [A-Za-z0-9_+-]+: (?:ok|failed \(\d+\))$")
+EVAL_BLOCK_RE = re.compile(r"^\[\d+/\d+\] (?:OK|FAIL \(\d+\))$")
 
 
 def _cli_base_cmd() -> list[str]:
@@ -312,13 +312,13 @@ class TestMdcCli(unittest.TestCase):
             self.assertEqual(eval_run.returncode, 0,
                              eval_run.stdout + eval_run.stderr)
             self.assertEqual(len(_eval_block_lines(eval_run.stdout)), 2)
-            self.assertIn("[1] natl: ok", eval_run.stdout)
+            self.assertIn("[1/2] natl:", eval_run.stdout)
             self.assertIn("hello from natl", eval_run.stdout)
-            self.assertIn("[2] py: ok", eval_run.stdout)
+            self.assertIn("[1/2] OK", eval_run.stdout)
+            self.assertIn("[2/2] py:", eval_run.stdout)
             self.assertIn("hello from py", eval_run.stdout)
-            self.assertFalse(
-                any("failed" in line for line in _eval_block_lines(eval_run.stdout))
-            )
+            self.assertIn("[2/2] OK", eval_run.stdout)
+            self.assertFalse(any("FAIL" in line for line in _eval_block_lines(eval_run.stdout)))
 
     def test_eval_returns_nonzero_when_py_block_fails(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_eval_fail.") as tmp:
@@ -336,10 +336,11 @@ class TestMdcCli(unittest.TestCase):
             eval_run = _run_cli(["eval", src_path], repo)
             self.assertEqual(eval_run.returncode, 1)
             self.assertEqual(len(_eval_block_lines(eval_run.stdout)), 1)
-            self.assertIn("[1] py: failed (1)", eval_run.stdout)
+            self.assertIn("[1/1] py:", eval_run.stdout)
+            self.assertIn("[1/1] FAIL (1)", eval_run.stdout)
             self.assertIn("boom", eval_run.stdout)
             self.assertEqual(
-                sum("failed" in line for line in _eval_block_lines(eval_run.stdout)),
+                sum("FAIL" in line for line in _eval_block_lines(eval_run.stdout)),
                 1,
             )
 
@@ -456,7 +457,8 @@ class TestMdcCli(unittest.TestCase):
             eval_run = _run_cli(["eval", src_path], repo)
             self.assertEqual(eval_run.returncode, 0,
                              eval_run.stdout + eval_run.stderr)
-            self.assertIn("[1] latex: ok", eval_run.stdout)
+            self.assertIn("[1/1] latex:", eval_run.stdout)
+            self.assertIn("[1/1] OK", eval_run.stdout)
             self.assertIn("temp-latex-", eval_run.stdout)
             self.assertIn("artifact dir:", eval_run.stdout)
             self.assertIn("artifact tex:", eval_run.stdout)

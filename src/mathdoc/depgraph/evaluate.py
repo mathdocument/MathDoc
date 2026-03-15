@@ -36,6 +36,8 @@ class GraphEvaluator:
         root_fnode: str,
         dep_items: list[DependencyItem],
         progress: Callable[[str], None] | None = None,
+        on_start: Callable[[int, int, str], None] | None = None,
+        on_result: Callable[[int, int, str, CompilerRes], None] | None = None,
     ) -> list[tuple[str, CompilerRes]]:
         if any(is_broken_fnode(self.state, item.fnode) for item in dep_items):
             raise ValueError(
@@ -63,20 +65,42 @@ class GraphEvaluator:
             ordered_nodes=ordered_nodes,
             src_cfg=src_cfg,
         )
+        total = len(merged_blocks)
 
         results: list[tuple[str, CompilerRes]] = []
-        for block in merged_blocks:
+        for index, block in enumerate(merged_blocks, start=1):
+            if on_start is not None:
+                on_start(index, total, block.srctype)
+            block_progress = self._block_progress(
+                progress=progress,
+            )
+            result = block.compile(
+                mdcroot=self.mdcroot,
+                src_cfg=src_cfg,
+                progress=block_progress,
+            )
             results.append(
                 (
                     block.srctype,
-                    block.compile(
-                        mdcroot=self.mdcroot,
-                        src_cfg=src_cfg,
-                        progress=progress,
-                    ),
+                    result,
                 )
             )
+            if on_result is not None:
+                on_result(index, total, block.srctype, result)
         return results
+
+    @staticmethod
+    def _block_progress(
+        *,
+        progress: Callable[[str], None] | None,
+    ) -> Callable[[str], None] | None:
+        if progress is None:
+            return None
+
+        def emit(message: str) -> None:
+            progress(message)
+
+        return emit
 
     def _merged_blocks_for_eval(
         self,
