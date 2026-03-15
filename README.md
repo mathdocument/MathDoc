@@ -125,12 +125,12 @@ mdc dep leaf <source>
 
 #### `mdc dep refs`
 
-Show reverse dependencies of a target mdoc:
+Show referrers of a target mdoc:
 ```bash
 mdc dep refs <target>
 mdc dep refs <target> --depth -1
 ```
-- `-d, --depth`: reverse traversal depth, default is `1`, use `-1` for unlimited traversal
+- `-d, --depth`: traversal depth, default is `1`, use `-1` for unlimited traversal
 
 
 #### `mdc graph check`
@@ -155,10 +155,8 @@ This will first merge all the dependent-enabled code blocks of the dependencies 
 ```bash
 mdc eval <source>
 mdc eval <source> --depth -1
-mdc eval <source> --depth -1 --reverse
 ```
 - `-d, --depth`: dependency traversal depth, default is `1`, use `-1` for unlimited depth
-- `-r, --reverse`: reverse merged dependency order for depens-enabled block types
 
 To modify the default compiling behavior of `mdc eval`, edit `.mdc/config.toml`. The default compiling configuration is
 ```toml

@@ -7,15 +7,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "src": {
         "natl": {
             "depens": True,
+            "reverse_depens": True,
         },
         "latex": {
             "depens": True,
+            "reverse_depens": True,
             "timeout_sec": 30,
             "preamble": "\\documentclass{article}\n\\begin{document}\n",
             "postamble": "\\end{document}\n",
         },
         "py": {
             "depens": False,
+            "reverse_depens": False,
             "timeout_sec": 30,
         },
     }

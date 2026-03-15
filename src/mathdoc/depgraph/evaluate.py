@@ -20,11 +20,8 @@ class GraphEvaluator:
         self,
         *,
         root_fnode: str,
-        reverse_depens: bool,
     ) -> list[MdocNode]:
         topo_fnodes = topo_dependencies_first(self.state.dep_graph, root_fnode=root_fnode)
-        if reverse_depens:
-            topo_fnodes = list(reversed(topo_fnodes))
         return [
             self.state.nodes_by_fnode[fnode]
             for fnode in topo_fnodes
@@ -37,7 +34,6 @@ class GraphEvaluator:
         root_node: MdocNode,
         root_fnode: str,
         dep_items: list[DependencyItem],
-        reverse_depens: bool,
     ) -> list[tuple[str, CompilerRes]]:
         if any(is_broken_fnode(self.state, item.fnode) for item in dep_items):
             raise ValueError(
@@ -49,7 +45,6 @@ class GraphEvaluator:
 
         ordered_nodes = self.ordered_nodes(
             root_fnode=root_fnode,
-            reverse_depens=reverse_depens,
         )
 
         try:
@@ -106,8 +101,15 @@ class GraphEvaluator:
                 merged.append(root_block)
                 continue
 
+            reverse_depens = self._reverse_depens_for_srctype(
+                src_cfg=src_cfg,
+                srctype_key=srctype_key,
+            )
+            merge_nodes = (
+                list(reversed(ordered_nodes)) if reverse_depens else ordered_nodes
+            )
             ordered_blocks: list[SrcBlock] = []
-            for node in ordered_nodes:
+            for node in merge_nodes:
                 candidate = blocks_by_node[node.fnode].get(srctype_key)
                 if candidate is not None:
                     ordered_blocks.append(candidate)
@@ -137,6 +139,24 @@ class GraphEvaluator:
         if not isinstance(depens, bool):
             raise ValueError(f"config key 'src.{srctype_key}.depens' must be a boolean")
         return depens
+
+    @staticmethod
+    def _reverse_depens_for_srctype(
+        *,
+        src_cfg: dict[str, Any],
+        srctype_key: str,
+    ) -> bool:
+        compiler_cfg = src_cfg.get(srctype_key)
+        if compiler_cfg is None:
+            return False
+        if not isinstance(compiler_cfg, dict):
+            raise ValueError(f"config key 'src.{srctype_key}' must be a table")
+        reverse_depens = compiler_cfg.get("reverse_depens", False)
+        if not isinstance(reverse_depens, bool):
+            raise ValueError(
+                f"config key 'src.{srctype_key}.reverse_depens' must be a boolean"
+            )
+        return reverse_depens
 
     @staticmethod
     def _merge_block_content(blocks: list[SrcBlock]) -> str:

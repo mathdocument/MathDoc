@@ -340,7 +340,6 @@ class DepGraph:
         self,
         *,
         depth: int = 1,
-        reverse_depens: bool = False,
         root_node: MdocNode | None = None,
         root_fnode: str | None = None,
     ) -> list[MdocNode]:
@@ -351,14 +350,12 @@ class DepGraph:
         )
         return self._evaluator.ordered_nodes(
             root_fnode=active_root,
-            reverse_depens=reverse_depens,
         )
 
     def eval_blocks(
         self,
         *,
         depth: int = 1,
-        reverse_depens: bool = False,
         root_node: MdocNode | None = None,
         root_fnode: str | None = None,
     ) -> list[tuple[str, CompilerRes]]:
@@ -373,7 +370,6 @@ class DepGraph:
             root_node=root,
             root_fnode=active_root,
             dep_items=dep_items,
-            reverse_depens=reverse_depens,
         )
 
     def scan_all(self) -> None:

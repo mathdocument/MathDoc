@@ -432,7 +432,6 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     try:
         block_results = graph.eval_blocks(
             depth=args.depth,
-            reverse_depens=args.reverse,
         )
     except DependencyCycleError as exc:
         UI.write_lines(UI.render_cycle_lines(_cycle_view(graph, exc.cycle)))
@@ -975,12 +974,6 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="Dependency traversal depth (-1 for unlimited, default: 1)",
-    )
-    eval_parser.add_argument(
-        "-r",
-        "--reverse",
-        action="store_true",
-        help="Reverse merged dependency order for depens-enabled block types",
     )
     eval_parser.set_defaults(func=_cmd_eval)
 

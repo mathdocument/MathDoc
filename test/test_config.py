@@ -19,6 +19,14 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg["src"]["latex"]["preamble"], DEFAULT_CONFIG["src"]["latex"]["preamble"])
         self.assertEqual(cfg["src"]["latex"]["postamble"], DEFAULT_CONFIG["src"]["latex"]["postamble"])
         self.assertEqual(cfg["src"]["py"]["timeout_sec"], DEFAULT_CONFIG["src"]["py"]["timeout_sec"])
+        self.assertEqual(
+            cfg["src"]["natl"]["reverse_depens"],
+            DEFAULT_CONFIG["src"]["natl"]["reverse_depens"],
+        )
+        self.assertEqual(
+            cfg["src"]["latex"]["reverse_depens"],
+            DEFAULT_CONFIG["src"]["latex"]["reverse_depens"],
+        )
 
     def test_load_config_reads_empty_file(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_config_empty.") as tmp:
@@ -45,6 +53,10 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg["src"]["latex"]["postamble"], DEFAULT_CONFIG["src"]["latex"]["postamble"])
         self.assertEqual(cfg["src"]["py"]["timeout_sec"], 5)
         self.assertEqual(cfg["src"]["natl"]["depens"], DEFAULT_CONFIG["src"]["natl"]["depens"])
+        self.assertEqual(
+            cfg["src"]["natl"]["reverse_depens"],
+            DEFAULT_CONFIG["src"]["natl"]["reverse_depens"],
+        )
 
     def test_load_config_invalid_toml_raises(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_config_bad_toml.") as tmp:

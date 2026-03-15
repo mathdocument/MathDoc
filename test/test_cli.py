@@ -343,7 +343,7 @@ class TestMdcCli(unittest.TestCase):
                 1,
             )
 
-    def test_eval_accepts_depth_and_reverse_flags(self) -> None:
+    def test_eval_respects_per_srctype_reverse_depens_config(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_eval_depth_reverse.") as tmp:
             repo = Path(tmp)
             self.assertEqual(_run_cli(["init"], repo).returncode, 0)
@@ -393,19 +393,32 @@ class TestMdcCli(unittest.TestCase):
             self.assertIn("dep2-body", eval_depth_inf.stdout)
             self.assertIn("dep1-body", eval_depth_inf.stdout)
             self.assertIn("root-body", eval_depth_inf.stdout)
+            root_pos = eval_depth_inf.stdout.find("root-body")
+            dep1_pos = eval_depth_inf.stdout.find("dep1-body")
+            dep2_pos = eval_depth_inf.stdout.find("dep2-body")
+            self.assertGreaterEqual(root_pos, 0, eval_depth_inf.stdout)
+            self.assertGreaterEqual(dep1_pos, 0, eval_depth_inf.stdout)
+            self.assertGreaterEqual(dep2_pos, 0, eval_depth_inf.stdout)
+            self.assertLess(root_pos, dep1_pos, eval_depth_inf.stdout)
+            self.assertLess(dep1_pos, dep2_pos, eval_depth_inf.stdout)
 
-            eval_reversed = _run_cli(
-                ["eval", "--depth", "-1", "--reverse", root_path], repo)
-            self.assertEqual(eval_reversed.returncode, 0,
-                             eval_reversed.stdout + eval_reversed.stderr)
-            root_pos = eval_reversed.stdout.find("root-body")
-            dep1_pos = eval_reversed.stdout.find("dep1-body")
-            dep2_pos = eval_reversed.stdout.find("dep2-body")
-            self.assertGreaterEqual(root_pos, 0, eval_reversed.stdout)
-            self.assertGreaterEqual(dep1_pos, 0, eval_reversed.stdout)
-            self.assertGreaterEqual(dep2_pos, 0, eval_reversed.stdout)
-            self.assertLess(root_pos, dep1_pos, eval_reversed.stdout)
-            self.assertLess(dep1_pos, dep2_pos, eval_reversed.stdout)
+            (repo / ".mdc" / "config.toml").write_text(
+                "[src.natl]\nreverse_depens = false\n",
+                encoding="utf-8",
+            )
+
+            eval_topological = _run_cli(
+                ["eval", "--depth", "-1", root_path], repo)
+            self.assertEqual(eval_topological.returncode, 0,
+                             eval_topological.stdout + eval_topological.stderr)
+            root_pos = eval_topological.stdout.find("root-body")
+            dep1_pos = eval_topological.stdout.find("dep1-body")
+            dep2_pos = eval_topological.stdout.find("dep2-body")
+            self.assertGreaterEqual(root_pos, 0, eval_topological.stdout)
+            self.assertGreaterEqual(dep1_pos, 0, eval_topological.stdout)
+            self.assertGreaterEqual(dep2_pos, 0, eval_topological.stdout)
+            self.assertLess(dep2_pos, dep1_pos, eval_topological.stdout)
+            self.assertLess(dep1_pos, root_pos, eval_topological.stdout)
 
     def test_eval_runs_latex_block_with_xelatex(self) -> None:
         required = ("latexmk", "xelatex")

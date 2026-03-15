@@ -176,7 +176,7 @@ class TestDepGraph(unittest.TestCase):
 
             self.assertEqual(len(block_results), 1)
             self.assertTrue(block_results[0][1].result)
-            self.assertEqual(block_results[0][1].stdout, "dep1\n\nsrc")
+            self.assertEqual(block_results[0][1].stdout, "src\n\ndep1")
 
     def test_eval_blocks_merges_dependencies_with_unbounded_depth(self) -> None:
         with tempfile.TemporaryDirectory(prefix="depgraph_eval_depth_inf.") as tmp:
@@ -197,11 +197,17 @@ class TestDepGraph(unittest.TestCase):
 
             self.assertEqual(len(block_results), 1)
             self.assertTrue(block_results[0][1].result)
-            self.assertEqual(block_results[0][1].stdout, "dep2\n\ndep1\n\nsrc")
+            self.assertEqual(block_results[0][1].stdout, "src\n\ndep1\n\ndep2")
 
-    def test_eval_blocks_merges_dependencies_in_reverse_order(self) -> None:
+    def test_eval_blocks_respects_reverse_depens_override(self) -> None:
         with tempfile.TemporaryDirectory(prefix="depgraph_eval_reverse.") as tmp:
             root = Path(tmp)
+            (root / ".mdc").mkdir(parents=True, exist_ok=True)
+            (root / ".mdc" / "config.toml").write_text(
+                "[src.natl]\nreverse_depens = false\n",
+                encoding="utf-8",
+            )
+
             dep2 = self._new_node(root, "Dep2", "natl", "dep2")
             dep2.save()
 
@@ -214,11 +220,11 @@ class TestDepGraph(unittest.TestCase):
             src.save()
 
             graph = DepGraph(mdcroot=root, root_fnode=src.fnode)
-            block_results = graph.eval_blocks(depth=-1, reverse_depens=True)
+            block_results = graph.eval_blocks(depth=-1)
 
             self.assertEqual(len(block_results), 1)
             self.assertTrue(block_results[0][1].result)
-            self.assertEqual(block_results[0][1].stdout, "src\n\ndep1\n\ndep2")
+            self.assertEqual(block_results[0][1].stdout, "dep2\n\ndep1\n\nsrc")
 
     def test_eval_blocks_does_not_merge_when_depens_disabled(self) -> None:
         with tempfile.TemporaryDirectory(prefix="depgraph_eval_no_merge.") as tmp:
@@ -257,7 +263,7 @@ class TestDepGraph(unittest.TestCase):
             self.assertEqual(len(block_results), 1)
             self.assertEqual(block_results[0][0], "natl")
             self.assertTrue(block_results[0][1].result)
-            self.assertEqual(block_results[0][1].stdout, "dep2\n\ndep1\n\nsrc")
+            self.assertEqual(block_results[0][1].stdout, "src\n\ndep1\n\ndep2")
 
     def test_dependency_items_respect_default_depth(self) -> None:
         with tempfile.TemporaryDirectory(prefix="depgraph_dep_items_depth1.") as tmp:
