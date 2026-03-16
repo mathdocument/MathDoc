@@ -198,6 +198,24 @@ def _append_src_block(mdoc_path: str, srctype: str, body: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _append_dependency(mdoc_path: str, dep_fnode: str) -> None:
+    path = Path(mdoc_path)
+    text = path.read_text(encoding="utf-8")
+    if "@dep:\n" in text:
+        updated = text.replace("@end\n", f"{dep_fnode}\n@end\n", 1)
+    else:
+        block = f"@dep:\n{dep_fnode}\n@end\n\n"
+        if "@src:" in text:
+            updated = text.replace("@src:", f"{block}@src:", 1)
+        else:
+            if not text.endswith("\n"):
+                text += "\n"
+            updated = text + ("\n" if text.strip() else "") + block
+    if updated == text:
+        raise AssertionError(f"Failed to append dependency to {mdoc_path}")
+    path.write_text(updated, encoding="utf-8")
+
+
 def _rename_mdoc(mdoc_path: str, new_name: str) -> str:
     path = Path(mdoc_path)
     target = path.with_name(new_name)
@@ -714,7 +732,9 @@ class TestMdcCli(unittest.TestCase):
             rc_add_cycle, out_add_cycle = _run_cli_tty(
                 ["dep", "add", dep2_path, src_fnode[:8]], repo, b" \r"
             )
-            self.assertEqual(rc_add_cycle, 0, out_add_cycle)
+            self.assertEqual(rc_add_cycle, 1, out_add_cycle)
+            self.assertIn("dependency cycle detected", _compact_cli_output(out_add_cycle))
+            _append_dependency(dep2_path, src_fnode)
 
             show_cycle = _run_cli(["dep", "show", "--depth", "-1", src_path], repo)
             combined = show_cycle.stdout + show_cycle.stderr
@@ -987,9 +1007,11 @@ class TestMdcCli(unittest.TestCase):
             rc_add_b, out_add_b = _run_cli_tty(
                 ["dep", "add", b_path, "Cycle A"], repo, b" \r"
             )
-            self.assertEqual(rc_add_b, 0, out_add_b)
+            self.assertEqual(rc_add_b, 1, out_add_b)
+            self.assertIn("dependency cycle detected", _compact_cli_output(out_add_b))
+            _append_dependency(b_path, a_fnode)
 
-            check_run = _run_cli(["graph", "check"], repo)
+            check_run = _run_cli(["graph", "check", "--full"], repo)
             self.assertEqual(check_run.returncode, 1, check_run.stdout + check_run.stderr)
             check_run_text = _compact_cli_output(check_run.stdout)
             self.assertIn("nodes: 4", check_run_text)
@@ -1003,6 +1025,35 @@ class TestMdcCli(unittest.TestCase):
             self.assertIn(a_fnode[:8], check_run_text)
             self.assertIn(b_fnode[:8], check_run_text)
             self.assertIn(bad_fnode[:8], check_run_text)
+
+    def test_graph_check_default_uses_cached_state_until_full_refresh(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_graph_check_cached.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_bad = _run_cli(["new", "-t", "Broken Later", "-f", "."], repo)
+            self.assertEqual(new_bad.returncode, 0, new_bad.stdout + new_bad.stderr)
+            _, bad_path = _extract_created_mdoc(new_bad.stdout)
+
+            cached_check = _run_cli(["graph", "check"], repo)
+            self.assertEqual(
+                cached_check.returncode, 0, cached_check.stdout + cached_check.stderr
+            )
+            self.assertIn("invalid: 0", _compact_cli_output(cached_check.stdout))
+
+            _make_mdoc_invalid(bad_path)
+
+            stale_check = _run_cli(["graph", "check"], repo)
+            self.assertEqual(
+                stale_check.returncode, 0, stale_check.stdout + stale_check.stderr
+            )
+            self.assertIn("invalid: 0", _compact_cli_output(stale_check.stdout))
+
+            fresh_check = _run_cli(["graph", "check", "--full"], repo)
+            self.assertEqual(
+                fresh_check.returncode, 1, fresh_check.stdout + fresh_check.stderr
+            )
+            self.assertIn("invalid: 1", _compact_cli_output(fresh_check.stdout))
 
     def test_graph_roots_lists_unreferenced_valid_and_invalid_nodes(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_graph_roots.") as tmp:
@@ -1058,7 +1109,7 @@ class TestMdcCli(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            roots_run = _run_cli(["graph", "roots"], repo)
+            roots_run = _run_cli(["graph", "roots", "--refresh"], repo)
             self.assertEqual(roots_run.returncode, 0, roots_run.stdout + roots_run.stderr)
             roots_text = _compact_cli_output(roots_run.stdout)
             root_lines = [

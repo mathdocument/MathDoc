@@ -1,6 +1,5 @@
 from ..depgraph import DependencyItem, GraphCheckReport, GraphIssue, GraphRootItem
 from ..depgraph.graph import DepGraph
-from ..indcache import IndCache
 from ..ui import (
     BrokenDependencySummary,
     ChainView,
@@ -97,41 +96,10 @@ def graph_check_view(graph: DepGraph, report: GraphCheckReport) -> GraphCheckVie
     )
 
 
-def cycle_view_from_cache(cache: IndCache, cycle: list[str]) -> CycleView:
-    cycle_nodes = cycle[:-1] if len(cycle) > 1 else cycle
-    return CycleView(
-        nodes=tuple(
-            node_ref_from_item(
-                cache.ref_item_for_fnode(fnode),
-                broken=cache.is_broken_fnode(fnode),
-            )
-            for fnode in cycle_nodes
-        )
-    )
-
-
-def graph_check_view_from_cache(
-    cache: IndCache,
-    report: GraphCheckReport,
-) -> GraphCheckView:
-    return GraphCheckView(
-        nodes=report.nodes,
-        edges=report.edges,
-        missing=tuple(issue_view(issue) for issue in report.missing),
-        invalid=tuple(issue_view(issue) for issue in report.invalid),
-        cycles=tuple(cycle_view_from_cache(cache, cycle) for cycle in report.cycles),
-    )
-
-
 def graph_roots_view(
     graph: DepGraph,
     items: list[GraphRootItem],
 ) -> GraphRootsView:
-    invalid_paths = {
-        (issue.fnode, issue.rel_path)
-        for issue in graph.invalid_file_issues
-        if issue.kind == "invalid"
-    }
     return GraphRootsView(
         roots=tuple(
             GraphRootEntryView(
@@ -139,30 +107,7 @@ def graph_roots_view(
                     fnode=item.fnode,
                     title=item.title,
                     rel_path=item.rel_path,
-                    broken=(
-                        graph.issue_for_fnode(item.fnode) is not None
-                        or (item.fnode, item.rel_path) in invalid_paths
-                    ),
-                ),
-                component_size=item.component_size,
-            )
-            for item in items
-        )
-    )
-
-
-def graph_roots_view_from_cache(
-    cache: IndCache,
-    items: list[GraphRootItem],
-) -> GraphRootsView:
-    return GraphRootsView(
-        roots=tuple(
-            GraphRootEntryView(
-                ref=node_ref(
-                    fnode=item.fnode,
-                    title=item.title,
-                    rel_path=item.rel_path,
-                    broken=cache.is_broken_fnode(item.fnode),
+                    broken=graph.issue_for_fnode(item.fnode) is not None,
                 ),
                 component_size=item.component_size,
             )

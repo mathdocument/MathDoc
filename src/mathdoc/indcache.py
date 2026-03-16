@@ -217,6 +217,9 @@ class IndCache:
             row = conn.execute("SELECT COUNT(*) FROM mdoc_files").fetchone()
         return int(row[0]) if row else 0
 
+    def has_fnode(self, fnode: str) -> bool:
+        return bool(self.lookup_by_fnode([fnode])) or self.issue_for_fnode(fnode) is not None
+
     def issue_for_fnode(self, fnode: str):
         with self._open_conn() as conn:
             return self._issue_for_fnode(conn, fnode)
@@ -225,10 +228,16 @@ class IndCache:
         return self.issue_for_fnode(fnode) is not None
 
     def ref_item_for_fnode(self, fnode: str, *, depth: int = 0):
-        from .depgraph.models import DependencyItem
-
         with self._open_conn() as conn:
-            return self._dependency_item_for_fnode(conn, fnode=fnode, depth=depth)
+            node_lookup = self._node_lookup(conn)
+            issue_lookup = self._issue_lookup(conn)
+            return self._dependency_item_for_fnode(
+                conn,
+                fnode=fnode,
+                depth=depth,
+                node_lookup=node_lookup,
+                issue_lookup=issue_lookup,
+            )
 
     def referrer_items(self, *, target_fnode: str, depth: int):
         from .depgraph.models import DependencyItem
@@ -237,11 +246,13 @@ class IndCache:
             raise ValueError("depth must be -1 (infinite) or >= 0")
 
         with self._open_conn() as conn:
+            reverse_graph = self._reverse_graph_snapshot(conn)
+            node_lookup = self._node_lookup(conn)
+            issue_lookup = self._issue_lookup(conn)
             items: list[DependencyItem] = []
             seen: set[str] = {target_fnode}
             queue: deque[tuple[str, int]] = deque(
-                (ref_fnode, 1)
-                for ref_fnode in self._referrer_fnodes(conn, target_fnode)
+                (ref_fnode, 1) for ref_fnode in reverse_graph.get(target_fnode, [])
             )
 
             while queue:
@@ -254,12 +265,14 @@ class IndCache:
                         conn,
                         fnode=fnode,
                         depth=item_depth,
+                        node_lookup=node_lookup,
+                        issue_lookup=issue_lookup,
                     )
                 )
 
                 if depth != -1 and item_depth >= depth:
                     continue
-                for ref_fnode in self._referrer_fnodes(conn, fnode):
+                for ref_fnode in reverse_graph.get(fnode, []):
                     if ref_fnode == target_fnode:
                         continue
                     queue.append((ref_fnode, item_depth + 1))
@@ -270,14 +283,28 @@ class IndCache:
         from .depgraph.models import GraphRootItem
 
         with self._open_conn() as conn:
+            valid_node_rows = self._valid_node_rows(conn)
+            invalid_issues = self._invalid_issue_rows(conn)
+            dep_graph = self._dep_graph_snapshot(
+                conn,
+                valid_node_rows=valid_node_rows,
+                invalid_issues=invalid_issues,
+            )
             incoming = {
-                str(row[0])
-                for row in conn.execute("SELECT DISTINCT dst_fnode FROM mdoc_edges")
+                dep_fnode
+                for dep_fnodes in dep_graph.values()
+                for dep_fnode in dep_fnodes
             }
-            component_sizes = self._component_sizes(conn)
+            component_sizes = self._component_sizes_from_graph(
+                dep_graph,
+                component_members=self._component_member_fnodes(
+                    valid_node_rows,
+                    invalid_issues,
+                ),
+            )
             items: list[GraphRootItem] = []
 
-            for fnode, title, path in self._valid_node_rows(conn):
+            for fnode, title, path in valid_node_rows:
                 if fnode in incoming:
                     continue
                 items.append(
@@ -289,7 +316,7 @@ class IndCache:
                     )
                 )
 
-            for issue in self._invalid_issue_rows(conn):
+            for issue in invalid_issues:
                 if not (
                     issue.fnode.startswith("<") and issue.fnode.endswith(">")
                 ) and issue.fnode in incoming:
@@ -347,50 +374,29 @@ class IndCache:
 
     @staticmethod
     def _edge_count(conn: sqlite3.Connection) -> int:
-        row = conn.execute("SELECT COUNT(*) FROM mdoc_edges").fetchone()
+        row = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM mdoc_edges
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM mdoc_issues
+                WHERE mdoc_issues.path = mdoc_edges.src_path
+                  AND mdoc_issues.kind IN ('invalid', 'duplicate')
+            )
+            """
+        ).fetchone()
         return int(row[0]) if row else 0
 
-    def _issue_for_fnode(self, conn: sqlite3.Connection, fnode: str):
-        from .depgraph.models import GraphIssue
-
-        row = conn.execute(
-            """
-            SELECT kind, path, error
-            FROM mdoc_issues
-            WHERE ref_fnode = ? AND kind IN ('invalid', 'duplicate')
-            ORDER BY path
-            LIMIT 1
-            """,
-            (fnode,),
-        ).fetchone()
-        if row is not None:
-            return GraphIssue(
-                kind="invalid",
-                fnode=fnode,
-                title="<invalid>",
-                rel_path=str(row[1]),
-                error=str(row[2]),
-            )
-
-        row = conn.execute(
-            """
-            SELECT error
-            FROM mdoc_issues
-            WHERE ref_fnode = ? AND kind = 'missing'
-            ORDER BY path
-            LIMIT 1
-            """,
-            (fnode,),
-        ).fetchone()
-        if row is None:
-            return None
-        return GraphIssue(
-            kind="missing",
-            fnode=fnode,
-            title="<missing>",
-            rel_path="<unknown>",
-            error=str(row[0]),
-        )
+    def _issue_for_fnode(
+        self,
+        conn: sqlite3.Connection,
+        fnode: str,
+        *,
+        issue_lookup: dict[str, object] | None = None,
+    ):
+        issue_map = issue_lookup or self._issue_lookup(conn)
+        return issue_map.get(fnode)
 
     def _dependency_item_for_fnode(
         self,
@@ -398,10 +404,16 @@ class IndCache:
         *,
         fnode: str,
         depth: int,
+        node_lookup: dict[str, tuple[str, str]] | None = None,
+        issue_lookup: dict[str, object] | None = None,
     ):
         from .depgraph.models import DependencyItem
 
-        issue = self._issue_for_fnode(conn, fnode)
+        issue = self._issue_for_fnode(
+            conn,
+            fnode,
+            issue_lookup=issue_lookup,
+        )
         if issue is not None:
             return DependencyItem(
                 depth=depth,
@@ -410,23 +422,14 @@ class IndCache:
                 rel_path=issue.rel_path,
             )
 
-        rows = conn.execute(
-            """
-            SELECT fnode, title, path
-            FROM mdocs
-            WHERE fnode = ?
-            ORDER BY path
-            LIMIT 1
-            """,
-            (fnode,),
-        ).fetchall()
-        if rows:
-            row = rows[0]
+        nodes = node_lookup or self._node_lookup(conn)
+        row = nodes.get(fnode)
+        if row is not None:
             return DependencyItem(
                 depth=depth,
-                fnode=str(row[0]),
-                title=str(row[1]),
-                rel_path=str(row[2]),
+                fnode=fnode,
+                title=row[0],
+                rel_path=row[1],
             )
         return DependencyItem(
             depth=depth,
@@ -434,22 +437,6 @@ class IndCache:
             title="<missing>",
             rel_path="<unknown>",
         )
-
-    def _referrer_fnodes(
-        self,
-        conn: sqlite3.Connection,
-        target_fnode: str,
-    ) -> list[str]:
-        rows = conn.execute(
-            """
-            SELECT DISTINCT src_fnode, src_path
-            FROM mdoc_edges
-            WHERE dst_fnode = ?
-            ORDER BY src_path
-            """,
-            (target_fnode,),
-        ).fetchall()
-        return [str(row[0]) for row in rows]
 
     def _valid_node_rows(
         self,
@@ -470,6 +457,56 @@ class IndCache:
         ).fetchall()
         return [(str(row[0]), str(row[1]), str(row[2])) for row in rows]
 
+    def _node_lookup(
+        self,
+        conn: sqlite3.Connection,
+    ) -> dict[str, tuple[str, str]]:
+        return {
+            fnode: (title, path)
+            for fnode, title, path in self._valid_node_rows(conn)
+        }
+
+    def _issue_lookup(
+        self,
+        conn: sqlite3.Connection,
+    ) -> dict[str, object]:
+        issue_map: dict[str, object] = {}
+        for issue in self._invalid_issue_rows(conn):
+            issue_map.setdefault(issue.fnode, issue)
+        for issue in self._missing_issue_rows(conn):
+            issue_map.setdefault(issue.fnode, issue)
+        return issue_map
+
+    def _valid_edge_rows(
+        self,
+        conn: sqlite3.Connection,
+    ) -> list[tuple[str, str]]:
+        rows = conn.execute(
+            """
+            SELECT src_fnode, dst_fnode
+            FROM mdoc_edges
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM mdoc_issues
+                WHERE mdoc_issues.path = mdoc_edges.src_path
+                  AND mdoc_issues.kind IN ('invalid', 'duplicate')
+            )
+            ORDER BY src_path, ord
+            """
+        ).fetchall()
+        return [(str(row[0]), str(row[1])) for row in rows]
+
+    def _reverse_graph_snapshot(
+        self,
+        conn: sqlite3.Connection,
+    ) -> dict[str, list[str]]:
+        reverse_graph: dict[str, list[str]] = {}
+        for src_fnode, dst_fnode in self._valid_edge_rows(conn):
+            refs = reverse_graph.setdefault(dst_fnode, [])
+            if src_fnode not in refs:
+                refs.append(src_fnode)
+        return reverse_graph
+
     def _missing_issue_rows(self, conn: sqlite3.Connection):
         from .depgraph.models import GraphIssue
 
@@ -478,6 +515,12 @@ class IndCache:
             SELECT ref_fnode, error
             FROM mdoc_issues
             WHERE kind = 'missing'
+              AND NOT EXISTS (
+                SELECT 1
+                FROM mdoc_issues AS src_issues
+                WHERE src_issues.path = mdoc_issues.path
+                  AND src_issues.kind IN ('invalid', 'duplicate')
+              )
             ORDER BY ref_fnode, path
             """
         ).fetchall()
@@ -524,36 +567,38 @@ class IndCache:
     def _dep_graph_snapshot(
         self,
         conn: sqlite3.Connection,
+        *,
+        valid_node_rows: list[tuple[str, str, str]] | None = None,
+        invalid_issues: list[object] | None = None,
     ) -> dict[str, list[str]]:
         graph: dict[str, list[str]] = {}
-        for fnode, _, _ in self._valid_node_rows(conn):
+        active_valid_node_rows = valid_node_rows or self._valid_node_rows(conn)
+        active_invalid_issues = invalid_issues or self._invalid_issue_rows(conn)
+        for fnode, _, _ in active_valid_node_rows:
             graph.setdefault(fnode, [])
-        for issue in self._invalid_issue_rows(conn):
+        for issue in active_invalid_issues:
             if issue.fnode.startswith("<") and issue.fnode.endswith(">"):
                 continue
             graph.setdefault(issue.fnode, [])
 
-        rows = conn.execute(
-            """
-            SELECT src_fnode, dst_fnode, ord
-            FROM mdoc_edges
-            ORDER BY src_path, ord
-            """
-        ).fetchall()
-        for row in rows:
-            src_fnode = str(row[0])
-            dst_fnode = str(row[1])
+        for src_fnode, dst_fnode in self._valid_edge_rows(conn):
             graph.setdefault(src_fnode, []).append(dst_fnode)
             graph.setdefault(dst_fnode, [])
         return graph
 
-    def _component_sizes(self, conn: sqlite3.Connection) -> dict[str, int]:
+    @staticmethod
+    def _component_sizes_from_graph(
+        graph: dict[str, list[str]],
+        *,
+        component_members: set[str],
+    ) -> dict[str, int]:
         adjacency: dict[str, set[str]] = {}
-        graph = self._dep_graph_snapshot(conn)
         for src_fnode, dep_fnodes in graph.items():
+            if src_fnode not in component_members:
+                continue
             adjacency.setdefault(src_fnode, set())
             for dep_fnode in dep_fnodes:
-                if not self._is_component_member(conn, dep_fnode):
+                if dep_fnode not in component_members:
                     continue
                 adjacency.setdefault(dep_fnode, set())
                 adjacency[src_fnode].add(dep_fnode)
@@ -581,19 +626,18 @@ class IndCache:
                 sizes[fnode] = size
         return sizes
 
-    def _is_component_member(self, conn: sqlite3.Connection, fnode: str) -> bool:
-        if self._fnode_exists(conn, fnode):
-            return True
-        row = conn.execute(
-            """
-            SELECT 1
-            FROM mdoc_issues
-            WHERE ref_fnode = ? AND kind IN ('invalid', 'duplicate')
-            LIMIT 1
-            """,
-            (fnode,),
-        ).fetchone()
-        return row is not None
+    @staticmethod
+    def _component_member_fnodes(
+        valid_node_rows: list[tuple[str, str, str]],
+        invalid_issues: list[object],
+    ) -> set[str]:
+        members = {fnode for fnode, _, _ in valid_node_rows}
+        members.update(
+            issue.fnode
+            for issue in invalid_issues
+            if not (issue.fnode.startswith("<") and issue.fnode.endswith(">"))
+        )
+        return members
 
     @staticmethod
     def _ensure_index_schema(conn: sqlite3.Connection) -> None:

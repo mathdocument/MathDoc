@@ -10,11 +10,8 @@ from .loading import GraphLoader, create_root_node, load_root_node_from_ref
 from .models import DependencyItem, GraphCheckReport, GraphIssue, GraphRootItem
 from .query import (
     dependency_items_from_graph,
-    global_root_items_from_graph,
     leaf_items_from_graph,
-    referrer_items_from_graph,
 )
-from .report import GraphReporter
 from .state import GraphState
 from ..compiler import CompilerRes
 from ..indcache import IndCache
@@ -75,10 +72,6 @@ class DepGraph:
             state=self.state,
         )
         self._evaluator = GraphEvaluator(
-            mdcroot=self.mdcroot,
-            state=self.state,
-        )
-        self._reporter = GraphReporter(
             mdcroot=self.mdcroot,
             state=self.state,
         )
@@ -153,7 +146,7 @@ class DepGraph:
         return bool(self.get_root_node().blocks)
 
     def root_item(self) -> DependencyItem:
-        issue = self.issue_for_fnode(self.root_fnode)
+        issue = self.state.broken_issues.get(self.root_fnode)
         if issue is not None:
             return DependencyItem(
                 depth=0,
@@ -170,18 +163,25 @@ class DepGraph:
         )
 
     def is_broken_fnode(self, fnode: str) -> bool:
-        return is_broken_fnode(self.state, fnode)
+        if is_broken_fnode(self.state, fnode):
+            return True
+        return self.cache.is_broken_fnode(fnode)
 
     def issue_for_fnode(self, fnode: str) -> GraphIssue | None:
-        return issue_for_fnode(self.state, fnode)
+        issue = issue_for_fnode(self.state, fnode)
+        if issue is not None:
+            return issue
+        return self.cache.issue_for_fnode(fnode)
 
     def ref_item_for_fnode(self, fnode: str, *, depth: int = 0) -> DependencyItem:
-        return dependency_item_for_fnode(
-            mdcroot=self.mdcroot,
-            state=self.state,
-            fnode=fnode,
-            depth=depth,
-        )
+        if fnode in self.state.nodes_by_fnode or fnode in self.state.broken_issues:
+            return dependency_item_for_fnode(
+                mdcroot=self.mdcroot,
+                state=self.state,
+                fnode=fnode,
+                depth=depth,
+            )
+        return self.cache.ref_item_for_fnode(fnode, depth=depth)
 
     def direct_dependency_fnodes(
         self,
@@ -241,9 +241,22 @@ class DepGraph:
             if dep_fnode in existing:
                 skipped_existing.append(dep_fnode)
                 continue
-            node.add_dependency(dep_fnode)
-            existing.add(dep_fnode)
             added.append(dep_fnode)
+            existing.add(dep_fnode)
+
+        if added:
+            original_deps = list(node.depens)
+            try:
+                for dep_fnode in added:
+                    node.add_dependency(dep_fnode)
+                self._loader.expand_from_root(root_fnode=node.fnode, depth=-1)
+                cycle = find_cycle(self.state.dep_graph, root_fnode=node.fnode)
+                if cycle is not None:
+                    raise DependencyCycleError(cycle)
+            except Exception:
+                node.depens = original_deps
+                self.state.reset_graph()
+                raise
 
         if added:
             node.save()
@@ -286,29 +299,21 @@ class DepGraph:
             raise ValueError("depth must be -1 (infinite) or >= 0")
 
         active_target = target_fnode or self._bind_root()
-        self.scan_all()
-        if active_target not in self.dep_graph and not self.is_broken_fnode(
-            active_target
-        ):
+        self.cache.bootstrap_if_needed()
+        if not self.cache.has_fnode(active_target):
             raise ValueError(f"no mdoc matched reference: {active_target}")
-
-        return referrer_items_from_graph(
-            mdcroot=self.mdcroot,
-            state=self.state,
+        return self.cache.referrer_items(
             target_fnode=active_target,
             depth=depth,
         )
 
     def graph_check_report(self) -> GraphCheckReport:
-        self.scan_all()
-        return self._reporter.graph_check_report()
+        self.cache.bootstrap_if_needed()
+        return self.cache.graph_check_report()
 
     def global_root_items(self) -> list[GraphRootItem]:
-        self.scan_all()
-        return global_root_items_from_graph(
-            mdcroot=self.mdcroot,
-            state=self.state,
-        )
+        self.cache.bootstrap_if_needed()
+        return self.cache.global_root_items()
 
     def dependency_items(
         self,

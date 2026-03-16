@@ -68,11 +68,21 @@ def build_parser() -> argparse.ArgumentParser:
         "check",
         help="Scan the whole repo and report graph issues",
     )
+    graph_check_parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Refresh the workspace index before checking the graph",
+    )
     graph_check_parser.set_defaults(func=cmd_graph_check)
 
     graph_roots_parser = graph_subparsers.add_parser(
         "roots",
         help="List all global root nodes with no incoming dependencies",
+    )
+    graph_roots_parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Refresh the workspace index before reading cached roots",
     )
     graph_roots_parser.set_defaults(func=cmd_graph_roots)
 
@@ -162,6 +172,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="Reverse dependency traversal depth (-1 for unlimited, default: 1)",
+    )
+    dep_refs_parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Refresh the workspace index before reading cached reverse dependencies",
     )
     dep_refs_parser.set_defaults(func=cmd_dep_refs)
 

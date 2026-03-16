@@ -564,6 +564,27 @@ class TestDepGraph(unittest.TestCase):
             reloaded.load()
             self.assertEqual(reloaded.depens, [dep2.fnode])
 
+    def test_add_direct_dependencies_rejects_cycle_before_save(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_mutation_cycle.") as tmp:
+            root = Path(tmp)
+            src = self._new_node(root, "Src", "natl", "src")
+            src.save()
+
+            dep = self._new_node(root, "Dep", "natl", "dep")
+            dep.save()
+
+            graph_src = DepGraph(mdcroot=root, root_fnode=src.fnode)
+            added, _, _ = graph_src.add_direct_dependencies([dep.fnode])
+            self.assertEqual(added, [dep.fnode])
+
+            graph_dep = DepGraph(mdcroot=root, root_fnode=dep.fnode)
+            with self.assertRaises(DependencyCycleError):
+                graph_dep.add_direct_dependencies([src.fnode])
+
+            reloaded = MdocNode(mdcroot=root, path=dep.path, title="")
+            reloaded.load()
+            self.assertEqual(reloaded.depens, [])
+
     def test_scan_all_builds_global_graph(self) -> None:
         with tempfile.TemporaryDirectory(prefix="depgraph_scan_all.") as tmp:
             root = Path(tmp)

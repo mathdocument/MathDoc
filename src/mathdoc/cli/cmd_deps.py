@@ -1,20 +1,21 @@
 import argparse
 import sqlite3
 
-from ..ui import ChainView, DepAddView, DepRmView, NodeRef, select_indices_interactive
+from ..depgraph.exceptions import DependencyCycleError
+from ..ui import DepAddView, DepRmView, NodeRef, select_indices_interactive
 from .common import (
     UI,
     load_source_graph,
+    load_target_graph,
     prompt_create_dependency_row,
-    prepare_cache_env,
     refresh_rows_or_warn,
     render_dependency_report,
-    resolve_ref_item,
     search_match_rows,
 )
 from .presenters import (
     broken_dependency_summary,
     chain_view,
+    cycle_view,
     node_ref,
     node_ref_from_item,
     node_ref_from_row,
@@ -104,6 +105,9 @@ def cmd_dep_add(args: argparse.Namespace) -> int:
 
     try:
         added, _, _ = graph.add_direct_dependencies(list(selected_by_fnode))
+    except DependencyCycleError as exc:
+        UI.write_lines(UI.render_cycle_lines(cycle_view(graph, exc.cycle)))
+        return 1
     except OSError as exc:
         UI.error(f"failed to save mdoc: {exc}")
         return 1
@@ -285,23 +289,30 @@ def cmd_dep_rm(args: argparse.Namespace) -> int:
 
 
 def cmd_dep_refs(args: argparse.Namespace) -> int:
-    env = prepare_cache_env(action="prepare dependency index")
+    env = load_target_graph(
+        target=args.target,
+        action="prepare dependency index",
+    )
     if env is None:
         return 1
-    _, cache = env
+    _, cache, graph, target_item = env
 
     try:
-        cache.refresh_all()
-        target_item = resolve_ref_item(cache, args.target)
-        ref_items = cache.referrer_items(
-            target_fnode=target_item.fnode,
-            depth=args.depth,
-        )
+        if args.refresh:
+            cache.refresh_all()
+            env = load_target_graph(
+                target=args.target,
+                action="prepare dependency index",
+            )
+            if env is None:
+                return 1
+            _, cache, graph, target_item = env
+        ref_items = graph.referrer_items(depth=args.depth)
     except (OSError, ValueError, sqlite3.Error) as exc:
         UI.error(f"failed to inspect referrers: {exc}")
         return 1
 
-    broken_target = cache.issue_for_fnode(target_item.fnode)
+    broken_target = graph.issue_for_fnode(target_item.fnode)
     if broken_target is not None:
         target_item = node_ref(
             fnode=broken_target.fnode,
@@ -312,17 +323,12 @@ def cmd_dep_refs(args: argparse.Namespace) -> int:
 
     UI.write_lines(
         UI.render_chain_lines(
-            ChainView(
+            chain_view(
                 anchor_label="target",
                 anchor=target_item,
                 count_label="refers",
-                items=tuple(
-                    node_ref_from_item(
-                        item,
-                        broken=cache.is_broken_fnode(item.fnode),
-                    )
-                    for item in ref_items
-                ),
+                items=ref_items,
+                graph=graph,
             )
         )
     )

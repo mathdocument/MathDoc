@@ -93,6 +93,7 @@ mdc dep add <source> <query> --max-results 50
 - interactive selection in the terminal
 - `-n, --max-results`: maximum number of candidates to display, default is `200`
 - if there are no matches and the command is run in a TTY, `mdc dep add` prompts whether to create a new mdoc and add it immediately as a dependency
+- cycle-producing dependency additions are rejected before the file is written
 
 
 #### `mdc dep rm`
@@ -130,8 +131,11 @@ Show referrers of a target mdoc:
 ```bash
 mdc dep refs <target>
 mdc dep refs <target> --depth -1
+mdc dep refs <target> --refresh
 ```
 - `-d, --depth`: traversal depth, default is `1`, use `-1` for unlimited traversal
+- by default reads the cached graph index
+- use `--refresh` or `mdc sync` after external file edits
 
 
 #### `mdc graph check`
@@ -139,6 +143,7 @@ mdc dep refs <target> --depth -1
 Inspect the global dependency graph for repository-wide issues:
 ```bash
 mdc graph check
+mdc graph check --full
 ```
 This scan reports:
 - total number of `.mdoc` files
@@ -146,18 +151,23 @@ This scan reports:
 - missing dependency targets
 - invalid `.mdoc` files
 - dependency cycles
+- default mode reads the cached graph index
+- use `--full` to refresh the workspace before checking, or `mdc sync` beforehand
 
 #### `mdc graph roots`
 
 Show all global root nodes that are not depended on by any other node:
 ```bash
 mdc graph roots
+mdc graph roots --refresh
 ```
 This scan reports:
 - includes valid nodes and invalid files that currently have no incoming dependencies
 - excludes missing dependency placeholders
 - shows each root's weakly connected component size, excluding missing placeholders
 - sorts roots by component size descending
+- default mode reads the cached graph index
+- use `--refresh` or `mdc sync` after external file edits
 
 
 ### Evaluation Commands
