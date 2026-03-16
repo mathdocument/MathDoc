@@ -1,4 +1,10 @@
-from ..depgraph import DependencyItem, GraphCheckReport, GraphIssue, GraphRootItem
+from ..depgraph import (
+    DependencyItem,
+    DependencyTraversalReport,
+    GraphCheckReport,
+    GraphIssue,
+    GraphRootItem,
+)
 from ..depgraph.graph import DepGraph
 from ..ui import (
     BrokenDependencySummary,
@@ -166,6 +172,27 @@ def chain_view(
     )
 
 
+def chain_view_from_report(
+    *,
+    anchor_label: str,
+    anchor: NodeRef,
+    count_label: str,
+    report: DependencyTraversalReport,
+) -> ChainView:
+    return ChainView(
+        anchor_label=anchor_label,
+        anchor=anchor,
+        count_label=count_label,
+        items=tuple(
+            node_ref_from_item(
+                item,
+                broken=item.fnode in report.issues_by_fnode,
+            )
+            for item in report.items
+        ),
+    )
+
+
 def broken_dependency_summary(
     dep_items: list[DependencyItem],
     graph: DepGraph,
@@ -174,6 +201,22 @@ def broken_dependency_summary(
     invalid = 0
     for item in dep_items:
         issue = graph.issue_for_fnode(item.fnode)
+        if issue is None:
+            continue
+        if issue.kind == "missing":
+            missing += 1
+        elif issue.kind == "invalid":
+            invalid += 1
+    return BrokenDependencySummary(missing=missing, invalid=invalid)
+
+
+def broken_dependency_summary_from_report(
+    report: DependencyTraversalReport,
+) -> BrokenDependencySummary:
+    missing = 0
+    invalid = 0
+    for item in report.items:
+        issue = report.issues_by_fnode.get(item.fnode)
         if issue is None:
             continue
         if issue.kind == "missing":
@@ -214,6 +257,51 @@ def missing_referrer_views(
             MissingReferrerView(
                 target=node_ref_from_item(item, broken=True),
                 referrers=referrers,
+            )
+        )
+    return tuple(views)
+
+
+def missing_referrer_views_from_report(
+    report: DependencyTraversalReport,
+    *,
+    anchor: NodeRef,
+) -> tuple[MissingReferrerView, ...]:
+    reverse_graph: dict[str, list[str]] = {}
+    for src_fnode, dep_fnodes in report.dep_graph.items():
+        for dep_fnode in dep_fnodes:
+            refs = reverse_graph.setdefault(dep_fnode, [])
+            if src_fnode not in refs:
+                refs.append(src_fnode)
+
+    items_by_fnode = {item.fnode: item for item in report.items}
+    views: list[MissingReferrerView] = []
+    seen_missing: set[str] = set()
+    for item in report.items:
+        issue = report.issues_by_fnode.get(item.fnode)
+        if issue is None or issue.kind != "missing" or item.fnode in seen_missing:
+            continue
+        seen_missing.add(item.fnode)
+        referrers: list[NodeRef] = []
+        for ref_fnode in reverse_graph.get(item.fnode, []):
+            if ref_fnode == report.root_fnode:
+                referrers.append(anchor)
+                continue
+            ref_item = items_by_fnode.get(ref_fnode)
+            if ref_item is None:
+                continue
+            referrers.append(
+                node_ref_from_item(
+                    ref_item,
+                    broken=ref_fnode in report.issues_by_fnode,
+                )
+            )
+        if not referrers:
+            continue
+        views.append(
+            MissingReferrerView(
+                target=node_ref_from_item(item, broken=True),
+                referrers=tuple(referrers),
             )
         )
     return tuple(views)

@@ -4,15 +4,19 @@ from pathlib import Path
 from uuid import uuid4
 
 from ..depgraph import DepGraph, DependencyItem
+from ..depgraph.models import DependencyTraversalReport
 from ..depgraph.exceptions import DependencyCycleError
 from ..indcache import IndCache
 from ..ui import BrokenDependencySummary, NodeRef, TerminalUI, prompt_new_mdoc_interactive
 from ..ui.theme import short_fnode
 from ..utils import find_mdcroot, to_rel_path
 from .presenters import (
+    broken_dependency_summary_from_report,
     broken_dependency_summary,
+    chain_view_from_report,
     chain_view,
     cycle_view,
+    missing_referrer_views_from_report,
     missing_referrer_views,
     node_ref_from_item,
 )
@@ -159,6 +163,42 @@ def render_dependency_report(
             )
         )
     return items, summary
+
+
+def emit_dependency_report(
+    *,
+    source_item: NodeRef,
+    count_label: str,
+    report: DependencyTraversalReport,
+    for_eval: bool,
+    show_missing_referrers: bool,
+) -> BrokenDependencySummary:
+    UI.write_lines(
+        UI.render_chain_lines(
+            chain_view_from_report(
+                anchor_label="source",
+                anchor=source_item,
+                count_label=count_label,
+                report=report,
+            )
+        )
+    )
+    if show_missing_referrers:
+        missing_lines = UI.render_missing_referrer_lines(
+            missing_referrer_views_from_report(report, anchor=source_item)
+        )
+        if missing_lines:
+            UI.write_lines(missing_lines)
+
+    summary = broken_dependency_summary_from_report(report)
+    if summary.total > 0:
+        UI.write_lines(
+            UI.render_broken_dependency_warning_lines(
+                summary=summary,
+                for_eval=for_eval,
+            )
+        )
+    return summary
 
 
 def search_match_rows(

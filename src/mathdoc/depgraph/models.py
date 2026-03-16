@@ -34,3 +34,11 @@ class GraphCheckReport:
     missing: list[GraphIssue]
     invalid: list[GraphIssue]
     cycles: list[list[str]]
+
+
+@dataclass(slots=True)
+class DependencyTraversalReport:
+    root_fnode: str
+    items: list[DependencyItem]
+    dep_graph: dict[str, list[str]]
+    issues_by_fnode: dict[str, GraphIssue]

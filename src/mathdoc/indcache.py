@@ -1,10 +1,21 @@
+from __future__ import annotations
+
 import sqlite3
 from collections import deque
 from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import TYPE_CHECKING, Iterator
 
 from .utils import find_nested_mdcroot, iter_workspace_mdoc_files
+
+if TYPE_CHECKING:
+    from .depgraph.models import (
+        DependencyItem,
+        DependencyTraversalReport,
+        GraphCheckReport,
+        GraphIssue,
+        GraphRootItem,
+    )
 
 
 class IndCache:
@@ -218,16 +229,19 @@ class IndCache:
         return int(row[0]) if row else 0
 
     def has_fnode(self, fnode: str) -> bool:
-        return bool(self.lookup_by_fnode([fnode])) or self.issue_for_fnode(fnode) is not None
+        return (
+            bool(self.lookup_by_fnode([fnode]))
+            or self.issue_for_fnode(fnode) is not None
+        )
 
-    def issue_for_fnode(self, fnode: str):
+    def issue_for_fnode(self, fnode: str) -> GraphIssue | None:
         with self._open_conn() as conn:
             return self._issue_for_fnode(conn, fnode)
 
     def is_broken_fnode(self, fnode: str) -> bool:
         return self.issue_for_fnode(fnode) is not None
 
-    def ref_item_for_fnode(self, fnode: str, *, depth: int = 0):
+    def ref_item_for_fnode(self, fnode: str, *, depth: int = 0) -> DependencyItem:
         with self._open_conn() as conn:
             node_lookup = self._node_lookup(conn)
             issue_lookup = self._issue_lookup(conn)
@@ -239,9 +253,7 @@ class IndCache:
                 issue_lookup=issue_lookup,
             )
 
-    def referrer_items(self, *, target_fnode: str, depth: int):
-        from .depgraph.models import DependencyItem
-
+    def referrer_items(self, *, target_fnode: str, depth: int) -> list[DependencyItem]:
         if depth < -1:
             raise ValueError("depth must be -1 (infinite) or >= 0")
 
@@ -298,7 +310,45 @@ class IndCache:
 
         return referrers
 
-    def global_root_items(self):
+    def dependency_report(
+        self,
+        *,
+        root_fnode: str,
+        depth: int,
+    ) -> DependencyTraversalReport:
+        if depth < -1:
+            raise ValueError("depth must be -1 (infinite) or >= 0")
+
+        with self._open_conn() as conn:
+            node_lookup = self._node_lookup(conn)
+            issue_lookup = self._issue_lookup(conn)
+            dep_graph = self._dep_graph_snapshot(conn)
+            return self._dependency_report_from_graph(
+                conn,
+                root_fnode=root_fnode,
+                depth=depth,
+                leaf_only=False,
+                node_lookup=node_lookup,
+                issue_lookup=issue_lookup,
+                dep_graph=dep_graph,
+            )
+
+    def leaf_dependency_report(self, *, root_fnode: str) -> DependencyTraversalReport:
+        with self._open_conn() as conn:
+            node_lookup = self._node_lookup(conn)
+            issue_lookup = self._issue_lookup(conn)
+            dep_graph = self._dep_graph_snapshot(conn)
+            return self._dependency_report_from_graph(
+                conn,
+                root_fnode=root_fnode,
+                depth=-1,
+                leaf_only=True,
+                node_lookup=node_lookup,
+                issue_lookup=issue_lookup,
+                dep_graph=dep_graph,
+            )
+
+    def global_root_items(self) -> list[GraphRootItem]:
         from .depgraph.models import GraphRootItem
 
         with self._open_conn() as conn:
@@ -337,9 +387,10 @@ class IndCache:
                 )
 
             for issue in invalid_issues:
-                if not (
-                    issue.fnode.startswith("<") and issue.fnode.endswith(">")
-                ) and issue.fnode in incoming:
+                if (
+                    not (issue.fnode.startswith("<") and issue.fnode.endswith(">"))
+                    and issue.fnode in incoming
+                ):
                     continue
                 items.append(
                     GraphRootItem(
@@ -361,7 +412,7 @@ class IndCache:
         )
         return items
 
-    def graph_check_report(self):
+    def graph_check_report(self) -> GraphCheckReport:
         from .depgraph.algorithms import (
             component_has_cycle,
             representative_cycle,
@@ -414,10 +465,98 @@ class IndCache:
         conn: sqlite3.Connection,
         fnode: str,
         *,
-        issue_lookup: dict[str, object] | None = None,
-    ):
+        issue_lookup: dict[str, GraphIssue] | None = None,
+    ) -> GraphIssue | None:
         issue_map = issue_lookup or self._issue_lookup(conn)
         return issue_map.get(fnode)
+
+    def _dependency_report_from_graph(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        root_fnode: str,
+        depth: int,
+        leaf_only: bool,
+        node_lookup: dict[str, tuple[str, str]],
+        issue_lookup: dict[str, GraphIssue],
+        dep_graph: dict[str, list[str]],
+    ) -> DependencyTraversalReport:
+        from .depgraph.algorithms import find_cycle
+        from .depgraph.models import DependencyTraversalReport
+
+        if (
+            root_fnode not in dep_graph
+            and root_fnode not in node_lookup
+            and root_fnode not in issue_lookup
+        ):
+            raise ValueError(f"no mdoc matched reference: {root_fnode}")
+
+        root_dep_fnodes = [] if depth == 0 else list(dep_graph.get(root_fnode, []))
+        report_graph: dict[str, list[str]] = {root_fnode: list(root_dep_fnodes)}
+        items: list[DependencyItem] = []
+        seen: set[str] = set()
+        queue: deque[tuple[str, int]] = deque(
+            (dep_fnode, 1) for dep_fnode in root_dep_fnodes
+        )
+
+        while queue:
+            fnode, item_depth = queue.popleft()
+            if fnode in seen:
+                continue
+            seen.add(fnode)
+
+            dep_fnodes = list(dep_graph.get(fnode, []))
+            if leaf_only:
+                report_graph[fnode] = dep_fnodes
+                if not dep_fnodes:
+                    items.append(
+                        self._dependency_item_for_fnode(
+                            conn,
+                            fnode=fnode,
+                            depth=item_depth,
+                            node_lookup=node_lookup,
+                            issue_lookup=issue_lookup,
+                        )
+                    )
+                else:
+                    for dep_fnode in dep_fnodes:
+                        queue.append((dep_fnode, item_depth + 1))
+                continue
+
+            items.append(
+                self._dependency_item_for_fnode(
+                    conn,
+                    fnode=fnode,
+                    depth=item_depth,
+                    node_lookup=node_lookup,
+                    issue_lookup=issue_lookup,
+                )
+            )
+
+            if depth != -1 and item_depth >= depth:
+                report_graph[fnode] = []
+                continue
+
+            report_graph[fnode] = dep_fnodes
+            for dep_fnode in dep_fnodes:
+                queue.append((dep_fnode, item_depth + 1))
+
+        cycle = find_cycle(report_graph, root_fnode=root_fnode)
+        if cycle is not None:
+            from .depgraph.exceptions import DependencyCycleError
+
+            raise DependencyCycleError(cycle)
+
+        return DependencyTraversalReport(
+            root_fnode=root_fnode,
+            items=items,
+            dep_graph=report_graph,
+            issues_by_fnode={
+                fnode: issue
+                for fnode, issue in issue_lookup.items()
+                if fnode in report_graph
+            },
+        )
 
     def _dependency_item_for_fnode(
         self,
@@ -426,8 +565,8 @@ class IndCache:
         fnode: str,
         depth: int,
         node_lookup: dict[str, tuple[str, str]] | None = None,
-        issue_lookup: dict[str, object] | None = None,
-    ):
+        issue_lookup: dict[str, GraphIssue] | None = None,
+    ) -> DependencyItem:
         from .depgraph.models import DependencyItem
 
         issue = self._issue_for_fnode(
@@ -483,15 +622,14 @@ class IndCache:
         conn: sqlite3.Connection,
     ) -> dict[str, tuple[str, str]]:
         return {
-            fnode: (title, path)
-            for fnode, title, path in self._valid_node_rows(conn)
+            fnode: (title, path) for fnode, title, path in self._valid_node_rows(conn)
         }
 
     def _issue_lookup(
         self,
         conn: sqlite3.Connection,
-    ) -> dict[str, object]:
-        issue_map: dict[str, object] = {}
+    ) -> dict[str, GraphIssue]:
+        issue_map: dict[str, GraphIssue] = {}
         for issue in self._invalid_issue_rows(conn):
             issue_map.setdefault(issue.fnode, issue)
         for issue in self._missing_issue_rows(conn):
@@ -528,7 +666,7 @@ class IndCache:
                 refs.append(src_fnode)
         return reverse_graph
 
-    def _missing_issue_rows(self, conn: sqlite3.Connection):
+    def _missing_issue_rows(self, conn: sqlite3.Connection) -> list[GraphIssue]:
         from .depgraph.models import GraphIssue
 
         rows = conn.execute(
@@ -563,7 +701,7 @@ class IndCache:
             )
         return deduped
 
-    def _invalid_issue_rows(self, conn: sqlite3.Connection):
+    def _invalid_issue_rows(self, conn: sqlite3.Connection) -> list[GraphIssue]:
         from .depgraph.models import GraphIssue
 
         rows = conn.execute(
@@ -590,7 +728,7 @@ class IndCache:
         conn: sqlite3.Connection,
         *,
         valid_node_rows: list[tuple[str, str, str]] | None = None,
-        invalid_issues: list[object] | None = None,
+        invalid_issues: list[GraphIssue] | None = None,
     ) -> dict[str, list[str]]:
         graph: dict[str, list[str]] = {}
         active_valid_node_rows = valid_node_rows or self._valid_node_rows(conn)
@@ -650,7 +788,7 @@ class IndCache:
     @staticmethod
     def _component_member_fnodes(
         valid_node_rows: list[tuple[str, str, str]],
-        invalid_issues: list[object],
+        invalid_issues: list[GraphIssue],
     ) -> set[str]:
         members = {fnode for fnode, _, _ in valid_node_rows}
         members.update(
@@ -679,7 +817,8 @@ class IndCache:
             conn.execute("DROP TABLE mdocs")
             IndCache._create_index_table(conn)
             columns = {
-                str(row[1]) for row in conn.execute("PRAGMA table_info(mdocs)").fetchall()
+                str(row[1])
+                for row in conn.execute("PRAGMA table_info(mdocs)").fetchall()
             }
         if "mtime_ns" not in columns:
             if "mtime_sec" not in columns:
@@ -829,9 +968,7 @@ class IndCache:
         return row is None or int(row[0]) == 0
 
     def _refresh_search_index(self, conn: sqlite3.Connection) -> None:
-        rows = conn.execute(
-            "SELECT path, mtime_ns, size FROM mdoc_files"
-        ).fetchall()
+        rows = conn.execute("SELECT path, mtime_ns, size FROM mdoc_files").fetchall()
         cached_by_path = {str(row[0]): (int(row[1]), int(row[2])) for row in rows}
         indexed_paths = {
             str(row[0])
@@ -1097,10 +1234,7 @@ class IndCache:
         if len(rows) <= 1:
             return
         paths = [str(row[0]) for row in rows]
-        error = (
-            f"duplicate fnode '{fnode}' found in: "
-            + ", ".join(paths)
-        )
+        error = f"duplicate fnode '{fnode}' found in: " + ", ".join(paths)
         for path in paths:
             self._insert_issue(
                 conn,

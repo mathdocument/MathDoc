@@ -139,6 +139,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="Dependency traversal depth (-1 for unlimited, default: 1)",
     )
+    dep_show_parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Refresh the workspace index before reading cached dependencies",
+    )
     dep_show_parser.set_defaults(func=cmd_dep_show)
 
     dep_leaf_parser = dep_subparsers.add_parser(
@@ -147,6 +152,11 @@ def build_parser() -> argparse.ArgumentParser:
     dep_leaf_parser.add_argument(
         "source",
         help="Source mdoc to inspect (fnode or .mdoc path)",
+    )
+    dep_leaf_parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Refresh the workspace index before reading cached leaf dependencies",
     )
     dep_leaf_parser.set_defaults(func=cmd_dep_leaf)
 

@@ -5,6 +5,7 @@ from ..depgraph.exceptions import DependencyCycleError
 from ..ui import DepAddView, DepRmView, NodeRef, select_indices_interactive
 from .common import (
     UI,
+    emit_dependency_report,
     load_source_graph,
     prepare_cache_env,
     prompt_create_dependency_row,
@@ -134,48 +135,107 @@ def cmd_dep_add(args: argparse.Namespace) -> int:
 
 
 def cmd_dep_show(args: argparse.Namespace) -> int:
-    env = load_source_graph(
-        source=args.source,
-        action="prepare dependency index",
-    )
+    env = prepare_cache_env(action="prepare dependency index")
     if env is None:
         return 1
-    _, _, graph, source_item = env
+    _, cache = env
 
-    report = render_dependency_report(
-        graph=graph,
+    source_item = None
+    try:
+        if getattr(args, "refresh", False):
+            cache.refresh_all()
+        source_item = resolve_ref_item(cache, args.source)
+        if not cache.has_fnode(source_item.fnode):
+            raise ValueError(
+                "source is not in the cached dependency index; "
+                "use `--refresh` or run `mdc sync` first"
+            )
+        report = cache.dependency_report(
+            root_fnode=source_item.fnode,
+            depth=args.depth,
+        )
+    except DependencyCycleError as exc:
+        cycle_rows = cache.lookup_by_fnode(list(dict.fromkeys(exc.cycle)))
+        UI.write_lines(
+            UI.render_cycle_lines(
+                cycle_view(
+                    exc.cycle,
+                    ref_rows_by_fnode=dict(cycle_rows),
+                )
+            )
+        )
+        return 1
+    except ValueError as exc:
+        if source_item is None:
+            UI.error(f"failed to inspect dependencies: {exc}")
+        else:
+            UI.write_lines(
+                UI.render_anchor_error_lines(
+                    label="source",
+                    item=source_item,
+                    message=f"failed to inspect dependencies: {exc}",
+                )
+            )
+        return 1
+    emit_dependency_report(
         source_item=source_item,
         count_label="depens",
-        inspect_error_message="failed to inspect dependencies",
-        load_items=lambda: graph.dependency_items(depth=args.depth),
+        report=report,
         for_eval=False,
         show_missing_referrers=True,
     )
-    if report is None:
-        return 1
     return 0
 
 
 def cmd_dep_leaf(args: argparse.Namespace) -> int:
-    env = load_source_graph(
-        source=args.source,
-        action="prepare dependency index",
-    )
+    env = prepare_cache_env(action="prepare dependency index")
     if env is None:
         return 1
-    _, _, graph, source_item = env
+    _, cache = env
 
-    report = render_dependency_report(
-        graph=graph,
+    source_item = None
+    try:
+        if getattr(args, "refresh", False):
+            cache.refresh_all()
+        source_item = resolve_ref_item(cache, args.source)
+        if not cache.has_fnode(source_item.fnode):
+            raise ValueError(
+                "source is not in the cached dependency index; "
+                "use `--refresh` or run `mdc sync` first"
+            )
+        report = cache.leaf_dependency_report(
+            root_fnode=source_item.fnode,
+        )
+    except DependencyCycleError as exc:
+        cycle_rows = cache.lookup_by_fnode(list(dict.fromkeys(exc.cycle)))
+        UI.write_lines(
+            UI.render_cycle_lines(
+                cycle_view(
+                    exc.cycle,
+                    ref_rows_by_fnode=dict(cycle_rows),
+                )
+            )
+        )
+        return 1
+    except ValueError as exc:
+        if source_item is None:
+            UI.error(f"failed to inspect leaf dependencies: {exc}")
+        else:
+            UI.write_lines(
+                UI.render_anchor_error_lines(
+                    label="source",
+                    item=source_item,
+                    message=f"failed to inspect leaf dependencies: {exc}",
+                )
+            )
+        return 1
+    emit_dependency_report(
         source_item=source_item,
         count_label="leaves",
-        inspect_error_message="failed to inspect leaf dependencies",
-        load_items=graph.leaf_dependency_items,
+        report=report,
         for_eval=False,
         show_missing_referrers=False,
     )
-    if report is None:
-        return 1
     return 0
 
 

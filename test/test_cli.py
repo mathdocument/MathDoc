@@ -691,11 +691,13 @@ class TestMdcCli(unittest.TestCase):
             show_run = _run_cli(["dep", "show", src_path], repo)
             self.assertEqual(show_run.returncode, 0,
                              show_run.stdout + show_run.stderr)
-            self.assertIn("Show Dep New", show_run.stdout)
+            self.assertIn("Show Dep Old", show_run.stdout)
+            self.assertNotIn("Show Dep New", show_run.stdout)
 
             leaf_run = _run_cli(["dep", "leaf", src_path], repo)
             self.assertEqual(leaf_run.returncode, 0, leaf_run.stdout + leaf_run.stderr)
-            self.assertIn("Show Dep New", leaf_run.stdout)
+            self.assertIn("Show Dep Old", leaf_run.stdout)
+            self.assertNotIn("Show Dep New", leaf_run.stdout)
 
             search_new = _run_cli(["search", "Show Dep New"], repo)
             self.assertEqual(search_new.returncode, 0,
@@ -707,16 +709,37 @@ class TestMdcCli(unittest.TestCase):
                              search_old.stdout + search_old.stderr)
             self.assertIn("Show Dep Old", search_old.stdout)
 
-            sync_run = _run_cli(["sync"], repo)
-            self.assertEqual(sync_run.returncode, 0, sync_run.stdout + sync_run.stderr)
-
-            search_new_after_sync = _run_cli(["search", "Show Dep New"], repo)
+            show_refresh = _run_cli(["dep", "show", "--refresh", src_path], repo)
             self.assertEqual(
-                search_new_after_sync.returncode,
+                show_refresh.returncode,
                 0,
-                search_new_after_sync.stdout + search_new_after_sync.stderr,
+                show_refresh.stdout + show_refresh.stderr,
             )
-            self.assertIn("Show Dep New", search_new_after_sync.stdout)
+            self.assertIn("Show Dep New", show_refresh.stdout)
+
+            leaf_refresh = _run_cli(["dep", "leaf", "--refresh", src_path], repo)
+            self.assertEqual(
+                leaf_refresh.returncode,
+                0,
+                leaf_refresh.stdout + leaf_refresh.stderr,
+            )
+            self.assertIn("Show Dep New", leaf_refresh.stdout)
+
+            search_new_after_refresh = _run_cli(["search", "Show Dep New"], repo)
+            self.assertEqual(
+                search_new_after_refresh.returncode,
+                0,
+                search_new_after_refresh.stdout + search_new_after_refresh.stderr,
+            )
+            self.assertIn("Show Dep New", search_new_after_refresh.stdout)
+
+            search_old_after_refresh = _run_cli(["search", "Show Dep Old"], repo)
+            self.assertEqual(
+                search_old_after_refresh.returncode,
+                0,
+                search_old_after_refresh.stdout + search_old_after_refresh.stderr,
+            )
+            self.assertIn("No results for: Show Dep Old", search_old_after_refresh.stdout)
 
     def test_cmd_eval_reuses_precomputed_dependencies_without_refreshing_rows(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_eval_preflight_once.") as tmp:
@@ -875,7 +898,10 @@ class TestMdcCli(unittest.TestCase):
             self.assertIn("dependency cycle detected", _compact_cli_output(out_add_cycle))
             _append_dependency(dep2_path, src_fnode)
 
-            show_cycle = _run_cli(["dep", "show", "--depth", "-1", src_path], repo)
+            show_cycle = _run_cli(
+                ["dep", "show", "--refresh", "--depth", "-1", src_path],
+                repo,
+            )
             combined = show_cycle.stdout + show_cycle.stderr
             self.assertEqual(show_cycle.returncode, 1, combined)
             self.assertIn("dependency cycle detected", combined)
@@ -903,7 +929,7 @@ class TestMdcCli(unittest.TestCase):
 
             Path(dep_path).unlink()
 
-            show_run = _run_cli(["dep", "show", src_path], repo)
+            show_run = _run_cli(["dep", "show", "--refresh", src_path], repo)
             self.assertEqual(show_run.returncode, 0, show_run.stdout + show_run.stderr)
             show_run_text = _compact_cli_output(show_run.stdout)
             self.assertEqual(len(_chain_item_lines(show_run.stdout)), 1)
@@ -943,7 +969,10 @@ class TestMdcCli(unittest.TestCase):
 
             Path(leaf_path).unlink()
 
-            show_run = _run_cli(["dep", "show", "--depth", "-1", src_path], repo)
+            show_run = _run_cli(
+                ["dep", "show", "--refresh", "--depth", "-1", src_path],
+                repo,
+            )
             self.assertEqual(show_run.returncode, 0, show_run.stdout + show_run.stderr)
             show_run_text = _compact_cli_output(show_run.stdout)
             self.assertIn(leaf_fnode[:8], show_run_text)
@@ -981,7 +1010,7 @@ class TestMdcCli(unittest.TestCase):
             self.assertNotIn("referred by:", out_rm_text)
             self.assertIn("remove: 1", out_rm_text)
 
-            show_run = _run_cli(["dep", "show", src_path], repo)
+            show_run = _run_cli(["dep", "show", "--refresh", src_path], repo)
             self.assertEqual(show_run.returncode, 0, show_run.stdout + show_run.stderr)
             self.assertEqual(len(_chain_item_lines(show_run.stdout)), 0)
 
@@ -1037,7 +1066,7 @@ class TestMdcCli(unittest.TestCase):
 
             _make_mdoc_invalid(dep_path)
 
-            show_run = _run_cli(["dep", "show", src_path], repo)
+            show_run = _run_cli(["dep", "show", "--refresh", src_path], repo)
             self.assertEqual(show_run.returncode, 0, show_run.stdout + show_run.stderr)
             show_run_text = _compact_cli_output(show_run.stdout)
             self.assertEqual(len(_chain_item_lines(show_run.stdout)), 1)
@@ -1431,7 +1460,7 @@ class TestMdcCli(unittest.TestCase):
             renamed_path = _rename_mdoc(dep_path, "renamed-dep.mdoc")
             renamed_rel = str(Path(renamed_path).relative_to(repo.resolve())).replace("\\", "/")
 
-            show_run = _run_cli(["dep", "show", src_path], repo)
+            show_run = _run_cli(["dep", "show", "--refresh", src_path], repo)
             self.assertEqual(show_run.returncode, 0, show_run.stdout + show_run.stderr)
             self.assertIn("Rename Dep", show_run.stdout)
             self.assertIn(renamed_rel, show_run.stdout)
