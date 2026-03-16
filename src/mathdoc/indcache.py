@@ -291,25 +291,6 @@ class IndCache:
 
         return items
 
-    def referrer_fnodes(self, *, target_fnode: str) -> set[str]:
-        with self._open_conn() as conn:
-            reverse_graph = self._reverse_graph_snapshot(conn)
-            seen: set[str] = {target_fnode}
-            referrers: set[str] = set()
-            queue: deque[str] = deque(reverse_graph.get(target_fnode, []))
-
-            while queue:
-                fnode = queue.popleft()
-                if fnode in seen:
-                    continue
-                seen.add(fnode)
-                referrers.add(fnode)
-                for ref_fnode in reverse_graph.get(fnode, []):
-                    if ref_fnode != target_fnode:
-                        queue.append(ref_fnode)
-
-        return referrers
-
     def dependency_report(
         self,
         *,
@@ -320,32 +301,20 @@ class IndCache:
             raise ValueError("depth must be -1 (infinite) or >= 0")
 
         with self._open_conn() as conn:
-            node_lookup = self._node_lookup(conn)
-            issue_lookup = self._issue_lookup(conn)
-            dep_graph = self._dep_graph_snapshot(conn)
-            return self._dependency_report_from_graph(
+            return self._dependency_report_for_root(
                 conn,
                 root_fnode=root_fnode,
                 depth=depth,
                 leaf_only=False,
-                node_lookup=node_lookup,
-                issue_lookup=issue_lookup,
-                dep_graph=dep_graph,
             )
 
     def leaf_dependency_report(self, *, root_fnode: str) -> DependencyTraversalReport:
         with self._open_conn() as conn:
-            node_lookup = self._node_lookup(conn)
-            issue_lookup = self._issue_lookup(conn)
-            dep_graph = self._dep_graph_snapshot(conn)
-            return self._dependency_report_from_graph(
+            return self._dependency_report_for_root(
                 conn,
                 root_fnode=root_fnode,
                 depth=-1,
                 leaf_only=True,
-                node_lookup=node_lookup,
-                issue_lookup=issue_lookup,
-                dep_graph=dep_graph,
             )
 
     def global_root_items(self) -> list[GraphRootItem]:
@@ -467,48 +436,57 @@ class IndCache:
         *,
         issue_lookup: dict[str, GraphIssue] | None = None,
     ) -> GraphIssue | None:
-        issue_map = issue_lookup or self._issue_lookup(conn)
+        issue_map = issue_lookup if issue_lookup is not None else self._issue_lookup(conn)
         return issue_map.get(fnode)
 
-    def _dependency_report_from_graph(
+    def _dependency_report_for_root(
         self,
         conn: sqlite3.Connection,
         *,
         root_fnode: str,
         depth: int,
         leaf_only: bool,
-        node_lookup: dict[str, tuple[str, str]],
-        issue_lookup: dict[str, GraphIssue],
-        dep_graph: dict[str, list[str]],
     ) -> DependencyTraversalReport:
         from .depgraph.algorithms import find_cycle
         from .depgraph.models import DependencyTraversalReport
 
-        if (
-            root_fnode not in dep_graph
-            and root_fnode not in node_lookup
-            and root_fnode not in issue_lookup
-        ):
+        node_lookup = self._node_lookup_for_fnodes(conn, [root_fnode])
+        issue_lookup = self._issue_lookup_for_fnodes(conn, [root_fnode])
+
+        root_issue = issue_lookup.get(root_fnode)
+        if root_issue is not None:
+            raise ValueError(root_issue.error)
+
+        if root_fnode not in node_lookup:
             raise ValueError(f"no mdoc matched reference: {root_fnode}")
 
-        root_dep_fnodes = [] if depth == 0 else list(dep_graph.get(root_fnode, []))
-        report_graph: dict[str, list[str]] = {root_fnode: list(root_dep_fnodes)}
+        report_graph: dict[str, list[str]] = {root_fnode: []}
         items: list[DependencyItem] = []
-        seen: set[str] = set()
-        queue: deque[tuple[str, int]] = deque(
-            (dep_fnode, 1) for dep_fnode in root_dep_fnodes
-        )
+        discovered: set[str] = {root_fnode}
+        queue: deque[tuple[str, int]] = deque([(root_fnode, 0)])
 
         while queue:
-            fnode, item_depth = queue.popleft()
-            if fnode in seen:
-                continue
-            seen.add(fnode)
+            batch: list[tuple[str, int]] = []
+            while queue and len(batch) < 200:
+                batch.append(queue.popleft())
 
-            dep_fnodes = list(dep_graph.get(fnode, []))
-            if leaf_only:
+            expandable = [
+                src_fnode
+                for src_fnode, src_depth in batch
+                if leaf_only or depth == -1 or src_depth < depth
+            ]
+            edges_by_src = self._edge_lookup_for_sources(conn, expandable)
+            pending_nodes: list[tuple[str, int]] = []
+
+            for fnode, item_depth in batch:
+                if not leaf_only and depth != -1 and item_depth >= depth:
+                    report_graph[fnode] = []
+                    continue
+
+                dep_fnodes = edges_by_src.get(fnode, [])
                 report_graph[fnode] = dep_fnodes
-                if not dep_fnodes:
+
+                if leaf_only and fnode != root_fnode and not dep_fnodes:
                     items.append(
                         self._dependency_item_for_fnode(
                             conn,
@@ -518,28 +496,29 @@ class IndCache:
                             issue_lookup=issue_lookup,
                         )
                     )
-                else:
-                    for dep_fnode in dep_fnodes:
-                        queue.append((dep_fnode, item_depth + 1))
-                continue
+                for dep_fnode in dep_fnodes:
+                    if dep_fnode in discovered:
+                        continue
+                    discovered.add(dep_fnode)
+                    pending_nodes.append((dep_fnode, item_depth + 1))
 
-            items.append(
-                self._dependency_item_for_fnode(
-                    conn,
-                    fnode=fnode,
-                    depth=item_depth,
-                    node_lookup=node_lookup,
-                    issue_lookup=issue_lookup,
-                )
-            )
+            if pending_nodes:
+                pending_fnodes = [fnode for fnode, _ in pending_nodes]
+                node_lookup.update(self._node_lookup_for_fnodes(conn, pending_fnodes))
+                issue_lookup.update(self._issue_lookup_for_fnodes(conn, pending_fnodes))
 
-            if depth != -1 and item_depth >= depth:
-                report_graph[fnode] = []
-                continue
-
-            report_graph[fnode] = dep_fnodes
-            for dep_fnode in dep_fnodes:
-                queue.append((dep_fnode, item_depth + 1))
+                for fnode, item_depth in pending_nodes:
+                    if not leaf_only:
+                        items.append(
+                            self._dependency_item_for_fnode(
+                                conn,
+                                fnode=fnode,
+                                depth=item_depth,
+                                node_lookup=node_lookup,
+                                issue_lookup=issue_lookup,
+                            )
+                        )
+                    queue.append((fnode, item_depth))
 
         cycle = find_cycle(report_graph, root_fnode=root_fnode)
         if cycle is not None:
@@ -557,6 +536,134 @@ class IndCache:
                 if fnode in report_graph
             },
         )
+
+    def _node_lookup_for_fnodes(
+        self,
+        conn: sqlite3.Connection,
+        fnodes: list[str],
+    ) -> dict[str, tuple[str, str]]:
+        if not fnodes:
+            return {}
+
+        rows_by_fnode: dict[str, tuple[str, str]] = {}
+        chunk_size = 500
+        for start in range(0, len(fnodes), chunk_size):
+            chunk = fnodes[start : start + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = conn.execute(
+                f"""
+                SELECT mdocs.fnode, mdocs.title, mdocs.path
+                FROM mdocs
+                WHERE mdocs.fnode IN ({placeholders})
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM mdoc_issues
+                    WHERE mdoc_issues.path = mdocs.path
+                      AND mdoc_issues.kind IN ('invalid', 'duplicate')
+                  )
+                """,
+                tuple(chunk),
+            ).fetchall()
+            for row in rows:
+                rows_by_fnode[str(row[0])] = (str(row[1]), str(row[2]))
+        return rows_by_fnode
+
+    def _issue_lookup_for_fnodes(
+        self,
+        conn: sqlite3.Connection,
+        fnodes: list[str],
+    ) -> dict[str, GraphIssue]:
+        from .depgraph.models import GraphIssue
+
+        if not fnodes:
+            return {}
+
+        issues_by_fnode: dict[str, GraphIssue] = {}
+        chunk_size = 500
+        for start in range(0, len(fnodes), chunk_size):
+            chunk = fnodes[start : start + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = conn.execute(
+                f"""
+                SELECT path, kind, ref_fnode, error
+                FROM mdoc_issues
+                WHERE ref_fnode IN ({placeholders})
+                  AND (
+                    kind IN ('invalid', 'duplicate')
+                    OR (
+                      kind = 'missing'
+                      AND NOT EXISTS (
+                        SELECT 1
+                        FROM mdoc_issues AS src_issues
+                        WHERE src_issues.path = mdoc_issues.path
+                          AND src_issues.kind IN ('invalid', 'duplicate')
+                      )
+                    )
+                  )
+                ORDER BY path, ref_fnode, error
+                """,
+                tuple(chunk),
+            ).fetchall()
+            for row in rows:
+                fnode = str(row[2])
+                if fnode in issues_by_fnode:
+                    continue
+                kind = str(row[1])
+                if kind == "missing":
+                    issues_by_fnode[fnode] = GraphIssue(
+                        kind="missing",
+                        fnode=fnode,
+                        title="<missing>",
+                        rel_path="<unknown>",
+                        error=str(row[3]),
+                    )
+                    continue
+                issues_by_fnode[fnode] = GraphIssue(
+                    kind="invalid",
+                    fnode=fnode,
+                    title="<invalid>",
+                    rel_path=str(row[0]),
+                    error=str(row[3]),
+                )
+        return issues_by_fnode
+
+    def _edge_lookup_for_sources(
+        self,
+        conn: sqlite3.Connection,
+        src_fnodes: list[str],
+    ) -> dict[str, list[str]]:
+        if not src_fnodes:
+            return {}
+
+        positions = {fnode: index for index, fnode in enumerate(src_fnodes)}
+        edge_rows: list[tuple[str, str, int]] = []
+        chunk_size = 500
+        for start in range(0, len(src_fnodes), chunk_size):
+            chunk = src_fnodes[start : start + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = conn.execute(
+                f"""
+                SELECT src_fnode, dst_fnode, ord
+                FROM mdoc_edges
+                WHERE src_fnode IN ({placeholders})
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM mdoc_issues
+                    WHERE mdoc_issues.path = mdoc_edges.src_path
+                      AND mdoc_issues.kind IN ('invalid', 'duplicate')
+                  )
+                """,
+                tuple(chunk),
+            ).fetchall()
+            edge_rows.extend(
+                (str(row[0]), str(row[1]), int(row[2])) for row in rows
+            )
+
+        edge_rows.sort(key=lambda row: (positions[row[0]], row[2]))
+        edges_by_src = {fnode: [] for fnode in src_fnodes}
+        for src_fnode, dst_fnode, _ in edge_rows:
+            edges_by_src[src_fnode].append(dst_fnode)
+        return edges_by_src
 
     def _dependency_item_for_fnode(
         self,
@@ -582,7 +689,7 @@ class IndCache:
                 rel_path=issue.rel_path,
             )
 
-        nodes = node_lookup or self._node_lookup(conn)
+        nodes = node_lookup if node_lookup is not None else self._node_lookup(conn)
         row = nodes.get(fnode)
         if row is not None:
             return DependencyItem(

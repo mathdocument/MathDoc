@@ -244,51 +244,30 @@ class DepGraph:
             existing.add(dep_fnode)
 
         if added:
-            use_cached_precheck = True
-            try:
-                self.cache.bootstrap_if_needed()
-                self.cache.refresh_rows(self.cache.dep_rows(added))
-                referrer_fnodes = self.cache.referrer_fnodes(target_fnode=node.fnode)
-            except (OSError, ValueError, sqlite3.Error):
-                use_cached_precheck = False
-                referrer_fnodes = set()
+            self._loader.expand_from_root(root_fnode=node.fnode, depth=-1)
+            for dep_fnode in added:
+                dep_node = self._loader.load_node(
+                    dep_fnode,
+                    tolerate_missing=True,
+                    tolerate_invalid=True,
+                )
+                if dep_node is None:
+                    self.state.dep_graph.setdefault(dep_fnode, [])
+                    continue
+                self.state.nodes_by_fnode[dep_fnode] = dep_node
+                self._loader.expand_from_root(root_fnode=dep_fnode, depth=-1)
 
-            if use_cached_precheck:
-                suspicious_existing = [
-                    dep_fnode for dep_fnode in node.depens if dep_fnode in referrer_fnodes
-                ]
-                suspicious_added = [
-                    dep_fnode for dep_fnode in added if dep_fnode in referrer_fnodes
-                ]
-            else:
-                suspicious_existing = list(node.depens)
-                suspicious_added = list(added)
+            candidate_deps = self._dedupe_keep_order([*node.depens, *added])
+            candidate_graph = {
+                fnode: list(dep_list) for fnode, dep_list in self.state.dep_graph.items()
+            }
+            candidate_graph[node.fnode] = candidate_deps
+            for dep_fnode in added:
+                candidate_graph.setdefault(dep_fnode, [])
 
-            if suspicious_existing or suspicious_added:
-                self._loader.expand_from_root(root_fnode=node.fnode, depth=-1)
-                for dep_fnode in suspicious_added:
-                    dep_node = self._loader.load_node(
-                        dep_fnode,
-                        tolerate_missing=True,
-                        tolerate_invalid=True,
-                    )
-                    if dep_node is None:
-                        self.state.dep_graph.setdefault(dep_fnode, [])
-                        continue
-                    self.state.nodes_by_fnode[dep_fnode] = dep_node
-                    self._loader.expand_from_root(root_fnode=dep_fnode, depth=-1)
-
-                candidate_deps = self._dedupe_keep_order([*node.depens, *added])
-                candidate_graph = {
-                    fnode: list(dep_list) for fnode, dep_list in self.state.dep_graph.items()
-                }
-                candidate_graph[node.fnode] = candidate_deps
-                for dep_fnode in added:
-                    candidate_graph.setdefault(dep_fnode, [])
-
-                cycle = find_cycle(candidate_graph, root_fnode=node.fnode)
-                if cycle is not None:
-                    raise DependencyCycleError(cycle)
+            cycle = find_cycle(candidate_graph, root_fnode=node.fnode)
+            if cycle is not None:
+                raise DependencyCycleError(cycle)
 
             for dep_fnode in added:
                 node.add_dependency(dep_fnode)

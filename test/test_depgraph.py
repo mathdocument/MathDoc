@@ -604,8 +604,8 @@ class TestDepGraph(unittest.TestCase):
             reloaded.load()
             self.assertEqual(reloaded.depens, [])
 
-    def test_add_direct_dependencies_skips_full_graph_expand_when_cache_precheck_is_clean(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="depgraph_mutation_cached_precheck.") as tmp:
+    def test_add_direct_dependencies_rejects_cycle_when_cache_is_stale(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_mutation_stale_cache_cycle.") as tmp:
             root = Path(tmp)
             src = self._new_node(root, "Src", "natl", "src")
             src.save()
@@ -613,23 +613,25 @@ class TestDepGraph(unittest.TestCase):
             dep = self._new_node(root, "Dep", "natl", "dep")
             dep.save()
 
-            graph = DepGraph(mdcroot=root, root_fnode=src.fnode)
-            with mock.patch.object(
-                graph._loader,
-                "expand_from_root",
-                side_effect=AssertionError("acyclic add should not expand the full graph"),
-            ):
-                added, skipped_existing, skipped_self = graph.add_direct_dependencies(
-                    [dep.fnode]
-                )
+            leaf = self._new_node(root, "Leaf", "natl", "leaf")
+            leaf.save()
 
-            self.assertEqual(added, [dep.fnode])
-            self.assertEqual(skipped_existing, [])
-            self.assertEqual(skipped_self, [])
+            dep.add_dependency(leaf.fnode)
+            dep.save()
+
+            cache = IndCache(root)
+            cache.bootstrap_if_needed()
+
+            leaf.add_dependency(src.fnode)
+            leaf.save()
+
+            graph = DepGraph(mdcroot=root, root_fnode=src.fnode, cache=cache)
+            with self.assertRaises(DependencyCycleError):
+                graph.add_direct_dependencies([dep.fnode])
 
             reloaded = MdocNode(mdcroot=root, path=src.path, title="")
             reloaded.load()
-            self.assertEqual(reloaded.depens, [dep.fnode])
+            self.assertEqual(reloaded.depens, [])
 
     def test_scan_all_builds_global_graph(self) -> None:
         with tempfile.TemporaryDirectory(prefix="depgraph_scan_all.") as tmp:

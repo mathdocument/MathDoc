@@ -1074,6 +1074,31 @@ class TestMdcCli(unittest.TestCase):
             self.assertIn(f"<invalid> ({dep_rel})", show_run_text)
             self.assertIn("Warning: detected 1 broken dependency reference(s) (1 invalid)", show_run_text)
 
+    def test_dep_show_and_leaf_fail_on_invalid_source(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_source_invalid.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_bad = _run_cli(["new", "-t", "Broken Source", "-f", "."], repo)
+            self.assertEqual(new_bad.returncode, 0, new_bad.stdout + new_bad.stderr)
+            _, bad_path = _extract_created_mdoc(new_bad.stdout)
+
+            _make_mdoc_invalid(bad_path)
+
+            show_run = _run_cli(["dep", "show", "--refresh", bad_path], repo)
+            self.assertEqual(show_run.returncode, 1, show_run.stdout + show_run.stderr)
+            show_text = _compact_cli_output(show_run.stdout)
+            self.assertIn("failed to inspect dependencies", show_text)
+            self.assertIn("Duplicate '@title'", show_text)
+            self.assertNotIn("depens:", show_text)
+
+            leaf_run = _run_cli(["dep", "leaf", "--refresh", bad_path], repo)
+            self.assertEqual(leaf_run.returncode, 1, leaf_run.stdout + leaf_run.stderr)
+            leaf_text = _compact_cli_output(leaf_run.stdout)
+            self.assertIn("failed to inspect leaf dependencies", leaf_text)
+            self.assertIn("Duplicate '@title'", leaf_text)
+            self.assertNotIn("leaves:", leaf_text)
+
     def test_dep_rm_can_remove_invalid_dependency(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_rm_invalid.") as tmp:
             repo = Path(tmp)

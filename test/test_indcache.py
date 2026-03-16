@@ -385,6 +385,57 @@ class TestIndCache(unittest.TestCase):
             self.assertEqual(len(report.invalid), 1)
             self.assertEqual(report.invalid[0].fnode, "bad-node")
 
+    def test_dependency_reports_do_not_use_full_graph_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_indcache_targeted_dep_report.") as tmp:
+            root = Path(tmp)
+            (root / ".mdc").mkdir(parents=True, exist_ok=True)
+
+            (root / "leaf.mdoc").write_text(
+                "@fnode: leaf-node\n"
+                "@title: Leaf Card\n",
+                encoding="utf-8",
+            )
+            (root / "src.mdoc").write_text(
+                "@fnode: src-node\n"
+                "@title: Source Card\n"
+                "\n"
+                "@dep:\n"
+                "leaf-node\n"
+                "@end\n",
+                encoding="utf-8",
+            )
+            (root / "other.mdoc").write_text(
+                "@fnode: other-node\n"
+                "@title: Other Card\n",
+                encoding="utf-8",
+            )
+
+            cache = IndCache(root)
+            cache.refresh_all()
+
+            with (
+                mock.patch.object(
+                    cache,
+                    "_dep_graph_snapshot",
+                    side_effect=AssertionError("dependency report should not snapshot the whole graph"),
+                ),
+                mock.patch.object(
+                    cache,
+                    "_node_lookup",
+                    side_effect=AssertionError("dependency report should not load all nodes"),
+                ),
+                mock.patch.object(
+                    cache,
+                    "_issue_lookup",
+                    side_effect=AssertionError("dependency report should not load all issues"),
+                ),
+            ):
+                report = cache.dependency_report(root_fnode="src-node", depth=-1)
+                leaf_report = cache.leaf_dependency_report(root_fnode="src-node")
+
+            self.assertEqual([item.fnode for item in report.items], ["leaf-node"])
+            self.assertEqual([item.fnode for item in leaf_report.items], ["leaf-node"])
+
 
 if __name__ == "__main__":
     unittest.main()
