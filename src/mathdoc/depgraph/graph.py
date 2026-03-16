@@ -391,14 +391,18 @@ class DepGraph:
         on_start: Callable[[int, int, str], None] | None = None,
         on_result: Callable[[int, int, str, CompilerRes], None] | None = None,
     ) -> list[tuple[str, CompilerRes]]:
-        active_root = self._bind_root(root_node=root_node, root_fnode=root_fnode)
+        active_root = self._dependency_context(
+            depth=depth,
+            root_node=root_node,
+            root_fnode=root_fnode,
+        )
         root = self._loader.ensure_node_loaded(active_root)
         active_dep_items = dep_items
         if active_dep_items is None:
-            active_dep_items = self.dependency_items(
-                depth=depth,
-                root_node=root_node,
-                root_fnode=root_fnode,
+            active_dep_items = dependency_items_from_graph(
+                mdcroot=self.mdcroot,
+                state=self.state,
+                root_fnode=active_root,
             )
         return self._evaluator.eval_blocks(
             root_node=root,

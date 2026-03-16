@@ -112,18 +112,24 @@ Show forward dependencies of a mdoc:
 ```bash
 mdc dep show <source>
 mdc dep show <source> --depth -1
+mdc dep show <source> --refresh
 ```
 - `-d, --depth`: traversal depth, default is `1`, use `-1` for unlimited traversal
+- default mode reads the cached dependency graph
+- use `--refresh` or `mdc sync` after external file edits
 
 #### `mdc dep leaf`
 
 Show all reachable leaf dependencies of a mdoc:
 ```bash
 mdc dep leaf <source>
+mdc dep leaf <source> --refresh
 ```
 - traverses the full reachable dependency graph
 - only prints nodes that have no downstream dependencies
 - shared leaves are deduplicated
+- default mode reads the cached dependency graph
+- use `--refresh` or `mdc sync` after external file edits
 
 #### `mdc dep refs`
 
@@ -187,6 +193,8 @@ mdc eval <source>
 mdc eval <source> --depth -1
 ```
 - `-d, --depth`: dependency traversal depth, default is `1`, use `-1` for unlimited depth
+- dependency preflight uses the cached reachable graph with targeted refresh of currently reachable dependency rows
+- actual execution still loads the real reachable `.mdoc` files and block content from disk
 
 To modify the default compiling behavior of `mdc eval`, edit `.mdc/config.toml`. The default compiling configuration is
 ```toml

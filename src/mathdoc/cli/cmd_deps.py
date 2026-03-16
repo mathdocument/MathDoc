@@ -10,7 +10,6 @@ from .common import (
     prepare_cache_env,
     prompt_create_dependency_row,
     refresh_rows_or_warn,
-    render_dependency_report,
     resolve_ref_item,
     search_match_rows,
 )
@@ -275,8 +274,13 @@ def cmd_dep_rm(args: argparse.Namespace) -> int:
         for item in dep_items
     ]
     error_indices = {idx for idx, item in enumerate(dep_refs) if item.broken}
+    issues_by_fnode = {
+        item.fnode: issue
+        for item in dep_items
+        if (issue := graph.issue_for_fnode(item.fnode)) is not None
+    }
     broken_lines = UI.render_broken_dependency_warning_lines(
-        summary=broken_dependency_summary(dep_items, graph),
+        summary=broken_dependency_summary(dep_items, issues_by_fnode),
         for_eval=False,
     )
     if broken_lines:
@@ -382,6 +386,7 @@ def cmd_dep_refs(args: argparse.Namespace) -> int:
                 anchor=target_item,
                 count_label="refers",
                 items=ref_items,
+                broken_fnodes=set(),
             )
         )
     )

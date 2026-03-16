@@ -741,7 +741,7 @@ class TestMdcCli(unittest.TestCase):
             )
             self.assertIn("No results for: Show Dep Old", search_old_after_refresh.stdout)
 
-    def test_cmd_eval_reuses_precomputed_dependencies_without_refreshing_rows(self) -> None:
+    def test_cmd_eval_uses_cached_preflight_and_passes_precomputed_dependencies(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_eval_preflight_once.") as tmp:
             repo = Path(tmp)
             self.assertEqual(_run_cli(["init"], repo).returncode, 0)
@@ -768,10 +768,18 @@ class TestMdcCli(unittest.TestCase):
                 _Pushd(repo),
                 mock.patch.object(
                     IndCache,
-                    "refresh_rows",
+                    "refresh_all",
                     autospec=True,
                     side_effect=AssertionError(
-                        "refresh_rows should not run during eval preflight"
+                        "cmd_eval should not force a full workspace refresh"
+                    ),
+                ),
+                mock.patch.object(
+                    DepGraph,
+                    "dependency_items",
+                    autospec=True,
+                    side_effect=AssertionError(
+                        "cmd_eval should use cached dependency reports for preflight"
                     ),
                 ),
                 mock.patch.object(

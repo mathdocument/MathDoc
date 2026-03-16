@@ -172,6 +172,37 @@ class TestDepGraph(unittest.TestCase):
             self.assertTrue(block_results[0][1].result)
             self.assertEqual(block_results[0][1].stdout, "hello")
 
+    def test_eval_blocks_with_precomputed_items_still_loads_dependency_graph(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_eval_precomputed_merge.") as tmp:
+            root = Path(tmp)
+            dep = self._new_node(root, "Dep", "natl", "dep")
+            dep.save()
+
+            src = self._new_node(root, "Src", "natl", "src")
+            src.add_dependency(dep.fnode)
+            src.save()
+
+            graph = DepGraph(mdcroot=root, root_fnode=src.fnode)
+            graph.dependency_items = lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("dependency_items should not be called")
+            )
+
+            block_results = graph.eval_blocks(
+                dep_items=[
+                    DependencyItem(
+                        depth=1,
+                        fnode=dep.fnode,
+                        title=dep.title,
+                        rel_path=dep.path.resolve().relative_to(root.resolve()).as_posix(),
+                    )
+                ]
+            )
+
+            self.assertEqual(len(block_results), 1)
+            self.assertEqual(block_results[0][0], "natl")
+            self.assertTrue(block_results[0][1].result)
+            self.assertEqual(block_results[0][1].stdout, "src\n\ndep")
+
     def test_eval_blocks_streams_plan_progress_and_results_in_order(self) -> None:
         class ProgressCompiler(SrcCompiler):
             @property

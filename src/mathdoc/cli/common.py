@@ -1,22 +1,16 @@
-from collections.abc import Callable
 import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
-from ..depgraph import DepGraph, DependencyItem
+from ..depgraph import DepGraph
 from ..depgraph.models import DependencyTraversalReport
-from ..depgraph.exceptions import DependencyCycleError
 from ..indcache import IndCache
 from ..ui import BrokenDependencySummary, NodeRef, TerminalUI, prompt_new_mdoc_interactive
 from ..ui.theme import short_fnode
 from ..utils import find_mdcroot, to_rel_path
 from .presenters import (
-    broken_dependency_summary_from_report,
     broken_dependency_summary,
-    chain_view_from_report,
     chain_view,
-    cycle_view,
-    missing_referrer_views_from_report,
     missing_referrer_views,
     node_ref_from_item,
 )
@@ -109,62 +103,6 @@ def refresh_rows_or_warn(
         UI.warn_index_failure(action, exc)
 
 
-def render_dependency_report(
-    *,
-    graph: DepGraph,
-    source_item: NodeRef,
-    count_label: str,
-    inspect_error_message: str,
-    load_items: Callable[[], list[DependencyItem]],
-    for_eval: bool,
-    show_missing_referrers: bool,
-) -> tuple[list[DependencyItem], BrokenDependencySummary] | None:
-    try:
-        items = load_items()
-    except DependencyCycleError as exc:
-        UI.write_lines(
-            UI.render_cycle_lines(cycle_view(exc.cycle, graph=graph))
-        )
-        return None
-    except ValueError as exc:
-        UI.write_lines(
-            UI.render_anchor_error_lines(
-                label="source",
-                item=source_item,
-                message=f"{inspect_error_message}: {exc}",
-            )
-        )
-        return None
-
-    UI.write_lines(
-        UI.render_chain_lines(
-            chain_view(
-                anchor_label="source",
-                anchor=source_item,
-                count_label=count_label,
-                items=items,
-                graph=graph,
-            )
-        )
-    )
-    if show_missing_referrers:
-        missing_lines = UI.render_missing_referrer_lines(
-            missing_referrer_views(items, graph)
-        )
-        if missing_lines:
-            UI.write_lines(missing_lines)
-
-    summary = broken_dependency_summary(items, graph)
-    if summary.total > 0:
-        UI.write_lines(
-            UI.render_broken_dependency_warning_lines(
-                summary=summary,
-                for_eval=for_eval,
-            )
-        )
-    return items, summary
-
-
 def emit_dependency_report(
     *,
     source_item: NodeRef,
@@ -175,22 +113,28 @@ def emit_dependency_report(
 ) -> BrokenDependencySummary:
     UI.write_lines(
         UI.render_chain_lines(
-            chain_view_from_report(
+            chain_view(
                 anchor_label="source",
                 anchor=source_item,
                 count_label=count_label,
-                report=report,
+                items=report.items,
+                broken_fnodes=set(report.issues_by_fnode),
             )
         )
     )
     if show_missing_referrers:
         missing_lines = UI.render_missing_referrer_lines(
-            missing_referrer_views_from_report(report, anchor=source_item)
+            missing_referrer_views(
+                dep_items=report.items,
+                dep_graph=report.dep_graph,
+                issues_by_fnode=report.issues_by_fnode,
+                anchor=source_item,
+            )
         )
         if missing_lines:
             UI.write_lines(missing_lines)
 
-    summary = broken_dependency_summary_from_report(report)
+    summary = broken_dependency_summary(report.items, report.issues_by_fnode)
     if summary.total > 0:
         UI.write_lines(
             UI.render_broken_dependency_warning_lines(
