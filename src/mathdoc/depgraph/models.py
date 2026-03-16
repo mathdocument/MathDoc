@@ -15,6 +15,7 @@ class GraphRootItem:
     title: str
     rel_path: str
     component_size: int
+    broken: bool = False
 
 
 @dataclass(slots=True, frozen=True)

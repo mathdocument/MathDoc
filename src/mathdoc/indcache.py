@@ -313,6 +313,7 @@ class IndCache:
                         title=title,
                         rel_path=path,
                         component_size=component_sizes.get(fnode, 1),
+                        broken=False,
                     )
                 )
 
@@ -327,6 +328,7 @@ class IndCache:
                         title=issue.title,
                         rel_path=issue.rel_path,
                         component_size=component_sizes.get(issue.fnode, 1),
+                        broken=True,
                     )
                 )
 

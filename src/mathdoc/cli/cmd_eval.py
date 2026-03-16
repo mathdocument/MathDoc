@@ -74,7 +74,9 @@ def cmd_eval(args: argparse.Namespace) -> int:
             on_result=_on_eval_result,
         )
     except DependencyCycleError as exc:
-        UI.write_lines(UI.render_cycle_lines(cycle_view(graph, exc.cycle)))
+        UI.write_lines(
+            UI.render_cycle_lines(cycle_view(exc.cycle, graph=graph))
+        )
         return 1
     except ValueError as exc:
         UI.error(f"failed to eval mdoc: {exc}")

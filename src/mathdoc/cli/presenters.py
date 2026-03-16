@@ -73,33 +73,61 @@ def issue_view(issue: GraphIssue) -> IssueView:
     )
 
 
-def cycle_view(graph: DepGraph, cycle: list[str]) -> CycleView:
+def cycle_view(
+    cycle: list[str],
+    *,
+    graph: DepGraph | None = None,
+    ref_rows_by_fnode: dict[str, tuple[str, str]] | None = None,
+) -> CycleView:
     cycle_nodes = cycle[:-1] if len(cycle) > 1 else cycle
-    return CycleView(
-        nodes=tuple(
-            node_ref_from_item(
-                graph.ref_item_for_fnode(fnode),
-                broken=graph.is_broken_fnode(fnode),
+    nodes: list[NodeRef] = []
+    for fnode in cycle_nodes:
+        if graph is not None:
+            nodes.append(
+                node_ref_from_item(
+                    graph.ref_item_for_fnode(fnode),
+                    broken=graph.is_broken_fnode(fnode),
+                )
             )
-            for fnode in cycle_nodes
+            continue
+
+        title, rel_path = ("<missing>", "<unknown>")
+        if ref_rows_by_fnode is not None:
+            title, rel_path = ref_rows_by_fnode.get(fnode, (title, rel_path))
+        nodes.append(
+            node_ref(
+                fnode=fnode,
+                title=title,
+                rel_path=rel_path,
+            )
         )
-    )
+
+    return CycleView(nodes=tuple(nodes))
 
 
-def graph_check_view(graph: DepGraph, report: GraphCheckReport) -> GraphCheckView:
+def graph_check_view(
+    report: GraphCheckReport,
+    *,
+    graph: DepGraph | None = None,
+    cycle_rows_by_fnode: dict[str, tuple[str, str]] | None = None,
+) -> GraphCheckView:
     return GraphCheckView(
         nodes=report.nodes,
         edges=report.edges,
         missing=tuple(issue_view(issue) for issue in report.missing),
         invalid=tuple(issue_view(issue) for issue in report.invalid),
-        cycles=tuple(cycle_view(graph, cycle) for cycle in report.cycles),
+        cycles=tuple(
+            cycle_view(
+                cycle,
+                graph=graph,
+                ref_rows_by_fnode=cycle_rows_by_fnode,
+            )
+            for cycle in report.cycles
+        ),
     )
 
 
-def graph_roots_view(
-    graph: DepGraph,
-    items: list[GraphRootItem],
-) -> GraphRootsView:
+def graph_roots_view(items: list[GraphRootItem]) -> GraphRootsView:
     return GraphRootsView(
         roots=tuple(
             GraphRootEntryView(
@@ -107,7 +135,7 @@ def graph_roots_view(
                     fnode=item.fnode,
                     title=item.title,
                     rel_path=item.rel_path,
-                    broken=graph.issue_for_fnode(item.fnode) is not None,
+                    broken=item.broken,
                 ),
                 component_size=item.component_size,
             )
@@ -122,7 +150,7 @@ def chain_view(
     anchor: NodeRef,
     count_label: str,
     items: list[DependencyItem],
-    graph: DepGraph,
+    graph: DepGraph | None = None,
 ) -> ChainView:
     return ChainView(
         anchor_label=anchor_label,
@@ -131,7 +159,7 @@ def chain_view(
         items=tuple(
             node_ref_from_item(
                 item,
-                broken=graph.is_broken_fnode(item.fnode),
+                broken=graph.is_broken_fnode(item.fnode) if graph is not None else False,
             )
             for item in items
         ),

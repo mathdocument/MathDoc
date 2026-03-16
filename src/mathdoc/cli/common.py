@@ -91,33 +91,6 @@ def load_source_graph(
     )
 
 
-def load_target_graph(
-    *,
-    target: str,
-    action: str,
-    resolve_error_prefix: str = "failed to resolve mdoc",
-) -> tuple[Path, IndCache, DepGraph, NodeRef] | None:
-    env = prepare_cache_env(action=action)
-    if env is None:
-        return None
-    mdcroot, cache = env
-    try:
-        target_item = resolve_ref_item(cache, target)
-    except (ValueError, sqlite3.Error) as exc:
-        UI.error(f"{resolve_error_prefix}: {exc}")
-        return None
-    return (
-        mdcroot,
-        cache,
-        DepGraph(
-            mdcroot=mdcroot,
-            root_fnode=target_item.fnode,
-            cache=cache,
-        ),
-        target_item,
-    )
-
-
 def refresh_rows_or_warn(
     cache: IndCache,
     rows: list[tuple[str, str, str]],
@@ -147,7 +120,9 @@ def render_dependency_report(
     try:
         items = load_items()
     except DependencyCycleError as exc:
-        UI.write_lines(UI.render_cycle_lines(cycle_view(graph, exc.cycle)))
+        UI.write_lines(
+            UI.render_cycle_lines(cycle_view(exc.cycle, graph=graph))
+        )
         return None
     except ValueError as exc:
         UI.write_lines(

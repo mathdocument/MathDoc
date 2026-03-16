@@ -6,10 +6,11 @@ from ..ui import DepAddView, DepRmView, NodeRef, select_indices_interactive
 from .common import (
     UI,
     load_source_graph,
-    load_target_graph,
+    prepare_cache_env,
     prompt_create_dependency_row,
     refresh_rows_or_warn,
     render_dependency_report,
+    resolve_ref_item,
     search_match_rows,
 )
 from .presenters import (
@@ -106,7 +107,9 @@ def cmd_dep_add(args: argparse.Namespace) -> int:
     try:
         added, _, _ = graph.add_direct_dependencies(list(selected_by_fnode))
     except DependencyCycleError as exc:
-        UI.write_lines(UI.render_cycle_lines(cycle_view(graph, exc.cycle)))
+        UI.write_lines(
+            UI.render_cycle_lines(cycle_view(exc.cycle, graph=graph))
+        )
         return 1
     except OSError as exc:
         UI.error(f"failed to save mdoc: {exc}")
@@ -289,30 +292,25 @@ def cmd_dep_rm(args: argparse.Namespace) -> int:
 
 
 def cmd_dep_refs(args: argparse.Namespace) -> int:
-    env = load_target_graph(
-        target=args.target,
-        action="prepare dependency index",
-    )
+    env = prepare_cache_env(action="prepare dependency index")
     if env is None:
         return 1
-    _, cache, graph, target_item = env
+    _, cache = env
 
     try:
+        target_item = resolve_ref_item(cache, args.target)
         if args.refresh:
             cache.refresh_all()
-            env = load_target_graph(
-                target=args.target,
-                action="prepare dependency index",
-            )
-            if env is None:
-                return 1
-            _, cache, graph, target_item = env
-        ref_items = graph.referrer_items(depth=args.depth)
+            target_item = resolve_ref_item(cache, args.target)
+        ref_items = cache.referrer_items(
+            target_fnode=target_item.fnode,
+            depth=args.depth,
+        )
     except (OSError, ValueError, sqlite3.Error) as exc:
         UI.error(f"failed to inspect referrers: {exc}")
         return 1
 
-    broken_target = graph.issue_for_fnode(target_item.fnode)
+    broken_target = cache.issue_for_fnode(target_item.fnode)
     if broken_target is not None:
         target_item = node_ref(
             fnode=broken_target.fnode,
@@ -328,7 +326,6 @@ def cmd_dep_refs(args: argparse.Namespace) -> int:
                 anchor=target_item,
                 count_label="refers",
                 items=ref_items,
-                graph=graph,
             )
         )
     )
