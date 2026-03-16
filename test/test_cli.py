@@ -1004,6 +1004,88 @@ class TestMdcCli(unittest.TestCase):
             self.assertIn(b_fnode[:8], check_run_text)
             self.assertIn(bad_fnode[:8], check_run_text)
 
+    def test_graph_roots_lists_unreferenced_valid_and_invalid_nodes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_graph_roots.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_root = _run_cli(["new", "-t", "Alpha Root", "-f", "."], repo)
+            self.assertEqual(new_root.returncode, 0, new_root.stdout + new_root.stderr)
+            root_fnode, root_path = _extract_created_mdoc(new_root.stdout)
+
+            new_leaf = _run_cli(["new", "-t", "Shared Leaf", "-f", "."], repo)
+            self.assertEqual(new_leaf.returncode, 0, new_leaf.stdout + new_leaf.stderr)
+            leaf_fnode, leaf_path = _extract_created_mdoc(new_leaf.stdout)
+
+            new_other = _run_cli(["new", "-t", "Beta Root", "-f", "."], repo)
+            self.assertEqual(new_other.returncode, 0, new_other.stdout + new_other.stderr)
+            other_fnode, _ = _extract_created_mdoc(new_other.stdout)
+
+            new_bad_root = _run_cli(["new", "-t", "Broken Root", "-f", "."], repo)
+            self.assertEqual(
+                new_bad_root.returncode, 0, new_bad_root.stdout + new_bad_root.stderr
+            )
+            bad_root_fnode, bad_root_path = _extract_created_mdoc(new_bad_root.stdout)
+            bad_root_rel = str(Path(bad_root_path).relative_to(repo.resolve())).replace(
+                "\\", "/"
+            )
+
+            new_bad_dep = _run_cli(["new", "-t", "Broken Dep", "-f", "."], repo)
+            self.assertEqual(
+                new_bad_dep.returncode, 0, new_bad_dep.stdout + new_bad_dep.stderr
+            )
+            bad_dep_fnode, bad_dep_path = _extract_created_mdoc(new_bad_dep.stdout)
+            bad_dep_rel = str(Path(bad_dep_path).relative_to(repo.resolve())).replace(
+                "\\", "/"
+            )
+
+            rc_add_leaf, out_add_leaf = _run_cli_tty(
+                ["dep", "add", root_path, "Shared Leaf"], repo, b" \r"
+            )
+            self.assertEqual(rc_add_leaf, 0, out_add_leaf)
+
+            rc_add_bad, out_add_bad = _run_cli_tty(
+                ["dep", "add", root_path, "Broken Dep"], repo, b" \r"
+            )
+            self.assertEqual(rc_add_bad, 0, out_add_bad)
+
+            _make_mdoc_invalid(bad_root_path)
+            _make_mdoc_invalid(bad_dep_path)
+
+            src_text = Path(root_path).read_text(encoding="utf-8")
+            Path(root_path).write_text(
+                src_text.replace("@end", "missing-target-001\n@end", 1),
+                encoding="utf-8",
+            )
+
+            roots_run = _run_cli(["graph", "roots"], repo)
+            self.assertEqual(roots_run.returncode, 0, roots_run.stdout + roots_run.stderr)
+            roots_text = _compact_cli_output(roots_run.stdout)
+            root_lines = [
+                line for line in _nonempty_cli_lines(roots_run.stdout) if line.startswith("[")
+            ]
+            self.assertIn("roots: 3", roots_text)
+            self.assertTrue(root_lines, roots_text)
+            self.assertRegex(
+                root_lines[0],
+                rf"\[3\] - {re.escape(root_fnode[:8])} Alpha Root .*",
+            )
+            self.assertRegex(
+                roots_text,
+                rf"\[3\] - {re.escape(root_fnode[:8])} Alpha Root .*",
+            )
+            self.assertRegex(
+                roots_text,
+                rf"\[1\] - {re.escape(other_fnode[:8])} Beta Root .*",
+            )
+            self.assertRegex(
+                roots_text,
+                rf"\[1\] - {re.escape(bad_root_fnode[:8])} <invalid> .*{re.escape(bad_root_rel)}.*",
+            )
+            self.assertNotIn(f"{leaf_fnode[:8]} Shared Leaf", roots_text)
+            self.assertNotIn(f"{bad_dep_fnode[:8]} <invalid> ({bad_dep_rel})", roots_text)
+            self.assertNotIn("missing-target-001", roots_text)
+
     def test_dep_refs_reports_reverse_dependencies(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_refs.") as tmp:
             repo = Path(tmp)

@@ -10,6 +10,8 @@ from .models import DepRmView
 from .models import EvalBlockView
 from .models import EvalReportView
 from .models import GraphCheckView
+from .models import GraphRootEntryView
+from .models import GraphRootsView
 from .models import IssueView
 from .models import MissingReferrerView
 from .models import NodeRef
@@ -25,6 +27,8 @@ __all__ = [
     "EvalBlockView",
     "EvalReportView",
     "GraphCheckView",
+    "GraphRootEntryView",
+    "GraphRootsView",
     "IssueView",
     "MissingReferrerView",
     "NodeRef",

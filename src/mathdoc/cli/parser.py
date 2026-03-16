@@ -9,7 +9,7 @@ from .cmd_deps import (
     cmd_dep_show,
 )
 from .cmd_eval import cmd_eval
-from .cmd_graph import cmd_graph_check
+from .cmd_graph import cmd_graph_check, cmd_graph_roots
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -69,6 +69,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Scan the whole repo and report graph issues",
     )
     graph_check_parser.set_defaults(func=cmd_graph_check)
+
+    graph_roots_parser = graph_subparsers.add_parser(
+        "roots",
+        help="List all global root nodes with no incoming dependencies",
+    )
+    graph_roots_parser.set_defaults(func=cmd_graph_roots)
 
     eval_parser = subparsers.add_parser(
         "eval", help="Compile and run all blocks in a mdoc"

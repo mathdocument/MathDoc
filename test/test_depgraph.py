@@ -601,6 +601,60 @@ class TestDepGraph(unittest.TestCase):
                 ],
             )
 
+    def test_global_root_items_include_unreferenced_valid_and_invalid_nodes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_global_roots.") as tmp:
+            root = Path(tmp)
+
+            leaf = self._new_node(root, "Leaf", "natl", "leaf")
+            leaf.save()
+
+            root_valid = self._new_node(root, "Root Valid", "natl", "root_valid")
+            root_valid.add_dependency(leaf.fnode)
+            root_valid.add_dependency("missing-target-001")
+            root_valid.save()
+
+            other_root = self._new_node(root, "Other Root", "natl", "other_root")
+            other_root.save()
+
+            bad_root = self._new_node(root, "Broken Root", "natl", "bad_root")
+            bad_root.save()
+            self._make_invalid(bad_root.path)
+
+            bad_dep = self._new_node(root, "Broken Dep", "natl", "bad_dep")
+            bad_dep.save()
+            root_valid.add_dependency(bad_dep.fnode)
+            root_valid.save()
+            self._make_invalid(bad_dep.path)
+
+            graph = DepGraph(mdcroot=root)
+            items = graph.global_root_items()
+
+            self.assertEqual(items[0].fnode, root_valid.fnode)
+            item_by_fnode = {item.fnode: item for item in items}
+            self.assertEqual(
+                item_by_fnode[root_valid.fnode].title,
+                "Root Valid",
+            )
+            self.assertEqual(
+                item_by_fnode[root_valid.fnode].rel_path,
+                root_valid.path.resolve().relative_to(root.resolve()).as_posix(),
+            )
+            self.assertEqual(item_by_fnode[root_valid.fnode].component_size, 3)
+            self.assertEqual(
+                item_by_fnode[other_root.fnode].title,
+                "Other Root",
+            )
+            self.assertEqual(item_by_fnode[other_root.fnode].component_size, 1)
+            self.assertEqual(
+                item_by_fnode[bad_root.fnode].rel_path,
+                bad_root.path.resolve().relative_to(root.resolve()).as_posix(),
+            )
+            self.assertEqual(item_by_fnode[bad_root.fnode].title, "<invalid>")
+            self.assertEqual(item_by_fnode[bad_root.fnode].component_size, 1)
+            self.assertNotIn(leaf.fnode, item_by_fnode)
+            self.assertNotIn(bad_dep.fnode, item_by_fnode)
+            self.assertNotIn("missing-target-001", item_by_fnode)
+
     def test_dependency_items_show_invalid_placeholder(self) -> None:
         with tempfile.TemporaryDirectory(prefix="depgraph_invalid_placeholder.") as tmp:
             root = Path(tmp)

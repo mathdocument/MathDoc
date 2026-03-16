@@ -147,6 +147,18 @@ This scan reports:
 - invalid `.mdoc` files
 - dependency cycles
 
+#### `mdc graph roots`
+
+Show all global root nodes that are not depended on by any other node:
+```bash
+mdc graph roots
+```
+This scan reports:
+- includes valid nodes and invalid files that currently have no incoming dependencies
+- excludes missing dependency placeholders
+- shows each root's weakly connected component size, excluding missing placeholders
+- sorts roots by component size descending
+
 
 ### Evaluation Commands
 

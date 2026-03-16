@@ -6,12 +6,14 @@ from .models import (
     GraphIssue,
     GraphCheckReport,
     DependencyItem,
+    GraphRootItem,
 )
 
 __all__ = [
     "DependencyCycleError",
     "DepGraph",
     "DependencyItem",
+    "GraphRootItem",
     "GraphCheckReport",
     "GraphIssue",
 ]

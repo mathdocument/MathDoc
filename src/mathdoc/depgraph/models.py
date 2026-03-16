@@ -10,6 +10,14 @@ class DependencyItem:
 
 
 @dataclass(slots=True, frozen=True)
+class GraphRootItem:
+    fnode: str
+    title: str
+    rel_path: str
+    component_size: int
+
+
+@dataclass(slots=True, frozen=True)
 class GraphIssue:
     kind: str
     fnode: str

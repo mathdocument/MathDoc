@@ -16,6 +16,8 @@ from mathdoc.ui import DepRmView
 from mathdoc.ui import EvalBlockView
 from mathdoc.ui import EvalReportView
 from mathdoc.ui import GraphCheckView
+from mathdoc.ui import GraphRootEntryView
+from mathdoc.ui import GraphRootsView
 from mathdoc.ui import IssueView
 from mathdoc.ui import MissingReferrerView
 from mathdoc.ui import NodeRef
@@ -439,6 +441,7 @@ def preview_terminal_ui() -> int:
             )
         )
     )
+
     _case("graph with missing, invalid, and cycle sections")
     _show_lines(
         ui.render_graph_check_lines(
@@ -462,6 +465,25 @@ def preview_terminal_ui() -> int:
                         nodes=(refs["cycle_a"], refs["cycle_b"], refs["cycle_c"])
                     ),
                 ),
+            )
+        )
+    )
+
+    _section(
+        "render_graph_roots_lines",
+        "Shown by `mdc graph roots` for the set of globally unreferenced valid/invalid nodes.",
+    )
+    covered.add("render_graph_roots_lines")
+    _case("no roots")
+    _show_lines(ui.render_graph_roots_lines(GraphRootsView()))
+    _case("mixed valid and invalid roots")
+    _show_lines(
+        ui.render_graph_roots_lines(
+            GraphRootsView(
+                roots=(
+                    GraphRootEntryView(ref=refs["source"], component_size=3),
+                    GraphRootEntryView(ref=refs["invalid"], component_size=1),
+                )
             )
         )
     )

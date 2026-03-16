@@ -7,9 +7,10 @@ from .evaluate import GraphEvaluator
 from .exceptions import DependencyCycleError
 from .issues import is_broken_fnode, issue_for_fnode, dependency_item_for_fnode
 from .loading import GraphLoader, create_root_node, load_root_node_from_ref
-from .models import DependencyItem, GraphCheckReport, GraphIssue
+from .models import DependencyItem, GraphCheckReport, GraphIssue, GraphRootItem
 from .query import (
     dependency_items_from_graph,
+    global_root_items_from_graph,
     leaf_items_from_graph,
     referrer_items_from_graph,
 )
@@ -301,6 +302,13 @@ class DepGraph:
     def graph_check_report(self) -> GraphCheckReport:
         self.scan_all()
         return self._reporter.graph_check_report()
+
+    def global_root_items(self) -> list[GraphRootItem]:
+        self.scan_all()
+        return global_root_items_from_graph(
+            mdcroot=self.mdcroot,
+            state=self.state,
+        )
 
     def dependency_items(
         self,

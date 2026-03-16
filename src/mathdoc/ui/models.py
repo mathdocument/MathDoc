@@ -67,6 +67,17 @@ class GraphCheckView:
 
 
 @dataclass(slots=True, frozen=True)
+class GraphRootEntryView:
+    ref: NodeRef
+    component_size: int
+
+
+@dataclass(slots=True, frozen=True)
+class GraphRootsView:
+    roots: tuple[GraphRootEntryView, ...] = field(default_factory=tuple)
+
+
+@dataclass(slots=True, frozen=True)
 class EvalBlockView:
     index: int
     total: int

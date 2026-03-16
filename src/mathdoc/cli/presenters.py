@@ -1,4 +1,4 @@
-from ..depgraph import DependencyItem, GraphCheckReport, GraphIssue
+from ..depgraph import DependencyItem, GraphCheckReport, GraphIssue, GraphRootItem
 from ..depgraph.graph import DepGraph
 from ..ui import (
     BrokenDependencySummary,
@@ -6,6 +6,8 @@ from ..ui import (
     CycleView,
     EvalBlockView,
     GraphCheckView,
+    GraphRootEntryView,
+    GraphRootsView,
     IssueView,
     MissingReferrerView,
     NodeRef,
@@ -91,6 +93,34 @@ def graph_check_view(graph: DepGraph, report: GraphCheckReport) -> GraphCheckVie
         missing=tuple(issue_view(issue) for issue in report.missing),
         invalid=tuple(issue_view(issue) for issue in report.invalid),
         cycles=tuple(cycle_view(graph, cycle) for cycle in report.cycles),
+    )
+
+
+def graph_roots_view(
+    graph: DepGraph,
+    items: list[GraphRootItem],
+) -> GraphRootsView:
+    invalid_paths = {
+        (issue.fnode, issue.rel_path)
+        for issue in graph.invalid_file_issues
+        if issue.kind == "invalid"
+    }
+    return GraphRootsView(
+        roots=tuple(
+            GraphRootEntryView(
+                ref=node_ref(
+                    fnode=item.fnode,
+                    title=item.title,
+                    rel_path=item.rel_path,
+                    broken=(
+                        graph.issue_for_fnode(item.fnode) is not None
+                        or (item.fnode, item.rel_path) in invalid_paths
+                    ),
+                ),
+                component_size=item.component_size,
+            )
+            for item in items
+        )
     )
 
 

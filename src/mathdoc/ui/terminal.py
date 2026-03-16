@@ -3,6 +3,7 @@ from .models import (
     NodeRef,
     IssueView,
     GraphCheckView,
+    GraphRootsView,
     EvalReportView,
     EvalBlockView,
     DepRmView,
@@ -375,6 +376,29 @@ class TerminalUI:
                 for cycle_line in cycle_lines[1:]:
                     lines.append(f"    {cycle_line}")
 
+        return lines
+
+    def render_graph_roots_lines(self, report: GraphRootsView) -> list[str]:
+        width = _label_width("roots")
+        indent = " " * (width + 1)
+        lines = [
+            self._metric(
+                "roots",
+                len(report.roots),
+                "unreferenced node(s)",
+                width=width,
+                tone=STYLE["blu"],
+            )
+        ]
+        for root in report.roots:
+            root_ref = NodeRef(
+                fnode=root.ref.fnode,
+                title=root.ref.title,
+                rel_path=root.ref.rel_path,
+                depth=root.component_size,
+                broken=root.ref.broken,
+            )
+            lines.append(f"{indent}{self.format_node_ref(root_ref, include_depth=True)}")
         return lines
 
     def render_eval_results_lines(self, report: EvalReportView) -> list[str]:
