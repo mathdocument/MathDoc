@@ -12,14 +12,12 @@ def cmd_eval(args: argparse.Namespace) -> int:
     )
     if env is None:
         return 1
-    _, cache, graph, source_item = env
+    _, _, graph, source_item = env
 
     report = render_dependency_report(
-        cache=cache,
         graph=graph,
         source_item=source_item,
         count_label="depens",
-        refresh_action="dependencies were inspected",
         inspect_error_message="failed to inspect dependencies",
         load_items=lambda: graph.dependency_items(depth=args.depth),
         for_eval=True,
@@ -27,7 +25,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
     )
     if report is None:
         return 1
-    _, broken_summary = report
+    dep_items, broken_summary = report
 
     if broken_summary.total > 0:
         return 1
@@ -69,6 +67,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
     try:
         graph.eval_blocks(
             depth=args.depth,
+            dep_items=dep_items,
             progress=UI.info,
             on_start=_on_eval_start,
             on_result=_on_eval_result,

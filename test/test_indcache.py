@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest import mock
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -147,6 +148,72 @@ class TestIndCache(unittest.TestCase):
                 ).fetchone()
             self.assertIsNotNone(row)
             self.assertGreater(int(row[0]), 0)
+
+    def test_schema_version_pragma_follows_constant(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_indcache_schema_version.") as tmp:
+            root = Path(tmp)
+            (root / ".mdc").mkdir(parents=True, exist_ok=True)
+            (root / "card.mdoc").write_text(
+                "@fnode: node-version\n"
+                "@title: Version Check\n",
+                encoding="utf-8",
+            )
+
+            original_version = IndCache.SCHEMA_VERSION
+            try:
+                IndCache.SCHEMA_VERSION = 7
+                cache = IndCache(root)
+                cache.refresh_all()
+            finally:
+                IndCache.SCHEMA_VERSION = original_version
+
+            with closing(sqlite3.connect(root / ".mdc" / "index.db")) as conn:
+                row = conn.execute("PRAGMA user_version").fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(int(row[0]), 7)
+
+    def test_bootstrap_stabilizes_empty_repo(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_indcache_bootstrap_empty.") as tmp:
+            root = Path(tmp)
+            (root / ".mdc").mkdir(parents=True, exist_ok=True)
+
+            cache = IndCache(root)
+            cache.refresh_all()
+
+            with cache._open_conn() as conn:
+                self.assertFalse(cache._bootstrap_required(conn))
+
+            with mock.patch.object(
+                cache,
+                "_refresh_search_index",
+                side_effect=AssertionError("bootstrap should already be stable"),
+            ):
+                cache.bootstrap_if_needed()
+
+    def test_bootstrap_stabilizes_invalid_only_repo(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_indcache_bootstrap_invalid.") as tmp:
+            root = Path(tmp)
+            (root / ".mdc").mkdir(parents=True, exist_ok=True)
+            (root / "broken.mdoc").write_text(
+                "@title: Broken Only\n",
+                encoding="utf-8",
+            )
+
+            cache = IndCache(root)
+            cache.refresh_all()
+
+            self.assertEqual(cache.indexed_file_count(), 1)
+            self.assertEqual(cache.count(), 0)
+
+            with cache._open_conn() as conn:
+                self.assertFalse(cache._bootstrap_required(conn))
+
+            with mock.patch.object(
+                cache,
+                "_refresh_search_index",
+                side_effect=AssertionError("bootstrap should already be stable"),
+            ):
+                cache.bootstrap_if_needed()
 
     def test_cache_operations_close_sqlite_connections(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_indcache_close.") as tmp:

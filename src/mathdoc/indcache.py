@@ -8,7 +8,7 @@ from .utils import find_nested_mdcroot, iter_workspace_mdoc_files
 
 
 class IndCache:
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
@@ -278,6 +278,25 @@ class IndCache:
                     queue.append((ref_fnode, item_depth + 1))
 
         return items
+
+    def referrer_fnodes(self, *, target_fnode: str) -> set[str]:
+        with self._open_conn() as conn:
+            reverse_graph = self._reverse_graph_snapshot(conn)
+            seen: set[str] = {target_fnode}
+            referrers: set[str] = set()
+            queue: deque[str] = deque(reverse_graph.get(target_fnode, []))
+
+            while queue:
+                fnode = queue.popleft()
+                if fnode in seen:
+                    continue
+                seen.add(fnode)
+                referrers.add(fnode)
+                for ref_fnode in reverse_graph.get(fnode, []):
+                    if ref_fnode != target_fnode:
+                        queue.append(ref_fnode)
+
+        return referrers
 
     def global_root_items(self):
         from .depgraph.models import GraphRootItem
@@ -685,10 +704,11 @@ class IndCache:
         IndCache._create_file_state_table(conn)
         IndCache._create_edge_table(conn)
         IndCache._create_issue_table(conn)
+        IndCache._create_index_state_table(conn)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mdocs_title_lc ON mdocs(title_lc)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mdocs_fnode ON mdocs(fnode)")
         if user_version < IndCache.SCHEMA_VERSION:
-            conn.execute("PRAGMA user_version = 2")
+            conn.execute(f"PRAGMA user_version = {IndCache.SCHEMA_VERSION}")
 
     @staticmethod
     def _create_index_table(conn: sqlite3.Connection) -> None:
@@ -759,6 +779,23 @@ class IndCache:
             "CREATE INDEX IF NOT EXISTS idx_mdoc_issues_ref_fnode ON mdoc_issues(ref_fnode)"
         )
 
+    @staticmethod
+    def _create_index_state_table(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mdoc_index_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                bootstrapped INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO mdoc_index_state (id, bootstrapped)
+            VALUES (1, 0)
+            """
+        )
+
     def _iter_mdoc_files(self) -> Iterator[Path]:
         yield from iter_workspace_mdoc_files(self.root)
 
@@ -785,16 +822,11 @@ class IndCache:
         return fnode, title
 
     @staticmethod
-    def _index_is_empty(conn: sqlite3.Connection) -> bool:
-        row = conn.execute("SELECT 1 FROM mdocs LIMIT 1").fetchone()
-        return row is None
-
-    @staticmethod
     def _bootstrap_required(conn: sqlite3.Connection) -> bool:
-        if IndCache._index_is_empty(conn):
-            return True
-        row = conn.execute("SELECT 1 FROM mdoc_files LIMIT 1").fetchone()
-        return row is None
+        row = conn.execute(
+            "SELECT bootstrapped FROM mdoc_index_state WHERE id = 1"
+        ).fetchone()
+        return row is None or int(row[0]) == 0
 
     def _refresh_search_index(self, conn: sqlite3.Connection) -> None:
         rows = conn.execute(
@@ -845,6 +877,7 @@ class IndCache:
                 stale_path=stale_path,
             )
 
+        conn.execute("UPDATE mdoc_index_state SET bootstrapped = 1 WHERE id = 1")
         conn.commit()
 
     def _upsert_mdoc_row(

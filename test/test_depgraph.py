@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from pathlib import Path
 import sys
+from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = PROJECT_ROOT / "src"
@@ -152,6 +153,24 @@ class TestDepGraph(unittest.TestCase):
             self.assertEqual(block_results[1][0], "py")
             self.assertTrue(block_results[1][1].result)
             self.assertEqual(block_results[1][1].stdout.strip(), "hi")
+
+    def test_eval_blocks_can_reuse_precomputed_dependency_items(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_eval_precomputed.") as tmp:
+            root = Path(tmp)
+            node = self._new_node(root, "Eval", "natl", "hello")
+            node.save()
+
+            graph = DepGraph(mdcroot=root, root_fnode=node.fnode)
+            graph.dependency_items = lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("dependency_items should not be called")
+            )
+
+            block_results = graph.eval_blocks(dep_items=[])
+
+            self.assertEqual(len(block_results), 1)
+            self.assertEqual(block_results[0][0], "natl")
+            self.assertTrue(block_results[0][1].result)
+            self.assertEqual(block_results[0][1].stdout, "hello")
 
     def test_eval_blocks_streams_plan_progress_and_results_in_order(self) -> None:
         class ProgressCompiler(SrcCompiler):
@@ -584,6 +603,33 @@ class TestDepGraph(unittest.TestCase):
             reloaded = MdocNode(mdcroot=root, path=dep.path, title="")
             reloaded.load()
             self.assertEqual(reloaded.depens, [])
+
+    def test_add_direct_dependencies_skips_full_graph_expand_when_cache_precheck_is_clean(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_mutation_cached_precheck.") as tmp:
+            root = Path(tmp)
+            src = self._new_node(root, "Src", "natl", "src")
+            src.save()
+
+            dep = self._new_node(root, "Dep", "natl", "dep")
+            dep.save()
+
+            graph = DepGraph(mdcroot=root, root_fnode=src.fnode)
+            with mock.patch.object(
+                graph._loader,
+                "expand_from_root",
+                side_effect=AssertionError("acyclic add should not expand the full graph"),
+            ):
+                added, skipped_existing, skipped_self = graph.add_direct_dependencies(
+                    [dep.fnode]
+                )
+
+            self.assertEqual(added, [dep.fnode])
+            self.assertEqual(skipped_existing, [])
+            self.assertEqual(skipped_self, [])
+
+            reloaded = MdocNode(mdcroot=root, path=src.path, title="")
+            reloaded.load()
+            self.assertEqual(reloaded.depens, [dep.fnode])
 
     def test_scan_all_builds_global_graph(self) -> None:
         with tempfile.TemporaryDirectory(prefix="depgraph_scan_all.") as tmp:

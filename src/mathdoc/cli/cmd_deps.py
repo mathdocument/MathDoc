@@ -140,14 +140,12 @@ def cmd_dep_show(args: argparse.Namespace) -> int:
     )
     if env is None:
         return 1
-    _, cache, graph, source_item = env
+    _, _, graph, source_item = env
 
     report = render_dependency_report(
-        cache=cache,
         graph=graph,
         source_item=source_item,
         count_label="depens",
-        refresh_action="dependencies were inspected",
         inspect_error_message="failed to inspect dependencies",
         load_items=lambda: graph.dependency_items(depth=args.depth),
         for_eval=False,
@@ -165,14 +163,12 @@ def cmd_dep_leaf(args: argparse.Namespace) -> int:
     )
     if env is None:
         return 1
-    _, cache, graph, source_item = env
+    _, _, graph, source_item = env
 
     report = render_dependency_report(
-        cache=cache,
         graph=graph,
         source_item=source_item,
         count_label="leaves",
-        refresh_action="leaf dependencies were inspected",
         inspect_error_message="failed to inspect leaf dependencies",
         load_items=graph.leaf_dependency_items,
         for_eval=False,

@@ -107,11 +107,9 @@ def refresh_rows_or_warn(
 
 def render_dependency_report(
     *,
-    cache: IndCache,
     graph: DepGraph,
     source_item: NodeRef,
     count_label: str,
-    refresh_action: str,
     inspect_error_message: str,
     load_items: Callable[[], list[DependencyItem]],
     for_eval: bool,
@@ -134,11 +132,6 @@ def render_dependency_report(
         )
         return None
 
-    refresh_rows_or_warn(
-        cache,
-        [(item.fnode, item.title, item.rel_path) for item in items],
-        action=refresh_action,
-    )
     UI.write_lines(
         UI.render_chain_lines(
             chain_view(

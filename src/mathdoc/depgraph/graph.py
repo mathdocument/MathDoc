@@ -163,14 +163,13 @@ class DepGraph:
         )
 
     def is_broken_fnode(self, fnode: str) -> bool:
-        if is_broken_fnode(self.state, fnode):
-            return True
+        if self._has_local_graph_state(fnode):
+            return is_broken_fnode(self.state, fnode)
         return self.cache.is_broken_fnode(fnode)
 
     def issue_for_fnode(self, fnode: str) -> GraphIssue | None:
-        issue = issue_for_fnode(self.state, fnode)
-        if issue is not None:
-            return issue
+        if self._has_local_graph_state(fnode):
+            return issue_for_fnode(self.state, fnode)
         return self.cache.issue_for_fnode(fnode)
 
     def ref_item_for_fnode(self, fnode: str, *, depth: int = 0) -> DependencyItem:
@@ -245,30 +244,51 @@ class DepGraph:
             existing.add(dep_fnode)
 
         if added:
-            self._loader.expand_from_root(root_fnode=node.fnode, depth=-1)
-            for dep_fnode in added:
-                dep_node = self._loader.load_node(
-                    dep_fnode,
-                    tolerate_missing=True,
-                    tolerate_invalid=True,
-                )
-                if dep_node is None:
-                    self.state.dep_graph.setdefault(dep_fnode, [])
-                    continue
-                self.state.nodes_by_fnode[dep_fnode] = dep_node
-                self._loader.expand_from_root(root_fnode=dep_fnode, depth=-1)
+            use_cached_precheck = True
+            try:
+                self.cache.bootstrap_if_needed()
+                self.cache.refresh_rows(self.cache.dep_rows(added))
+                referrer_fnodes = self.cache.referrer_fnodes(target_fnode=node.fnode)
+            except (OSError, ValueError, sqlite3.Error):
+                use_cached_precheck = False
+                referrer_fnodes = set()
 
-            candidate_deps = self._dedupe_keep_order([*node.depens, *added])
-            candidate_graph = {
-                fnode: list(dep_list) for fnode, dep_list in self.state.dep_graph.items()
-            }
-            candidate_graph[node.fnode] = candidate_deps
-            for dep_fnode in added:
-                candidate_graph.setdefault(dep_fnode, [])
+            if use_cached_precheck:
+                suspicious_existing = [
+                    dep_fnode for dep_fnode in node.depens if dep_fnode in referrer_fnodes
+                ]
+                suspicious_added = [
+                    dep_fnode for dep_fnode in added if dep_fnode in referrer_fnodes
+                ]
+            else:
+                suspicious_existing = list(node.depens)
+                suspicious_added = list(added)
 
-            cycle = find_cycle(candidate_graph, root_fnode=node.fnode)
-            if cycle is not None:
-                raise DependencyCycleError(cycle)
+            if suspicious_existing or suspicious_added:
+                self._loader.expand_from_root(root_fnode=node.fnode, depth=-1)
+                for dep_fnode in suspicious_added:
+                    dep_node = self._loader.load_node(
+                        dep_fnode,
+                        tolerate_missing=True,
+                        tolerate_invalid=True,
+                    )
+                    if dep_node is None:
+                        self.state.dep_graph.setdefault(dep_fnode, [])
+                        continue
+                    self.state.nodes_by_fnode[dep_fnode] = dep_node
+                    self._loader.expand_from_root(root_fnode=dep_fnode, depth=-1)
+
+                candidate_deps = self._dedupe_keep_order([*node.depens, *added])
+                candidate_graph = {
+                    fnode: list(dep_list) for fnode, dep_list in self.state.dep_graph.items()
+                }
+                candidate_graph[node.fnode] = candidate_deps
+                for dep_fnode in added:
+                    candidate_graph.setdefault(dep_fnode, [])
+
+                cycle = find_cycle(candidate_graph, root_fnode=node.fnode)
+                if cycle is not None:
+                    raise DependencyCycleError(cycle)
 
             for dep_fnode in added:
                 node.add_dependency(dep_fnode)
@@ -385,6 +405,7 @@ class DepGraph:
         self,
         *,
         depth: int = 1,
+        dep_items: list[DependencyItem] | None = None,
         root_node: MdocNode | None = None,
         root_fnode: str | None = None,
         progress: Callable[[str], None] | None = None,
@@ -393,15 +414,17 @@ class DepGraph:
     ) -> list[tuple[str, CompilerRes]]:
         active_root = self._bind_root(root_node=root_node, root_fnode=root_fnode)
         root = self._loader.ensure_node_loaded(active_root)
-        dep_items = self.dependency_items(
-            depth=depth,
-            root_node=root_node,
-            root_fnode=root_fnode,
-        )
+        active_dep_items = dep_items
+        if active_dep_items is None:
+            active_dep_items = self.dependency_items(
+                depth=depth,
+                root_node=root_node,
+                root_fnode=root_fnode,
+            )
         return self._evaluator.eval_blocks(
             root_node=root,
             root_fnode=active_root,
-            dep_items=dep_items,
+            dep_items=active_dep_items,
             progress=progress,
             on_start=on_start,
             on_result=on_result,
@@ -457,3 +480,10 @@ class DepGraph:
             seen.add(item)
             out.append(item)
         return out
+
+    def _has_local_graph_state(self, fnode: str) -> bool:
+        return (
+            fnode in self.state.nodes_by_fnode
+            or fnode in self.state.broken_issues
+            or fnode in self.state.dep_graph
+        )
