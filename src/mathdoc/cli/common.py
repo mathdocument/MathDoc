@@ -2,8 +2,8 @@ import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
-from ..depgraph import DepGraph
-from ..depgraph.models import DependencyTraversalReport
+from ..core import DependencyTraversalReport
+from ..depgraph.graph import DepGraph
 from ..indcache import IndCache
 from ..ui import BrokenDependencySummary, NodeRef, TerminalUI, prompt_new_mdoc_interactive
 from ..ui.theme import short_fnode
@@ -71,11 +71,18 @@ def load_source_graph(
     source: str,
     action: str,
     error_prefix: str = "failed to load mdoc",
+    discover_changes: bool = False,
 ) -> tuple[Path, IndCache, DepGraph, NodeRef] | None:
     env = prepare_cache_env(action=action)
     if env is None:
         return None
     mdcroot, cache = env
+    if discover_changes:
+        try:
+            cache.discover_workspace_changes()
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            UI.write_lines(UI.render_index_error_lines(action=action, exc=exc))
+            return None
     try:
         graph, src_rel = load_graph_from_ref(cache, source)
     except (FileNotFoundError, OSError, ValueError, sqlite3.Error) as exc:

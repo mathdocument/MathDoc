@@ -1,10 +1,11 @@
-from ..depgraph import (
+from typing import Protocol
+
+from ..core import (
     DependencyItem,
     GraphCheckReport,
     GraphIssue,
     GraphRootItem,
 )
-from ..depgraph.graph import DepGraph
 from ..ui import (
     BrokenDependencySummary,
     ChainView,
@@ -17,6 +18,17 @@ from ..ui import (
     MissingReferrerView,
     NodeRef,
 )
+
+
+class GraphLookup(Protocol):
+    def ref_item_for_fnode(
+        self,
+        fnode: str,
+        *,
+        depth: int = 0,
+    ) -> DependencyItem: ...
+
+    def is_broken_fnode(self, fnode: str) -> bool: ...
 
 
 def node_ref(
@@ -81,7 +93,7 @@ def issue_view(issue: GraphIssue) -> IssueView:
 def cycle_view(
     cycle: list[str],
     *,
-    graph: DepGraph | None = None,
+    graph: GraphLookup | None = None,
     ref_rows_by_fnode: dict[str, tuple[str, str]] | None = None,
 ) -> CycleView:
     cycle_nodes = cycle[:-1] if len(cycle) > 1 else cycle
@@ -113,7 +125,7 @@ def cycle_view(
 def graph_check_view(
     report: GraphCheckReport,
     *,
-    graph: DepGraph | None = None,
+    graph: GraphLookup | None = None,
     cycle_rows_by_fnode: dict[str, tuple[str, str]] | None = None,
 ) -> GraphCheckView:
     return GraphCheckView(

@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 from dataclasses import field
 
+from ..core import GraphIssue
 from ..mdocnode import MdocNode
-from .models import GraphIssue
 
 
 @dataclass(slots=True)

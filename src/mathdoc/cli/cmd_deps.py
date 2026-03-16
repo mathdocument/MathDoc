@@ -1,7 +1,9 @@
 import argparse
 import sqlite3
+from collections.abc import Callable
 
-from ..depgraph.exceptions import DependencyCycleError
+from ..core import DependencyCycleError, DependencyTraversalReport
+from ..indcache import IndCache
 from ..ui import DepAddView, DepRmView, NodeRef, select_indices_interactive
 from .common import (
     UI,
@@ -21,6 +23,93 @@ from .presenters import (
     node_ref_from_item,
     node_ref_from_row,
 )
+
+
+def _cached_dependency_report(
+    args: argparse.Namespace,
+    *,
+    count_label: str,
+    error_label: str,
+    show_missing_referrers: bool,
+    refresh_depth: int,
+    loader: Callable[[IndCache, str], DependencyTraversalReport],
+) -> int:
+    env = prepare_cache_env(action="prepare dependency index")
+    if env is None:
+        return 1
+    _, cache = env
+
+    if getattr(args, "refresh", False):
+        try:
+            cache.discover_workspace_changes()
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            UI.write_lines(
+                UI.render_index_error_lines(
+                    action="refresh dependency index",
+                    exc=exc,
+                )
+            )
+            return 1
+        try:
+            source_path = cache.resolve_edit_target_path(args.source)
+        except ValueError:
+            source_path = None
+        if source_path is not None:
+            try:
+                cache.refresh_reachable_from_path(
+                    root_path=source_path,
+                    depth=refresh_depth,
+                )
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                UI.write_lines(
+                    UI.render_index_error_lines(
+                        action="refresh dependency index",
+                        exc=exc,
+                    )
+                )
+                return 1
+
+    source_item = None
+    try:
+        source_item = resolve_ref_item(cache, args.source)
+        if not cache.knows_fnode(source_item.fnode):
+            raise ValueError(
+                "source is not in the cached dependency index; "
+                "use `--refresh` or run `mdc sync` first"
+            )
+        report = loader(cache, source_item.fnode)
+    except DependencyCycleError as exc:
+        cycle_rows = cache.lookup_by_fnode(list(dict.fromkeys(exc.cycle)))
+        UI.write_lines(
+            UI.render_cycle_lines(
+                cycle_view(
+                    exc.cycle,
+                    ref_rows_by_fnode=dict(cycle_rows),
+                )
+            )
+        )
+        return 1
+    except ValueError as exc:
+        if source_item is None:
+            UI.error(f"failed to inspect {error_label}: {exc}")
+        else:
+            UI.write_lines(
+                UI.render_anchor_error_lines(
+                    label="source",
+                    item=source_item,
+                    message=f"failed to inspect {error_label}: {exc}",
+                )
+            )
+        return 1
+
+    emit_dependency_report(
+        source_item=source_item,
+        count_label=count_label,
+        report=report,
+        for_eval=False,
+        show_missing_referrers=show_missing_referrers,
+    )
+    return 0
 
 
 def cmd_dep_add(args: argparse.Namespace) -> int:
@@ -134,108 +223,30 @@ def cmd_dep_add(args: argparse.Namespace) -> int:
 
 
 def cmd_dep_show(args: argparse.Namespace) -> int:
-    env = prepare_cache_env(action="prepare dependency index")
-    if env is None:
-        return 1
-    _, cache = env
-
-    source_item = None
-    try:
-        if getattr(args, "refresh", False):
-            cache.refresh_all()
-        source_item = resolve_ref_item(cache, args.source)
-        if not cache.has_fnode(source_item.fnode):
-            raise ValueError(
-                "source is not in the cached dependency index; "
-                "use `--refresh` or run `mdc sync` first"
-            )
-        report = cache.dependency_report(
-            root_fnode=source_item.fnode,
-            depth=args.depth,
-        )
-    except DependencyCycleError as exc:
-        cycle_rows = cache.lookup_by_fnode(list(dict.fromkeys(exc.cycle)))
-        UI.write_lines(
-            UI.render_cycle_lines(
-                cycle_view(
-                    exc.cycle,
-                    ref_rows_by_fnode=dict(cycle_rows),
-                )
-            )
-        )
-        return 1
-    except ValueError as exc:
-        if source_item is None:
-            UI.error(f"failed to inspect dependencies: {exc}")
-        else:
-            UI.write_lines(
-                UI.render_anchor_error_lines(
-                    label="source",
-                    item=source_item,
-                    message=f"failed to inspect dependencies: {exc}",
-                )
-            )
-        return 1
-    emit_dependency_report(
-        source_item=source_item,
+    return _cached_dependency_report(
+        args,
         count_label="depens",
-        report=report,
-        for_eval=False,
+        error_label="dependencies",
         show_missing_referrers=True,
+        refresh_depth=args.depth,
+        loader=lambda cache, root_fnode: cache.dependency_report(
+            root_fnode=root_fnode,
+            depth=args.depth,
+        ),
     )
-    return 0
 
 
 def cmd_dep_leaf(args: argparse.Namespace) -> int:
-    env = prepare_cache_env(action="prepare dependency index")
-    if env is None:
-        return 1
-    _, cache = env
-
-    source_item = None
-    try:
-        if getattr(args, "refresh", False):
-            cache.refresh_all()
-        source_item = resolve_ref_item(cache, args.source)
-        if not cache.has_fnode(source_item.fnode):
-            raise ValueError(
-                "source is not in the cached dependency index; "
-                "use `--refresh` or run `mdc sync` first"
-            )
-        report = cache.leaf_dependency_report(
-            root_fnode=source_item.fnode,
-        )
-    except DependencyCycleError as exc:
-        cycle_rows = cache.lookup_by_fnode(list(dict.fromkeys(exc.cycle)))
-        UI.write_lines(
-            UI.render_cycle_lines(
-                cycle_view(
-                    exc.cycle,
-                    ref_rows_by_fnode=dict(cycle_rows),
-                )
-            )
-        )
-        return 1
-    except ValueError as exc:
-        if source_item is None:
-            UI.error(f"failed to inspect leaf dependencies: {exc}")
-        else:
-            UI.write_lines(
-                UI.render_anchor_error_lines(
-                    label="source",
-                    item=source_item,
-                    message=f"failed to inspect leaf dependencies: {exc}",
-                )
-            )
-        return 1
-    emit_dependency_report(
-        source_item=source_item,
+    return _cached_dependency_report(
+        args,
         count_label="leaves",
-        report=report,
-        for_eval=False,
+        error_label="leaf dependencies",
         show_missing_referrers=False,
+        refresh_depth=-1,
+        loader=lambda cache, root_fnode: cache.leaf_dependency_report(
+            root_fnode=root_fnode,
+        ),
     )
-    return 0
 
 
 def cmd_dep_rm(args: argparse.Namespace) -> int:
@@ -358,10 +369,9 @@ def cmd_dep_refs(args: argparse.Namespace) -> int:
     _, cache = env
 
     try:
-        target_item = resolve_ref_item(cache, args.target)
         if args.refresh:
-            cache.refresh_all()
-            target_item = resolve_ref_item(cache, args.target)
+            cache.refresh_workspace_index()
+        target_item = resolve_ref_item(cache, args.target)
         ref_items = cache.referrer_items(
             target_fnode=target_item.fnode,
             depth=args.depth,

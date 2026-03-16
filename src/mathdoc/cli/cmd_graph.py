@@ -43,7 +43,7 @@ def cmd_graph_roots(args: argparse.Namespace) -> int:
 
     try:
         if args.refresh:
-            cache.refresh_all()
+            cache.refresh_workspace_index()
         items = cache.global_root_items()
     except (OSError, ValueError, sqlite3.Error) as exc:
         UI.error(f"failed to inspect graph roots: {exc}")

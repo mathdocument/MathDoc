@@ -2,9 +2,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .algorithms import topo_dependencies_first
+from ..core import DependencyItem, topo_dependencies_first
 from .issues import is_broken_fnode
-from .models import DependencyItem
 from .state import GraphState
 from ..compiler import CompilerRes
 from ..config import load_config

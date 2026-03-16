@@ -116,7 +116,8 @@ mdc dep show <source> --refresh
 ```
 - `-d, --depth`: traversal depth, default is `1`, use `-1` for unlimited traversal
 - default mode reads the cached dependency graph
-- use `--refresh` or `mdc sync` after external file edits
+- `--refresh` first runs workspace discovery for new/deleted/renamed `.mdoc` paths, then refreshes the reachable cached subgraph
+- use `mdc sync` when you want a full repository refresh
 
 #### `mdc dep leaf`
 
@@ -129,7 +130,8 @@ mdc dep leaf <source> --refresh
 - only prints nodes that have no downstream dependencies
 - shared leaves are deduplicated
 - default mode reads the cached dependency graph
-- use `--refresh` or `mdc sync` after external file edits
+- `--refresh` first runs workspace discovery for new/deleted/renamed `.mdoc` paths, then refreshes the reachable cached subgraph
+- use `mdc sync` when you want a full repository refresh
 
 #### `mdc dep refs`
 
@@ -193,7 +195,7 @@ mdc eval <source>
 mdc eval <source> --depth -1
 ```
 - `-d, --depth`: dependency traversal depth, default is `1`, use `-1` for unlimited depth
-- dependency preflight uses the cached reachable graph with targeted refresh of currently reachable dependency rows
+- dependency preflight starts with workspace discovery, then uses the cached reachable graph with targeted refresh of currently reachable dependency rows
 - actual execution still loads the real reachable `.mdoc` files and block content from disk
 
 To modify the default compiling behavior of `mdc eval`, edit `.mdc/config.toml`. The default compiling configuration is

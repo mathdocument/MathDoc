@@ -142,7 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
     dep_show_parser.add_argument(
         "--refresh",
         action="store_true",
-        help="Refresh the workspace index before reading cached dependencies",
+        help="Refresh the cached reachable dependency subgraph before reading dependencies",
     )
     dep_show_parser.set_defaults(func=cmd_dep_show)
 
@@ -156,7 +156,7 @@ def build_parser() -> argparse.ArgumentParser:
     dep_leaf_parser.add_argument(
         "--refresh",
         action="store_true",
-        help="Refresh the workspace index before reading cached leaf dependencies",
+        help="Refresh the cached reachable dependency subgraph before reading leaf dependencies",
     )
     dep_leaf_parser.set_defaults(func=cmd_dep_leaf)
 

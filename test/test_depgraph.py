@@ -1,6 +1,5 @@
 from mathdoc.depgraph import DepGraph
-from mathdoc.depgraph import DependencyCycleError
-from mathdoc.depgraph import DependencyItem
+from mathdoc.core import DependencyCycleError, DependencyItem
 import mathdoc.depgraph.evaluate as depgraph_evaluate_module
 from mathdoc.compiler.base import CompilerReq, CompilerRes, SrcCompiler
 from mathdoc.compiler.registry import CompilerRegistry
@@ -48,6 +47,44 @@ class TestDepGraph(unittest.TestCase):
             graph, rel_path = DepGraph.from_ref(cache=cache, ref=src.fnode[:8], cwd=root)
 
             self.assertEqual(rel_path, src.path.resolve().relative_to(root.resolve()).as_posix())
+            self.assertEqual(graph.get_root_node().fnode, src.fnode)
+
+    def test_from_ref_does_not_hide_stale_cache_with_full_refresh_fallback(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_from_ref_stale.") as tmp:
+            root = Path(tmp)
+            (root / ".mdc").mkdir(parents=True, exist_ok=True)
+
+            cache = IndCache(root)
+            cache.refresh_all()
+
+            (root / "src.mdoc").write_text(
+                "@fnode: src-node\n"
+                "@title: Source Card\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(
+                cache,
+                "refresh_all",
+                side_effect=AssertionError("from_ref should not force a full refresh"),
+            ):
+                with self.assertRaisesRegex(ValueError, "no mdoc matched reference"):
+                    DepGraph.from_ref(cache=cache, ref="src-node", cwd=root)
+
+    def test_loading_does_not_trigger_cache_refresh(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_no_refresh.") as tmp:
+            root = Path(tmp)
+            src = self._new_node(root, "Source", "natl", "src")
+            src.save()
+
+            cache = IndCache(root)
+            cache.refresh_all()
+
+            with mock.patch(
+                "mathdoc.indcache.refresh.upsert_mdoc_row",
+                side_effect=AssertionError("loading must not trigger index refresh"),
+            ):
+                graph, _ = DepGraph.from_ref(cache=cache, ref=src.fnode[:8], cwd=root)
             self.assertEqual(graph.get_root_node().fnode, src.fnode)
 
     def test_dependency_items_expand_incrementally_from_root_node(self) -> None:
@@ -135,6 +172,42 @@ class TestDepGraph(unittest.TestCase):
             block_results = graph.eval_blocks(depth=0)
             self.assertEqual(len(block_results), 1)
             self.assertEqual(block_results[0][1].stdout, "src")
+
+    def test_dependency_items_do_not_force_full_refresh_for_stale_deeper_nodes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="depgraph_deeper_stale.") as tmp:
+            root = Path(tmp)
+            src = self._new_node(root, "Src", "natl", "src")
+            src.add_dependency("dep-node")
+            src.save()
+
+            cache = IndCache(root)
+            cache.refresh_all()
+
+            dep = self._new_node(root, "Dep", "natl", "dep")
+            dep.fnode = "dep-node"
+            dep.save()
+
+            with mock.patch.object(
+                cache,
+                "refresh_all",
+                side_effect=AssertionError(
+                    "dependency expansion should not force a full refresh"
+                ),
+            ):
+                graph, _ = DepGraph.from_ref(cache=cache, ref=src.fnode, cwd=root)
+                items = graph.dependency_items()
+
+            self.assertEqual(
+                items,
+                [
+                    DependencyItem(
+                        depth=1,
+                        fnode="dep-node",
+                        title="<missing>",
+                        rel_path="<unknown>",
+                    )
+                ],
+            )
 
     def test_eval_blocks_runs_all_blocks(self) -> None:
         with tempfile.TemporaryDirectory(prefix="depgraph_eval_basic.") as tmp:
@@ -726,8 +799,9 @@ class TestDepGraph(unittest.TestCase):
             root_valid.save()
             self._make_invalid(bad_dep.path)
 
-            graph = DepGraph(mdcroot=root)
-            items = graph.global_root_items()
+            cache = IndCache(root)
+            cache.bootstrap_if_needed()
+            items = cache.global_root_items()
 
             self.assertEqual(items[0].fnode, root_valid.fnode)
             item_by_fnode = {item.fnode: item for item in items}
@@ -808,8 +882,9 @@ class TestDepGraph(unittest.TestCase):
             src.add_dependency(bad.fnode)
             src.save()
 
-            graph = DepGraph(mdcroot=root)
-            report = graph.graph_check_report()
+            cache = IndCache(root)
+            cache.bootstrap_if_needed()
+            report = cache.graph_check_report()
 
             self.assertEqual(report.nodes, 4)
             self.assertEqual(report.edges, 4)
@@ -869,8 +944,9 @@ class TestDepGraph(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            graph = DepGraph(mdcroot=root)
-            report = graph.graph_check_report()
+            cache = IndCache(root)
+            cache.bootstrap_if_needed()
+            report = cache.graph_check_report()
 
             self.assertEqual(report.nodes, 2)
             self.assertEqual(report.edges, 0)

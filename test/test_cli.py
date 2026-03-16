@@ -21,7 +21,9 @@ if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
 from mathdoc.cli.cmd_deps import cmd_dep_leaf, cmd_dep_show
+from mathdoc.cli.cmd_deps import cmd_dep_refs
 from mathdoc.cli.cmd_eval import cmd_eval
+from mathdoc.cli.cmd_graph import cmd_graph_roots
 from mathdoc.depgraph import DepGraph
 from mathdoc.indcache import IndCache
 
@@ -235,6 +237,24 @@ def _append_dependency(mdoc_path: str, dep_fnode: str) -> None:
             updated = text + ("\n" if text.strip() else "") + block
     if updated == text:
         raise AssertionError(f"Failed to append dependency to {mdoc_path}")
+    path.write_text(updated, encoding="utf-8")
+
+
+def _replace_dependencies(mdoc_path: str, dep_fnodes: list[str]) -> None:
+    path = Path(mdoc_path)
+    text = path.read_text(encoding="utf-8")
+    block = "@dep:\n"
+    if dep_fnodes:
+        block += "".join(f"{dep_fnode}\n" for dep_fnode in dep_fnodes)
+    block += "@end\n"
+    updated, count = re.subn(
+        r"(?ms)^@dep:\n.*?^@end\n",
+        block,
+        text,
+        count=1,
+    )
+    if count == 0:
+        raise AssertionError(f"Failed to replace dependencies for {mdoc_path}")
     path.write_text(updated, encoding="utf-8")
 
 
@@ -665,8 +685,8 @@ class TestMdcCli(unittest.TestCase):
             )
             self.assertIn("nested mdoc root", parent_show_child.stdout)
 
-    def test_dep_show_and_leaf_do_not_refresh_accessed_dependency_index(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_show_no_refresh.") as tmp:
+    def test_dep_show_and_leaf_refresh_reachable_files_after_workspace_discovery(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_show_refresh_scope.") as tmp:
             repo = Path(tmp)
             self.assertEqual(_run_cli(["init"], repo).returncode, 0)
 
@@ -681,12 +701,17 @@ class TestMdcCli(unittest.TestCase):
                              new_dep.stdout + new_dep.stderr)
             _, dep_path = _extract_created_mdoc(new_dep.stdout)
 
+            new_other = _run_cli(["new", "-t", "Unrelated Old", "-f", "."], repo)
+            self.assertEqual(new_other.returncode, 0, new_other.stdout + new_other.stderr)
+            _, other_path = _extract_created_mdoc(new_other.stdout)
+
             rc_add, out_add = _run_cli_tty(
                 ["dep", "add", src_path, "Show Dep Old"], repo, b" \r")
             self.assertEqual(rc_add, 0, out_add)
             self.assertIn("added: 1", _compact_cli_output(out_add))
 
             _rewrite_title(dep_path, "Show Dep New")
+            _rewrite_title(other_path, "Unrelated New")
 
             show_run = _run_cli(["dep", "show", src_path], repo)
             self.assertEqual(show_run.returncode, 0,
@@ -740,6 +765,40 @@ class TestMdcCli(unittest.TestCase):
                 search_old_after_refresh.stdout + search_old_after_refresh.stderr,
             )
             self.assertIn("No results for: Show Dep Old", search_old_after_refresh.stdout)
+
+    def test_dep_show_refresh_discovers_external_duplicate_dependency_paths(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_show_refresh_duplicate.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_src = _run_cli(["new", "-t", "Dup Src", "-f", "."], repo)
+            self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
+            _, src_path = _extract_created_mdoc(new_src.stdout)
+
+            new_dep = _run_cli(["new", "-t", "Dup Dep", "-f", "."], repo)
+            self.assertEqual(new_dep.returncode, 0, new_dep.stdout + new_dep.stderr)
+            dep_fnode, dep_path = _extract_created_mdoc(new_dep.stdout)
+
+            rc_add, out_add = _run_cli_tty(
+                ["dep", "add", src_path, "Dup Dep"], repo, b" \r"
+            )
+            self.assertEqual(rc_add, 0, out_add)
+
+            dup_copy_path = str(Path(dep_path).with_name("dup-copy.mdoc"))
+            shutil.copy2(dep_path, dup_copy_path)
+
+            with _Pushd(repo), redirect_stdout(io.StringIO()) as captured:
+                show_rc = cmd_dep_show(
+                    argparse.Namespace(source=src_path, depth=1, refresh=True)
+                )
+            self.assertEqual(show_rc, 0, captured.getvalue())
+            show_text = _compact_cli_output(captured.getvalue())
+            self.assertIn(dep_fnode[:8], show_text)
+            self.assertIn("broken dependency reference", show_text)
+
+            search_run = _run_cli(["search", dep_fnode[:8]], repo)
+            self.assertEqual(search_run.returncode, 0, search_run.stdout + search_run.stderr)
+            self.assertEqual(len(_search_result_lines(search_run.stdout)), 2)
 
     def test_cmd_eval_uses_cached_preflight_and_passes_precomputed_dependencies(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_eval_preflight_once.") as tmp:
@@ -795,6 +854,121 @@ class TestMdcCli(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual([item.fnode for item in seen_dep_items], [dep_fnode])
 
+    def test_cmd_eval_does_not_run_repo_wide_workspace_index_refresh(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_eval_no_repo_sweep.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_src = _run_cli(["new", "-t", "Eval Src", "-f", "."], repo)
+            self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
+            _, src_path = _extract_created_mdoc(new_src.stdout)
+            _append_src_block(src_path, "natl", "src")
+
+            with (
+                _Pushd(repo),
+                mock.patch.object(
+                    IndCache,
+                    "refresh_workspace_index",
+                    autospec=True,
+                    side_effect=AssertionError(
+                        "cmd_eval should not run a repo-wide workspace index refresh"
+                    ),
+                ),
+            ):
+                with redirect_stdout(io.StringIO()):
+                    rc = cmd_eval(argparse.Namespace(source=src_path, depth=-1))
+
+            self.assertEqual(rc, 0)
+
+    def test_cmd_eval_converges_after_transitive_external_dependency_edits(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_eval_converges.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_b = _run_cli(["new", "-t", "Eval B", "-f", "."], repo)
+            self.assertEqual(new_b.returncode, 0, new_b.stdout + new_b.stderr)
+            b_fnode, _ = _extract_created_mdoc(new_b.stdout)
+
+            new_c = _run_cli(["new", "-t", "Eval C", "-f", "."], repo)
+            self.assertEqual(new_c.returncode, 0, new_c.stdout + new_c.stderr)
+            c_fnode, c_path = _extract_created_mdoc(new_c.stdout)
+
+            new_a = _run_cli(["new", "-t", "Eval A", "-f", "."], repo)
+            self.assertEqual(new_a.returncode, 0, new_a.stdout + new_a.stderr)
+            _, a_path = _extract_created_mdoc(new_a.stdout)
+
+            new_src = _run_cli(["new", "-t", "Eval Src", "-f", "."], repo)
+            self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
+            _, src_path = _extract_created_mdoc(new_src.stdout)
+
+            rc_add_a, out_add_a = _run_cli_tty(
+                ["dep", "add", a_path, b_fnode[:8]],
+                repo,
+                b" \r",
+            )
+            self.assertEqual(rc_add_a, 0, out_add_a)
+
+            rc_add_src, out_add_src = _run_cli_tty(
+                ["dep", "add", src_path, "Eval A"],
+                repo,
+                b" \r",
+            )
+            self.assertEqual(rc_add_src, 0, out_add_src)
+            _append_src_block(src_path, "natl", "src")
+
+            _replace_dependencies(a_path, [c_fnode])
+            _append_dependency(c_path, "missing-deep-001")
+
+            with (
+                _Pushd(repo),
+                mock.patch.object(
+                    DepGraph,
+                    "eval_blocks",
+                    autospec=True,
+                    side_effect=AssertionError(
+                        "cmd_eval should stop before execution when converged preflight finds broken targets"
+                    ),
+                ),
+                redirect_stdout(io.StringIO()) as captured,
+            ):
+                rc = cmd_eval(argparse.Namespace(source=src_path, depth=-1))
+
+            output = captured.getvalue()
+            self.assertEqual(rc, 1, output)
+            self.assertIn(c_fnode[:8], output)
+            self.assertIn("missing-", output)
+            self.assertIn("broken dependency targets detected", output)
+
+    def test_cmd_eval_discovers_external_duplicate_dependency_paths(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_eval_duplicate_discovery.") as tmp:
+            repo = Path(tmp)
+            self.assertEqual(_run_cli(["init"], repo).returncode, 0)
+
+            new_dep = _run_cli(["new", "-t", "Eval Dup Dep", "-f", "."], repo)
+            self.assertEqual(new_dep.returncode, 0, new_dep.stdout + new_dep.stderr)
+            dep_fnode, dep_path = _extract_created_mdoc(new_dep.stdout)
+
+            new_src = _run_cli(["new", "-t", "Eval Dup Src", "-f", "."], repo)
+            self.assertEqual(new_src.returncode, 0, new_src.stdout + new_src.stderr)
+            _, src_path = _extract_created_mdoc(new_src.stdout)
+            _append_dependency(src_path, dep_fnode)
+            _append_src_block(src_path, "natl", "src")
+
+            dup_copy_path = str(Path(dep_path).with_name("eval-dup-copy.mdoc"))
+            shutil.copy2(dep_path, dup_copy_path)
+
+            with _Pushd(repo), redirect_stdout(io.StringIO()) as captured:
+                eval_rc = cmd_eval(argparse.Namespace(source=src_path, depth=1))
+            self.assertEqual(eval_rc, 1, captured.getvalue())
+            eval_text = _compact_cli_output(captured.getvalue())
+            self.assertIn(dep_fnode[:8], eval_text)
+            self.assertIn("broken dependency targets detected", eval_text)
+            self.assertNotIn("No blocks to eval", eval_text)
+
+            search_run = _run_cli(["search", dep_fnode[:8]], repo)
+            self.assertEqual(search_run.returncode, 0, search_run.stdout + search_run.stderr)
+            self.assertEqual(len(_search_result_lines(search_run.stdout)), 2)
+
     def test_forward_dependency_render_uses_local_graph_state_not_cache_queries(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_forward_render_local.") as tmp:
             repo = Path(tmp)
@@ -814,18 +988,10 @@ class TestMdcCli(unittest.TestCase):
                 _Pushd(repo),
                 mock.patch.object(
                     IndCache,
-                    "is_broken_fnode",
-                    autospec=True,
-                    side_effect=AssertionError(
-                        "render should use local graph state for broken checks"
-                    ),
-                ),
-                mock.patch.object(
-                    IndCache,
                     "issue_for_fnode",
                     autospec=True,
                     side_effect=AssertionError(
-                        "render should use local graph state for issue lookups"
+                        "render should use local graph state for broken checks and issue lookups"
                     ),
                 ),
                 mock.patch.object(
@@ -845,6 +1011,129 @@ class TestMdcCli(unittest.TestCase):
             self.assertEqual(show_rc, 0)
             self.assertEqual(leaf_rc, 0)
             self.assertEqual(eval_rc, 1)
+
+    def test_dep_refs_refresh_uses_workspace_index_refresh_not_full_refresh(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_refs_refresh.") as tmp:
+            repo = Path(tmp)
+            (repo / ".mdc").mkdir(parents=True, exist_ok=True)
+            (repo / "leaf.mdoc").write_text(
+                "@fnode: leaf-node\n"
+                "@title: Leaf Node\n",
+                encoding="utf-8",
+            )
+            (repo / "src.mdoc").write_text(
+                "@fnode: src-node\n"
+                "@title: Source Node\n"
+                "@dep:\n"
+                "leaf-node\n"
+                "@end\n",
+                encoding="utf-8",
+            )
+
+            cache = IndCache(repo)
+            cache.refresh_all()
+
+            with (
+                _Pushd(repo),
+                mock.patch(
+                    "mathdoc.cli.cmd_deps.prepare_cache_env",
+                    return_value=(repo, cache),
+                ),
+                mock.patch.object(
+                    cache,
+                    "refresh_all",
+                    side_effect=AssertionError("dep refs --refresh should not full-refresh"),
+                ),
+                mock.patch.object(
+                    cache,
+                    "refresh_workspace_index",
+                    wraps=cache.refresh_workspace_index,
+                ) as refresh_mock,
+                redirect_stdout(io.StringIO()),
+            ):
+                rc = cmd_dep_refs(
+                    argparse.Namespace(target="leaf-node", depth=-1, refresh=True)
+                )
+
+            self.assertEqual(rc, 0)
+            refresh_mock.assert_called_once()
+
+    def test_dep_refs_refresh_resolves_target_after_workspace_index_refresh(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_refs_refresh_target.") as tmp:
+            repo = Path(tmp)
+            (repo / ".mdc").mkdir(parents=True, exist_ok=True)
+            (repo / "src.mdoc").write_text(
+                "@fnode: src-node\n"
+                "@title: Source Node\n",
+                encoding="utf-8",
+            )
+
+            cache = IndCache(repo)
+            cache.refresh_all()
+
+            (repo / "external-target.mdoc").write_text(
+                "@fnode: external-target-001\n"
+                "@title: External Target\n",
+                encoding="utf-8",
+            )
+
+            with (
+                _Pushd(repo),
+                mock.patch(
+                    "mathdoc.cli.cmd_deps.prepare_cache_env",
+                    return_value=(repo, cache),
+                ),
+                redirect_stdout(io.StringIO()) as captured,
+            ):
+                rc = cmd_dep_refs(
+                    argparse.Namespace(
+                        target="external-target-001",
+                        depth=-1,
+                        refresh=True,
+                    )
+                )
+
+            output = captured.getvalue()
+            self.assertEqual(rc, 0, output)
+            self.assertIn("External Target", output)
+
+    def test_graph_roots_refresh_uses_workspace_index_refresh_not_full_refresh(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_cli_graph_roots_refresh.") as tmp:
+            repo = Path(tmp)
+            (repo / ".mdc").mkdir(parents=True, exist_ok=True)
+            (repo / "root.mdoc").write_text(
+                "@fnode: root-node\n"
+                "@title: Root Node\n",
+                encoding="utf-8",
+            )
+
+            cache = IndCache(repo)
+            cache.refresh_all()
+
+            with (
+                _Pushd(repo),
+                mock.patch(
+                    "mathdoc.cli.cmd_graph.prepare_cache_env",
+                    return_value=(repo, cache),
+                ),
+                mock.patch.object(
+                    cache,
+                    "refresh_all",
+                    side_effect=AssertionError(
+                        "graph roots --refresh should not full-refresh"
+                    ),
+                ),
+                mock.patch.object(
+                    cache,
+                    "refresh_workspace_index",
+                    wraps=cache.refresh_workspace_index,
+                ) as refresh_mock,
+                redirect_stdout(io.StringIO()),
+            ):
+                rc = cmd_graph_roots(argparse.Namespace(refresh=True))
+
+            self.assertEqual(rc, 0)
+            refresh_mock.assert_called_once()
 
     def test_dep_show_accepts_depth_and_detects_cycles(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc_cli_dep_show_depth.") as tmp:

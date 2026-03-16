@@ -2,16 +2,12 @@ import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 
-from .algorithms import find_cycle
+from ..core import DependencyCycleError, DependencyItem, GraphIssue, find_cycle
 from .evaluate import GraphEvaluator
-from .exceptions import DependencyCycleError
 from .issues import is_broken_fnode, issue_for_fnode, dependency_item_for_fnode
 from .loading import GraphLoader, create_root_node, load_root_node_from_ref
-from .models import DependencyItem, GraphCheckReport, GraphIssue, GraphRootItem
-from .query import (
-    dependency_items_from_graph,
-    leaf_items_from_graph,
-)
+from .query import dependency_items_from_graph
+from .utils import _dedupe_keep_order
 from .state import GraphState
 from ..compiler import CompilerRes
 from ..indcache import IndCache
@@ -165,7 +161,7 @@ class DepGraph:
     def is_broken_fnode(self, fnode: str) -> bool:
         if self._has_local_graph_state(fnode):
             return is_broken_fnode(self.state, fnode)
-        return self.cache.is_broken_fnode(fnode)
+        return self.cache.issue_for_fnode(fnode) is not None
 
     def issue_for_fnode(self, fnode: str) -> GraphIssue | None:
         if self._has_local_graph_state(fnode):
@@ -190,7 +186,7 @@ class DepGraph:
     ) -> list[str]:
         active_root = self._bind_root(root_node=root_node, root_fnode=root_fnode)
         node = self._loader.ensure_node_loaded(active_root)
-        return self._dedupe_keep_order(node.depens)
+        return _dedupe_keep_order(node.depens)
 
     def direct_dependency_items(
         self,
@@ -202,7 +198,7 @@ class DepGraph:
         node = self._loader.ensure_node_loaded(active_root)
         dep_items: list[DependencyItem] = []
 
-        for dep_fnode in self._dedupe_keep_order(node.depens):
+        for dep_fnode in _dedupe_keep_order(node.depens):
             if dep_fnode not in self.state.nodes_by_fnode:
                 dep_node = self._loader.load_node(
                     dep_fnode,
@@ -215,7 +211,7 @@ class DepGraph:
             self.state.dep_graph.setdefault(dep_fnode, [])
             dep_items.append(self.ref_item_for_fnode(dep_fnode, depth=1))
 
-        self.state.dep_graph[active_root] = self._dedupe_keep_order(node.depens)
+        self.state.dep_graph[active_root] = _dedupe_keep_order(node.depens)
         return dep_items
 
     def add_direct_dependencies(
@@ -233,7 +229,7 @@ class DepGraph:
         skipped_self: list[str] = []
         existing = set(self.direct_dependency_fnodes(root_fnode=active_root))
 
-        for dep_fnode in self._dedupe_keep_order(dep_fnodes):
+        for dep_fnode in _dedupe_keep_order(dep_fnodes):
             if dep_fnode == node.fnode:
                 skipped_self.append(dep_fnode)
                 continue
@@ -257,7 +253,7 @@ class DepGraph:
                 self.state.nodes_by_fnode[dep_fnode] = dep_node
                 self._loader.expand_from_root(root_fnode=dep_fnode, depth=-1)
 
-            candidate_deps = self._dedupe_keep_order([*node.depens, *added])
+            candidate_deps = _dedupe_keep_order([*node.depens, *added])
             candidate_graph = {
                 fnode: list(dep_list) for fnode, dep_list in self.state.dep_graph.items()
             }
@@ -274,7 +270,7 @@ class DepGraph:
 
         if added:
             node.save()
-            self.state.dep_graph[node.fnode] = self._dedupe_keep_order(node.depens)
+            self.state.dep_graph[node.fnode] = _dedupe_keep_order(node.depens)
             for dep_fnode in added:
                 self.state.dep_graph.setdefault(dep_fnode, [])
 
@@ -291,7 +287,7 @@ class DepGraph:
         node = self._loader.ensure_node_loaded(active_root)
 
         removed: list[str] = []
-        for dep_fnode in self._dedupe_keep_order(dep_fnodes):
+        for dep_fnode in _dedupe_keep_order(dep_fnodes):
             if dep_fnode not in node.depens:
                 continue
             node.rmv_dependency(dep_fnode)
@@ -299,35 +295,9 @@ class DepGraph:
 
         if removed:
             node.save()
-            self.state.dep_graph[node.fnode] = self._dedupe_keep_order(node.depens)
+            self.state.dep_graph[node.fnode] = _dedupe_keep_order(node.depens)
 
         return removed
-
-    def referrer_items(
-        self,
-        *,
-        depth: int = 1,
-        target_fnode: str | None = None,
-    ) -> list[DependencyItem]:
-        if depth < -1:
-            raise ValueError("depth must be -1 (infinite) or >= 0")
-
-        active_target = target_fnode or self._bind_root()
-        self.cache.bootstrap_if_needed()
-        if not self.cache.has_fnode(active_target):
-            raise ValueError(f"no mdoc matched reference: {active_target}")
-        return self.cache.referrer_items(
-            target_fnode=active_target,
-            depth=depth,
-        )
-
-    def graph_check_report(self) -> GraphCheckReport:
-        self.cache.bootstrap_if_needed()
-        return self.cache.graph_check_report()
-
-    def global_root_items(self) -> list[GraphRootItem]:
-        self.cache.bootstrap_if_needed()
-        return self.cache.global_root_items()
 
     def dependency_items(
         self,
@@ -358,10 +328,11 @@ class DepGraph:
             root_node=root_node,
             root_fnode=root_fnode,
         )
-        return leaf_items_from_graph(
+        return dependency_items_from_graph(
             mdcroot=self.mdcroot,
             state=self.state,
             root_fnode=active_root,
+            leaf_only=True,
         )
 
     def ordered_nodes(
@@ -452,17 +423,6 @@ class DepGraph:
         if not self.root_fnode:
             raise ValueError("root fnode is required")
         return self.root_fnode
-
-    @staticmethod
-    def _dedupe_keep_order(items: list[str]) -> list[str]:
-        out: list[str] = []
-        seen: set[str] = set()
-        for item in items:
-            if item in seen:
-                continue
-            seen.add(item)
-            out.append(item)
-        return out
 
     def _has_local_graph_state(self, fnode: str) -> bool:
         return (

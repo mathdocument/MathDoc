@@ -1,21 +1,11 @@
-"""dependecy graph package"""
+"""Dependency graph package."""
 
-from .exceptions import DependencyCycleError
-from .graph import DepGraph
-from .models import (
-    GraphIssue,
-    GraphCheckReport,
-    DependencyItem,
-    DependencyTraversalReport,
-    GraphRootItem,
-)
+__all__ = ["DepGraph"]
 
-__all__ = [
-    "DependencyCycleError",
-    "DepGraph",
-    "DependencyItem",
-    "DependencyTraversalReport",
-    "GraphRootItem",
-    "GraphCheckReport",
-    "GraphIssue",
-]
+
+def __getattr__(name: str) -> object:
+    if name == "DepGraph":
+        from .graph import DepGraph
+
+        return DepGraph
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
