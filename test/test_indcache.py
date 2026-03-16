@@ -222,6 +222,102 @@ class TestIndCache(unittest.TestCase):
                 [(root / "dup-a.mdoc").resolve(), (root / "dup-b.mdoc").resolve()],
             )
 
+    def test_upsert_path_updates_cached_edges_and_missing_issues(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_indcache_upsert_graph.") as tmp:
+            root = Path(tmp)
+            (root / ".mdc").mkdir(parents=True, exist_ok=True)
+
+            src_path = root / "src.mdoc"
+            leaf_path = root / "leaf.mdoc"
+            leaf_path.write_text(
+                "@fnode: leaf-node\n"
+                "@title: Leaf Card\n",
+                encoding="utf-8",
+            )
+            src_path.write_text(
+                "@fnode: src-node\n"
+                "@title: Source Card\n"
+                "\n"
+                "@dep:\n"
+                "leaf-node\n"
+                "@end\n",
+                encoding="utf-8",
+            )
+
+            cache = IndCache(root)
+            cache.refresh_all()
+            self.assertEqual(
+                [item.fnode for item in cache.referrer_items(target_fnode="leaf-node", depth=1)],
+                ["src-node"],
+            )
+            self.assertEqual(cache.graph_check_report().missing, [])
+
+            src_path.write_text(
+                "@fnode: src-node\n"
+                "@title: Source Card\n"
+                "\n"
+                "@dep:\n"
+                "missing-target-001\n"
+                "@end\n",
+                encoding="utf-8",
+            )
+            cache.upsert_path(src_path)
+
+            report = cache.graph_check_report()
+            self.assertEqual(
+                [issue.fnode for issue in report.missing],
+                ["missing-target-001"],
+            )
+            self.assertEqual(
+                cache.referrer_items(target_fnode="leaf-node", depth=1),
+                [],
+            )
+
+    def test_cached_graph_queries_cover_roots_refs_and_invalid(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc_indcache_cached_graph.") as tmp:
+            root = Path(tmp)
+            (root / ".mdc").mkdir(parents=True, exist_ok=True)
+
+            (root / "leaf.mdoc").write_text(
+                "@fnode: leaf-node\n"
+                "@title: Leaf Card\n",
+                encoding="utf-8",
+            )
+            (root / "src.mdoc").write_text(
+                "@fnode: src-node\n"
+                "@title: Source Card\n"
+                "\n"
+                "@dep:\n"
+                "leaf-node\n"
+                "@end\n",
+                encoding="utf-8",
+            )
+            bad_path = root / "bad.mdoc"
+            bad_path.write_text(
+                "@fnode: bad-node\n"
+                "@title: Broken Card\n"
+                "@title: Duplicate Broken Title\n",
+                encoding="utf-8",
+            )
+
+            cache = IndCache(root)
+            cache.refresh_all()
+
+            roots = cache.global_root_items()
+            self.assertEqual(roots[0].fnode, "src-node")
+            self.assertEqual(roots[0].component_size, 2)
+            self.assertEqual(roots[1].fnode, "bad-node")
+            self.assertEqual(roots[1].title, "<invalid>")
+
+            refs = cache.referrer_items(target_fnode="leaf-node", depth=1)
+            self.assertEqual([item.fnode for item in refs], ["src-node"])
+
+            report = cache.graph_check_report()
+            self.assertEqual(report.nodes, 3)
+            self.assertEqual(report.edges, 1)
+            self.assertEqual(len(report.invalid), 1)
+            self.assertEqual(report.invalid[0].fnode, "bad-node")
+
 
 if __name__ == "__main__":
     unittest.main()

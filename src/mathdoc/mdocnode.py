@@ -77,7 +77,7 @@ class MdocNode:
         if dep_fnode in self.depens:
             self.depens.remove(dep_fnode)
 
-    def load(self) -> None:
+    def load(self, *, include_blocks: bool = True) -> None:
         """
         Load card content from file.
         """
@@ -89,6 +89,7 @@ class MdocNode:
         title: str = ""
         depens: list[str] = []
         blocks: list[SrcBlock] = []
+        seen_srctypes: set[str] = set()
 
         status = ""
         for index, raw_line in enumerate(lines, start=1):
@@ -114,7 +115,8 @@ class MdocNode:
                 if line == "@end":
                     status = ""
                     continue
-                blocks[-1].content += raw_line + "\n"
+                if include_blocks:
+                    blocks[-1].content += raw_line + "\n"
                 continue
 
             if not line:
@@ -164,12 +166,15 @@ class MdocNode:
                         f"line {index}: unexpected '@src' after {status} block in {self.path}"
                     )
                 srctype, metadata = self._parse_src_header(line)
-                for block in blocks:
-                    if srctype == block.srctype:
-                        raise ValueError(
-                            f"line {index}: Duplicate '@src' srctype '{srctype}' in {self.path}"
-                        )
-                blocks.append(SrcBlock(srctype=srctype, content="", metadata=metadata))
+                if srctype in seen_srctypes:
+                    raise ValueError(
+                        f"line {index}: Duplicate '@src' srctype '{srctype}' in {self.path}"
+                    )
+                seen_srctypes.add(srctype)
+                if include_blocks:
+                    blocks.append(
+                        SrcBlock(srctype=srctype, content="", metadata=metadata)
+                    )
                 status = "@src"
                 continue
 
