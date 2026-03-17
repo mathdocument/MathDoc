@@ -52,6 +52,7 @@ impl DepGraph {
         }
         node.path = resolve_new_node_path(&root, file_path, &node.fnode)?;
         node.save()?;
+        let node_path = node.path.clone();
         let rel_path = to_rel_path(&root, &node.path);
         let cache = match cache {
             Some(c) => c,
@@ -63,6 +64,7 @@ impl DepGraph {
             state: GraphState::default(),
         };
         graph.set_root_node(node)?;
+        graph.cache.upsert_path(&node_path)?;
         Ok((graph, rel_path))
     }
 
@@ -302,46 +304,6 @@ impl DepGraph {
         }
 
         if !added.is_empty() {
-            self.expand_from_root(&root.clone(), -1)?;
-
-            for dep_fnode in &added {
-                if !self.state.nodes_by_fnode.contains_key(dep_fnode) {
-                    if let Some(node) = self.load_node(dep_fnode, true, true)? {
-                        self.state.nodes_by_fnode.insert(dep_fnode.clone(), node);
-                    }
-                    self.state.dep_graph.entry(dep_fnode.clone()).or_default();
-                    if self.state.nodes_by_fnode.contains_key(dep_fnode) {
-                        self.expand_from_root(dep_fnode, -1)?;
-                    }
-                }
-            }
-
-            // Cycle check on a candidate graph
-            let current_depens = {
-                let node = &self.state.nodes_by_fnode[&root];
-                dedupe_keep_order(&node.depens)
-            };
-            let mut candidate_deps = current_depens;
-            for dep in &added {
-                if !candidate_deps.contains(dep) {
-                    candidate_deps.push(dep.clone());
-                }
-            }
-            let mut candidate_graph: HashMap<String, Vec<String>> = self
-                .state
-                .dep_graph
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-            candidate_graph.insert(root.clone(), candidate_deps);
-            for dep_fnode in &added {
-                candidate_graph.entry(dep_fnode.clone()).or_default();
-            }
-
-            if let Some(cycle) = find_cycle(&candidate_graph, Some(&root)) {
-                bail!("dependency cycle detected: {}", cycle.join(" → "));
-            }
-
             // Commit: mutate the node and save
             {
                 let node = self

@@ -114,6 +114,11 @@ pub fn refresh_reachable_from_path(
         if !seen.insert(rel_path.clone()) {
             continue;
         }
+        // Skip files that no longer exist at the cached path — they may have been
+        // renamed. Cleaning up stale paths is sync's job, not a targeted refresh.
+        if !file_path.exists() {
+            continue;
+        }
         upsert_mdoc_row(conn, root, &file_path)?;
         if depth != -1 && item_depth as i32 >= depth {
             continue;
@@ -229,6 +234,22 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
                 }
             }
             insert_issue(conn, &rel_path, "invalid", ref_fnode, &e.to_string())?;
+        }
+    }
+
+    // If the file was renamed, the old path for this fnode is still in the cache.
+    // Clean it up now so that refresh_duplicate_issues_for_fnode doesn't flag a
+    // spurious duplicate.
+    if let Some(ref nf) = new_fnode {
+        let mut stmt =
+            conn.prepare("SELECT path FROM mdocs WHERE fnode = ? AND path != ?")?;
+        let stale_paths: Vec<String> = stmt
+            .query_map(rusqlite::params![nf, rel_path], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for stale_rel in stale_paths {
+            if !root_resolved.join(&stale_rel).exists() {
+                delete_indexed_path(conn, &stale_rel)?;
+            }
         }
     }
 

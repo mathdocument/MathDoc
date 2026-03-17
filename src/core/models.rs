@@ -64,4 +64,6 @@ pub struct DependencyTraversalReport {
     pub items: Vec<DependencyItem>,
     pub dep_graph: HashMap<String, Vec<String>>,
     pub issues_by_fnode: HashMap<String, GraphIssue>,
+    /// Cycles detected in the traversed subgraph. Each cycle is [A, B, ..., A].
+    pub cycles: Vec<Vec<String>>,
 }

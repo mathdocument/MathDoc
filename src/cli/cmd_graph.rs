@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::core::{GraphIssue, IssueKind};
 
-use super::{fmt_item, open_cache, require_mdcroot, BOLD, DIM, GREEN, RED, RESET, YELLOW};
+use super::{fmt_item, open_cache, require_mdcroot, BOLD, DIM, GREEN, RED, RESET};
 
 // ── cmd: graph check ──────────────────────────────────────────────────────────
 
@@ -42,18 +42,8 @@ pub(super) fn cmd_graph_check(full: bool) -> Result<i32> {
         println!("  {RED}cycles ({}):{RESET}", report.cycles.len());
         for cycle in &report.cycles {
             let fnode_refs: Vec<&str> = cycle.iter().map(|s| s.as_str()).collect();
-            let label = match cache.lookup_by_fnode(&fnode_refs) {
-                Ok(rows) => {
-                    let m: std::collections::HashMap<_, _> = rows.into_iter().collect();
-                    cycle
-                        .iter()
-                        .map(|f| m.get(f).map(|(t, _)| t.as_str()).unwrap_or(f.as_str()))
-                        .collect::<Vec<_>>()
-                        .join(" → ")
-                }
-                Err(_) => cycle.join(" → "),
-            };
-            println!("    {YELLOW}↺{RESET} {label}");
+            let label_map = cache.lookup_by_fnode(&fnode_refs).unwrap_or_default();
+            super::print_cycle(cycle, &label_map);
         }
     }
     Ok(1)

@@ -5,7 +5,7 @@ use crate::config::Config;
 use crate::depgraph::DepGraph;
 
 use super::{
-    cwd, eprintln_err, eprintln_warn, open_cache, print_dep_report, require_mdcroot, BOLD, GREEN,
+    cwd, eprintln_err, open_cache, print_dep_report, require_mdcroot, BOLD, GREEN,
     RED, RESET,
 };
 
@@ -14,14 +14,15 @@ use super::{
 pub(super) fn cmd_eval(source: String, depth: i32) -> Result<i32> {
     let mdcroot = require_mdcroot()?;
     let mut cache = open_cache(mdcroot.clone())?;
+
     cache.discover_workspace_changes()?;
+    // Also ensure the source is in the cache if it was just created on disk.
+    if let Ok(src_path) = cache.resolve_edit_target_path(&source, Some(&cwd())) {
+        let _ = cache.upsert_path(&src_path);
+    }
 
     let (mut graph, _) = DepGraph::from_ref(cache, &source, Some(&cwd()))?;
     let root_path = graph.root_path()?;
-
-    if let Err(e) = graph.cache.upsert_path(&root_path) {
-        eprintln_warn(&format!("index update failed: {e}"));
-    }
     graph.cache.refresh_reachable_from_path(&root_path, depth)?;
 
     let root_item = graph.root_item()?;

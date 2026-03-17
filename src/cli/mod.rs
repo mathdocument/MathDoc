@@ -148,16 +148,9 @@ enum DepCommands {
         source: String,
         #[arg(short, long, default_value = "1", allow_hyphen_values = true)]
         depth: i32,
-        /// Refresh the cached dependency subgraph first.
-        #[arg(long)]
-        refresh: bool,
     },
     /// Show all leaf dependencies (no further deps).
-    Leaf {
-        source: String,
-        #[arg(long)]
-        refresh: bool,
-    },
+    Leaf { source: String },
     /// Interactively remove dependencies from a mdoc.
     Rm { source: String },
     /// Show reverse dependencies (who depends on this).
@@ -165,8 +158,6 @@ enum DepCommands {
         target: String,
         #[arg(short, long, default_value = "1", allow_hyphen_values = true)]
         depth: i32,
-        #[arg(long)]
-        refresh: bool,
     },
 }
 
@@ -201,18 +192,10 @@ fn dispatch(cmd: Commands) -> Result<i32> {
                 query,
                 max_results,
             } => cmd_deps::cmd_dep_add(source, query, max_results),
-            DepCommands::Show {
-                source,
-                depth,
-                refresh,
-            } => cmd_deps::cmd_dep_show(source, depth, refresh),
-            DepCommands::Leaf { source, refresh } => cmd_deps::cmd_dep_leaf(source, refresh),
+            DepCommands::Show { source, depth } => cmd_deps::cmd_dep_show(source, depth),
+            DepCommands::Leaf { source } => cmd_deps::cmd_dep_leaf(source),
             DepCommands::Rm { source } => cmd_deps::cmd_dep_rm(source),
-            DepCommands::Refs {
-                target,
-                depth,
-                refresh,
-            } => cmd_deps::cmd_dep_refs(target, depth, refresh),
+            DepCommands::Refs { target, depth } => cmd_deps::cmd_dep_refs(target, depth),
         },
     }
 }
@@ -236,6 +219,40 @@ fn cwd() -> PathBuf {
 
 // ── Shared output helpers ─────────────────────────────────────────────────────
 
+/// Print a single cycle in vertical format with a left-side bracket.
+/// `label_map`: fnode → (title, rel_path), used for display titles.
+/// Cycles are stored as [A, B, …, A]; the repeated tail is stripped.
+fn print_cycle(cycle: &[String], label_map: &HashMap<String, (String, String)>) {
+    let nodes = if cycle.len() > 1 && cycle.first() == cycle.last() {
+        &cycle[..cycle.len() - 1]
+    } else {
+        cycle
+    };
+    if nodes.is_empty() {
+        return;
+    }
+    let fmt_node = |f: &str| -> String {
+        match label_map.get(f) {
+            Some((t, p)) => fmt_item(f, t, p, false),
+            None => format!("{DIM}{}{RESET}", short_fnode(f)),
+        }
+    };
+    if nodes.len() == 1 {
+        println!("    {YELLOW}↺{RESET}  {}", fmt_node(&nodes[0]));
+    } else {
+        for (i, fnode) in nodes.iter().enumerate() {
+            let item = fmt_node(fnode);
+            if i == 0 {
+                println!("    {DIM}┌➤{RESET}  {item}");
+            } else if i == nodes.len() - 1 {
+                println!("    {DIM}└─{RESET}  {item}");
+            } else {
+                println!("    {DIM}│{RESET}   {item}");
+            }
+        }
+    }
+}
+
 fn print_dep_report(
     anchor_label: &str,
     anchor: &DependencyItem,
@@ -251,11 +268,11 @@ fn print_dep_report(
         println!("  {DIM}no {count_label}{RESET}");
         return;
     }
-    println!("  {BOLD}{}{RESET} {count_label}", items.len());
+    println!("   {BOLD}{}{RESET} {count_label}", items.len());
     for item in items {
         let broken = issues.contains_key(&item.fnode);
         println!(
-            "  [{}]  {}",
+            "   [{}]  {}",
             item.depth,
             fmt_item(&item.fnode, &item.title, &item.rel_path, broken)
         );

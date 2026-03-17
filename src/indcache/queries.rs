@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 pub(crate) const CHUNK_SIZE: usize = 500;
 
 use crate::core::{
-    component_has_cycle, find_cycle, representative_cycle, strongly_connected_components,
+    component_has_cycle, representative_cycle, strongly_connected_components,
     DependencyItem, DependencyTraversalReport, GraphCheckReport, GraphIssue, GraphRootItem,
     IssueKind,
 };
@@ -386,9 +386,12 @@ fn dependency_report_inner(
         }
     }
 
-    if let Some(cycle) = find_cycle(&report_graph, Some(root_fnode)) {
-        bail!("dependency cycle detected: {}", cycle.join(" → "));
-    }
+    let mut cycles: Vec<Vec<String>> = strongly_connected_components(&report_graph)
+        .into_iter()
+        .filter(|c| component_has_cycle(&report_graph, c))
+        .filter_map(|c| representative_cycle(&report_graph, &c))
+        .collect();
+    cycles.sort();
 
     let issues_in_graph: HashMap<String, GraphIssue> = issues
         .into_iter()
@@ -400,6 +403,7 @@ fn dependency_report_inner(
         items,
         dep_graph: report_graph,
         issues_by_fnode: issues_in_graph,
+        cycles,
     })
 }
 
