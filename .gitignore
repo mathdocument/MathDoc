@@ -1,9 +1,6 @@
 .*
 !.gitignore
 
-# builds 
-__pycache__/
+# builds
+target/
 
-# tests
-test/*
-!test/*.py

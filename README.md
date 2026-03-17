@@ -2,14 +2,21 @@
 
 `MathDoc` is a math knowledge management tool with a command-line interface exposed as `mdc`, which manages `.mdoc` files inside an initialized workspace with a `.mdc/` directory.
 
-Each `.mdoc` file owns a unique `fnode` id and represents a small chunk of knowledge that can be supplemented by plain texts and code blocks. `.mdoc` files can refer other as dependencies, circular dependencies are forbidden.
+Each `.mdoc` file owns a unique `fnode` id and represents a small chunk of knowledge that can be supplemented by plain texts and source blocks. `.mdoc` files can declare other files as dependencies; circular dependencies are forbidden.
 
-References to `.mdoc` files accepted by `mdc` commands are
-- a `.mdoc` path
-- a full `fnode`
-- a unique `fnode` prefix
+## Build
 
+```bash
+cargo build --release
+# binary: target/release/mdc
+```
 
+## References to `.mdoc` files
+
+References accepted by `mdc` commands:
+- a `.mdoc` path (absolute, relative to cwd, or relative to workspace root)
+- a full `fnode` UUID
+- a unique `fnode` prefix (first 8 chars are sufficient)
 
 ## Workflow example
 
@@ -18,11 +25,11 @@ mdc init
 mdc new -t "Root Note" -f notes/root-note
 mdc edit notes/root-note.mdoc
 mdc new -t "Background Lemma" -f notes/background-lemma
-# use the created path or fnode reported by `mdc new` as <root>
-mdc dep add <root> background
-mdc dep show <root> -d -1
-mdc dep leaf <root>
-mdc eval <root>
+# use the path or fnode reported by `mdc new` as <ref>
+mdc dep add <ref> background
+mdc dep show <ref> -d -1
+mdc dep leaf <ref>
+mdc eval <ref>
 mdc graph check
 ```
 
@@ -36,7 +43,7 @@ Initialize the current directory as a MathDoc workspace:
 ```bash
 mdc init
 ```
-This will create a `.mdc` folder in your current directory, nested MathDoc workspaces are allowed but what they manage will be separated.
+Creates a `.mdc/` folder. Nested MathDoc workspaces are allowed but managed separately.
 
 #### `mdc new`
 
@@ -45,106 +52,84 @@ Create a new `.mdoc` file:
 mdc new -t "Matrix Rank"
 mdc new -t "Matrix Rank" -f notes/matrix-rank
 ```
-- `-t, --title`: title of the new mdoc, default is `Untitled`
-- `-f, --file`: relative output file path without the forced `.mdoc` suffix
-- default behavior creates `<fnode>.mdoc` at the mdoc root
-- the `.mdoc` suffix is always appended; for example `-f data/ok.mdoc` creates `data/ok.mdoc.mdoc`
-
+- `-t, --title`: title of the new mdoc (default: `Untitled`)
+- `-f, --file`: relative output path without `.mdoc` suffix; default creates `<fnode>.mdoc` at workspace root
+- the `.mdoc` suffix is always appended automatically
 
 #### `mdc edit`
 
-Open a mdoc in `$EDITOR`, then refresh its index in search cache:
+Open a mdoc in `$EDITOR`, then refresh its index entry:
 ```bash
-mdc edit <source>
+mdc edit <ref>
 ```
 
 #### `mdc sync`
 
-Force-refresh the whole search cache:
+Force-refresh the entire workspace index:
 ```bash
 mdc sync
 ```
 
 #### `mdc search`
 
-Search mdocs:
+Search mdocs by title or fnode:
 ```bash
 mdc search <query>
-mdc search <query> --max-results 20
+mdc search <query> -n 20
 ```
-- `-n, --max-results`: maximum number of results to display, default is `200`
-
-Examples:
-```bash
-mdc search matrix
-mdc search a1b2c3d4
-```
+- `-n, --max-results`: maximum results to display (default: `200`)
 
 ### Dependency Commands
 
 #### `mdc dep add`
 
-Interactively search for candidate nodes and add them as direct dependencies of a source mdoc:
-
+Interactively search for candidates and add them as direct dependencies:
 ```bash
 mdc dep add <source> <query>
-mdc dep add <source> <query> --max-results 50
+mdc dep add <source> <query> -n 50
 ```
-- interactive selection in the terminal
-- `-n, --max-results`: maximum number of candidates to display, default is `200`
-- if there are no matches and the command is run in a TTY, `mdc dep add` prompts whether to create a new mdoc and add it immediately as a dependency
-- cycle-producing dependency additions are rejected before the file is written
-
+- Interactive selection in the terminal (enter comma-separated numbers or ranges)
+- Cycle-producing additions are rejected before the file is written
 
 #### `mdc dep rm`
-Interactively remove direct dependencies from a mdoc:
 
+Interactively remove direct dependencies:
 ```bash
 mdc dep rm <source>
 ```
-
-- interactive selection in the terminal
-- broken dependency rows can also be removed
 
 #### `mdc dep show`
 
 Show forward dependencies of a mdoc:
 ```bash
 mdc dep show <source>
-mdc dep show <source> --depth -1
+mdc dep show <source> -d -1
 mdc dep show <source> --refresh
 ```
-- `-d, --depth`: traversal depth, default is `1`, use `-1` for unlimited traversal
-- default mode reads the cached dependency graph
-- `--refresh` first runs workspace discovery for new/deleted/renamed `.mdoc` paths, then refreshes the reachable cached subgraph
-- use `mdc sync` when you want a full repository refresh
+- `-d, --depth`: traversal depth (default: `1`; `-1` = unlimited)
+- `--refresh`: runs workspace discovery then refreshes the reachable cached subgraph
 
 #### `mdc dep leaf`
 
-Show all reachable leaf dependencies of a mdoc:
+Show all reachable leaf dependencies (nodes with no further deps):
 ```bash
 mdc dep leaf <source>
 mdc dep leaf <source> --refresh
 ```
-- traverses the full reachable dependency graph
-- only prints nodes that have no downstream dependencies
-- shared leaves are deduplicated
-- default mode reads the cached dependency graph
-- `--refresh` first runs workspace discovery for new/deleted/renamed `.mdoc` paths, then refreshes the reachable cached subgraph
-- use `mdc sync` when you want a full repository refresh
+- `--refresh`: runs workspace discovery then refreshes the reachable cached subgraph
 
 #### `mdc dep refs`
 
-Show referrers of a target mdoc:
+Show reverse dependencies (who depends on this node):
 ```bash
 mdc dep refs <target>
-mdc dep refs <target> --depth -1
+mdc dep refs <target> -d -1
 mdc dep refs <target> --refresh
 ```
-- `-d, --depth`: traversal depth, default is `1`, use `-1` for unlimited traversal
-- by default reads the cached graph index
-- use `--refresh` or `mdc sync` after external file edits
+- `-d, --depth`: traversal depth (default: `1`)
+- `--refresh`: runs incremental workspace refresh before resolving the target
 
+### Graph Commands
 
 #### `mdc graph check`
 
@@ -153,66 +138,64 @@ Inspect the global dependency graph for repository-wide issues:
 mdc graph check
 mdc graph check --full
 ```
-This scan reports:
-- total number of `.mdoc` files
-- total number of dependency relations
-- missing dependency targets
-- invalid `.mdoc` files
-- dependency cycles
-- default mode reads the cached graph index
-- use `--full` to refresh the workspace before checking, or `mdc sync` beforehand
+Reports: node/edge counts, missing targets, invalid files, dependency cycles.
+- `--full`: refresh the workspace before checking
 
 #### `mdc graph roots`
 
-Show all global root nodes that are not depended on by any other node:
+Show all global root nodes (no incoming dependencies):
 ```bash
 mdc graph roots
 mdc graph roots --refresh
 ```
-This scan reports:
-- includes valid nodes and invalid files that currently have no incoming dependencies
-- excludes missing dependency placeholders
-- shows each root's weakly connected component size, excluding missing placeholders
-- sorts roots by component size descending
-- default mode reads the cached graph index
-- use `--refresh` or `mdc sync` after external file edits
-
+- Shows each root's weakly connected component size
+- `--refresh`: runs incremental workspace refresh first
 
 ### Evaluation Commands
 
 #### `mdc eval`
 
-One can write codeblocks in `.mdoc` files of the form
-```mdoc
-@src: [type]
-@end
-```
-where [type] for now could be natl/latex/lean/python.
-
-`mdc eval` will first merge all the dependent-enabled code blocks of the dependencies of a given source `.mdoc` file in topological order, and then compile them according to compiling configurations:
+Compile and run all source blocks in a mdoc and its dependency tree:
 ```bash
 mdc eval <source>
-mdc eval <source> --depth -1
+mdc eval <source> -d -1
 ```
-- `-d, --depth`: dependency traversal depth, default is `1`, use `-1` for unlimited depth
-- dependency preflight starts with workspace discovery, then uses the cached reachable graph with targeted refresh of currently reachable dependency rows
-- actual execution still loads the real reachable `.mdoc` files and block content from disk
+- `-d, --depth`: dependency traversal depth (default: `1`)
+- Merges ancestor blocks of the same srctype in topological order before compilation (for srctypes with `depens = true`)
+- Supported srctypes: `natl`, `latex`, `lean`, `py`
 
-To modify the default compiling behavior of `mdc eval`, edit `.mdc/config.toml`. The default compiling configuration is
+#### Source block format
+
+```
+@src: natl
+plain text content
+@end
+
+@src: py
+print("hello")
+@end
+```
+
+#### Compiler configuration
+
+Edit `.mdc/config.toml` to configure compiler behavior. Effective defaults (built into the binary):
+
+| Setting          | natl | latex    | lean     | py    |
+| ---------------- | ---- | -------- | -------- | ----- |
+| `depens`         | true | true     | true     | false |
+| `reverse_depens` | true | true     | true     | true  |
+| `timeout_sec`    | —    | required | required | 30s   |
+
+For `latex`, `preamble` and `postamble` are **required** in config.toml (no built-in default). Example:
+
 ```toml
-[src.natl]
-depens = true
-
 [src.latex]
-depens = true
-preamble = '''
-\documentclass{article}
-\begin{document}
-'''
-postamble = '''
-\end{document}
-'''
-
-[src.py]
-depens = false
+timeout_sec = 60
+preamble = """
+\\documentclass{article}
+\\begin{document}
+"""
+postamble = """
+\\end{document}
+"""
 ```

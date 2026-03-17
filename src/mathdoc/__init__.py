@@ -1,1 +1,0 @@
-"""mathdoc package"""
