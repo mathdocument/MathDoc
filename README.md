@@ -2,7 +2,7 @@
 
 `MathDoc` is a math knowledge management tool with a command-line interface exposed as `mdc`, which manages `.mdoc` files inside an initialized workspace with a `.mdc/` directory.
 
-Each `.mdoc` file owns a unique `fnode` id and represents a small chunk of knowledge that can be supplemented by plain texts and source blocks. `.mdoc` files can declare other files as dependencies; circular dependencies are forbidden.
+Each `.mdoc` file owns a unique `fnode` id and represents a small chunk of knowledge that can be supplemented by plain text and source blocks. `.mdoc` files can declare other files as dependencies; circular dependencies are forbidden.
 
 ## Build
 
@@ -23,14 +23,14 @@ References accepted by `mdc` commands:
 ```bash
 mdc init
 mdc new -t "Root Note" -f notes/root-note
-mdc edit notes/root-note.mdoc
 mdc new -t "Background Lemma" -f notes/background-lemma
 # use the path or fnode reported by `mdc new` as <ref>
-mdc dep add <ref> background
-mdc dep show <ref> -d -1
-mdc dep leaf <ref>
-mdc eval <ref>
+mdc dep add notes/root-note.mdoc background
+mdc dep show notes/root-note.mdoc -d -1
+mdc dep leaf notes/root-note.mdoc
+mdc eval notes/root-note.mdoc
 mdc graph check
+mdc graph tui
 ```
 
 ## Command Reference
@@ -55,13 +55,6 @@ mdc new -t "Matrix Rank" -f notes/matrix-rank
 - `-t, --title`: title of the new mdoc (default: `Untitled`)
 - `-f, --file`: relative output path without `.mdoc` suffix; default creates `<fnode>.mdoc` at workspace root
 - the `.mdoc` suffix is always appended automatically
-
-#### `mdc edit`
-
-Open a mdoc in `$EDITOR`, then refresh its index entry:
-```bash
-mdc edit <ref>
-```
 
 #### `mdc sync`
 
@@ -89,7 +82,6 @@ mdc dep add <source> <query>
 mdc dep add <source> <query> -n 50
 ```
 - Interactive selection in the terminal (enter comma-separated numbers or ranges)
-- Cycle-producing additions are rejected before the file is written
 
 #### `mdc dep rm`
 
@@ -104,19 +96,16 @@ Show forward dependencies of a mdoc:
 ```bash
 mdc dep show <source>
 mdc dep show <source> -d -1
-mdc dep show <source> --refresh
 ```
 - `-d, --depth`: traversal depth (default: `1`; `-1` = unlimited)
-- `--refresh`: runs workspace discovery then refreshes the reachable cached subgraph
+- Runs incremental workspace discovery automatically
 
 #### `mdc dep leaf`
 
 Show all reachable leaf dependencies (nodes with no further deps):
 ```bash
 mdc dep leaf <source>
-mdc dep leaf <source> --refresh
 ```
-- `--refresh`: runs workspace discovery then refreshes the reachable cached subgraph
 
 #### `mdc dep refs`
 
@@ -124,32 +113,36 @@ Show reverse dependencies (who depends on this node):
 ```bash
 mdc dep refs <target>
 mdc dep refs <target> -d -1
-mdc dep refs <target> --refresh
 ```
 - `-d, --depth`: traversal depth (default: `1`)
-- `--refresh`: runs incremental workspace refresh before resolving the target
 
 ### Graph Commands
 
 #### `mdc graph check`
 
-Inspect the global dependency graph for repository-wide issues:
+Scan the workspace and report repository-wide issues:
 ```bash
 mdc graph check
-mdc graph check --full
 ```
 Reports: node/edge counts, missing targets, invalid files, dependency cycles.
-- `--full`: refresh the workspace before checking
 
 #### `mdc graph roots`
 
-Show all global root nodes (no incoming dependencies):
+Show all global root nodes (no incoming dependencies), sorted by topo height (deepest dependency tree first):
 ```bash
 mdc graph roots
-mdc graph roots --refresh
 ```
-- Shows each root's weakly connected component size
-- `--refresh`: runs incremental workspace refresh first
+
+#### `mdc graph tui`
+
+Open the interactive graph browser:
+```bash
+mdc graph tui
+mdc graph tui <ref>
+```
+- Defaults to the highest root node (largest dependency tree)
+- `<ref>`: start at a specific node (fnode prefix, path, or title)
+
 
 ### Evaluation Commands
 
@@ -162,7 +155,7 @@ mdc eval <source> -d -1
 ```
 - `-d, --depth`: dependency traversal depth (default: `1`)
 - Merges ancestor blocks of the same srctype in topological order before compilation (for srctypes with `depens = true`)
-- Supported srctypes: `natl`, `latex`, `lean`, `py`
+- Current supported srctypes: `natl`, `latex`, `lean`, `py`
 
 #### Source block format
 

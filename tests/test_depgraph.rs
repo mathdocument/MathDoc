@@ -174,7 +174,7 @@ fn test_eval_blocks_runs_all_blocks() {
 
     let mut graph = DepGraph::new(root.to_path_buf(), &node.fnode).unwrap();
     let results = graph
-        .eval_blocks(1, &default_registry(), &load_config(root), None)
+        .eval_blocks(1, &default_registry(), &load_config(root), None, None, None)
         .unwrap();
 
     assert_eq!(results.len(), 2);
@@ -204,7 +204,7 @@ fn test_eval_blocks_merges_dependencies_with_default_depth() {
 
     let mut graph = DepGraph::new(root.to_path_buf(), &src.fnode).unwrap();
     let results = graph
-        .eval_blocks(1, &default_registry(), &load_config(root), None)
+        .eval_blocks(1, &default_registry(), &load_config(root), None, None, None)
         .unwrap();
 
     assert_eq!(results.len(), 1);
@@ -231,7 +231,14 @@ fn test_eval_blocks_merges_dependencies_with_unbounded_depth() {
 
     let mut graph = DepGraph::new(root.to_path_buf(), &src.fnode).unwrap();
     let results = graph
-        .eval_blocks(-1, &default_registry(), &load_config(root), None)
+        .eval_blocks(
+            -1,
+            &default_registry(),
+            &load_config(root),
+            None,
+            None,
+            None,
+        )
         .unwrap();
 
     assert_eq!(results.len(), 1);
@@ -263,7 +270,14 @@ fn test_eval_blocks_respects_reverse_depens_override() {
 
     let mut graph = DepGraph::new(root.to_path_buf(), &src.fnode).unwrap();
     let results = graph
-        .eval_blocks(-1, &default_registry(), &load_config(root), None)
+        .eval_blocks(
+            -1,
+            &default_registry(),
+            &load_config(root),
+            None,
+            None,
+            None,
+        )
         .unwrap();
 
     assert_eq!(results.len(), 1);
@@ -285,7 +299,14 @@ fn test_eval_blocks_does_not_merge_when_depens_disabled() {
 
     let mut graph = DepGraph::new(root.to_path_buf(), &src.fnode).unwrap();
     let results = graph
-        .eval_blocks(-1, &default_registry(), &load_config(root), None)
+        .eval_blocks(
+            -1,
+            &default_registry(),
+            &load_config(root),
+            None,
+            None,
+            None,
+        )
         .unwrap();
 
     assert_eq!(results.len(), 1);
@@ -311,7 +332,14 @@ fn test_eval_blocks_raises_on_dependency_cycle() {
     dep.save().unwrap();
 
     let mut graph = DepGraph::new(root.to_path_buf(), &src.fnode).unwrap();
-    let err = expect_err(graph.eval_blocks(-1, &default_registry(), &load_config(root), None));
+    let err = expect_err(graph.eval_blocks(
+        -1,
+        &default_registry(),
+        &load_config(root),
+        None,
+        None,
+        None,
+    ));
     assert!(
         err.to_string().contains("dependency cycle detected"),
         "unexpected error: {err}"
@@ -332,7 +360,7 @@ fn test_eval_blocks_depth_zero_compiles_root_only_no_merge() {
 
     let mut graph = DepGraph::new(root.to_path_buf(), &src.fnode).unwrap();
     let results = graph
-        .eval_blocks(0, &default_registry(), &load_config(root), None)
+        .eval_blocks(0, &default_registry(), &load_config(root), None, None, None)
         .unwrap();
 
     assert_eq!(results.len(), 1);
@@ -398,7 +426,7 @@ fn test_direct_dependency_mutation_uses_graph_api() {
 }
 
 #[test]
-fn test_add_direct_dependencies_rejects_cycle_before_save() {
+fn test_add_direct_dependencies_allows_cycle() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
 
@@ -414,17 +442,16 @@ fn test_add_direct_dependencies_rejects_cycle_before_save() {
         .unwrap();
     assert_eq!(added, vec![dep.fnode.clone()]);
 
-    // dep → src would create cycle
+    // dep → src creates a cycle — this is now allowed
     let mut graph_dep = DepGraph::new(root.to_path_buf(), &dep.fnode).unwrap();
-    let err = expect_err(graph_dep.add_direct_dependencies(vec![src.fnode.clone()]));
-    assert!(
-        err.to_string().contains("dependency cycle"),
-        "unexpected error: {err}"
-    );
+    let (added2, _, _) = graph_dep
+        .add_direct_dependencies(vec![src.fnode.clone()])
+        .unwrap();
+    assert_eq!(added2, vec![src.fnode.clone()]);
 
-    // dep's file should NOT have been modified
+    // dep's file should have been updated
     let reloaded = MdocNode::load(root, &dep.path).unwrap();
-    assert!(reloaded.depens.is_empty());
+    assert_eq!(reloaded.depens, vec![src.fnode.clone()]);
 }
 
 // ── scan_all ──────────────────────────────────────────────────────────────────

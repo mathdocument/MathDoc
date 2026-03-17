@@ -1,18 +1,16 @@
 mod query;
 mod state;
 
-pub use state::{make_invalid_issue, GraphState};
-
+use anyhow::{bail, Result};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-
-use anyhow::{bail, Result};
 
 use crate::core::{find_cycle, topo_dependencies_first, DependencyItem, GraphIssue};
 use crate::indcache::IndCache;
 use crate::mdoc::{read_mdoc_head, MdocNode};
 use crate::workspace::{find_nested_mdcroot, iter_mdoc_files, to_rel_path};
 use query::dependency_items_from_graph;
+use state::{make_invalid_issue, GraphState};
 
 // ── DepGraph ──────────────────────────────────────────────────────────────────
 
@@ -372,6 +370,8 @@ impl DepGraph {
         registry: &crate::compiler::CompilerRegistry,
         config: &crate::config::Config,
         progress: Option<fn(&str)>,
+        on_start: Option<&mut dyn FnMut(usize, usize, &str)>,
+        on_result: Option<&mut dyn FnMut(usize, usize, &crate::compiler::BlockResult)>,
     ) -> Result<Vec<crate::compiler::BlockResult>> {
         // ordered_nodes returns topo order: [dep_deepest, ..., dep_direct, root]
         let nodes = self.ordered_nodes(depth)?;
@@ -386,7 +386,13 @@ impl DepGraph {
         };
 
         let mut results = Vec::new();
-        for block in &root_node.blocks {
+        let total = root_node.blocks.len();
+        let mut on_start = on_start;
+        let mut on_result = on_result;
+        for (i, block) in root_node.blocks.iter().enumerate() {
+            if let Some(ref mut cb) = on_start {
+                cb(i + 1, total, &block.srctype);
+            }
             let src_cfg = config.src_config(&block.srctype);
             let content = if src_cfg.effective_depens(&block.srctype) && !dep_nodes.is_empty() {
                 // Collect same-srctype blocks from dep nodes (in topo order: deepest first)
@@ -433,11 +439,15 @@ impl DepGraph {
                     crate::compiler::CompilerRes::err(format!("unknown srctype: {}", block.srctype))
                 }
             };
-            results.push(crate::compiler::BlockResult {
+            let br = crate::compiler::BlockResult {
                 node_fnode: root_node.fnode.clone(),
                 srctype: block.srctype.clone(),
                 res,
-            });
+            };
+            if let Some(ref mut cb) = on_result {
+                cb(i + 1, total, &br);
+            }
+            results.push(br);
         }
         Ok(results)
     }
@@ -563,16 +573,12 @@ impl DepGraph {
                 }
                 if !self.state.nodes_by_fnode.contains_key(dep_fnode) {
                     if let Some(node) = self.load_node(dep_fnode, true, true)? {
+                        let sub_depens = dedupe_keep_order(&node.depens.clone());
                         self.state.nodes_by_fnode.insert(dep_fnode.clone(), node);
-                        if self.state.nodes_by_fnode.contains_key(dep_fnode) {
-                            let sub_depens = dedupe_keep_order(
-                                &self.state.nodes_by_fnode[dep_fnode].depens.clone(),
-                            );
-                            self.state
-                                .dep_graph
-                                .entry(dep_fnode.clone())
-                                .or_insert_with(|| sub_depens);
-                        }
+                        self.state
+                            .dep_graph
+                            .entry(dep_fnode.clone())
+                            .or_insert(sub_depens);
                     }
                 }
                 self.state

@@ -1,6 +1,3 @@
-//! Read-only query functions over an open SQLite connection.
-//! All functions take `&Connection`; the caller owns the transaction boundary.
-
 use anyhow::{bail, Result};
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -8,9 +5,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 pub(crate) const CHUNK_SIZE: usize = 500;
 
 use crate::core::{
-    component_has_cycle, representative_cycle, strongly_connected_components,
-    DependencyItem, DependencyTraversalReport, GraphCheckReport, GraphIssue, GraphRootItem,
-    IssueKind,
+    component_has_cycle, representative_cycle, strongly_connected_components, DependencyItem,
+    DependencyTraversalReport, GraphCheckReport, GraphIssue, GraphRootItem, IssueKind,
 };
 
 // ── Public query functions ──────────────────────────────────────────────────
@@ -60,6 +56,98 @@ pub fn referrer_items(
         }
     }
     Ok(items)
+}
+
+/// Compute the height of every node: leaves (no dependencies) = 0,
+/// a node's height = 1 + max height of its dependencies.
+/// Global roots (top-level documents) get the highest height.
+/// Nodes in cycles get whatever height was accumulated before the cycle.
+pub fn all_topo_depths(conn: &Connection) -> Result<HashMap<String, u32>> {
+    let graph = dep_graph_snapshot(conn, None, None)?;
+    if graph.is_empty() {
+        return Ok(HashMap::new());
+    }
+    // Reverse graph: reverse[B] = nodes that depend on B (i.e. have B as a dep).
+    let mut reverse: HashMap<&str, Vec<&str>> =
+        graph.keys().map(|k| (k.as_str(), vec![])).collect();
+    for (src, dsts) in &graph {
+        for dst in dsts {
+            if graph.contains_key(dst.as_str()) {
+                reverse.entry(dst.as_str()).or_default().push(src.as_str());
+            }
+        }
+    }
+    // remaining[node] = number of its dependencies not yet processed.
+    let mut remaining: HashMap<&str, usize> = graph
+        .iter()
+        .map(|(k, dsts)| {
+            let n = dsts
+                .iter()
+                .filter(|d| graph.contains_key(d.as_str()))
+                .count();
+            (k.as_str(), n)
+        })
+        .collect();
+    let mut depth: HashMap<&str, u32> = graph.keys().map(|k| (k.as_str(), 0)).collect();
+    // Start from leaves: nodes with no dependencies.
+    let mut queue: std::collections::VecDeque<&str> = remaining
+        .iter()
+        .filter(|(_, &r)| r == 0)
+        .map(|(&f, _)| f)
+        .collect();
+    while let Some(node) = queue.pop_front() {
+        let node_depth = depth[node];
+        for &parent in reverse.get(node).into_iter().flatten() {
+            if let Some(pd) = depth.get_mut(parent) {
+                if node_depth + 1 > *pd {
+                    *pd = node_depth + 1;
+                }
+            }
+            let r = remaining.entry(parent).or_insert(0);
+            *r = r.saturating_sub(1);
+            if *r == 0 {
+                queue.push_back(parent);
+            }
+        }
+    }
+    Ok(depth.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+}
+
+/// Returns the fnode with the longest path depth in the valid dependency graph.
+pub fn deepest_fnode(conn: &Connection) -> Result<Option<String>> {
+    let depths = all_topo_depths(conn)?;
+    Ok(depths.into_iter().max_by_key(|(_, d)| *d).map(|(f, _)| f))
+}
+
+/// Returns the direct referrers (depth-1) of `target_fnode` as (fnode, title, rel_path) tuples.
+/// Referrers whose own file is invalid/duplicate are excluded.
+pub fn direct_referrers_for_fnode(
+    conn: &Connection,
+    target_fnode: &str,
+) -> Result<Vec<(String, String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT e.src_fnode, m.title, m.path
+         FROM mdoc_edges e
+         JOIN mdocs m ON m.fnode = e.src_fnode
+         WHERE e.dst_fnode = ?
+           AND NOT EXISTS (
+               SELECT 1 FROM mdoc_issues i
+               WHERE i.path = e.src_path
+                 AND i.kind IN ('invalid', 'duplicate')
+           )
+         GROUP BY e.src_fnode
+         ORDER BY m.path",
+    )?;
+    let rows = stmt
+        .query_map([target_fnode], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
 }
 
 pub fn dependency_report(
@@ -239,7 +327,7 @@ fn compute_and_cache_cycles(conn: &Connection, current_epoch: i32) -> Result<Vec
     Ok(cycles)
 }
 
-pub(crate) fn recompute_weak_components(conn: &Connection) -> Result<()> {
+fn recompute_weak_components(conn: &Connection) -> Result<()> {
     let valid_nodes = valid_node_rows(conn)?;
     let inv_issues = invalid_issue_rows(conn)?;
     let graph = dep_graph_snapshot(conn, Some(&valid_nodes), Some(&inv_issues))?;
@@ -409,7 +497,7 @@ fn dependency_report_inner(
 
 // ── Low-level data accessors ─────────────────────────────────────────────────
 
-pub(crate) fn valid_node_rows(conn: &Connection) -> Result<Vec<(String, String, String)>> {
+fn valid_node_rows(conn: &Connection) -> Result<Vec<(String, String, String)>> {
     let mut stmt = conn.prepare(
         "SELECT mdocs.fnode, mdocs.title, mdocs.path
          FROM mdocs
@@ -426,14 +514,14 @@ pub(crate) fn valid_node_rows(conn: &Connection) -> Result<Vec<(String, String, 
     Ok(rows)
 }
 
-pub(crate) fn node_lookup(conn: &Connection) -> Result<HashMap<String, (String, String)>> {
+fn node_lookup(conn: &Connection) -> Result<HashMap<String, (String, String)>> {
     Ok(valid_node_rows(conn)?
         .into_iter()
         .map(|(f, t, p)| (f, (t, p)))
         .collect())
 }
 
-pub(crate) fn issue_lookup(conn: &Connection) -> Result<HashMap<String, GraphIssue>> {
+fn issue_lookup(conn: &Connection) -> Result<HashMap<String, GraphIssue>> {
     let mut map: HashMap<String, GraphIssue> = HashMap::new();
     for issue in invalid_issue_rows(conn)? {
         map.entry(issue.fnode.clone()).or_insert(issue);
@@ -444,7 +532,7 @@ pub(crate) fn issue_lookup(conn: &Connection) -> Result<HashMap<String, GraphIss
     Ok(map)
 }
 
-pub(crate) fn invalid_issue_rows(conn: &Connection) -> Result<Vec<GraphIssue>> {
+fn invalid_issue_rows(conn: &Connection) -> Result<Vec<GraphIssue>> {
     let mut stmt = conn.prepare(
         "SELECT path, ref_fnode, error FROM mdoc_issues
          WHERE kind IN ('invalid', 'duplicate')
@@ -464,7 +552,7 @@ pub(crate) fn invalid_issue_rows(conn: &Connection) -> Result<Vec<GraphIssue>> {
     Ok(rows)
 }
 
-pub(crate) fn missing_issue_rows(conn: &Connection) -> Result<Vec<GraphIssue>> {
+fn missing_issue_rows(conn: &Connection) -> Result<Vec<GraphIssue>> {
     let mut stmt = conn.prepare(
         "SELECT ref_fnode, error FROM mdoc_issues
          WHERE kind = 'missing'

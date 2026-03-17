@@ -1,15 +1,13 @@
-//! CLI entry point, clap command structure, shared helpers, and output utilities.
-
 mod cmd_core;
 mod cmd_deps;
 mod cmd_eval;
 mod cmd_graph;
-
-use std::collections::HashMap;
-use std::path::PathBuf;
+mod cmd_tui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::core::{DependencyItem, GraphIssue};
 use crate::indcache::IndCache;
@@ -17,20 +15,20 @@ use crate::workspace::find_mdcroot;
 
 // ── ANSI color helpers ────────────────────────────────────────────────────────
 
-const RESET: &str = "\x1b[0m";
-const BOLD: &str = "\x1b[1m";
+const RST: &str = "\x1b[0m";
+const BLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
 const RED: &str = "\x1b[31m";
-const GREEN: &str = "\x1b[32m";
-const YELLOW: &str = "\x1b[33m";
-const CYAN: &str = "\x1b[36m";
+const GRN: &str = "\x1b[32m";
+const YLW: &str = "\x1b[33m";
+const CYN: &str = "\x1b[36m";
 
 fn eprintln_err(msg: &str) {
-    eprintln!("{RED}error:{RESET} {msg}");
+    eprintln!("{RED}error:{RST} {msg}");
 }
 
 fn eprintln_warn(msg: &str) {
-    eprintln!("{YELLOW}warn:{RESET} {msg}");
+    eprintln!("{YLW}warn:{RST} {msg}");
 }
 
 fn short_fnode(fnode: &str) -> &str {
@@ -38,7 +36,8 @@ fn short_fnode(fnode: &str) -> &str {
     &s[..s.len().min(8)]
 }
 
-const TITLE_WIDTH: usize = 32;
+const TITLE_WIDTH: usize = 40;
+const PATH_WIDTH: usize = 40;
 
 fn truncate_title(title: &str) -> String {
     let chars: Vec<char> = title.chars().collect();
@@ -51,15 +50,28 @@ fn truncate_title(title: &str) -> String {
     }
 }
 
+fn truncate_path(path: &str) -> String {
+    let chars: Vec<char> = path.chars().collect();
+    if chars.len() <= PATH_WIDTH {
+        return path.to_string();
+    }
+    // Keep ".mdoc" suffix + "…"; visible prefix fills the rest
+    const SUFFIX: &str = ".mdoc";
+    let prefix_len = PATH_WIDTH - SUFFIX.len() - 1; // -1 for "…"
+    let prefix: String = chars[..prefix_len].iter().collect();
+    format!("{prefix}….mdoc")
+}
+
 fn fmt_item(fnode: &str, title: &str, rel_path: &str, broken: bool) -> String {
     let sf = short_fnode(fnode);
     let marker = if broken {
-        format!("{RED}✗{RESET} ")
+        format!("{RED}✗{RST} ")
     } else {
         String::new()
     };
     let title_col = truncate_title(title);
-    format!("{DIM}{sf}{RESET}  {marker}{BOLD}{title_col}{RESET}  {DIM}{rel_path}{RESET}")
+    let path_col = truncate_path(rel_path);
+    format!("{DIM}{sf}{RST}  {marker}{BLD}{title_col}{RST}  {DIM}{path_col}{RST}")
 }
 
 // ── Clap command structure ────────────────────────────────────────────────────
@@ -84,9 +96,6 @@ enum Commands {
         #[arg(short, long, default_value = ".")]
         file: String,
     },
-
-    /// Open a mdoc with $EDITOR and refresh its index entry.
-    Edit { source: String },
 
     /// Force refresh all index entries.
     Sync,
@@ -121,16 +130,13 @@ enum Commands {
 #[derive(Subcommand)]
 enum GraphCommands {
     /// Scan the whole repo and report graph issues.
-    Check {
-        /// Refresh the workspace index before checking.
-        #[arg(long)]
-        full: bool,
-    },
+    Check,
     /// List all global root nodes with no incoming dependencies.
-    Roots {
-        /// Refresh the workspace index first.
-        #[arg(long)]
-        refresh: bool,
+    Roots,
+    /// Open interactive TUI graph browser.
+    Tui {
+        /// Start at this node (fnode prefix, path, or title). Defaults to deepest node.
+        source: Option<String>,
     },
 }
 
@@ -178,12 +184,12 @@ fn dispatch(cmd: Commands) -> Result<i32> {
     match cmd {
         Commands::Init => cmd_core::cmd_init(),
         Commands::New { title, file } => cmd_core::cmd_new(title, file),
-        Commands::Edit { source } => cmd_core::cmd_edit(source),
         Commands::Sync => cmd_core::cmd_sync(),
         Commands::Search { query, max_results } => cmd_core::cmd_search(query, max_results),
         Commands::Graph { command } => match command {
-            GraphCommands::Check { full } => cmd_graph::cmd_graph_check(full),
-            GraphCommands::Roots { refresh } => cmd_graph::cmd_graph_roots(refresh),
+            GraphCommands::Check => cmd_graph::cmd_graph_check(),
+            GraphCommands::Roots => cmd_graph::cmd_graph_roots(),
+            GraphCommands::Tui { source } => cmd_tui::cmd_graph_tui(source),
         },
         Commands::Eval { source, depth } => cmd_eval::cmd_eval(source, depth),
         Commands::Dep { command } => match command {
@@ -234,21 +240,40 @@ fn print_cycle(cycle: &[String], label_map: &HashMap<String, (String, String)>) 
     let fmt_node = |f: &str| -> String {
         match label_map.get(f) {
             Some((t, p)) => fmt_item(f, t, p, false),
-            None => format!("{DIM}{}{RESET}", short_fnode(f)),
+            None => format!("{DIM}{}{RST}", short_fnode(f)),
         }
     };
     if nodes.len() == 1 {
-        println!("    {YELLOW}↺{RESET}  {}", fmt_node(&nodes[0]));
+        println!("    {YLW}↺{RST}  {}", fmt_node(&nodes[0]));
     } else {
         for (i, fnode) in nodes.iter().enumerate() {
             let item = fmt_node(fnode);
             if i == 0 {
-                println!("    {DIM}┌➤{RESET}  {item}");
+                println!("    {DIM}┌➤{RST}  {item}");
             } else if i == nodes.len() - 1 {
-                println!("    {DIM}└─{RESET}  {item}");
+                println!("    {DIM}└─{RST}  {item}");
             } else {
-                println!("    {DIM}│{RESET}   {item}");
+                println!("    {DIM}│{RST}   {item}");
             }
+        }
+    }
+}
+
+fn print_missing_with_referrers(issues: &[GraphIssue], cache: &IndCache) {
+    if issues.is_empty() {
+        return;
+    }
+    println!("   {RED}missing ({}):{RST}", issues.len());
+    for issue in issues {
+        println!(
+            "    {}",
+            fmt_item(&issue.fnode, &issue.title, &issue.rel_path, true)
+        );
+        let refs = cache
+            .direct_referrers_for_fnode(&issue.fnode)
+            .unwrap_or_default();
+        for (f, t, p) in &refs {
+            println!("      ← {}", fmt_item(f, t, p, false));
         }
     }
 }
@@ -261,18 +286,25 @@ fn print_dep_report(
     issues: &HashMap<String, GraphIssue>,
 ) {
     println!(
-        "{BOLD}{anchor_label}{RESET}  {}",
+        "{BLD}{anchor_label}{RST}  {}",
         fmt_item(&anchor.fnode, &anchor.title, &anchor.rel_path, false)
     );
     if items.is_empty() {
-        println!("  {DIM}no {count_label}{RESET}");
+        println!("   {DIM}no {count_label}{RST}");
         return;
     }
-    println!("   {BOLD}{}{RESET} {count_label}", items.len());
+    println!("   {BLD}{}{RST} {count_label}", items.len());
+    let w = items
+        .iter()
+        .map(|i| i.depth)
+        .max()
+        .unwrap_or(0)
+        .to_string()
+        .len();
     for item in items {
         let broken = issues.contains_key(&item.fnode);
         println!(
-            "   [{}]  {}",
+            "   [{:>w$}]  {}",
             item.depth,
             fmt_item(&item.fnode, &item.title, &item.rel_path, broken)
         );

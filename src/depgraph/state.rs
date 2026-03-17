@@ -1,5 +1,3 @@
-//! In-memory graph state accumulated during a DepGraph session.
-
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -124,7 +122,12 @@ fn upsert_issue(issues: &mut Vec<GraphIssue>, issue: GraphIssue) {
     issues.push(issue);
 }
 
-pub fn make_invalid_issue(mdcroot: &Path, path: &Path, error: &str, fnode: &str) -> GraphIssue {
+pub(super) fn make_invalid_issue(
+    mdcroot: &Path,
+    path: &Path,
+    error: &str,
+    fnode: &str,
+) -> GraphIssue {
     GraphIssue {
         kind: IssueKind::Invalid,
         fnode: fnode.to_string(),

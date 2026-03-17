@@ -1,12 +1,12 @@
 use anyhow::Result;
+use std::io::Write;
 
 use crate::compiler::CompilerRegistry;
 use crate::config::Config;
 use crate::depgraph::DepGraph;
 
 use super::{
-    cwd, eprintln_err, open_cache, print_dep_report, require_mdcroot, BOLD, GREEN,
-    RED, RESET,
+    cwd, eprintln_err, open_cache, print_dep_report, require_mdcroot, BLD, DIM, GRN, RED, RST,
 };
 
 // ── cmd: eval ─────────────────────────────────────────────────────────────────
@@ -52,39 +52,45 @@ pub(super) fn cmd_eval(source: String, depth: i32) -> Result<i32> {
     let config = Config::load(&graph.mdcroot)?;
     let registry = CompilerRegistry::default_registry();
     fn eval_progress(msg: &str) {
-        println!("  \x1b[2m{msg}\x1b[0m");
+        println!("  {DIM}{msg}{RST}");
     }
-    let results = graph.eval_blocks(depth, &registry, &config, Some(eval_progress))?;
+    let mut failed = 0;
+    let results = graph.eval_blocks(
+        depth,
+        &registry,
+        &config,
+        Some(eval_progress),
+        Some(&mut |idx: usize, total: usize, srctype: &str| {
+            println!("[{idx}/{total}] {BLD}{srctype}{RST}");
+            let _ = std::io::stdout().flush();
+        }),
+        Some(
+            &mut |_idx: usize, _total: usize, br: &crate::compiler::BlockResult| {
+                if !br.res.stdout.is_empty() {
+                    for line in br.res.stdout.lines() {
+                        println!("  {line}");
+                    }
+                }
+                if !br.res.stderr.is_empty() {
+                    for line in br.res.stderr.lines() {
+                        eprintln!("  {RED}{line}{RST}");
+                    }
+                }
+                if br.res.result {
+                    println!("{GRN}✓{RST} (exit {})", br.res.rtcode);
+                } else {
+                    failed += 1;
+                    println!("{RED}✗{RST} (exit {})", br.res.rtcode);
+                }
+                println!();
+            },
+        ),
+    )?;
 
     if results.is_empty() {
         println!("No blocks to eval");
         return Ok(0);
     }
 
-    let total = results.len();
-    let mut failed = 0;
-    for (i, br) in results.iter().enumerate() {
-        let n = i + 1;
-        let ok_str = if br.res.result {
-            format!("{GREEN}✓{RESET}")
-        } else {
-            failed += 1;
-            format!("{RED}✗{RESET}")
-        };
-        println!(
-            "[{n}/{total}] {ok_str} {BOLD}{}{RESET}  (exit {})",
-            br.srctype, br.res.rtcode
-        );
-        if !br.res.stdout.is_empty() {
-            for line in br.res.stdout.lines() {
-                println!("  {line}");
-            }
-        }
-        if !br.res.stderr.is_empty() {
-            for line in br.res.stderr.lines() {
-                eprintln!("  {RED}{line}{RESET}");
-            }
-        }
-    }
     Ok(if failed > 0 { 1 } else { 0 })
 }

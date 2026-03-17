@@ -1,16 +1,13 @@
-//! Block compilation: request/response types, compiler trait, registry, and implementations.
-
 mod latex;
 mod lean;
 mod natl;
 mod py;
 
+use anyhow::{bail, Result};
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-
-use anyhow::{bail, Result};
 
 // ── Public types ───────────────────────────────────────────────────────────────
 
@@ -98,7 +95,7 @@ impl CompilerRegistry {
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
-pub(crate) fn cfg_positive_int(
+fn cfg_positive_int(
     compcfg: &HashMap<String, toml::Value>,
     key: &str,
     full_key: &str,
@@ -112,11 +109,7 @@ pub(crate) fn cfg_positive_int(
     }
 }
 
-pub(crate) fn cfg_str(
-    compcfg: &HashMap<String, toml::Value>,
-    key: &str,
-    full_key: &str,
-) -> Result<String> {
+fn cfg_str(compcfg: &HashMap<String, toml::Value>, key: &str, full_key: &str) -> Result<String> {
     match compcfg.get(key) {
         None => bail!("config key '{full_key}' is required"),
         Some(v) => match v.as_str() {
@@ -126,7 +119,7 @@ pub(crate) fn cfg_str(
     }
 }
 
-pub(crate) fn cfg_str_opt(
+fn cfg_str_opt(
     compcfg: &HashMap<String, toml::Value>,
     key: &str,
     full_key: &str,
@@ -140,14 +133,14 @@ pub(crate) fn cfg_str_opt(
     }
 }
 
-pub(crate) fn require_tool(name: &str) -> Result<String> {
+fn require_tool(name: &str) -> Result<String> {
     which::which(name)
         .map(|p| p.to_string_lossy().into_owned())
         .map_err(|_| anyhow::anyhow!("{name} not found in PATH"))
 }
 
 /// Run a subprocess and wait, with a polling timeout. Returns `(rtcode, stdout, stderr)`.
-pub(crate) fn run_process(
+fn run_process(
     args: &[&str],
     tool_name: &str,
     timeout_sec: u64,
@@ -194,11 +187,11 @@ pub(crate) fn run_process(
     }
 }
 
-pub(crate) fn is_timeout_error(e: &anyhow::Error) -> bool {
+fn is_timeout_error(e: &anyhow::Error) -> bool {
     e.to_string().contains("timed out after")
 }
 
-pub(crate) fn emit_progress(progress: &Option<Box<dyn Fn(&str)>>, msg: &str) {
+fn emit_progress(progress: &Option<Box<dyn Fn(&str)>>, msg: &str) {
     if let Some(p) = progress {
         p(msg);
     }

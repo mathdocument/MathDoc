@@ -1,12 +1,8 @@
-//! Write-path operations on the SQLite index.
-//! All functions take `&Connection`; the caller provides transaction scope.
-
+use anyhow::{bail, Result};
+use rusqlite::Connection;
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
-
-use anyhow::{bail, Result};
-use rusqlite::Connection;
 
 use crate::indcache::queries::{
     edge_targets_for_source_path, fnode_for_path, path_for_fnode_if_unique,
@@ -241,8 +237,7 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
     // Clean it up now so that refresh_duplicate_issues_for_fnode doesn't flag a
     // spurious duplicate.
     if let Some(ref nf) = new_fnode {
-        let mut stmt =
-            conn.prepare("SELECT path FROM mdocs WHERE fnode = ? AND path != ?")?;
+        let mut stmt = conn.prepare("SELECT path FROM mdocs WHERE fnode = ? AND path != ?")?;
         let stale_paths: Vec<String> = stmt
             .query_map(rusqlite::params![nf, rel_path], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<_>>()?;

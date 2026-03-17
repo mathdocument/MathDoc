@@ -1,13 +1,12 @@
 mod discovery;
 mod queries;
 mod refresh;
-pub(crate) mod schema;
-
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+mod schema;
 
 use anyhow::{bail, Result};
 use rusqlite::Connection;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::core::{
     DependencyItem, DependencyTraversalReport, GraphCheckReport, GraphIssue, GraphRootItem,
@@ -148,6 +147,18 @@ impl IndCache {
         queries::referrer_items(&self.conn, target_fnode, depth)
     }
 
+    pub fn direct_referrers_for_fnode(&self, fnode: &str) -> Result<Vec<(String, String, String)>> {
+        queries::direct_referrers_for_fnode(&self.conn, fnode)
+    }
+
+    pub fn deepest_fnode(&self) -> Result<Option<String>> {
+        queries::deepest_fnode(&self.conn)
+    }
+
+    pub fn all_topo_depths(&self) -> Result<HashMap<String, u32>> {
+        queries::all_topo_depths(&self.conn)
+    }
+
     pub fn dependency_report(
         &self,
         root_fnode: &str,
@@ -158,6 +169,10 @@ impl IndCache {
 
     pub fn leaf_dependency_report(&self, root_fnode: &str) -> Result<DependencyTraversalReport> {
         queries::leaf_dependency_report(&self.conn, root_fnode)
+    }
+
+    pub fn has_issues(&self, fnode: &str) -> Result<bool> {
+        Ok(self.issue_for_fnode(fnode)?.is_some())
     }
 
     // ── Write-then-read (need &mut for transaction) ───────────────────────────

@@ -1,5 +1,3 @@
-//! Lean 4 / Mathlib compiler.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -10,7 +8,7 @@ use super::{
     CompilerReq, CompilerRes, SrcCompiler,
 };
 
-pub struct CompilerLean;
+pub(super) struct CompilerLean;
 
 const MANAGED_MARKER: &str = "# Managed by MathDoc";
 const MODULE_NAME: &str = "MathDocCheck";

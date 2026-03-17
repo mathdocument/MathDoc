@@ -4,7 +4,7 @@ use crate::config::default_for_srctype;
 use crate::depgraph::DepGraph;
 use crate::indcache::IndCache;
 
-use super::{cwd, fmt_item, open_cache, require_mdcroot, BOLD, DIM, RESET};
+use super::{cwd, fmt_item, open_cache, require_mdcroot, BLD, CYN, RST};
 
 // ── cmd: init ─────────────────────────────────────────────────────────────────
 
@@ -94,43 +94,6 @@ pub(super) fn cmd_new(title: String, file: String) -> Result<i32> {
     Ok(0)
 }
 
-// ── cmd: edit ─────────────────────────────────────────────────────────────────
-
-pub(super) fn cmd_edit(source: String) -> Result<i32> {
-    use super::{eprintln_err, eprintln_warn};
-
-    let mdcroot = require_mdcroot()?;
-    let mut cache = open_cache(mdcroot.clone())?;
-    let src_path = cache.resolve_edit_target_path(&source, Some(&cwd()))?;
-
-    let editor_raw = std::env::var("EDITOR").unwrap_or_default();
-    let editor_raw = editor_raw.trim().to_string();
-    if editor_raw.is_empty() {
-        return Err(anyhow::anyhow!("$EDITOR is not set"));
-    }
-    let editor_parts: Vec<&str> = editor_raw.split_whitespace().collect();
-    let (editor_bin, editor_args) = editor_parts
-        .split_first()
-        .ok_or_else(|| anyhow::anyhow!("$EDITOR is empty"))?;
-
-    let status = std::process::Command::new(editor_bin)
-        .args(editor_args)
-        .arg(&src_path)
-        .status()?;
-    if !status.success() {
-        let code = status.code().unwrap_or(1);
-        eprintln_err(&format!("editor exited with code {code}"));
-        return Ok(code);
-    }
-
-    if let Err(e) = cache.upsert_path(&src_path) {
-        eprintln_warn(&format!("mdoc was edited but index update failed: {e}"));
-    }
-    let rel = crate::workspace::to_rel_path(&mdcroot, &src_path);
-    println!("indexed  {DIM}{rel}{RESET}");
-    Ok(0)
-}
-
 // ── cmd: sync ─────────────────────────────────────────────────────────────────
 
 pub(super) fn cmd_sync() -> Result<i32> {
@@ -138,15 +101,13 @@ pub(super) fn cmd_sync() -> Result<i32> {
     let mut cache = IndCache::open(mdcroot)?;
     cache.refresh_all()?;
     let total = cache.count()?;
-    println!("synced  {BOLD}{total}{RESET} mdocs");
+    println!("synced  {BLD}{total}{RST} mdocs");
     Ok(0)
 }
 
 // ── cmd: search ───────────────────────────────────────────────────────────────
 
 pub(super) fn cmd_search(query: String, max_results: usize) -> Result<i32> {
-    use super::CYAN;
-
     let q = query.trim().to_string();
     if q.is_empty() {
         return Err(anyhow::anyhow!("query cannot be empty"));
@@ -157,7 +118,7 @@ pub(super) fn cmd_search(query: String, max_results: usize) -> Result<i32> {
     let shown: Vec<_> = rows.iter().take(max_results).collect();
 
     println!(
-        "{BOLD}{}{RESET} result{} for {CYAN}{q}{RESET}",
+        "{BLD}{}{RST} result{} for {CYN}{q}{RST}",
         shown.len(),
         if shown.len() == 1 { "" } else { "s" }
     );

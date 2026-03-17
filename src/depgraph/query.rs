@@ -1,11 +1,8 @@
-//! BFS traversal over in-memory graph state to produce dependency item lists.
-
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 
-use crate::core::DependencyItem;
-
 use super::state::GraphState;
+use crate::core::DependencyItem;
 
 /// BFS from `root_fnode` over `state.dep_graph`.
 /// If `leaf_only`, only nodes with no outgoing edges in the graph are returned.
