@@ -140,6 +140,11 @@ fn require_tool(name: &str) -> Result<String> {
 }
 
 /// Run a subprocess and wait, with a polling timeout. Returns `(rtcode, stdout, stderr)`.
+///
+/// stdout and stderr are drained in background threads immediately after spawn.
+/// Without this, a child that writes more than the OS pipe buffer (~64 KB) would
+/// block on its write end while the parent polls `try_wait()`, causing a deadlock
+/// that looks like a timeout even when the child is not actually slow.
 fn run_process(
     args: &[&str],
     tool_name: &str,
@@ -147,6 +152,7 @@ fn run_process(
     cwd: Option<&Path>,
 ) -> Result<(i32, String, String)> {
     use std::process::Stdio;
+    use std::thread;
 
     let mut cmd = std::process::Command::new(args[0]);
     cmd.args(&args[1..])
@@ -159,31 +165,98 @@ fn run_process(
         .spawn()
         .map_err(|e| anyhow::anyhow!("failed to run {tool_name}: {e}"))?;
 
+    // Take the pipes before entering the wait loop so the drain threads hold
+    // the only read ends; the child can write freely without blocking.
+    let mut stdout_pipe = child.stdout.take().expect("stdout is piped");
+    let mut stderr_pipe = child.stderr.take().expect("stderr is piped");
+    let stdout_thread = thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = stdout_pipe.read_to_string(&mut buf);
+        buf
+    });
+    let stderr_thread = thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = stderr_pipe.read_to_string(&mut buf);
+        buf
+    });
+
     let deadline = Instant::now() + Duration::from_secs(timeout_sec);
-    loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut stdout = String::new();
-                let mut stderr = String::new();
-                if let Some(mut out) = child.stdout.take() {
-                    let _ = out.read_to_string(&mut stdout);
-                }
-                if let Some(mut err) = child.stderr.take() {
-                    let _ = err.read_to_string(&mut stderr);
-                }
-                let rtcode = status.code().unwrap_or(-1);
-                return Ok((rtcode, stdout, stderr));
-            }
+            Ok(Some(status)) => break status,
             Ok(None) => {
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
+                    // Join drain threads to avoid leaking OS resources.
+                    let _ = stdout_thread.join();
+                    let _ = stderr_thread.join();
                     bail!("{tool_name} timed out after {timeout_sec} seconds");
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            Err(e) => return Err(e.into()),
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_thread.join();
+                let _ = stderr_thread.join();
+                return Err(e.into());
+            }
         }
+    };
+
+    let stdout = stdout_thread.join().unwrap_or_default();
+    let stderr = stderr_thread.join().unwrap_or_default();
+    Ok((status.code().unwrap_or(-1), stdout, stderr))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: a subprocess that writes more than the OS pipe buffer (~64 KB) must
+    /// not be reported as a timeout. Previously stdout/stderr were read only *after*
+    /// try_wait() returned — so a large-output child blocked on write while the parent
+    /// spun until the deadline, producing a spurious "timed out" error.
+    ///
+    /// Fix: both pipes are drained in background threads immediately after spawn.
+    #[cfg(unix)]
+    #[test]
+    fn test_large_output_does_not_false_timeout() {
+        if which::which("python3").is_err() {
+            return; // skip if python3 is unavailable in this environment
+        }
+        // 2 MB stdout — well beyond the typical 64 KB pipe buffer.
+        let (code, stdout, _stderr) = run_process(
+            &[
+                "python3",
+                "-c",
+                "import sys; sys.stdout.write('x' * 2_000_000)",
+            ],
+            "python3",
+            10,
+            None,
+        )
+        .expect("large output must not be misreported as timeout");
+        assert_eq!(code, 0);
+        assert_eq!(stdout.len(), 2_000_000, "all output must be captured");
+    }
+
+    /// Regression: a genuinely slow process must still be killed and reported as timed out.
+    #[cfg(unix)]
+    #[test]
+    fn test_real_timeout_is_reported() {
+        let (cmd, name) = if which::which("sleep").is_ok() {
+            (vec!["sleep", "60"], "sleep")
+        } else {
+            return; // skip if no suitable blocking command
+        };
+        let result = run_process(&cmd, name, 1, None);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("timed out after"),
+            "timed-out process must produce a timed-out error"
+        );
     }
 }
 

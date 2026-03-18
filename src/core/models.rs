@@ -15,6 +15,7 @@ pub struct GraphRootItem {
     pub rel_path: String,
     pub component_size: u32,
     pub broken: bool,
+    pub topo_depth: u32,
 }
 
 /// Issue kind surfaced through the API.

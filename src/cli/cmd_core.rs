@@ -6,6 +6,19 @@ use crate::indcache::IndCache;
 
 use super::{cwd, fmt_item, open_cache, require_mdcroot, BLD, CYN, RST};
 
+// ── cmd: edit ─────────────────────────────────────────────────────────────────
+
+pub(super) fn cmd_edit(source: String) -> Result<i32> {
+    let mdcroot = require_mdcroot()?;
+    let mut cache = open_cache(mdcroot)?;
+    cache.discover_workspace_changes()?;
+    let path = cache.resolve_edit_target_path(&source, Some(&cwd()))?;
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+    std::process::Command::new(&editor).arg(&path).status()?;
+    cache.upsert_path(&path)?;
+    Ok(0)
+}
+
 // ── cmd: init ─────────────────────────────────────────────────────────────────
 
 fn generate_config_toml() -> String {
@@ -113,7 +126,8 @@ pub(super) fn cmd_search(query: String, max_results: usize) -> Result<i32> {
         return Err(anyhow::anyhow!("query cannot be empty"));
     }
     let mdcroot = require_mdcroot()?;
-    let cache = open_cache(mdcroot)?;
+    let mut cache = open_cache(mdcroot)?;
+    cache.discover_workspace_changes()?;
     let rows = cache.search(&q)?;
     let shown: Vec<_> = rows.iter().take(max_results).collect();
 

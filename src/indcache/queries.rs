@@ -58,19 +58,17 @@ pub fn referrer_items(
     Ok(items)
 }
 
-/// Compute the height of every node: leaves (no dependencies) = 0,
+/// Compute the height of every node from a pre-loaded graph: leaves = 0,
 /// a node's height = 1 + max height of its dependencies.
-/// Global roots (top-level documents) get the highest height.
-/// Nodes in cycles get whatever height was accumulated before the cycle.
-pub fn all_topo_depths(conn: &Connection) -> Result<HashMap<String, u32>> {
-    let graph = dep_graph_snapshot(conn, None, None)?;
+/// Nodes in cycles get whatever height was accumulated before the cycle closes.
+pub(super) fn all_topo_depths_impl(graph: &HashMap<String, Vec<String>>) -> HashMap<String, u32> {
     if graph.is_empty() {
-        return Ok(HashMap::new());
+        return HashMap::new();
     }
-    // Reverse graph: reverse[B] = nodes that depend on B (i.e. have B as a dep).
+    // Reverse graph: reverse[B] = nodes that depend on B.
     let mut reverse: HashMap<&str, Vec<&str>> =
         graph.keys().map(|k| (k.as_str(), vec![])).collect();
-    for (src, dsts) in &graph {
+    for (src, dsts) in graph {
         for dst in dsts {
             if graph.contains_key(dst.as_str()) {
                 reverse.entry(dst.as_str()).or_default().push(src.as_str());
@@ -89,7 +87,6 @@ pub fn all_topo_depths(conn: &Connection) -> Result<HashMap<String, u32>> {
         })
         .collect();
     let mut depth: HashMap<&str, u32> = graph.keys().map(|k| (k.as_str(), 0)).collect();
-    // Start from leaves: nodes with no dependencies.
     let mut queue: std::collections::VecDeque<&str> = remaining
         .iter()
         .filter(|(_, &r)| r == 0)
@@ -110,13 +107,49 @@ pub fn all_topo_depths(conn: &Connection) -> Result<HashMap<String, u32>> {
             }
         }
     }
-    Ok(depth.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    depth.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
 }
 
-/// Returns the fnode with the longest path depth in the valid dependency graph.
-pub fn deepest_fnode(conn: &Connection) -> Result<Option<String>> {
-    let depths = all_topo_depths(conn)?;
-    Ok(depths.into_iter().max_by_key(|(_, d)| *d).map(|(f, _)| f))
+/// Compute topo depths from scratch via graph traversal. Used by backfill operations.
+pub(super) fn compute_all_topo_depths_from_edges(
+    conn: &Connection,
+) -> Result<HashMap<String, u32>> {
+    let graph = dep_graph_snapshot(conn, None, None)?;
+    Ok(all_topo_depths_impl(&graph))
+}
+
+/// Returns the topo depth of every node in the workspace, reading from the persisted DB column.
+pub fn all_topo_depths(conn: &Connection) -> Result<HashMap<String, u32>> {
+    let mut stmt = conn.prepare("SELECT fnode, topo_depth FROM mdocs")?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
+/// BFS reachability check on `mdoc_edges`. Returns true if `to_fnode` is reachable from
+/// `from_fnode` (including the trivial case where they are equal).
+pub fn is_reachable(conn: &Connection, from_fnode: &str, to_fnode: &str) -> Result<bool> {
+    if from_fnode == to_fnode {
+        return Ok(true);
+    }
+    let mut stmt = conn.prepare("SELECT dst_fnode FROM mdoc_edges WHERE src_fnode = ?")?;
+    let mut seen: HashSet<String> = HashSet::from([from_fnode.to_string()]);
+    let mut queue: VecDeque<String> = VecDeque::from([from_fnode.to_string()]);
+    while let Some(current) = queue.pop_front() {
+        let deps: Vec<String> = stmt
+            .query_map([&current], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for dep in deps {
+            if dep == to_fnode {
+                return Ok(true);
+            }
+            if seen.insert(dep.clone()) {
+                queue.push_back(dep);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Returns the direct referrers (depth-1) of `target_fnode` as (fnode, title, rel_path) tuples.
@@ -169,40 +202,46 @@ pub fn leaf_dependency_report(
 }
 
 pub fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>> {
-    // Recompute weak components if dirty
+    // Recompute weak components if dirty (requires a full graph load).
     let dirty: i32 = conn.query_row(
         "SELECT weak_component_dirty FROM mdoc_index_state WHERE id = 1",
         [],
         |r| r.get(0),
     )?;
     if dirty != 0 {
-        recompute_weak_components(conn)?;
+        let valid_nodes = valid_node_rows(conn)?;
+        let invalid_issues = invalid_issue_rows(conn)?;
+        let graph = dep_graph_snapshot(conn, Some(&valid_nodes), Some(&invalid_issues))?;
+        recompute_weak_components_from_graph(conn, &graph, &valid_nodes, &invalid_issues)?;
         conn.execute(
             "UPDATE mdoc_index_state SET weak_component_dirty = 0 WHERE id = 1",
             [],
         )?;
     }
 
-    let valid_roots: Vec<(String, String, String)> = {
+    // Valid root nodes: join with component table and read persisted topo_depth — no graph load.
+    let valid_roots: Vec<(String, String, String, u32, u32)> = {
         let mut stmt = conn.prepare(
-            "SELECT mdocs.fnode, mdocs.title, mdocs.path
-             FROM mdocs
-             LEFT JOIN mdoc_in_degree ON mdocs.fnode = mdoc_in_degree.fnode
-             WHERE (mdoc_in_degree.in_degree IS NULL OR mdoc_in_degree.in_degree = 0)
+            "SELECT m.fnode, m.title, m.path, m.topo_depth,
+                    COALESCE(w.component_size, 1)
+             FROM mdocs m
+             LEFT JOIN mdoc_in_degree id ON m.fnode = id.fnode
+             LEFT JOIN mdoc_weak_component w ON m.fnode = w.fnode
+             WHERE (id.in_degree IS NULL OR id.in_degree = 0)
                AND NOT EXISTS (
                  SELECT 1 FROM mdoc_issues
-                 WHERE mdoc_issues.path = mdocs.path
+                 WHERE mdoc_issues.path = m.path
                    AND mdoc_issues.kind IN ('invalid', 'duplicate')
                )
-             ORDER BY mdocs.path, mdocs.fnode",
+             ORDER BY m.path, m.fnode",
         )?;
-        let rows: Vec<(String, String, String)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        let rows: Vec<_> = stmt
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?
             .collect::<rusqlite::Result<_>>()?;
         rows
     };
-
-    let invalid_issues = invalid_issue_rows(conn)?;
 
     let fnodes_with_incoming: HashSet<String> = {
         let mut stmt = conn.prepare("SELECT fnode FROM mdoc_in_degree WHERE in_degree > 0")?;
@@ -220,18 +259,20 @@ pub fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>> {
         rows
     };
 
+    let invalid_issues = invalid_issue_rows(conn)?;
+
     let mut items: Vec<GraphRootItem> = valid_roots
         .into_iter()
-        .map(|(fnode, title, path)| {
-            let size = component_sizes.get(&fnode).copied().unwrap_or(1);
-            GraphRootItem {
+        .map(
+            |(fnode, title, path, topo_depth, component_size)| GraphRootItem {
                 fnode,
                 title,
                 rel_path: path,
-                component_size: size,
+                component_size,
                 broken: false,
-            }
-        })
+                topo_depth,
+            },
+        )
         .collect();
 
     for issue in &invalid_issues {
@@ -246,14 +287,17 @@ pub fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>> {
             rel_path: issue.rel_path.clone(),
             component_size: size,
             broken: true,
+            topo_depth: 0,
         });
     }
 
+    // Primary: most depended-upon (deepest topo) first; secondary: largest component.
+    // Broken nodes (topo_depth=0) sort after valid ones of equal depth.
     items.sort_by(|a, b| {
-        b.component_size
-            .cmp(&a.component_size)
+        b.topo_depth
+            .cmp(&a.topo_depth)
+            .then(b.component_size.cmp(&a.component_size))
             .then(a.rel_path.cmp(&b.rel_path))
-            .then(a.title.cmp(&b.title))
             .then(a.fnode.cmp(&b.fnode))
     });
     Ok(items)
@@ -327,11 +371,12 @@ fn compute_and_cache_cycles(conn: &Connection, current_epoch: i32) -> Result<Vec
     Ok(cycles)
 }
 
-fn recompute_weak_components(conn: &Connection) -> Result<()> {
-    let valid_nodes = valid_node_rows(conn)?;
-    let inv_issues = invalid_issue_rows(conn)?;
-    let graph = dep_graph_snapshot(conn, Some(&valid_nodes), Some(&inv_issues))?;
-
+fn recompute_weak_components_from_graph(
+    conn: &Connection,
+    graph: &HashMap<String, Vec<String>>,
+    valid_nodes: &[(String, String, String)],
+    inv_issues: &[GraphIssue],
+) -> Result<()> {
     // Members: valid nodes + non-placeholder invalid fnodes
     let members: HashSet<&str> = valid_nodes
         .iter()
@@ -346,7 +391,7 @@ fn recompute_weak_components(conn: &Connection) -> Result<()> {
 
     // Build undirected adjacency from the directed graph
     let mut adj: HashMap<&str, HashSet<&str>> = HashMap::new();
-    for (src, deps) in &graph {
+    for (src, deps) in graph {
         if !members.contains(src.as_str()) {
             continue;
         }
@@ -360,8 +405,9 @@ fn recompute_weak_components(conn: &Connection) -> Result<()> {
         }
     }
 
-    // BFS to find connected components
-    let mut sizes: HashMap<&str, u32> = HashMap::new();
+    // BFS to find connected components. Single pass: collect (fnode, component_id, size).
+    // component_id = lex-min fnode string in the component.
+    let mut rows: Vec<(String, String, u32)> = Vec::new(); // (fnode, component_id, size)
     let mut seen: HashSet<&str> = HashSet::new();
     let mut sorted_starts: Vec<&&str> = adj.keys().collect();
     sorted_starts.sort();
@@ -370,7 +416,7 @@ fn recompute_weak_components(conn: &Connection) -> Result<()> {
             continue;
         }
         let mut component: Vec<&str> = Vec::new();
-        let mut queue = VecDeque::from([start]);
+        let mut queue: VecDeque<&str> = VecDeque::from([start]);
         while let Some(node) = queue.pop_front() {
             if !seen.insert(node) {
                 continue;
@@ -383,29 +429,69 @@ fn recompute_weak_components(conn: &Connection) -> Result<()> {
             }
         }
         let size = component.len() as u32;
+        let rep = component.iter().copied().min().unwrap_or(start).to_string();
         for node in component {
-            sizes.insert(node, size);
+            rows.push((node.to_string(), rep.clone(), size));
         }
     }
 
     conn.execute("DELETE FROM mdoc_weak_component", [])?;
-    for chunk in sizes.iter().collect::<Vec<_>>().chunks(CHUNK_SIZE) {
-        let placeholders = chunk.iter().map(|_| "(?,?)").collect::<Vec<_>>().join(",");
+    for chunk in rows.chunks(CHUNK_SIZE) {
+        let placeholders = chunk
+            .iter()
+            .map(|_| "(?,?,?)")
+            .collect::<Vec<_>>()
+            .join(",");
         let sql = format!(
-            "INSERT INTO mdoc_weak_component (fnode, component_size) VALUES {placeholders}"
+            "INSERT INTO mdoc_weak_component (fnode, component_id, component_size) VALUES {placeholders}"
         );
         let params: Vec<&dyn rusqlite::types::ToSql> = chunk
             .iter()
-            .flat_map(|(f, s)| {
+            .flat_map(|(f, cid, s)| {
                 [
                     f as &dyn rusqlite::types::ToSql,
+                    cid as &dyn rusqlite::types::ToSql,
                     s as &dyn rusqlite::types::ToSql,
                 ]
             })
             .collect();
         conn.execute(&sql, params.as_slice())?;
     }
+    conn.execute(
+        "UPDATE mdoc_index_state SET weak_component_dirty = 0 WHERE id = 1",
+        [],
+    )?;
     Ok(())
+}
+
+/// Full weak-component recompute from scratch, including dirty-flag reset.
+pub(super) fn recompute_weak_components_full(conn: &Connection) -> Result<()> {
+    let valid_nodes = valid_node_rows(conn)?;
+    let invalid_issues = invalid_issue_rows(conn)?;
+    let graph = dep_graph_snapshot(conn, Some(&valid_nodes), Some(&invalid_issues))?;
+    recompute_weak_components_from_graph(conn, &graph, &valid_nodes, &invalid_issues)
+}
+
+/// Recompute both `topo_depth` (mdocs) and weak components (mdoc_weak_component) from a
+/// single graph load. Use this after bulk write operations instead of two separate passes.
+pub(super) fn refresh_all_derived_data(conn: &Connection) -> Result<()> {
+    let valid_nodes = valid_node_rows(conn)?;
+    let invalid_issues = invalid_issue_rows(conn)?;
+    let graph = dep_graph_snapshot(conn, Some(&valid_nodes), Some(&invalid_issues))?;
+
+    // Topo depths — one combined Kahn pass, then bulk UPDATE.
+    let depths = all_topo_depths_impl(&graph);
+    for chunk in depths.iter().collect::<Vec<_>>().chunks(CHUNK_SIZE) {
+        for (fnode, depth) in chunk {
+            conn.execute(
+                "UPDATE mdocs SET topo_depth = ? WHERE fnode = ?",
+                rusqlite::params![depth, fnode],
+            )?;
+        }
+    }
+
+    // Weak components — clears and rebuilds mdoc_weak_component, resets dirty=0.
+    recompute_weak_components_from_graph(conn, &graph, &valid_nodes, &invalid_issues)
 }
 
 fn dependency_report_inner(

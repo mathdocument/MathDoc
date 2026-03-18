@@ -1,12 +1,12 @@
 use anyhow::{bail, Result};
 use rusqlite::Connection;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
 use crate::indcache::queries::{
-    edge_targets_for_source_path, fnode_for_path, path_for_fnode_if_unique,
-    path_has_blocking_issue, CHUNK_SIZE,
+    compute_all_topo_depths_from_edges, edge_targets_for_source_path, fnode_for_path,
+    path_for_fnode_if_unique, path_has_blocking_issue, CHUNK_SIZE,
 };
 use crate::mdoc::{read_mdoc_head, MdocNode};
 use crate::workspace::{find_nested_mdcroot, iter_mdoc_files, to_rel_path};
@@ -58,6 +58,7 @@ pub fn refresh_search_index(conn: &Connection, root: &Path) -> Result<()> {
         delete_indexed_path(conn, stale_path)?;
     }
 
+    super::queries::refresh_all_derived_data(conn)?;
     super::discovery::rebuild_directory_index(conn, root)?;
     conn.execute(
         "UPDATE mdoc_index_state SET bootstrapped = 1 WHERE id = 1",
@@ -84,20 +85,23 @@ pub fn refresh_indexed_paths(conn: &Connection, root: &Path) -> Result<()> {
             Err(_) => delete_indexed_path(conn, &rel_path)?,
         }
     }
+    super::queries::refresh_all_derived_data(conn)?;
     Ok(())
 }
 
 /// Upsert the root path and all reachable dependencies up to `depth` hops (-1 = infinite).
+/// Returns the fnodes of all successfully upserted files (for incremental topo updates).
 pub fn refresh_reachable_from_path(
     conn: &Connection,
     root: &Path,
     root_path: &Path,
     depth: i32,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     if depth < -1 {
         bail!("depth must be -1 (infinite) or >= 0");
     }
     let mut seen: HashSet<String> = HashSet::new();
+    let mut upserted_fnodes: Vec<String> = Vec::new();
     let mut queue: std::collections::VecDeque<(std::path::PathBuf, u32)> =
         std::collections::VecDeque::new();
     let canonical_root = root_path
@@ -116,6 +120,9 @@ pub fn refresh_reachable_from_path(
             continue;
         }
         upsert_mdoc_row(conn, root, &file_path)?;
+        if let Some(fnode) = fnode_for_path(conn, &rel_path)? {
+            upserted_fnodes.push(fnode);
+        }
         if depth != -1 && item_depth as i32 >= depth {
             continue;
         }
@@ -128,7 +135,7 @@ pub fn refresh_reachable_from_path(
             }
         }
     }
-    Ok(())
+    Ok(upserted_fnodes)
 }
 
 /// Upsert a single .mdoc file: update metadata, parse, rebuild edges and issues.
@@ -305,6 +312,333 @@ pub fn delete_indexed_path(conn: &Connection, stale_path: &str) -> Result<()> {
     if old_fnode.is_some() {
         bump_graph_epoch(conn)?;
     }
+    Ok(())
+}
+
+// ── Topo depth helpers ────────────────────────────────────────────────────────
+
+/// Compute topo_depth for a single fnode: max(dep topo_depths) + 1, or 0 if no deps.
+fn compute_node_topo_depth(conn: &Connection, fnode: &str) -> Result<u32> {
+    let max_dep: Option<u32> = conn.query_row(
+        "SELECT MAX(m.topo_depth)
+         FROM mdoc_edges e
+         JOIN mdocs m ON m.fnode = e.dst_fnode
+         WHERE e.src_fnode = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM mdoc_issues i
+             WHERE i.path = e.src_path AND i.kind IN ('invalid', 'duplicate')
+           )",
+        [fnode],
+        |r| r.get::<_, Option<u32>>(0),
+    )?;
+    Ok(max_dep.map(|d| d + 1).unwrap_or(0))
+}
+
+/// BFS upward from `start_fnode` through reverse edges, recomputing and persisting
+/// `topo_depth` for each ancestor whose depth changes.
+pub(crate) fn refresh_topo_depth_upward_from(conn: &Connection, start_fnode: &str) -> Result<()> {
+    use std::collections::{HashSet, VecDeque};
+    let mut queue: VecDeque<String> = VecDeque::from([start_fnode.to_string()]);
+    let mut visited: HashSet<String> = HashSet::new();
+    while let Some(fnode) = queue.pop_front() {
+        if !visited.insert(fnode.clone()) {
+            continue;
+        }
+        let new_depth = compute_node_topo_depth(conn, &fnode)?;
+        let old_depth: Option<u32> = conn
+            .query_row(
+                "SELECT topo_depth FROM mdocs WHERE fnode = ?",
+                [&fnode],
+                |r| r.get(0),
+            )
+            .ok();
+        if old_depth != Some(new_depth) {
+            conn.execute(
+                "UPDATE mdocs SET topo_depth = ? WHERE fnode = ?",
+                rusqlite::params![new_depth, &fnode],
+            )?;
+            // Propagate to nodes that have this fnode as a dependency.
+            let mut stmt =
+                conn.prepare("SELECT DISTINCT src_fnode FROM mdoc_edges WHERE dst_fnode = ?")?;
+            let parents: Vec<String> = stmt
+                .query_map([&fnode], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            for parent in parents {
+                if !visited.contains(&parent) {
+                    queue.push_back(parent);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Recompute topo_depth for all nodes from scratch and persist to DB.
+/// Used after bulk scans where incremental updates would be incorrect or too expensive.
+pub(crate) fn backfill_all_topo_depths(conn: &Connection) -> Result<()> {
+    let depths = compute_all_topo_depths_from_edges(conn)?;
+    for chunk in depths.iter().collect::<Vec<_>>().chunks(CHUNK_SIZE) {
+        for (fnode, depth) in chunk {
+            conn.execute(
+                "UPDATE mdocs SET topo_depth = ? WHERE fnode = ?",
+                rusqlite::params![depth, fnode],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+// ── Incremental weak component helpers ───────────────────────────────────────
+
+/// Insert a node as its own isolated component (no-op if already present).
+fn ensure_component_entry(conn: &Connection, fnode: &str) -> Result<()> {
+    if fnode.starts_with('<') && fnode.ends_with('>') {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO mdoc_weak_component (fnode, component_id, component_size)
+         VALUES (?, ?, 1)",
+        rusqlite::params![fnode, fnode],
+    )?;
+    Ok(())
+}
+
+/// Union the components of `u` and `v`. Merges smaller into larger by size.
+fn union_components(conn: &Connection, u: &str, v: &str) -> Result<()> {
+    if (u.starts_with('<') && u.ends_with('>')) || (v.starts_with('<') && v.ends_with('>')) {
+        return Ok(());
+    }
+    ensure_component_entry(conn, u)?;
+    ensure_component_entry(conn, v)?;
+
+    let row_u: Option<(String, u32)> = conn
+        .query_row(
+            "SELECT component_id, component_size FROM mdoc_weak_component WHERE fnode = ?",
+            [u],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok();
+    let row_v: Option<(String, u32)> = conn
+        .query_row(
+            "SELECT component_id, component_size FROM mdoc_weak_component WHERE fnode = ?",
+            [v],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok();
+    let (cid_u, size_u) = match row_u {
+        Some(r) => r,
+        None => return Ok(()),
+    };
+    let (cid_v, size_v) = match row_v {
+        Some(r) => r,
+        None => return Ok(()),
+    };
+    if cid_u == cid_v {
+        return Ok(());
+    }
+    let (keep, replace, new_size) = if size_u >= size_v {
+        (cid_u, cid_v, size_u + size_v)
+    } else {
+        (cid_v, cid_u, size_u + size_v)
+    };
+    conn.execute(
+        "UPDATE mdoc_weak_component SET component_id = ?, component_size = ?
+         WHERE component_id = ?",
+        rusqlite::params![keep, new_size, replace],
+    )?;
+    Ok(())
+}
+
+/// Build undirected adjacency (restricted to `members`) from the current `mdoc_edges` table.
+fn build_undirected_adj_for_members(
+    conn: &Connection,
+    members: &HashSet<String>,
+) -> Result<HashMap<String, HashSet<String>>> {
+    let mut adj: HashMap<String, HashSet<String>> = members
+        .iter()
+        .map(|m| (m.clone(), HashSet::new()))
+        .collect();
+
+    let member_vec: Vec<&str> = members.iter().map(|s| s.as_str()).collect();
+    for chunk in member_vec.chunks(CHUNK_SIZE) {
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT DISTINCT src_fnode, dst_fnode FROM mdoc_edges
+             WHERE src_fnode IN ({placeholders})
+               AND NOT EXISTS (
+                 SELECT 1 FROM mdoc_issues
+                 WHERE mdoc_issues.path = mdoc_edges.src_path
+                   AND mdoc_issues.kind IN ('invalid', 'duplicate')
+               )"
+        );
+        let params: Vec<&dyn rusqlite::types::ToSql> = chunk
+            .iter()
+            .map(|f| f as &dyn rusqlite::types::ToSql)
+            .collect();
+        let mut stmt = conn.prepare(&sql)?;
+        for row in stmt.query_map(params.as_slice(), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })? {
+            let (src, dst) = row?;
+            if members.contains(&dst) {
+                adj.entry(src.clone()).or_default().insert(dst.clone());
+                adj.entry(dst).or_default().insert(src);
+            }
+        }
+    }
+    Ok(adj)
+}
+
+/// BFS from `start` using undirected `adj`. Returns the set of reachable nodes.
+fn bfs_reachable(adj: &HashMap<String, HashSet<String>>, start: &str) -> HashSet<String> {
+    use std::collections::VecDeque;
+    let mut visited: HashSet<String> = HashSet::new();
+    if !adj.contains_key(start) {
+        return visited;
+    }
+    let mut queue: VecDeque<String> = VecDeque::from([start.to_string()]);
+    while let Some(node) = queue.pop_front() {
+        if !visited.insert(node.clone()) {
+            continue;
+        }
+        for nb in adj.get(&node).into_iter().flatten() {
+            if !visited.contains(nb.as_str()) {
+                queue.push_back(nb.clone());
+            }
+        }
+    }
+    visited
+}
+
+/// After edge `u → v` removal, check if `u` and `v` are still connected; split if not.
+fn check_and_split_component(conn: &Connection, u: &str, v: &str) -> Result<()> {
+    if (u.starts_with('<') && u.ends_with('>')) || (v.starts_with('<') && v.ends_with('>')) {
+        return Ok(());
+    }
+    let cid_u: Option<String> = conn
+        .query_row(
+            "SELECT component_id FROM mdoc_weak_component WHERE fnode = ?",
+            [u],
+            |r| r.get(0),
+        )
+        .ok();
+    let cid_v: Option<String> = conn
+        .query_row(
+            "SELECT component_id FROM mdoc_weak_component WHERE fnode = ?",
+            [v],
+            |r| r.get(0),
+        )
+        .ok();
+    let (cid_u, cid_v) = match (cid_u, cid_v) {
+        (Some(a), Some(b)) => (a, b),
+        _ => return Ok(()),
+    };
+    if cid_u != cid_v {
+        return Ok(());
+    }
+
+    // Get all members of this component
+    let mut stmt = conn.prepare("SELECT fnode FROM mdoc_weak_component WHERE component_id = ?")?;
+    let members: HashSet<String> = stmt
+        .query_map([&cid_u], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    if members.len() <= 1 {
+        return Ok(());
+    }
+
+    let adj = build_undirected_adj_for_members(conn, &members)?;
+    let u_side = bfs_reachable(&adj, u);
+    if u_side.contains(v) {
+        return Ok(());
+    }
+
+    let v_side: HashSet<String> = members.difference(&u_side).cloned().collect();
+    let new_cid_u = u_side
+        .iter()
+        .min()
+        .cloned()
+        .unwrap_or_else(|| u.to_string());
+    let new_cid_v = v_side
+        .iter()
+        .min()
+        .cloned()
+        .unwrap_or_else(|| v.to_string());
+    let sz_u = u_side.len() as u32;
+    let sz_v = v_side.len() as u32;
+
+    for chunk in u_side.iter().collect::<Vec<_>>().chunks(CHUNK_SIZE) {
+        let ph = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "UPDATE mdoc_weak_component SET component_id = ?, component_size = ?
+             WHERE fnode IN ({ph})"
+        );
+        let mut params: Vec<&dyn rusqlite::types::ToSql> = vec![
+            &new_cid_u as &dyn rusqlite::types::ToSql,
+            &sz_u as &dyn rusqlite::types::ToSql,
+        ];
+        params.extend(chunk.iter().map(|f| *f as &dyn rusqlite::types::ToSql));
+        conn.execute(&sql, params.as_slice())?;
+    }
+    for chunk in v_side.iter().collect::<Vec<_>>().chunks(CHUNK_SIZE) {
+        let ph = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "UPDATE mdoc_weak_component SET component_id = ?, component_size = ?
+             WHERE fnode IN ({ph})"
+        );
+        let mut params: Vec<&dyn rusqlite::types::ToSql> = vec![
+            &new_cid_v as &dyn rusqlite::types::ToSql,
+            &sz_v as &dyn rusqlite::types::ToSql,
+        ];
+        params.extend(chunk.iter().map(|f| *f as &dyn rusqlite::types::ToSql));
+        conn.execute(&sql, params.as_slice())?;
+    }
+    Ok(())
+}
+
+/// Incrementally update weak components after a single-file upsert.
+///
+/// Handles:
+/// - New node (old=None, new=Some): insert isolated, union with new deps.
+/// - Same fnode, edge changes: split-check removed edges, union added edges.
+/// - Other cases (fnode rename, deletion): fall back to full recompute.
+///
+/// Always ends with `weak_component_dirty = 0`.
+pub(crate) fn update_weak_component_incremental(
+    conn: &Connection,
+    old_fnode: Option<&str>,
+    new_fnode: Option<&str>,
+    old_dsts: &HashSet<String>,
+    new_dsts: &HashSet<String>,
+) -> Result<()> {
+    match (old_fnode, new_fnode) {
+        (None, None) => {}
+
+        (None, Some(new_f)) => {
+            ensure_component_entry(conn, new_f)?;
+            for dep in new_dsts {
+                union_components(conn, new_f, dep)?;
+            }
+        }
+
+        (Some(old_f), Some(new_f)) if old_f == new_f => {
+            for dep in old_dsts.difference(new_dsts) {
+                check_and_split_component(conn, old_f, dep)?;
+            }
+            for dep in new_dsts.difference(old_dsts) {
+                union_components(conn, new_f, dep)?;
+            }
+        }
+
+        _ => {
+            // Fnode changed or node deleted: fall back to full recompute.
+            super::queries::recompute_weak_components_full(conn)?;
+            return Ok(());
+        }
+    }
+    conn.execute(
+        "UPDATE mdoc_index_state SET weak_component_dirty = 0 WHERE id = 1",
+        [],
+    )?;
     Ok(())
 }
 

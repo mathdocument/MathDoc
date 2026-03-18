@@ -27,10 +27,6 @@ fn eprintln_err(msg: &str) {
     eprintln!("{RED}error:{RST} {msg}");
 }
 
-fn eprintln_warn(msg: &str) {
-    eprintln!("{YLW}warn:{RST} {msg}");
-}
-
 fn short_fnode(fnode: &str) -> &str {
     let s = fnode.trim_matches(|c| c == '<' || c == '>');
     &s[..s.len().min(8)]
@@ -96,6 +92,9 @@ enum Commands {
         #[arg(short, long, default_value = ".")]
         file: String,
     },
+
+    /// Open a mdoc file in $EDITOR and reindex it on exit.
+    Edit { source: String },
 
     /// Force refresh all index entries.
     Sync,
@@ -184,6 +183,7 @@ fn dispatch(cmd: Commands) -> Result<i32> {
     match cmd {
         Commands::Init => cmd_core::cmd_init(),
         Commands::New { title, file } => cmd_core::cmd_new(title, file),
+        Commands::Edit { source } => cmd_core::cmd_edit(source),
         Commands::Sync => cmd_core::cmd_sync(),
         Commands::Search { query, max_results } => cmd_core::cmd_search(query, max_results),
         Commands::Graph { command } => match command {
@@ -256,6 +256,18 @@ fn print_cycle(cycle: &[String], label_map: &HashMap<String, (String, String)>) 
                 println!("    {DIM}│{RST}   {item}");
             }
         }
+    }
+}
+
+pub(super) fn print_cycles_if_any(cycles: &[Vec<String>], cache: &IndCache) {
+    if cycles.is_empty() {
+        return;
+    }
+    println!("   {RED}cycles ({}):{RST}", cycles.len());
+    for cycle in cycles {
+        let fnode_refs: Vec<&str> = cycle.iter().map(|s| s.as_str()).collect();
+        let label_map = cache.lookup_by_fnode(&fnode_refs).unwrap_or_default();
+        print_cycle(cycle, &label_map);
     }
 }
 

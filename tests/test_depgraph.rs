@@ -82,6 +82,32 @@ fn test_from_ref_rejects_duplicate_root_fnode_even_by_path() {
     );
 }
 
+#[test]
+fn test_from_ref_detects_duplicate_via_filesystem_fallback() {
+    // Scenario: a.mdoc is already indexed; b.mdoc has the same fnode but was written
+    // externally after the last bootstrap.  from_ref resolves b.mdoc via filesystem
+    // path lookup (it's not yet in the index), upserts it, then catches the duplicate.
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join(".mdc")).unwrap();
+
+    // Write and index only a.mdoc
+    fs::write(root.join("a.mdoc"), "@fnode: shared-node\n@title: A\n").unwrap();
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    cache.bootstrap_if_needed().unwrap();
+
+    // Write b.mdoc with the same fnode — not yet indexed
+    fs::write(root.join("b.mdoc"), "@fnode: shared-node\n@title: B\n").unwrap();
+
+    // Open a fresh cache (no bootstrap) so b.mdoc is still absent from the index
+    let cache2 = IndCache::open(root.to_path_buf()).unwrap();
+    let err = expect_err(DepGraph::from_ref(cache2, "b.mdoc", Some(root)));
+    assert!(
+        err.to_string().contains("duplicate fnode 'shared-node'"),
+        "expected duplicate error, got: {err}"
+    );
+}
+
 // ── dependency_items ─────────────────────────────────────────────────────────
 
 #[test]
@@ -426,7 +452,7 @@ fn test_direct_dependency_mutation_uses_graph_api() {
 }
 
 #[test]
-fn test_add_direct_dependencies_allows_cycle() {
+fn test_add_direct_dependencies_rejects_cycle() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
 
@@ -442,16 +468,471 @@ fn test_add_direct_dependencies_allows_cycle() {
         .unwrap();
     assert_eq!(added, vec![dep.fnode.clone()]);
 
-    // dep → src creates a cycle — this is now allowed
+    // dep → src would create a cycle — should be rejected
     let mut graph_dep = DepGraph::new(root.to_path_buf(), &dep.fnode).unwrap();
-    let (added2, _, _) = graph_dep
-        .add_direct_dependencies(vec![src.fnode.clone()])
-        .unwrap();
-    assert_eq!(added2, vec![src.fnode.clone()]);
+    let result = graph_dep.add_direct_dependencies(vec![src.fnode.clone()]);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("cycle"),
+        "expected cycle error, got: {err_msg}"
+    );
 
-    // dep's file should have been updated
+    // dep's file should NOT have been modified
     let reloaded = MdocNode::load(root, &dep.path).unwrap();
-    assert_eq!(reloaded.depens, vec![src.fnode.clone()]);
+    assert!(reloaded.depens.is_empty());
+}
+
+#[test]
+fn test_create_and_add_dependency_no_side_effects_on_cycle() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root_dir = dir.path();
+
+    let root_node = make_node(root_dir, "Root", "natl", "root");
+    root_node.save().unwrap();
+
+    // Build a new node whose @dep already points back at root — this would form
+    // the cycle root → new_node → root the moment we add root → new_node.
+    let mut new_node = make_node(root_dir, "New", "natl", "new");
+    new_node.add_dependency(&root_node.fnode);
+    let new_path = new_node.path.clone();
+    let new_fnode = new_node.fnode.clone();
+
+    let mut graph = DepGraph::new(root_dir.to_path_buf(), &root_node.fnode).unwrap();
+    let result = graph.create_and_add_dependency(new_node);
+
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("cycle"),
+        "expected cycle error, got: {err_msg}"
+    );
+
+    // No file should have been created on disk.
+    assert!(
+        !new_path.exists(),
+        "new node file must not exist after failure"
+    );
+
+    // The new node must not appear in the index.
+    let search_results = graph.cache.search(&new_fnode[..8]).unwrap();
+    assert!(
+        search_results.is_empty(),
+        "new node must not be indexed after failure"
+    );
+}
+
+#[test]
+fn test_create_root_rejects_duplicate_fnode() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join(".mdc")).unwrap();
+
+    // First create succeeds and establishes the fnode in the index.
+    let (graph, _) =
+        DepGraph::create_root(root.to_path_buf(), "first", "First", None, None).unwrap();
+    let existing_fnode = graph
+        .cache
+        .resolve_ref("first.mdoc", None)
+        .map(|(f, _, _)| f)
+        .unwrap_or_else(|_| {
+            // Fall back: read fnode from indexed nodes
+            graph
+                .cache
+                .search("First")
+                .unwrap()
+                .into_iter()
+                .next()
+                .unwrap()
+                .0
+        });
+
+    // Second create with the same fnode must fail before writing anything.
+    let second_path = root.join("second.mdoc");
+    let result = DepGraph::create_root(
+        root.to_path_buf(),
+        "second",
+        "Second",
+        Some(&existing_fnode),
+        None,
+    );
+
+    let err_msg = result.err().expect("expected error").to_string();
+    assert!(
+        err_msg.contains("already used"),
+        "expected duplicate fnode error, got: {err_msg}"
+    );
+    // No file should have been created for the second node.
+    assert!(
+        !second_path.exists(),
+        "second node file must not exist after failure"
+    );
+}
+
+/// P2 regression: create_root() must bootstrap before the duplicate-fnode check, so that a
+/// file already on disk (but not yet in the index) is discovered and the collision is caught.
+#[test]
+fn test_create_root_rejects_duplicate_fnode_unindexed() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join(".mdc")).unwrap();
+
+    // Write an existing mdoc file to disk WITHOUT indexing it.
+    let existing = make_node(root, "Existing", "natl", "");
+    existing.save().unwrap();
+    let existing_fnode = existing.fnode.clone();
+
+    // Attempt to create a new root with the same fnode — bootstrap must surface
+    // the on-disk file so the duplicate check fires before any write.
+    let second_path = root.join("second.mdoc");
+    let result = DepGraph::create_root(
+        root.to_path_buf(),
+        "second",
+        "Second",
+        Some(&existing_fnode),
+        None,
+    );
+
+    let err_msg = result
+        .err()
+        .expect("expected error for unindexed duplicate fnode")
+        .to_string();
+    assert!(
+        err_msg.contains("already used"),
+        "expected duplicate fnode error, got: {err_msg}"
+    );
+    assert!(
+        !second_path.exists(),
+        "second node file must not exist after failure"
+    );
+}
+
+#[test]
+fn test_create_and_add_dependency_rejects_duplicate_fnode() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root_dir = dir.path();
+
+    let root_node = make_node(root_dir, "Root", "natl", "root");
+    root_node.save().unwrap();
+
+    // Index the root so the fnode is known.
+    let mut graph = DepGraph::new(root_dir.to_path_buf(), &root_node.fnode).unwrap();
+    graph.cache.upsert_path(&root_node.path).unwrap();
+
+    // Build a new node whose fnode is deliberately set to root's fnode.
+    let mut dup_node = make_node(root_dir, "Dup", "natl", "dup");
+    dup_node.fnode = root_node.fnode.clone();
+    let dup_path = dup_node.path.clone();
+
+    let result = graph.create_and_add_dependency(dup_node);
+
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("already used"),
+        "expected duplicate fnode error, got: {err_msg}"
+    );
+    // No file should have been created.
+    assert!(
+        !dup_path.exists(),
+        "duplicate node file must not exist after failure"
+    );
+}
+
+/// P2 regression: create_and_add_dependency() must reject non-.mdoc extensions to avoid
+/// creating index entries that workspace discovery would never scan.
+#[test]
+fn test_create_and_add_dependency_rejects_non_mdoc_extension() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root_dir = dir.path();
+
+    let root_node = make_node(root_dir, "Root", "natl", "root");
+    root_node.save().unwrap();
+    let mut graph = DepGraph::new(root_dir.to_path_buf(), &root_node.fnode).unwrap();
+    graph.cache.upsert_path(&root_node.path).unwrap();
+
+    let mut new_node = make_node(root_dir, "Txt", "natl", "txt");
+    new_node.path = root_dir.join("note.txt");
+
+    let result = graph.create_and_add_dependency(new_node);
+
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains(".mdoc"),
+        "expected .mdoc extension error, got: {err_msg}"
+    );
+    assert!(
+        !root_dir.join("note.txt").exists(),
+        "non-.mdoc file must not be written"
+    );
+}
+
+/// P1 regression: create_and_add_dependency() must refuse to write when the target path
+/// already exists on disk, even if fnode and cycle checks pass.
+#[test]
+fn test_create_and_add_dependency_rejects_existing_path() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root_dir = dir.path();
+
+    let root_node = make_node(root_dir, "Root", "natl", "root");
+    root_node.save().unwrap();
+    let mut graph = DepGraph::new(root_dir.to_path_buf(), &root_node.fnode).unwrap();
+    graph.cache.upsert_path(&root_node.path).unwrap();
+
+    // Write an unrelated victim file at the path the new node would occupy.
+    let mut new_node = make_node(root_dir, "New", "natl", "new");
+    fs::write(&new_node.path, b"victim content").unwrap();
+    // Give the new node a different fnode so the duplicate-fnode check doesn't fire first.
+    new_node.fnode = format!("{}x", &new_node.fnode[..new_node.fnode.len() - 1]);
+    let victim_path = new_node.path.clone();
+
+    let result = graph.create_and_add_dependency(new_node);
+
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("already exists"),
+        "expected path-collision error, got: {err_msg}"
+    );
+    // Victim file content must be untouched.
+    assert_eq!(fs::read(&victim_path).unwrap(), b"victim content");
+}
+
+/// P1 regression: create_and_add_dependency() must refuse to write a file outside
+/// the workspace root.
+#[test]
+fn test_create_and_add_dependency_rejects_path_outside_workspace() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root_dir = dir.path();
+    let outside_dir = tempfile::TempDir::new().unwrap();
+
+    let root_node = make_node(root_dir, "Root", "natl", "root");
+    root_node.save().unwrap();
+    let mut graph = DepGraph::new(root_dir.to_path_buf(), &root_node.fnode).unwrap();
+    graph.cache.upsert_path(&root_node.path).unwrap();
+
+    let mut new_node = make_node(root_dir, "Outside", "natl", "outside");
+    // Point the path to a location outside the workspace.
+    new_node.path = outside_dir.path().join("outside.mdoc");
+    let outside_path = new_node.path.clone();
+
+    let result = graph.create_and_add_dependency(new_node);
+
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("under mdoc root"),
+        "expected out-of-workspace error, got: {err_msg}"
+    );
+    assert!(
+        !outside_path.exists(),
+        "file must not be written outside workspace"
+    );
+}
+
+/// P1 regression: create_and_add_dependency() must refuse to write a file inside
+/// a nested workspace (a directory that itself contains a .mdc/ subdirectory).
+#[test]
+fn test_create_and_add_dependency_rejects_path_in_nested_workspace() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root_dir = dir.path().canonicalize().unwrap();
+    // Create a nested workspace inside the outer one.
+    let nested = root_dir.join("sub");
+    fs::create_dir_all(nested.join(".mdc")).unwrap();
+
+    let root_node = make_node(&root_dir, "Root", "natl", "root");
+    root_node.save().unwrap();
+    let mut graph = DepGraph::new(root_dir.clone(), &root_node.fnode).unwrap();
+    graph.cache.upsert_path(&root_node.path).unwrap();
+
+    let mut new_node = make_node(&root_dir, "Nested", "natl", "nested");
+    new_node.path = nested.join("nested.mdoc");
+    let nested_path = new_node.path.clone();
+
+    let result = graph.create_and_add_dependency(new_node);
+
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("nested mdoc root"),
+        "expected nested-workspace error, got: {err_msg}"
+    );
+    assert!(
+        !nested_path.exists(),
+        "file must not be written inside nested workspace"
+    );
+}
+
+/// P1 regression: .. components in new_node.path must not allow escaping the
+/// workspace root, even when intermediate directories don't yet exist on disk.
+/// Covers create_and_add_dependency().
+#[test]
+fn test_create_and_add_dependency_rejects_dotdot_escape() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root_dir = dir.path().canonicalize().unwrap();
+
+    let root_node = make_node(&root_dir, "Root", "natl", "root");
+    root_node.save().unwrap();
+    let mut graph = DepGraph::new(root_dir.clone(), &root_node.fnode).unwrap();
+    graph.cache.upsert_path(&root_node.path).unwrap();
+
+    // Construct a path that looks like it starts under root but uses .. to escape.
+    // Use the unique temp dir name as the stem so parallel runs don't share a filename.
+    let stem = root_dir.file_name().unwrap().to_str().unwrap();
+    let escaped_name = format!("{stem}-escaped.mdoc");
+    let mut new_node = make_node(&root_dir, "Escape", "natl", "escape");
+    new_node.path = root_dir
+        .join("nope")
+        .join("..")
+        .join("..")
+        .join(&escaped_name);
+    let escaped_path = root_dir.parent().unwrap().join(&escaped_name);
+
+    let result = graph.create_and_add_dependency(new_node);
+
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("under mdoc root"),
+        "expected out-of-workspace error for .. escape, got: {err_msg}"
+    );
+    assert!(!escaped_path.exists(), "escaped file must not be written");
+}
+
+/// P1 regression: same .. escape via create_root().
+#[test]
+fn test_create_root_rejects_dotdot_escape() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root_dir = dir.path().canonicalize().unwrap();
+    fs::create_dir_all(root_dir.join(".mdc")).unwrap();
+
+    // A relative target with .. that would escape the workspace when joined to mdcroot.
+    // Use the unique temp dir name so parallel runs don't share a filename.
+    let stem = root_dir.file_name().unwrap().to_str().unwrap();
+    let file_target = format!("nope/../../{stem}-escaped");
+    let result = DepGraph::create_root(root_dir.clone(), &file_target, "Escape", None, None);
+
+    assert!(result.is_err());
+    let err_msg = result.err().expect("expected error").to_string();
+    assert!(
+        err_msg.contains("under mdoc root"),
+        "expected out-of-workspace error for .. escape, got: {err_msg}"
+    );
+    let escaped_path = root_dir
+        .parent()
+        .unwrap()
+        .join(format!("{stem}-escaped.mdoc"));
+    assert!(!escaped_path.exists(), "escaped file must not be written");
+}
+
+/// P1 regression: symlink/.. must not allow escaping the workspace.
+/// `root/link` → outside; POSIX `link/..` = parent-of-outside, not `root/`.
+/// Covers create_and_add_dependency().
+#[cfg(unix)]
+#[test]
+fn test_create_and_add_dependency_rejects_symlink_dotdot_escape() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let root_dir = dir.path().canonicalize().unwrap();
+    let outside_dir = tempfile::TempDir::new().unwrap();
+    let outside_canonical = outside_dir.path().canonicalize().unwrap();
+
+    // Symlink inside workspace → outside
+    let link_path = root_dir.join("external_link");
+    symlink(&outside_canonical, &link_path).unwrap();
+
+    let root_node = make_node(&root_dir, "Root", "natl", "root");
+    root_node.save().unwrap();
+    let mut graph = DepGraph::new(root_dir.clone(), &root_node.fnode).unwrap();
+    graph.cache.upsert_path(&root_node.path).unwrap();
+
+    // root/external_link/../<name>.mdoc: lexically looks like root/<name>.mdoc,
+    // but POSIX resolves external_link → outside, so link/.. = outside/.., OUTSIDE.
+    let stem = root_dir.file_name().unwrap().to_str().unwrap();
+    let escaped_name = format!("{stem}-sym-escaped.mdoc");
+    let mut new_node = make_node(&root_dir, "Escape", "natl", "escape");
+    new_node.path = root_dir
+        .join("external_link")
+        .join("..")
+        .join(&escaped_name);
+    // Actual POSIX-resolved location the file would be written to:
+    let potential_escape = outside_canonical.parent().unwrap().join(&escaped_name);
+
+    let result = graph.create_and_add_dependency(new_node);
+
+    assert!(result.is_err(), "symlink-dotdot escape must be rejected");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("under mdoc root"),
+        "expected out-of-workspace error, got: {err_msg}"
+    );
+    assert!(
+        !potential_escape.exists(),
+        "escaped file must not be written"
+    );
+}
+
+/// P1 regression: same symlink/.. escape via create_root().
+#[cfg(unix)]
+#[test]
+fn test_create_root_rejects_symlink_dotdot_escape() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let root_dir = dir.path().canonicalize().unwrap();
+    let outside_dir = tempfile::TempDir::new().unwrap();
+    let outside_canonical = outside_dir.path().canonicalize().unwrap();
+
+    fs::create_dir_all(root_dir.join(".mdc")).unwrap();
+    let link_path = root_dir.join("ext_link");
+    symlink(&outside_canonical, &link_path).unwrap();
+
+    let stem = root_dir.file_name().unwrap().to_str().unwrap();
+    let file_target = format!("ext_link/../{stem}-sym-root-escaped");
+    let result = DepGraph::create_root(root_dir.clone(), &file_target, "Escape", None, None);
+
+    assert!(result.is_err(), "symlink-dotdot escape must be rejected");
+    let err_msg = result.err().expect("expected error").to_string();
+    assert!(
+        err_msg.contains("under mdoc root"),
+        "expected out-of-workspace error, got: {err_msg}"
+    );
+    let escaped_name = format!("{stem}-sym-root-escaped.mdoc");
+    let potential_escape = outside_canonical.parent().unwrap().join(&escaped_name);
+    assert!(
+        !potential_escape.exists(),
+        "escaped file must not be written"
+    );
+}
+
+/// P1 regression: create_root() with file_path="." or "" must not silently
+/// overwrite an existing file — the default path still goes through validation.
+#[test]
+fn test_create_root_dot_target_rejects_existing_file() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join(".mdc")).unwrap();
+
+    // Write a pre-existing file whose name matches the fnode we will force.
+    let fnode = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    let victim_path = root.join(format!("{fnode}.mdoc"));
+    fs::write(&victim_path, b"victim content").unwrap();
+
+    // create_root with file_path="." should refuse because the default path already exists.
+    let result = DepGraph::create_root(root.to_path_buf(), ".", "New", Some(fnode), None);
+
+    let err_msg = result
+        .err()
+        .expect("expected error for existing default path")
+        .to_string();
+    assert!(
+        err_msg.contains("already exists"),
+        "expected path-collision error, got: {err_msg}"
+    );
+    // Victim must be untouched.
+    assert_eq!(fs::read(&victim_path).unwrap(), b"victim content");
 }
 
 // ── scan_all ──────────────────────────────────────────────────────────────────

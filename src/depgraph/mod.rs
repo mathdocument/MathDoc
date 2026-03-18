@@ -49,13 +49,23 @@ impl DepGraph {
             node.fnode = f.to_string();
         }
         node.path = resolve_new_node_path(&root, file_path, &node.fnode)?;
-        node.save()?;
-        let node_path = node.path.clone();
-        let rel_path = to_rel_path(&root, &node.path);
-        let cache = match cache {
+
+        // Open (or receive) the cache before any I/O so we can pre-validate.
+        let mut cache = match cache {
             Some(c) => c,
             None => IndCache::open(root.clone())?,
         };
+        cache.bootstrap_if_needed()?;
+        if !cache.duplicate_fnode_paths(&node.fnode)?.is_empty() {
+            bail!(
+                "fnode {} is already used by another file in this workspace",
+                &node.fnode[..node.fnode.len().min(8)]
+            );
+        }
+
+        node.save()?;
+        let node_path = node.path.clone();
+        let rel_path = to_rel_path(&root, &node.path);
         let mut graph = DepGraph {
             mdcroot: root,
             cache,
@@ -77,6 +87,10 @@ impl DepGraph {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| cache.root.clone()));
         cache.bootstrap_if_needed()?;
         let (_, _, src_path) = cache.resolve_ref(ref_str, Some(&base_cwd))?;
+        // Ensure the resolved file is indexed before checking for duplicates.
+        // Without this, a file resolved via filesystem fallback (not yet in the index)
+        // would be invisible to duplicate_fnode_paths, allowing a silent bypass.
+        cache.upsert_path(&src_path)?;
         let node = MdocNode::load(&cache.root, &src_path)?;
 
         let dup_paths = cache.duplicate_fnode_paths(&node.fnode)?;
@@ -301,8 +315,20 @@ impl DepGraph {
             }
         }
 
+        // Reject any dep that would create a cycle: adding root → dep_fnode creates
+        // a cycle if dep_fnode can already reach root in the indexed graph.
+        for dep_fnode in &added {
+            if self.cache.is_reachable(dep_fnode, &root)? {
+                bail!(
+                    "adding {} as a dependency of {} would create a cycle",
+                    &dep_fnode[..dep_fnode.len().min(8)],
+                    &root[..root.len().min(8)]
+                );
+            }
+        }
+
         if !added.is_empty() {
-            // Commit: mutate the node and save
+            // Commit: mutate the node, save to disk, and sync the index.
             {
                 let node = self
                     .state
@@ -314,6 +340,8 @@ impl DepGraph {
                 }
             }
             self.state.nodes_by_fnode[&root].save()?;
+            let root_path = self.state.nodes_by_fnode[&root].path.clone();
+            self.cache.upsert_path(&root_path)?;
 
             let new_depens = dedupe_keep_order(&self.state.nodes_by_fnode[&root].depens.clone());
             self.state.dep_graph.insert(root.clone(), new_depens);
@@ -347,10 +375,70 @@ impl DepGraph {
 
         if !removed.is_empty() {
             self.state.nodes_by_fnode[&root].save()?;
+            let root_path = self.state.nodes_by_fnode[&root].path.clone();
+            self.cache.upsert_path(&root_path)?;
             let new_depens = dedupe_keep_order(&self.state.nodes_by_fnode[&root].depens.clone());
             self.state.dep_graph.insert(root, new_depens);
         }
         Ok(removed)
+    }
+
+    /// Save `new_node` to disk, index it, load it into the in-memory graph, and
+    /// add it as a direct dependency of the root. Returns `true` if it was added.
+    ///
+    /// All cycle validation is done before any I/O so failure leaves no files on
+    /// disk and no index entries. Two sources of cycles are checked up-front:
+    ///  - `new_node.fnode` already exists in the index with a path to root
+    ///    (fnode collision with an existing node that can reach root).
+    ///  - `new_node.depens` contains a fnode that can reach root in the current
+    ///    index (root → new_node → declared_dep → … → root).
+    pub fn create_and_add_dependency(&mut self, mut new_node: MdocNode) -> Result<bool> {
+        let root = self.bind_root(None, None)?;
+
+        // Reject duplicate fnode before touching disk.
+        if !self
+            .cache
+            .duplicate_fnode_paths(&new_node.fnode)?
+            .is_empty()
+        {
+            bail!(
+                "fnode {} is already used by another file in this workspace",
+                &new_node.fnode[..new_node.fnode.len().min(8)]
+            );
+        }
+
+        // Enforce path contract before touching disk: must be inside mdcroot, not in
+        // a nested root, not already existing. Returns the resolved canonical path —
+        // we update new_node.path to it so the write never uses a raw symlink-bearing path.
+        new_node.path = validate_new_node_path(&self.mdcroot, &new_node.path)?;
+
+        // Check both cycle sources before touching disk.
+        if self.cache.is_reachable(&new_node.fnode, &root)? {
+            bail!(
+                "adding {} as a dependency of {} would create a cycle",
+                &new_node.fnode[..new_node.fnode.len().min(8)],
+                &root[..root.len().min(8)]
+            );
+        }
+        for dep_fnode in &new_node.depens {
+            if self.cache.is_reachable(dep_fnode, &root)? {
+                bail!(
+                    "adding {} as a dependency of {} would create a cycle \
+                     (new node's dep {} already reaches root)",
+                    &new_node.fnode[..new_node.fnode.len().min(8)],
+                    &root[..root.len().min(8)],
+                    &dep_fnode[..dep_fnode.len().min(8)]
+                );
+            }
+        }
+
+        new_node.save()?;
+        self.cache.upsert_path(&new_node.path)?;
+        let fnode = new_node.fnode.clone();
+        self.state.nodes_by_fnode.insert(fnode.clone(), new_node);
+        self.state.dep_graph.entry(fnode.clone()).or_default();
+        let (added, _, _) = self.add_direct_dependencies(vec![fnode])?;
+        Ok(!added.is_empty())
     }
 
     // ── Full workspace scan ───────────────────────────────────────────────────
@@ -727,7 +815,25 @@ impl DepGraph {
         self.expand_from_root(&root.clone(), depth)
             .map_err(|e| anyhow::anyhow!("failed to build dependency graph: {e}"))?;
         if let Some(cycle) = find_cycle(&self.state.dep_graph, Some(&root)) {
-            bail!("dependency cycle detected: {}", cycle.join(" → "));
+            let nodes = if cycle.len() > 1 && cycle.first() == cycle.last() {
+                &cycle[..cycle.len() - 1]
+            } else {
+                &cycle[..]
+            };
+            let mut msg = String::from("dependency cycle detected:");
+            for (i, fnode) in nodes.iter().enumerate() {
+                let s = &fnode[..fnode.len().min(8)];
+                if nodes.len() == 1 {
+                    msg.push_str(&format!("\n  ↺  {s}"));
+                } else if i == 0 {
+                    msg.push_str(&format!("\n  ┌➤  {s}"));
+                } else if i == nodes.len() - 1 {
+                    msg.push_str(&format!("\n  └─  {s}"));
+                } else {
+                    msg.push_str(&format!("\n  │   {s}"));
+                }
+            }
+            bail!("{msg}");
         }
         Ok(root)
     }
@@ -751,39 +857,89 @@ fn dedupe_keep_order(items: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Resolve the path for a new `.mdoc` file given a relative target (no extension).
-/// Returns the absolute path with `.mdoc` appended to the last component.
-fn resolve_new_node_path(mdcroot: &Path, raw_target: &str, fnode: &str) -> Result<PathBuf> {
-    let target = raw_target.trim();
-    if target.is_empty() || target == "." {
-        return Ok(mdcroot.join(format!("{fnode}.mdoc")));
+/// Validate that `path` is an acceptable location for a new `.mdoc` file:
+/// Validate that `path` is a safe, canonical location for a new `.mdoc` file and
+/// return the fully-resolved path to use for writing.
+///
+/// Two classes of path-escape are blocked:
+/// - **Lexical `..` through non-existent dirs**: e.g. `root/nope/../../outside.mdoc`
+///   where `nope` does not exist. A naive `parent().canonicalize()` silently falls
+///   back to the raw path here; this function handles it by evaluating `..` against
+///   the resolved prefix built so far (which is already correctly bounded by root).
+/// - **Symlink-assisted `..`**: e.g. `root/link/../outside.mdoc` where
+///   `link → /external/`. Lexical normalization would collapse `link/..` to `root/`
+///   (wrongly inside the workspace), but this function resolves the symlink first
+///   via `canonicalize`, so `..` is evaluated relative to `/external/` — correctly
+///   landing outside the workspace.
+///
+/// Algorithm: walk path components left-to-right; after each existing intermediate
+/// directory is appended, call `canonicalize` to resolve any symlink at that level.
+/// `..` and `.` are then applied to the already-resolved prefix.
+/// The final (filename) component is appended verbatim — it must not yet exist.
+///
+/// Returns the resolved absolute path that callers must use for all subsequent I/O.
+fn validate_new_node_path(mdcroot: &Path, path: &Path) -> Result<PathBuf> {
+    use std::path::Component;
+    let comps: Vec<_> = path.components().collect();
+    let mut out = PathBuf::new();
+    for (i, comp) in comps.iter().enumerate() {
+        match comp {
+            Component::Prefix(p) => out.push(p.as_os_str()),
+            Component::RootDir => out.push("/"),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::Normal(name) => {
+                out.push(name);
+                // Resolve symlinks in intermediate components only (not the filename
+                // to be created). This makes `..` evaluate against the real on-disk
+                // parent rather than the lexical one, blocking symlink-based escapes.
+                if i < comps.len() - 1 {
+                    if let Ok(canonical) = out.canonicalize() {
+                        out = canonical;
+                    }
+                }
+            }
+        }
     }
-    let rel = Path::new(target);
-    if rel.is_absolute() {
-        bail!("target path must be relative to the mdoc root");
+    if out.extension().and_then(|e| e.to_str()) != Some("mdoc") {
+        bail!("path must have a .mdoc extension: {}", out.display());
     }
-    let joined = mdcroot.join(rel);
-    // Verify path stays under root (without requiring existence)
-    if joined.strip_prefix(mdcroot).is_err() {
+    if out.strip_prefix(mdcroot).is_err() {
         bail!("target path must be under mdoc root {}", mdcroot.display());
     }
-    let stem = joined
-        .file_name()
-        .ok_or_else(|| anyhow::anyhow!("invalid target path"))?
-        .to_string_lossy();
-    let final_path = joined.with_file_name(format!("{stem}.mdoc"));
-
-    let parent = final_path.parent().unwrap_or(mdcroot);
+    let parent = out.parent().unwrap_or(mdcroot);
     if let Some(nested) = find_nested_mdcroot(mdcroot, parent) {
         bail!(
             "target path is inside nested mdoc root: {}",
             nested.display()
         );
     }
-    if final_path.exists() {
-        bail!("mdoc file already exists: {}", final_path.display());
+    if out.exists() {
+        bail!("mdoc file already exists: {}", out.display());
     }
-    Ok(final_path)
+    Ok(out)
+}
+
+/// Resolve the path for a new `.mdoc` file given a relative target (no extension).
+/// Returns the absolute path with `.mdoc` appended to the last component.
+fn resolve_new_node_path(mdcroot: &Path, raw_target: &str, fnode: &str) -> Result<PathBuf> {
+    let target = raw_target.trim();
+    if target.is_empty() || target == "." {
+        return validate_new_node_path(mdcroot, &mdcroot.join(format!("{fnode}.mdoc")));
+    }
+    let rel = Path::new(target);
+    if rel.is_absolute() {
+        bail!("target path must be relative to the mdoc root");
+    }
+    let joined = mdcroot.join(rel);
+    let stem = joined
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("invalid target path"))?
+        .to_string_lossy();
+    let final_path = joined.with_file_name(format!("{stem}.mdoc"));
+    validate_new_node_path(mdcroot, &final_path)
 }
 
 fn duplicate_fnode_error(mdcroot: &Path, fnode: &str, paths: &[PathBuf]) -> String {

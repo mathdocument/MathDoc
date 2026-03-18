@@ -11,7 +11,7 @@ use super::{
 pub(super) fn cmd_graph_check() -> Result<i32> {
     let mdcroot = require_mdcroot()?;
     let mut cache = open_cache(mdcroot)?;
-    cache.discover_workspace_changes()?;
+    cache.refresh_workspace_index()?;
     let report = cache.graph_check_report()?;
     let ok = report.missing.is_empty() && report.invalid.is_empty() && report.cycles.is_empty();
 
@@ -52,27 +52,23 @@ pub(super) fn cmd_graph_roots() -> Result<i32> {
     let mdcroot = require_mdcroot()?;
     let mut cache = open_cache(mdcroot)?;
     cache.discover_workspace_changes()?;
-    let mut items = cache.global_root_items()?;
-    let topo = cache.all_topo_depths().unwrap_or_default();
-    items.sort_by(|a, b| {
-        let da = topo.get(&a.fnode).copied().unwrap_or(0);
-        let db = topo.get(&b.fnode).copied().unwrap_or(0);
-        db.cmp(&da).then(b.component_size.cmp(&a.component_size))
-    });
+    let items = cache.global_root_items()?;
     println!(
         "{BLD}{}{RST} root node{}",
         items.len(),
         if items.len() == 1 { "" } else { "s" }
     );
-    let depths: Vec<u32> = items
+    let w = items
         .iter()
-        .map(|i| topo.get(&i.fnode).copied().unwrap_or(0))
-        .collect();
-    let w = depths.iter().max().copied().unwrap_or(0).to_string().len();
-    for (item, depth) in items.iter().zip(&depths) {
+        .map(|i| i.topo_depth)
+        .max()
+        .unwrap_or(0)
+        .to_string()
+        .len();
+    for item in &items {
         println!(
             "   [{:>w$}]  {}",
-            depth,
+            item.topo_depth,
             fmt_item(&item.fnode, &item.title, &item.rel_path, item.broken)
         );
     }

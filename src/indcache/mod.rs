@@ -23,7 +23,20 @@ impl IndCache {
     pub fn open(root: PathBuf) -> Result<Self> {
         let root = root.canonicalize()?;
         let db_path = root.join(".mdc").join("index.db");
-        let conn = schema::open_db(&db_path)?;
+        let (mut conn, needs_topo_backfill) = schema::open_db(&db_path)?;
+        if needs_topo_backfill {
+            // topo_depth values are all-zero (column newly added or prior crash).
+            // Backfill real depths and mark complete in the same transaction so a
+            // crash here leaves topo_depth_backfilled = 0 and triggers recovery on
+            // the next open.
+            let tx = conn.transaction()?;
+            refresh::backfill_all_topo_depths(&tx)?;
+            tx.execute(
+                "UPDATE mdoc_index_state SET topo_depth_backfilled = 1 WHERE id = 1",
+                [],
+            )?;
+            tx.commit()?;
+        }
         Ok(IndCache { root, conn })
     }
 
@@ -55,7 +68,17 @@ impl IndCache {
     /// Incremental discovery using directory mtime tracking; marks bootstrapped.
     pub fn discover_workspace_changes(&mut self) -> Result<()> {
         let tx = self.conn.transaction()?;
-        discovery::discover_workspace_changes(&tx, &self.root)?;
+        let (changed_fnodes, has_deletion) =
+            discovery::discover_workspace_changes(&tx, &self.root)?;
+        if has_deletion {
+            // Deletions can decrease ancestor depths; full backfill is needed.
+            refresh::backfill_all_topo_depths(&tx)?;
+        } else {
+            // Additions/updates: incremental upward BFS per changed fnode.
+            for fnode in &changed_fnodes {
+                refresh::refresh_topo_depth_upward_from(&tx, fnode)?;
+            }
+        }
         tx.execute(
             "UPDATE mdoc_index_state SET bootstrapped = 1 WHERE id = 1",
             [],
@@ -77,10 +100,43 @@ impl IndCache {
         Ok(())
     }
 
-    /// Upsert a single file path.
+    /// Upsert a single file path with incremental topo and weak component updates.
     pub fn upsert_path(&mut self, file_path: &Path) -> Result<()> {
         let tx = self.conn.transaction()?;
+        let rel_path = crate::workspace::to_rel_path(&self.root, file_path);
+
+        // Capture pre-upsert state for incremental updates.
+        let old_fnode = queries::fnode_for_path(&tx, &rel_path)?;
+        let old_dsts: std::collections::HashSet<String> =
+            queries::edge_targets_for_source_path(&tx, &rel_path)?
+                .into_iter()
+                .collect();
+
         refresh::upsert_mdoc_row(&tx, &self.root, file_path)?;
+
+        // Post-upsert state.
+        let new_fnode = queries::fnode_for_path(&tx, &rel_path)?;
+        let new_dsts: std::collections::HashSet<String> =
+            queries::edge_targets_for_source_path(&tx, &rel_path)?
+                .into_iter()
+                .collect();
+
+        // Incremental topo refresh.
+        if let Some(ref fnode) = new_fnode {
+            refresh::refresh_topo_depth_upward_from(&tx, fnode)?;
+        } else {
+            refresh::backfill_all_topo_depths(&tx)?;
+        }
+
+        // Incremental weak component update (also clears weak_component_dirty).
+        refresh::update_weak_component_incremental(
+            &tx,
+            old_fnode.as_deref(),
+            new_fnode.as_deref(),
+            &old_dsts,
+            &new_dsts,
+        )?;
+
         tx.commit()?;
         Ok(())
     }
@@ -88,7 +144,13 @@ impl IndCache {
     /// Upsert all dependencies reachable from `root_path` up to `depth` hops (-1 = infinite).
     pub fn refresh_reachable_from_path(&mut self, root_path: &Path, depth: i32) -> Result<()> {
         let tx = self.conn.transaction()?;
-        refresh::refresh_reachable_from_path(&tx, &self.root, root_path, depth)?;
+        let upserted_fnodes =
+            refresh::refresh_reachable_from_path(&tx, &self.root, root_path, depth)?;
+        // Incremental topo update for each upserted fnode; weak components are handled
+        // lazily via the weak_component_dirty flag already set by bump_graph_epoch.
+        for fnode in &upserted_fnodes {
+            refresh::refresh_topo_depth_upward_from(&tx, fnode)?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -151,12 +213,12 @@ impl IndCache {
         queries::direct_referrers_for_fnode(&self.conn, fnode)
     }
 
-    pub fn deepest_fnode(&self) -> Result<Option<String>> {
-        queries::deepest_fnode(&self.conn)
-    }
-
     pub fn all_topo_depths(&self) -> Result<HashMap<String, u32>> {
         queries::all_topo_depths(&self.conn)
+    }
+
+    pub fn is_reachable(&self, from_fnode: &str, to_fnode: &str) -> Result<bool> {
+        queries::is_reachable(&self.conn, from_fnode, to_fnode)
     }
 
     pub fn dependency_report(

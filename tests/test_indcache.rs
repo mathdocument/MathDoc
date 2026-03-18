@@ -424,6 +424,94 @@ fn test_in_degree_decrements_on_dep_remove() {
     }
 }
 
+// ── topo_depth migration / crash-safe backfill ────────────────────────────────
+
+#[test]
+fn test_migration_backfills_topo_depth() {
+    // Simulate upgrading from a pre-v6 database that has edges but no topo_depth column.
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+
+    write(
+        &root.join("parent.mdoc"),
+        "@fnode: parent-node\n@title: Parent\n\n@dep:\nchild-node\n@end\n",
+    );
+    write(
+        &root.join("child.mdoc"),
+        "@fnode: child-node\n@title: Child\n",
+    );
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    cache.refresh_all().unwrap();
+
+    // Simulate a pre-v6 database: drop topo_depth column by downgrading user_version
+    // and zeroing out depths, plus clear the backfilled flag.
+    {
+        let conn = rusqlite::Connection::open(cache.db_path()).unwrap();
+        conn.execute_batch(
+            "PRAGMA user_version = 5;
+             UPDATE mdocs SET topo_depth = 0;
+             UPDATE mdoc_index_state SET topo_depth_backfilled = 0 WHERE id = 1;",
+        )
+        .unwrap();
+    }
+
+    // Re-open: migration detects needs_topo_backfill and backfills real depths.
+    let cache2 = IndCache::open(root.to_path_buf()).unwrap();
+    let depths = cache2.all_topo_depths().unwrap();
+    assert_eq!(
+        depths.get("parent-node").copied().unwrap_or(0),
+        1,
+        "parent-node should have topo_depth = 1 after backfill"
+    );
+    assert_eq!(
+        depths.get("child-node").copied().unwrap_or(999),
+        0,
+        "child-node (leaf) should have topo_depth = 0"
+    );
+}
+
+#[test]
+fn test_crash_safe_topo_backfill() {
+    // Simulate a crash window: schema is v8 (version already bumped), topo_depth
+    // column exists, but topo_depth_backfilled flag was never set to 1.
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+
+    write(
+        &root.join("parent.mdoc"),
+        "@fnode: parent-node\n@title: Parent\n\n@dep:\nchild-node\n@end\n",
+    );
+    write(
+        &root.join("child.mdoc"),
+        "@fnode: child-node\n@title: Child\n",
+    );
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    cache.refresh_all().unwrap();
+
+    // Simulate the crash window: zero out depths and reset the flag.
+    {
+        let conn = rusqlite::Connection::open(cache.db_path()).unwrap();
+        conn.execute_batch(
+            "UPDATE mdocs SET topo_depth = 0;
+             UPDATE mdoc_index_state SET topo_depth_backfilled = 0 WHERE id = 1;",
+        )
+        .unwrap();
+    }
+
+    // Re-open: sees topo_depth_backfilled = 0 even though user_version = 8, runs backfill.
+    let cache2 = IndCache::open(root.to_path_buf()).unwrap();
+    let depths = cache2.all_topo_depths().unwrap();
+    assert_eq!(
+        depths.get("parent-node").copied().unwrap_or(0),
+        1,
+        "parent-node should have topo_depth = 1 after crash-safe recovery"
+    );
+}
+
 #[test]
 fn test_schema_migration_backfills_in_degree() {
     let dir = tempfile::TempDir::new().unwrap();

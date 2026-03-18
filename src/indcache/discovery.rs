@@ -7,18 +7,25 @@ use std::time::UNIX_EPOCH;
 use anyhow::Result;
 use rusqlite::Connection;
 
+use super::queries::fnode_for_path;
 use super::refresh::{delete_indexed_path, upsert_mdoc_row};
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Efficiently detect and index workspace changes using directory mtime comparison.
-pub fn discover_workspace_changes(conn: &Connection, root: &Path) -> Result<()> {
+///
+/// Returns `(changed_fnodes, has_deletion)`:
+/// - `changed_fnodes`: fnodes of added/updated files (use for incremental topo).
+/// - `has_deletion`: true if any files were deleted (requires full topo backfill).
+pub fn discover_workspace_changes(conn: &Connection, root: &Path) -> Result<(Vec<String>, bool)> {
     let mut state = DiscoveryState {
         known_dirs: dir_mtimes(conn)?,
         known_file_states: file_states(conn)?,
         child_dirs_by_parent: HashMap::new(),
         files_by_parent: HashMap::new(),
         seen_dirs: HashSet::new(),
+        changed_fnodes: Vec::new(),
+        has_deletion: false,
     };
     state.child_dirs_by_parent = group_dirs_by_parent(&state.known_dirs);
     state.files_by_parent = group_files_by_parent(&state.known_file_states);
@@ -41,7 +48,7 @@ pub fn discover_workspace_changes(conn: &Connection, root: &Path) -> Result<()> 
     for stale_dir in stale_dirs {
         purge_subtree(conn, &stale_dir, &mut state)?;
     }
-    Ok(())
+    Ok((state.changed_fnodes, state.has_deletion))
 }
 
 /// Rebuild the mdoc_dirs table from scratch by walking the workspace.
@@ -66,6 +73,11 @@ struct DiscoveryState {
     child_dirs_by_parent: HashMap<String, HashSet<String>>,
     files_by_parent: HashMap<String, HashSet<String>>,
     seen_dirs: HashSet<String>,
+    /// Fnodes of files that were added or updated this scan (for incremental topo).
+    changed_fnodes: Vec<String>,
+    /// True if any file was deleted; deletions require a full topo backfill because
+    /// ancestor depths may decrease and incremental propagation is not monotone-safe.
+    has_deletion: bool,
 }
 
 fn scan_dir_step(
@@ -165,6 +177,9 @@ fn scan_dir_step(
             continue;
         }
         upsert_mdoc_row(conn, root, &dir_path.join(&name))?;
+        if let Some(fnode) = fnode_for_path(conn, &child_rel)? {
+            state.changed_fnodes.push(fnode);
+        }
         state.known_file_states.insert(child_rel, current_state);
     }
 
@@ -180,6 +195,7 @@ fn scan_dir_step(
     for path in stale_files {
         delete_indexed_path(conn, &path)?;
         state.known_file_states.remove(&path);
+        state.has_deletion = true;
     }
 
     // Purge stale child directories
@@ -241,6 +257,7 @@ fn purge_subtree(conn: &Connection, rel_dir: &str, state: &mut DiscoveryState) -
     for path in stale_files {
         delete_indexed_path(conn, &path)?;
         state.known_file_states.remove(&path);
+        state.has_deletion = true;
     }
 
     let stale_dirs: Vec<String> = if rel_dir.is_empty() {

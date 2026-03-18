@@ -2,17 +2,18 @@ use anyhow::Result;
 use rusqlite::Connection;
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 5;
+const SCHEMA_VERSION: i32 = 8;
 
 const CREATE_SQL: &str = "
 CREATE TABLE IF NOT EXISTS mdocs (
-    path       TEXT PRIMARY KEY,
-    fnode      TEXT NOT NULL,
-    title      TEXT NOT NULL,
-    title_lc   TEXT NOT NULL,
-    mtime_sec  INTEGER NOT NULL,
-    mtime_ns   INTEGER NOT NULL,
-    size       INTEGER NOT NULL
+    path        TEXT    PRIMARY KEY,
+    fnode       TEXT    NOT NULL,
+    title       TEXT    NOT NULL,
+    title_lc    TEXT    NOT NULL,
+    mtime_sec   INTEGER NOT NULL,
+    mtime_ns    INTEGER NOT NULL,
+    size        INTEGER NOT NULL,
+    topo_depth  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_mdocs_title_lc ON mdocs(title_lc);
 CREATE INDEX IF NOT EXISTS idx_mdocs_fnode    ON mdocs(fnode);
@@ -50,10 +51,11 @@ CREATE INDEX IF NOT EXISTS idx_mdoc_issues_kind      ON mdoc_issues(kind);
 CREATE INDEX IF NOT EXISTS idx_mdoc_issues_ref_fnode ON mdoc_issues(ref_fnode);
 
 CREATE TABLE IF NOT EXISTS mdoc_index_state (
-    id                    INTEGER PRIMARY KEY CHECK (id = 1),
-    bootstrapped          INTEGER NOT NULL DEFAULT 0,
-    graph_epoch           INTEGER NOT NULL DEFAULT 0,
-    weak_component_dirty  INTEGER NOT NULL DEFAULT 1
+    id                      INTEGER PRIMARY KEY CHECK (id = 1),
+    bootstrapped            INTEGER NOT NULL DEFAULT 0,
+    graph_epoch             INTEGER NOT NULL DEFAULT 0,
+    weak_component_dirty    INTEGER NOT NULL DEFAULT 1,
+    topo_depth_backfilled   INTEGER NOT NULL DEFAULT 0
 );
 INSERT OR IGNORE INTO mdoc_index_state (id, bootstrapped) VALUES (1, 0);
 
@@ -70,6 +72,7 @@ CREATE TABLE IF NOT EXISTS mdoc_scc_result (
 
 CREATE TABLE IF NOT EXISTS mdoc_weak_component (
     fnode          TEXT    PRIMARY KEY,
+    component_id   TEXT    NOT NULL DEFAULT '',
     component_size INTEGER NOT NULL DEFAULT 1
 );
 ";
@@ -87,21 +90,29 @@ INSERT INTO mdoc_in_degree (fnode, in_degree)
     GROUP BY dst_fnode;
 ";
 
-/// Open the database at `path` with WAL mode and apply the v5 schema.
-pub fn open_db(path: &Path) -> Result<Connection> {
+/// Open the database at `path` with WAL mode and apply the schema.
+/// Returns `(connection, needs_topo_backfill)`.  When `needs_topo_backfill` is
+/// true the caller must run `backfill_all_topo_depths` before serving reads,
+/// because the `topo_depth` column was just added with all-zero defaults.
+pub fn open_db(path: &Path) -> Result<(Connection, bool)> {
     let conn = Connection::open(path)?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
-    apply_schema(&conn)?;
-    Ok(conn)
+    let needs_topo_backfill = apply_schema(&conn)?;
+    Ok((conn, needs_topo_backfill))
 }
 
-fn apply_schema(conn: &Connection) -> Result<()> {
+/// Returns `true` when `topo_depth` needs to be backfilled before the first read.
+///
+/// The flag is checked on *every* open (outside the version guard) so that a
+/// crash between the version bump and the actual backfill is automatically
+/// recovered on the next startup.
+fn apply_schema(conn: &Connection) -> Result<bool> {
     conn.execute_batch(CREATE_SQL)?;
 
     let user_version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
 
     if user_version < SCHEMA_VERSION {
-        // Add mtime_ns to mdocs if missing (legacy schema migration).
+        // Add mtime_ns to mdocs if missing (v4→v5 migration).
         let has_mtime_ns: bool = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('mdocs') WHERE name = 'mtime_ns'",
@@ -116,11 +127,71 @@ fn apply_schema(conn: &Connection) -> Result<()> {
             )?;
         }
 
+        // Add topo_depth to mdocs if missing (v5→v6 migration).
+        let has_topo_depth: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('mdocs') WHERE name = 'topo_depth'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+            .unwrap_or(false);
+        if !has_topo_depth {
+            conn.execute_batch(
+                "ALTER TABLE mdocs ADD COLUMN topo_depth INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+
+        // Add component_id to mdoc_weak_component if missing (v6→v7 migration).
+        let has_component_id: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('mdoc_weak_component') WHERE name = 'component_id'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+            .unwrap_or(false);
+        if !has_component_id {
+            conn.execute_batch(
+                "ALTER TABLE mdoc_weak_component ADD COLUMN component_id TEXT NOT NULL DEFAULT '';
+                 UPDATE mdoc_weak_component SET component_id = fnode WHERE component_id = '';
+                 UPDATE mdoc_index_state SET weak_component_dirty = 1 WHERE id = 1;",
+            )?;
+        }
+
+        // Add topo_depth_backfilled flag to mdoc_index_state if missing (v7→v8 migration).
+        // Default 0 means "not yet backfilled"; IndCache::open will run the backfill and
+        // set it to 1 in the same transaction, making recovery crash-safe.
+        let has_topo_flag: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('mdoc_index_state') WHERE name = 'topo_depth_backfilled'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+            .unwrap_or(false);
+        if !has_topo_flag {
+            conn.execute_batch(
+                "ALTER TABLE mdoc_index_state ADD COLUMN topo_depth_backfilled INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+
         conn.execute_batch(BACKFILL_IN_DEGREE_SQL)?;
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     }
 
-    Ok(())
+    // Check the persistent flag on every open — independent of user_version so that
+    // a crash between the version bump and the backfill is recovered automatically.
+    let needs_topo_backfill: bool = conn
+        .query_row(
+            "SELECT topo_depth_backfilled FROM mdoc_index_state WHERE id = 1",
+            [],
+            |r| r.get::<_, i32>(0),
+        )
+        .map(|v| v == 0)
+        .unwrap_or(false);
+
+    Ok(needs_topo_backfill)
 }
 
 #[cfg(test)]
@@ -131,7 +202,10 @@ mod tests {
     #[test]
     fn open_fresh_db() {
         let dir = TempDir::new().unwrap();
-        let conn = open_db(&dir.path().join("index.db")).unwrap();
+        // Fresh DB: topo_depth_backfilled defaults to 0, so backfill is requested
+        // (no-op on empty DB, but the flag machinery should still trigger).
+        let (conn, needs_backfill) = open_db(&dir.path().join("index.db")).unwrap();
+        assert!(needs_backfill);
         let n: i32 = conn
             .query_row("SELECT COUNT(*) FROM mdoc_index_state", [], |r| r.get(0))
             .unwrap();
@@ -139,7 +213,7 @@ mod tests {
         let v: i32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, SCHEMA_VERSION);
+        assert_eq!(v, 8);
     }
 
     #[test]
@@ -154,7 +228,7 @@ mod tests {
     fn backfill_migration_is_idempotent() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("index.db");
-        let conn = open_db(&path).unwrap();
+        let (conn, _) = open_db(&path).unwrap();
         // Simulate an old database by resetting user_version, then re-apply
         conn.execute_batch("PRAGMA user_version = 0;").unwrap();
         conn.execute_batch("INSERT INTO mdoc_edges (src_path, src_fnode, dst_fnode, ord) VALUES ('a.mdoc', 'fa', 'fb', 0)").unwrap();

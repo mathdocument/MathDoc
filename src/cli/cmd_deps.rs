@@ -1,38 +1,29 @@
 use anyhow::Result;
 use std::collections::HashSet;
 
-use crate::core::DependencyItem;
-use crate::core::IssueKind;
+use crate::core::{DependencyItem, DependencyTraversalReport, IssueKind};
 use crate::depgraph::DepGraph;
+use crate::indcache::IndCache;
 use crate::mdoc::MdocNode;
 
 use super::{
-    cwd, eprintln_warn, fmt_item, open_cache, print_cycle, print_dep_report,
-    print_missing_with_referrers, require_mdcroot, BLD, RED, RST,
+    cwd, fmt_item, open_cache, print_cycles_if_any, print_dep_report, print_missing_with_referrers,
+    require_mdcroot, BLD, RST,
 };
 
-// ── cmd: dep show ─────────────────────────────────────────────────────────────
+// ── Shared dep display ────────────────────────────────────────────────────────
 
-pub(super) fn cmd_dep_show(source: String, depth: i32) -> Result<i32> {
-    let mdcroot = require_mdcroot()?;
-    let mut cache = open_cache(mdcroot.clone())?;
-    cache.discover_workspace_changes()?;
-    if let Ok(src_path) = cache.resolve_edit_target_path(&source, Some(&cwd())) {
-        let _ = cache.refresh_reachable_from_path(&src_path, depth);
-    }
-    let source_item = cache
-        .resolve_ref(&source, Some(&cwd()))
-        .map(|(f, t, p)| DependencyItem {
-            depth: 0,
-            fnode: f,
-            title: t,
-            rel_path: crate::workspace::to_rel_path(&mdcroot, &p),
-        })?;
-    let report = cache.dependency_report(&source_item.fnode, depth)?;
+/// Print report sections and return the appropriate exit code (1 if cycles detected).
+fn print_dep_report_sections(
+    cache: &IndCache,
+    source_item: &DependencyItem,
+    count_label: &str,
+    report: &DependencyTraversalReport,
+) -> i32 {
     print_dep_report(
         "source",
-        &source_item,
-        "depens",
+        source_item,
+        count_label,
         &report.items,
         &report.issues_by_fnode,
     );
@@ -42,52 +33,72 @@ pub(super) fn cmd_dep_show(source: String, depth: i32) -> Result<i32> {
         .filter(|i| i.kind == IssueKind::Missing)
         .cloned()
         .collect();
-    print_missing_with_referrers(&missing, &cache);
-    print_cycles_if_any(&report.cycles, &cache);
-    Ok(0)
+    print_missing_with_referrers(&missing, cache);
+    print_cycles_if_any(&report.cycles, cache);
+    if report.cycles.is_empty() {
+        0
+    } else {
+        1
+    }
+}
+
+// ── Shared setup for read commands ───────────────────────────────────────────
+
+/// Open cache, discover changes, do a targeted refresh up to `refresh_depth`,
+/// and resolve `source` to a `DependencyItem`. Used by dep show and dep leaf.
+fn open_and_resolve_source(
+    source: &str,
+    refresh_depth: i32,
+) -> Result<(IndCache, std::path::PathBuf, DependencyItem)> {
+    let mdcroot = require_mdcroot()?;
+    let mut cache = open_cache(mdcroot.clone())?;
+    cache.discover_workspace_changes()?;
+    if let Ok(src_path) = cache.resolve_edit_target_path(source, Some(&cwd())) {
+        let _ = cache.refresh_reachable_from_path(&src_path, refresh_depth);
+    }
+    let source_item = cache
+        .resolve_ref(source, Some(&cwd()))
+        .map(|(f, t, p)| DependencyItem {
+            depth: 0,
+            fnode: f,
+            title: t,
+            rel_path: crate::workspace::to_rel_path(&mdcroot, &p),
+        })?;
+    Ok((cache, mdcroot, source_item))
+}
+
+// ── cmd: dep show ─────────────────────────────────────────────────────────────
+
+pub(super) fn cmd_dep_show(source: String, depth: i32) -> Result<i32> {
+    let (cache, _, source_item) = open_and_resolve_source(&source, depth)?;
+    let report = cache.dependency_report(&source_item.fnode, depth)?;
+    Ok(print_dep_report_sections(
+        &cache,
+        &source_item,
+        "depens",
+        &report,
+    ))
 }
 
 // ── cmd: dep leaf ─────────────────────────────────────────────────────────────
 
 pub(super) fn cmd_dep_leaf(source: String) -> Result<i32> {
-    let mdcroot = require_mdcroot()?;
-    let mut cache = open_cache(mdcroot.clone())?;
-    cache.discover_workspace_changes()?;
-    if let Ok(src_path) = cache.resolve_edit_target_path(&source, Some(&cwd())) {
-        let _ = cache.refresh_reachable_from_path(&src_path, -1);
-    }
-    let source_item = cache
-        .resolve_ref(&source, Some(&cwd()))
-        .map(|(f, t, p)| DependencyItem {
-            depth: 0,
-            fnode: f,
-            title: t,
-            rel_path: crate::workspace::to_rel_path(&mdcroot, &p),
-        })?;
+    let (cache, _, source_item) = open_and_resolve_source(&source, -1)?;
     let report = cache.leaf_dependency_report(&source_item.fnode)?;
-    print_dep_report(
-        "source",
+    Ok(print_dep_report_sections(
+        &cache,
         &source_item,
         "leaves",
-        &report.items,
-        &report.issues_by_fnode,
-    );
-    let missing: Vec<_> = report
-        .issues_by_fnode
-        .values()
-        .filter(|i| i.kind == IssueKind::Missing)
-        .cloned()
-        .collect();
-    print_missing_with_referrers(&missing, &cache);
-    print_cycles_if_any(&report.cycles, &cache);
-    Ok(0)
+        &report,
+    ))
 }
 
 // ── cmd: dep add ──────────────────────────────────────────────────────────────
 
 pub(super) fn cmd_dep_add(source: String, query: String, max_results: usize) -> Result<i32> {
     let mdcroot = require_mdcroot()?;
-    let cache = open_cache(mdcroot)?;
+    let mut cache = open_cache(mdcroot)?;
+    cache.discover_workspace_changes()?;
     let (mut graph, _) = DepGraph::from_ref(cache, &source, Some(&cwd()))?;
     let source_item = graph.root_item()?;
 
@@ -135,21 +146,10 @@ pub(super) fn cmd_dep_add(source: String, query: String, max_results: usize) -> 
             format!("{}.mdoc", file_input.trim())
         };
         new_node.path = mdcroot.join(&filename);
-        new_node.save()?;
-        graph.cache.upsert_path(&new_node.path)?;
         let new_fnode = new_node.fnode.clone();
         let node_path = new_node.path.clone();
-        graph
-            .state
-            .nodes_by_fnode
-            .insert(new_fnode.clone(), new_node);
-        graph.state.dep_graph.entry(new_fnode.clone()).or_default();
-        let (added, _, _) = graph.add_direct_dependencies(vec![new_fnode.clone()])?;
-        let root_path = graph.root_path()?;
-        if let Err(e) = graph.cache.upsert_path(&root_path) {
-            eprintln_warn(&format!("index update failed: {e}"));
-        }
-        if !added.is_empty() {
+        let added = graph.create_and_add_dependency(new_node)?;
+        if added {
             let rel = crate::workspace::to_rel_path(&graph.mdcroot, &node_path);
             println!(
                 "created and added  {}",
@@ -178,11 +178,6 @@ pub(super) fn cmd_dep_add(source: String, query: String, max_results: usize) -> 
     let selected_fnodes: Vec<String> = selected.iter().map(|&i| candidates[i].0.clone()).collect();
     let (added, _, _) = graph.add_direct_dependencies(selected_fnodes)?;
 
-    let root_path = graph.root_path()?;
-    if let Err(e) = graph.cache.upsert_path(&root_path) {
-        eprintln_warn(&format!("index update failed: {e}"));
-    }
-
     println!(
         "added {BLD}{}{RST} dep{}",
         added.len(),
@@ -203,7 +198,8 @@ pub(super) fn cmd_dep_add(source: String, query: String, max_results: usize) -> 
 
 pub(super) fn cmd_dep_rm(source: String) -> Result<i32> {
     let mdcroot = require_mdcroot()?;
-    let cache = open_cache(mdcroot)?;
+    let mut cache = open_cache(mdcroot)?;
+    cache.discover_workspace_changes()?;
     let (mut graph, _) = DepGraph::from_ref(cache, &source, Some(&cwd()))?;
     let source_item = graph.root_item()?;
     let dep_items = graph.direct_dependency_items()?;
@@ -253,11 +249,6 @@ pub(super) fn cmd_dep_rm(source: String) -> Result<i32> {
         .collect();
     let removed = graph.remove_direct_dependencies(selected_fnodes)?;
 
-    let root_path = graph.root_path()?;
-    if let Err(e) = graph.cache.upsert_path(&root_path) {
-        eprintln_warn(&format!("index update failed: {e}"));
-    }
-
     println!(
         "removed {BLD}{}{RST} dep{}",
         removed.len(),
@@ -300,21 +291,6 @@ pub(super) fn cmd_dep_refs(target: String, depth: i32) -> Result<i32> {
         &std::collections::HashMap::new(),
     );
     Ok(0)
-}
-
-// ── Cycle display helper ──────────────────────────────────────────────────────
-
-fn print_cycles_if_any(cycles: &[Vec<String>], cache: &crate::indcache::IndCache) {
-    if cycles.is_empty() {
-        return;
-    }
-    println!("   {RED}cycles ({}):{RST}", cycles.len());
-
-    for cycle in cycles {
-        let fnode_refs: Vec<&str> = cycle.iter().map(|s| s.as_str()).collect();
-        let label_map = cache.lookup_by_fnode(&fnode_refs).unwrap_or_default();
-        print_cycle(cycle, &label_map);
-    }
 }
 
 // ── Interactive multi-select (dialoguer) ─────────────────────────────────────

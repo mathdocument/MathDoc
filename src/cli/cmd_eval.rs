@@ -6,7 +6,8 @@ use crate::config::Config;
 use crate::depgraph::DepGraph;
 
 use super::{
-    cwd, eprintln_err, open_cache, print_dep_report, require_mdcroot, BLD, DIM, GRN, RED, RST,
+    cwd, eprintln_err, open_cache, print_cycles_if_any, print_dep_report, require_mdcroot, BLD,
+    DIM, GRN, RED, RST,
 };
 
 // ── cmd: eval ─────────────────────────────────────────────────────────────────
@@ -34,6 +35,16 @@ pub(super) fn cmd_eval(source: String, depth: i32) -> Result<i32> {
         &report.items,
         &report.issues_by_fnode,
     );
+
+    print_cycles_if_any(&report.cycles, &graph.cache);
+    if !report.cycles.is_empty() {
+        eprintln_err(&format!(
+            "{} dependency cycle{}",
+            report.cycles.len(),
+            if report.cycles.len() == 1 { "" } else { "s" }
+        ));
+        return Ok(1);
+    }
 
     let broken_count: usize = report.issues_by_fnode.len();
     if broken_count > 0 {

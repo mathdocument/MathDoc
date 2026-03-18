@@ -1,8 +1,9 @@
 use anyhow::Result;
 use crossterm::{
+    cursor,
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{self, disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
     backend::CrosstermBackend,
@@ -32,16 +33,10 @@ pub(super) fn cmd_graph_tui(source: Option<String>) -> Result<i32> {
             Err(e) => anyhow::bail!("cannot resolve '{}': {}", s, e),
         }
     } else {
-        let mut roots = cache.global_root_items()?;
+        let roots = cache.global_root_items()?;
         if roots.is_empty() {
             anyhow::bail!("no nodes in workspace");
         }
-        let topo = cache.all_topo_depths().unwrap_or_default();
-        roots.sort_by(|a, b| {
-            let da = topo.get(&a.fnode).copied().unwrap_or(0);
-            let db = topo.get(&b.fnode).copied().unwrap_or(0);
-            db.cmp(&da).then(b.component_size.cmp(&a.component_size))
-        });
         roots.into_iter().next().unwrap().fnode
     };
 
@@ -140,6 +135,7 @@ struct TuiApp {
     preview_offset: usize,
     in_preview: bool,
     action_log: Vec<String>,
+    notify: Option<(String, bool, std::time::Instant)>, // (message, is_success, shown_at)
 }
 
 // ── TuiApp impl ───────────────────────────────────────────────────────────────
@@ -169,6 +165,7 @@ impl TuiApp {
             preview_offset: 0,
             in_preview: false,
             action_log: vec![],
+            notify: None,
         };
         app.load_view(&fnode)?;
         Ok(app)
@@ -303,7 +300,11 @@ impl TuiApp {
     // ── Dep operations ────────────────────────────────────────────────────────
 
     fn refresh_after_op(&mut self) -> Result<()> {
-        self.cache.refresh_workspace_index()?;
+        // The calling operation already called upsert_path on any modified file,
+        // so the index and derived data are already up to date for that file.
+        // discover_workspace_changes picks up any concurrent external changes with
+        // incremental topo updates, without re-stating every indexed file.
+        self.cache.discover_workspace_changes()?;
         self.topo_depths = self.cache.all_topo_depths().unwrap_or_default();
         let fnode = self.focused.fnode.clone();
         self.load_view(&fnode)
@@ -318,8 +319,6 @@ impl TuiApp {
     ) -> Result<()> {
         let mut graph = crate::depgraph::DepGraph::new(self.mdcroot.clone(), &self.focused.fnode)?;
         let (added, _, _) = graph.add_direct_dependencies(vec![dep_fnode.clone()])?;
-        let root_path = graph.root_path()?;
-        let _ = graph.cache.upsert_path(&root_path);
         if !added.is_empty() {
             let src = fmt_item(
                 &self.focused.fnode,
@@ -338,20 +337,11 @@ impl TuiApp {
     /// Create a new node (already path-resolved) and add it as a dependency.
     fn do_create_and_add_dep(&mut self, new_node: crate::mdoc::MdocNode) -> Result<()> {
         let mut graph = crate::depgraph::DepGraph::new(self.mdcroot.clone(), &self.focused.fnode)?;
-        new_node.save()?;
-        graph.cache.upsert_path(&new_node.path)?;
         let new_fnode = new_node.fnode.clone();
         let node_path = new_node.path.clone();
         let node_title = new_node.title.clone();
-        graph
-            .state
-            .nodes_by_fnode
-            .insert(new_fnode.clone(), new_node);
-        graph.state.dep_graph.entry(new_fnode.clone()).or_default();
-        let (added, _, _) = graph.add_direct_dependencies(vec![new_fnode.clone()])?;
-        let root_path = graph.root_path()?;
-        let _ = graph.cache.upsert_path(&root_path);
-        if !added.is_empty() {
+        let added = graph.create_and_add_dependency(new_node)?;
+        if added {
             let rel = crate::workspace::to_rel_path(&self.mdcroot, &node_path);
             let focused_fnode = self.focused.fnode.clone();
             let focused_title = self.focused.title.clone();
@@ -376,8 +366,6 @@ impl TuiApp {
         }
         let mut graph = crate::depgraph::DepGraph::new(self.mdcroot.clone(), &self.focused.fnode)?;
         let removed = graph.remove_direct_dependencies(fnodes)?;
-        let root_path = graph.root_path()?;
-        let _ = graph.cache.upsert_path(&root_path);
         for fnode in &removed {
             let (title, rel, broken) = self
                 .children
@@ -397,6 +385,10 @@ impl TuiApp {
             ));
         }
         self.refresh_after_op()
+    }
+
+    fn set_notify(&mut self, msg: impl Into<String>, success: bool) {
+        self.notify = Some((msg.into(), success, std::time::Instant::now()));
     }
 }
 
@@ -446,6 +438,14 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
         terminal.draw(|f| render(f, app))?;
 
         if !event::poll(std::time::Duration::from_millis(50))? {
+            // Auto-expire notification after 3 seconds
+            if app
+                .notify
+                .as_ref()
+                .is_some_and(|(_, _, t)| t.elapsed().as_secs() >= 3)
+            {
+                app.notify = None;
+            }
             continue;
         }
         let Event::Key(key) = event::read()? else {
@@ -454,6 +454,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
         if key.kind != KeyEventKind::Press {
             continue;
         }
+
+        app.notify = None;
 
         match &mut app.overlay {
             // ── Search overlay ────────────────────────────────────────────────
@@ -540,11 +542,18 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                     let rel = app.focused.rel_path.clone();
                     if !rel.is_empty() {
                         let abs_path = app.mdcroot.join(&rel);
+                        // Clear the alternate screen before leaving it so the transition
+                        // shows a blank terminal rather than a flash of the TUI content.
+                        execute!(
+                            io::stdout(),
+                            terminal::Clear(terminal::ClearType::All),
+                            cursor::MoveTo(0, 0),
+                        )?;
                         disable_raw_mode()?;
-                        execute!(io::stdout(), LeaveAlternateScreen)?;
+                        execute!(io::stdout(), LeaveAlternateScreen, cursor::Show)?;
                         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
                         let _ = std::process::Command::new(&editor).arg(&abs_path).status();
-                        execute!(io::stdout(), EnterAlternateScreen)?;
+                        execute!(io::stdout(), EnterAlternateScreen, cursor::Hide)?;
                         enable_raw_mode()?;
                         terminal.clear()?;
                         let _ = app.cache.upsert_path(&abs_path);
@@ -560,6 +569,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                                 app.focused.broken
                             ),
                         ));
+                        app.set_notify("file edited", true);
                     }
                     app.overlay = Overlay::None;
                 }
@@ -611,7 +621,18 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                     };
                     app.overlay = next_overlay;
                     if let Some((fnode, title, rel, broken)) = add_dep {
-                        app.do_add_dep(fnode, title, rel, broken)?;
+                        match app.do_add_dep(fnode, title, rel, broken) {
+                            Ok(()) => {
+                                app.set_notify("dep added", true);
+                            }
+                            Err(e) => {
+                                let msg = e.to_string();
+                                app.action_log
+                                    .push(format!("  {RED}✗{RST} {BLD}dep add failed:{RST} {msg}"));
+                                let short = msg.lines().next().unwrap_or("dep add failed");
+                                app.set_notify(short, false);
+                            }
+                        }
                     }
                 }
                 KeyCode::Down => {
@@ -677,7 +698,18 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                     } else {
                         vec![]
                     };
-                    app.do_rm_deps(fnodes)?;
+                    match app.do_rm_deps(fnodes) {
+                        Ok(()) => {
+                            app.set_notify("deps removed", true);
+                        }
+                        Err(e) => {
+                            let msg = e.to_string();
+                            app.action_log
+                                .push(format!("  {RED}✗{RST} {BLD}dep rm failed:{RST} {msg}"));
+                            let short = msg.lines().next().unwrap_or("dep rm failed");
+                            app.set_notify(short, false);
+                        }
+                    }
                     app.overlay = Overlay::None;
                 }
                 _ => {}
@@ -743,7 +775,19 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                                 &file_path,
                                 &title,
                             );
-                            app.do_create_and_add_dep(new_node)?;
+                            match app.do_create_and_add_dep(new_node) {
+                                Ok(()) => {
+                                    app.set_notify("node created and added", true);
+                                }
+                                Err(e) => {
+                                    let msg = e.to_string();
+                                    app.action_log.push(format!(
+                                        "  {RED}✗{RST} {BLD}dep add failed:{RST} {msg}"
+                                    ));
+                                    let short = msg.lines().next().unwrap_or("dep add failed");
+                                    app.set_notify(short, false);
+                                }
+                            }
                         }
                     }
                 }
@@ -889,7 +933,6 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
 const CARD_WIDTH: u16 = 30;
 const CARD_GAP: u16 = 2;
 const CARD_H: u16 = 6; // border + fnode + up to 4 title lines (wrapped) + border
-const CENTER_H: u16 = 10;
 
 fn render(f: &mut ratatui::Frame, app: &mut TuiApp) {
     let area = f.area();
@@ -897,17 +940,13 @@ fn render(f: &mut ratatui::Frame, app: &mut TuiApp) {
     let usable = area.width.saturating_sub(4);
     app.cards_per_row = ((usable + CARD_GAP) / (CARD_WIDTH + CARD_GAP)).max(1) as usize;
 
-    let fixed = CARD_H + CARD_H + CENTER_H + 1; // +1 = status bar
-    let flex = area.height.saturating_sub(fixed);
-    let edge_h = (flex / 2).max(2);
-
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(CARD_H),
-            Constraint::Length(edge_h),
-            Constraint::Length(CENTER_H),
-            Constraint::Length(edge_h),
+            Constraint::Length(CARD_GAP),
+            Constraint::Fill(1),
+            Constraint::Length(CARD_GAP),
             Constraint::Length(CARD_H),
             Constraint::Length(1),
         ])
@@ -922,6 +961,54 @@ fn render(f: &mut ratatui::Frame, app: &mut TuiApp) {
 
     // Draw overlays on top (do not disturb layout)
     render_overlay(f, area, app);
+    // Draw operation notification in top-right corner (above all overlays)
+    if let Some((ref msg, success, _)) = app.notify {
+        render_notify(f, area, msg, success);
+    }
+}
+
+// ── Notification rendering ────────────────────────────────────────────────────
+
+fn render_notify(f: &mut ratatui::Frame, area: Rect, msg: &str, success: bool) {
+    let color = if success { Color::Green } else { Color::Red };
+    let icon = if success { "✓" } else { "✗" };
+    let max_w = (area.width / 2).max(20).min(60);
+    let text: String = msg
+        .lines()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take(max_w as usize - 4)
+        .collect();
+    let w = (text.chars().count() as u16 + 6).min(max_w);
+    let h = 3u16;
+    if area.width < w || area.height < h {
+        return;
+    }
+    let x = area.x + area.width - w;
+    let y = area.y;
+    let r = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, r);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{icon} "),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(text, Style::default().fg(color)),
+        ])),
+        inner,
+    );
 }
 
 // ── Overlay rendering ─────────────────────────────────────────────────────────
@@ -1251,6 +1338,11 @@ fn render_node_row(f: &mut ratatui::Frame, area: Rect, app: &TuiApp, is_referrer
         } else {
             app.presel == PreSel::Child(abs_idx)
         };
+        let tint = if is_referrers {
+            Color::Magenta
+        } else {
+            Color::Blue
+        };
         render_card(
             f,
             Rect {
@@ -1261,6 +1353,7 @@ fn render_node_row(f: &mut ratatui::Frame, area: Rect, app: &TuiApp, is_referrer
             },
             node,
             is_presel,
+            tint,
         );
         x += CARD_WIDTH + CARD_GAP;
     }
@@ -1290,7 +1383,7 @@ fn render_node_row(f: &mut ratatui::Frame, area: Rect, app: &TuiApp, is_referrer
     }
 }
 
-fn render_card(f: &mut ratatui::Frame, area: Rect, node: &NodeInfo, selected: bool) {
+fn render_card(f: &mut ratatui::Frame, area: Rect, node: &NodeInfo, selected: bool, tint: Color) {
     let border_style = if selected {
         Style::default()
             .fg(Color::Cyan)
@@ -1320,7 +1413,7 @@ fn render_card(f: &mut ratatui::Frame, area: Rect, node: &NodeInfo, selected: bo
     } else {
         (
             Style::default().fg(Color::DarkGray),
-            Style::default().fg(Color::Gray),
+            Style::default().fg(tint),
         )
     };
 
