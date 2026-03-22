@@ -1,6 +1,6 @@
 use std::fs;
 
-use mathdoc::mdoc::{MdocNode, SrcBlock};
+use mathdoc::mdocnode::{MdocNode, SrcBlock};
 
 fn write_file(path: &std::path::Path, content: &str) {
     if let Some(parent) = path.parent() {
@@ -66,7 +66,7 @@ fn test_load_preserves_blank_lines_in_src_blocks() {
         "@fnode: blank-node\n\
          @title: Blank Lines\n\
          \n\
-         @src: py\n\
+         @src: python\n\
          print('line1')\n\
          \n\
          print('line3')\n\

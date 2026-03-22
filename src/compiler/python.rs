@@ -3,19 +3,19 @@ use super::{
     SrcCompiler,
 };
 
-pub(super) struct CompilerPy;
+pub(super) struct CompilerPython;
 
-impl SrcCompiler for CompilerPy {
+impl SrcCompiler for CompilerPython {
     fn srctype(&self) -> &str {
-        "py"
+        "python"
     }
 
     fn compile(&self, req: &CompilerReq) -> CompilerRes {
-        let timeout_sec = match cfg_positive_int(&req.compcfg, "timeout_sec", "src.py.timeout_sec")
-        {
-            Ok(v) => v,
-            Err(e) => return CompilerRes::err(e.to_string()),
-        };
+        let timeout_sec =
+            match cfg_positive_int(&req.compcfg, "timeout_sec", "src.python.timeout_sec") {
+                Ok(v) => v,
+                Err(e) => return CompilerRes::err(e.to_string()),
+            };
         let python = match require_tool("python3").or_else(|_| require_tool("python")) {
             Ok(p) => p,
             Err(e) => return CompilerRes::err_code(e.to_string(), 127),

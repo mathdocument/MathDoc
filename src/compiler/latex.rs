@@ -1,6 +1,6 @@
 use super::{
-    cfg_positive_int, cfg_str, is_timeout_error, require_tool, run_process, CompilerReq,
-    CompilerRes, SrcCompiler,
+    cfg_positive_int, is_timeout_error, require_tool, run_process, CompilerReq, CompilerRes,
+    SrcCompiler,
 };
 
 pub(super) struct CompilerLatex;
@@ -16,14 +16,6 @@ impl SrcCompiler for CompilerLatex {
                 Ok(v) => v,
                 Err(e) => return CompilerRes::err(e.to_string()),
             };
-        let preamble = match cfg_str(&req.compcfg, "preamble", "src.latex.preamble") {
-            Ok(v) => v,
-            Err(e) => return CompilerRes::err(e.to_string()),
-        };
-        let postamble = match cfg_str(&req.compcfg, "postamble", "src.latex.postamble") {
-            Ok(v) => v,
-            Err(e) => return CompilerRes::err(e.to_string()),
-        };
 
         let latexmk = match require_tool("latexmk") {
             Ok(p) => p,
@@ -33,9 +25,9 @@ impl SrcCompiler for CompilerLatex {
             return CompilerRes::err_code(e.to_string(), 127);
         }
 
-        let tex_dir = req.mdcroot.join(".mdc").join(".tex");
+        let tex_dir = req.mdcroot.join(".mdc").join("latex");
         if let Err(e) = std::fs::create_dir_all(&tex_dir) {
-            return CompilerRes::err(format!("failed to create tex artifact dir: {e}"));
+            return CompilerRes::err(format!("failed to create latex artifact dir: {e}"));
         }
         let stem = format!(
             "temp-latex-{}",
@@ -44,7 +36,7 @@ impl SrcCompiler for CompilerLatex {
         let tex_path = tex_dir.join(format!("{stem}.tex"));
         let pdf_path = tex_dir.join(format!("{stem}.pdf"));
 
-        let payload = latex_payload(&req.content, &preamble, &postamble);
+        let payload = latex_payload(&req.content, &req.preamble, &req.postamble);
         if let Err(e) = std::fs::write(&tex_path, &payload) {
             return CompilerRes::err(format!("failed to write latex source: {e}"));
         }

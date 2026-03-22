@@ -278,7 +278,7 @@ impl IndCache {
             if let Some((fnode, title)) = queries::resolve_ref_by_path(&self.conn, &rel_path)? {
                 return Ok((fnode, title, candidate));
             }
-            match crate::mdoc::read_mdoc_head(&candidate) {
+            match crate::mdocnode::read_mdoc_head(&candidate) {
                 Some((fnode, title)) if !fnode.is_empty() => return Ok((fnode, title, candidate)),
                 _ => bail!("invalid mdoc file: {}", candidate.display()),
             }

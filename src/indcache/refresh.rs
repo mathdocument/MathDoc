@@ -8,7 +8,7 @@ use crate::indcache::queries::{
     compute_all_topo_depths_from_edges, edge_targets_for_source_path, fnode_for_path,
     path_for_fnode_if_unique, path_has_blocking_issue, CHUNK_SIZE,
 };
-use crate::mdoc::{read_mdoc_head, MdocNode};
+use crate::mdocnode::{read_mdoc_head, MdocNode};
 use crate::workspace::{find_nested_mdcroot, iter_mdoc_files, to_rel_path};
 
 // ── Public write functions ────────────────────────────────────────────────────

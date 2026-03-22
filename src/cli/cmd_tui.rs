@@ -3,7 +3,9 @@ use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{self, disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{
+        self, disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    },
 };
 use ratatui::{
     backend::CrosstermBackend,
@@ -238,7 +240,7 @@ impl TuiApp {
 
         self.preview_lines = if !self.focused.rel_path.is_empty() {
             let abs = self.mdcroot.join(&self.focused.rel_path);
-            match crate::mdoc::MdocNode::load(&self.mdcroot, &abs) {
+            match crate::mdocnode::MdocNode::load(&self.mdcroot, &abs) {
                 Ok(node) => {
                     let mut lines: Vec<String> = Vec::new();
                     for (i, block) in node.blocks.iter().enumerate() {
@@ -335,7 +337,7 @@ impl TuiApp {
     }
 
     /// Create a new node (already path-resolved) and add it as a dependency.
-    fn do_create_and_add_dep(&mut self, new_node: crate::mdoc::MdocNode) -> Result<()> {
+    fn do_create_and_add_dep(&mut self, new_node: crate::mdocnode::MdocNode) -> Result<()> {
         let mut graph = crate::depgraph::DepGraph::new(self.mdcroot.clone(), &self.focused.fnode)?;
         let new_fnode = new_node.fnode.clone();
         let node_path = new_node.path.clone();
@@ -770,7 +772,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                                 app.mdcroot.join(format!("{actual_file}.mdoc"))
                             };
                             app.overlay = Overlay::None;
-                            let new_node = crate::mdoc::MdocNode::new_at_path(
+                            let new_node = crate::mdocnode::MdocNode::new_at_path(
                                 &app.mdcroot,
                                 &file_path,
                                 &title,

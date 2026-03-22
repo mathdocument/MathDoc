@@ -6,7 +6,7 @@ use mathdoc::config::Config;
 use mathdoc::core::IssueKind;
 use mathdoc::depgraph::DepGraph;
 use mathdoc::indcache::IndCache;
-use mathdoc::mdoc::{MdocNode, SrcBlock};
+use mathdoc::mdocnode::{MdocNode, SrcBlock};
 
 fn expect_err<T>(result: anyhow::Result<T>) -> anyhow::Error {
     match result {
@@ -53,7 +53,7 @@ fn load_config(root: &Path) -> Config {
 fn test_from_ref_loads_root_graph() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
-    let src = make_node(root, "Src", "natl", "src");
+    let src = make_node(root, "Src", "text", "src");
     src.save().unwrap();
 
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
@@ -115,14 +115,14 @@ fn test_dependency_items_expand_incrementally_from_root_node() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
 
-    let dep2 = make_node(root, "Dep2", "natl", "dep2");
+    let dep2 = make_node(root, "Dep2", "text", "dep2");
     dep2.save().unwrap();
 
-    let mut dep1 = make_node(root, "Dep1", "natl", "dep1");
+    let mut dep1 = make_node(root, "Dep1", "text", "dep1");
     dep1.add_dependency(&dep2.fnode);
     dep1.save().unwrap();
 
-    let mut src = make_node(root, "Src", "natl", "src");
+    let mut src = make_node(root, "Src", "text", "src");
     src.add_dependency(&dep1.fnode);
     src.save().unwrap();
 
@@ -144,9 +144,9 @@ fn test_dependency_items_expand_incrementally_from_root_node() {
 fn test_dependency_items_depth_zero_returns_empty() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
-    let dep = make_node(root, "Dep", "natl", "dep");
+    let dep = make_node(root, "Dep", "text", "dep");
     dep.save().unwrap();
-    let mut src = make_node(root, "Src", "natl", "src");
+    let mut src = make_node(root, "Src", "text", "src");
     src.add_dependency(&dep.fnode);
     src.save().unwrap();
 
@@ -160,16 +160,16 @@ fn test_leaf_dependency_items_only_return_reachable_leaves() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
 
-    let leaf_direct = make_node(root, "Leaf Direct", "natl", "leaf_direct");
+    let leaf_direct = make_node(root, "Leaf Direct", "text", "leaf_direct");
     leaf_direct.save().unwrap();
-    let leaf_shared = make_node(root, "Leaf Shared", "natl", "leaf_shared");
+    let leaf_shared = make_node(root, "Leaf Shared", "text", "leaf_shared");
     leaf_shared.save().unwrap();
 
-    let mut mid = make_node(root, "Mid", "natl", "mid");
+    let mut mid = make_node(root, "Mid", "text", "mid");
     mid.add_dependency(&leaf_shared.fnode);
     mid.save().unwrap();
 
-    let mut src = make_node(root, "Src", "natl", "src");
+    let mut src = make_node(root, "Src", "text", "src");
     src.add_dependency(&mid.fnode);
     src.add_dependency(&leaf_direct.fnode);
     src.save().unwrap();
@@ -190,9 +190,9 @@ fn test_eval_blocks_runs_all_blocks() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
 
-    let mut node = make_node(root, "Eval", "natl", "hello");
+    let mut node = make_node(root, "Eval", "text", "hello");
     node.blocks.push(SrcBlock {
-        srctype: "py".to_string(),
+        srctype: "python".to_string(),
         content: "print('hi')\n".to_string(),
         metadata: Default::default(),
     });
@@ -204,10 +204,10 @@ fn test_eval_blocks_runs_all_blocks() {
         .unwrap();
 
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].srctype, "natl");
+    assert_eq!(results[0].srctype, "text");
     assert!(results[0].res.result);
     assert_eq!(results[0].res.stdout, "hello");
-    assert_eq!(results[1].srctype, "py");
+    assert_eq!(results[1].srctype, "python");
     assert!(results[1].res.result);
     assert_eq!(results[1].res.stdout.trim(), "hi");
 }
@@ -217,14 +217,14 @@ fn test_eval_blocks_merges_dependencies_with_default_depth() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
 
-    let dep2 = make_node(root, "Dep2", "natl", "dep2");
+    let dep2 = make_node(root, "Dep2", "text", "dep2");
     dep2.save().unwrap();
 
-    let mut dep1 = make_node(root, "Dep1", "natl", "dep1");
+    let mut dep1 = make_node(root, "Dep1", "text", "dep1");
     dep1.add_dependency(&dep2.fnode);
     dep1.save().unwrap();
 
-    let mut src = make_node(root, "Src", "natl", "src");
+    let mut src = make_node(root, "Src", "text", "src");
     src.add_dependency(&dep1.fnode);
     src.save().unwrap();
 
@@ -244,14 +244,14 @@ fn test_eval_blocks_merges_dependencies_with_unbounded_depth() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
 
-    let dep2 = make_node(root, "Dep2", "natl", "dep2");
+    let dep2 = make_node(root, "Dep2", "text", "dep2");
     dep2.save().unwrap();
 
-    let mut dep1 = make_node(root, "Dep1", "natl", "dep1");
+    let mut dep1 = make_node(root, "Dep1", "text", "dep1");
     dep1.add_dependency(&dep2.fnode);
     dep1.save().unwrap();
 
-    let mut src = make_node(root, "Src", "natl", "src");
+    let mut src = make_node(root, "Src", "text", "src");
     src.add_dependency(&dep1.fnode);
     src.save().unwrap();
 
@@ -279,18 +279,18 @@ fn test_eval_blocks_respects_reverse_depens_override() {
     fs::create_dir_all(root.join(".mdc")).unwrap();
     fs::write(
         root.join(".mdc/config.toml"),
-        "[src.natl]\nreverse_depens = false\n",
+        "[src.text]\nreverse_depens = false\n",
     )
     .unwrap();
 
-    let dep2 = make_node(root, "Dep2", "natl", "dep2");
+    let dep2 = make_node(root, "Dep2", "text", "dep2");
     dep2.save().unwrap();
 
-    let mut dep1 = make_node(root, "Dep1", "natl", "dep1");
+    let mut dep1 = make_node(root, "Dep1", "text", "dep1");
     dep1.add_dependency(&dep2.fnode);
     dep1.save().unwrap();
 
-    let mut src = make_node(root, "Src", "natl", "src");
+    let mut src = make_node(root, "Src", "text", "src");
     src.add_dependency(&dep1.fnode);
     src.save().unwrap();
 
@@ -316,10 +316,10 @@ fn test_eval_blocks_does_not_merge_when_depens_disabled() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
 
-    let dep = make_node(root, "Dep", "py", "print('dep')\n");
+    let dep = make_node(root, "Dep", "python", "print('dep')\n");
     dep.save().unwrap();
 
-    let mut src = make_node(root, "Src", "py", "print('src')\n");
+    let mut src = make_node(root, "Src", "python", "print('src')\n");
     src.add_dependency(&dep.fnode);
     src.save().unwrap();
 
@@ -346,10 +346,10 @@ fn test_eval_blocks_raises_on_dependency_cycle() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
 
-    let mut dep = make_node(root, "Dep", "natl", "dep");
+    let mut dep = make_node(root, "Dep", "text", "dep");
     dep.save().unwrap();
 
-    let mut src = make_node(root, "Src", "natl", "src");
+    let mut src = make_node(root, "Src", "text", "src");
     src.add_dependency(&dep.fnode);
     src.save().unwrap();
 
@@ -377,10 +377,10 @@ fn test_eval_blocks_depth_zero_compiles_root_only_no_merge() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
 
-    let dep = make_node(root, "Dep", "natl", "dep");
+    let dep = make_node(root, "Dep", "text", "dep");
     dep.save().unwrap();
 
-    let mut src = make_node(root, "Src", "natl", "src");
+    let mut src = make_node(root, "Src", "text", "src");
     src.add_dependency(&dep.fnode);
     src.save().unwrap();
 
@@ -400,11 +400,11 @@ fn test_direct_dependency_mutation_uses_graph_api() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
 
-    let src = make_node(root, "Src", "natl", "src");
+    let src = make_node(root, "Src", "text", "src");
     src.save().unwrap();
-    let dep1 = make_node(root, "Dep1", "natl", "dep1");
+    let dep1 = make_node(root, "Dep1", "text", "dep1");
     dep1.save().unwrap();
-    let dep2 = make_node(root, "Dep2", "natl", "dep2");
+    let dep2 = make_node(root, "Dep2", "text", "dep2");
     dep2.save().unwrap();
 
     let mut graph = DepGraph::new(root.to_path_buf(), &src.fnode).unwrap();
@@ -456,9 +456,9 @@ fn test_add_direct_dependencies_rejects_cycle() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
 
-    let src = make_node(root, "Src", "natl", "src");
+    let src = make_node(root, "Src", "text", "src");
     src.save().unwrap();
-    let dep = make_node(root, "Dep", "natl", "dep");
+    let dep = make_node(root, "Dep", "text", "dep");
     dep.save().unwrap();
 
     // src → dep
@@ -488,12 +488,12 @@ fn test_create_and_add_dependency_no_side_effects_on_cycle() {
     let dir = tempfile::TempDir::new().unwrap();
     let root_dir = dir.path();
 
-    let root_node = make_node(root_dir, "Root", "natl", "root");
+    let root_node = make_node(root_dir, "Root", "text", "root");
     root_node.save().unwrap();
 
     // Build a new node whose @dep already points back at root — this would form
     // the cycle root → new_node → root the moment we add root → new_node.
-    let mut new_node = make_node(root_dir, "New", "natl", "new");
+    let mut new_node = make_node(root_dir, "New", "text", "new");
     new_node.add_dependency(&root_node.fnode);
     let new_path = new_node.path.clone();
     let new_fnode = new_node.fnode.clone();
@@ -578,7 +578,7 @@ fn test_create_root_rejects_duplicate_fnode_unindexed() {
     fs::create_dir_all(root.join(".mdc")).unwrap();
 
     // Write an existing mdoc file to disk WITHOUT indexing it.
-    let existing = make_node(root, "Existing", "natl", "");
+    let existing = make_node(root, "Existing", "text", "");
     existing.save().unwrap();
     let existing_fnode = existing.fnode.clone();
 
@@ -612,7 +612,7 @@ fn test_create_and_add_dependency_rejects_duplicate_fnode() {
     let dir = tempfile::TempDir::new().unwrap();
     let root_dir = dir.path();
 
-    let root_node = make_node(root_dir, "Root", "natl", "root");
+    let root_node = make_node(root_dir, "Root", "text", "root");
     root_node.save().unwrap();
 
     // Index the root so the fnode is known.
@@ -620,7 +620,7 @@ fn test_create_and_add_dependency_rejects_duplicate_fnode() {
     graph.cache.upsert_path(&root_node.path).unwrap();
 
     // Build a new node whose fnode is deliberately set to root's fnode.
-    let mut dup_node = make_node(root_dir, "Dup", "natl", "dup");
+    let mut dup_node = make_node(root_dir, "Dup", "text", "dup");
     dup_node.fnode = root_node.fnode.clone();
     let dup_path = dup_node.path.clone();
 
@@ -646,12 +646,12 @@ fn test_create_and_add_dependency_rejects_non_mdoc_extension() {
     let dir = tempfile::TempDir::new().unwrap();
     let root_dir = dir.path();
 
-    let root_node = make_node(root_dir, "Root", "natl", "root");
+    let root_node = make_node(root_dir, "Root", "text", "root");
     root_node.save().unwrap();
     let mut graph = DepGraph::new(root_dir.to_path_buf(), &root_node.fnode).unwrap();
     graph.cache.upsert_path(&root_node.path).unwrap();
 
-    let mut new_node = make_node(root_dir, "Txt", "natl", "txt");
+    let mut new_node = make_node(root_dir, "Txt", "text", "txt");
     new_node.path = root_dir.join("note.txt");
 
     let result = graph.create_and_add_dependency(new_node);
@@ -675,13 +675,13 @@ fn test_create_and_add_dependency_rejects_existing_path() {
     let dir = tempfile::TempDir::new().unwrap();
     let root_dir = dir.path();
 
-    let root_node = make_node(root_dir, "Root", "natl", "root");
+    let root_node = make_node(root_dir, "Root", "text", "root");
     root_node.save().unwrap();
     let mut graph = DepGraph::new(root_dir.to_path_buf(), &root_node.fnode).unwrap();
     graph.cache.upsert_path(&root_node.path).unwrap();
 
     // Write an unrelated victim file at the path the new node would occupy.
-    let mut new_node = make_node(root_dir, "New", "natl", "new");
+    let mut new_node = make_node(root_dir, "New", "text", "new");
     fs::write(&new_node.path, b"victim content").unwrap();
     // Give the new node a different fnode so the duplicate-fnode check doesn't fire first.
     new_node.fnode = format!("{}x", &new_node.fnode[..new_node.fnode.len() - 1]);
@@ -707,12 +707,12 @@ fn test_create_and_add_dependency_rejects_path_outside_workspace() {
     let root_dir = dir.path();
     let outside_dir = tempfile::TempDir::new().unwrap();
 
-    let root_node = make_node(root_dir, "Root", "natl", "root");
+    let root_node = make_node(root_dir, "Root", "text", "root");
     root_node.save().unwrap();
     let mut graph = DepGraph::new(root_dir.to_path_buf(), &root_node.fnode).unwrap();
     graph.cache.upsert_path(&root_node.path).unwrap();
 
-    let mut new_node = make_node(root_dir, "Outside", "natl", "outside");
+    let mut new_node = make_node(root_dir, "Outside", "text", "outside");
     // Point the path to a location outside the workspace.
     new_node.path = outside_dir.path().join("outside.mdoc");
     let outside_path = new_node.path.clone();
@@ -741,12 +741,12 @@ fn test_create_and_add_dependency_rejects_path_in_nested_workspace() {
     let nested = root_dir.join("sub");
     fs::create_dir_all(nested.join(".mdc")).unwrap();
 
-    let root_node = make_node(&root_dir, "Root", "natl", "root");
+    let root_node = make_node(&root_dir, "Root", "text", "root");
     root_node.save().unwrap();
     let mut graph = DepGraph::new(root_dir.clone(), &root_node.fnode).unwrap();
     graph.cache.upsert_path(&root_node.path).unwrap();
 
-    let mut new_node = make_node(&root_dir, "Nested", "natl", "nested");
+    let mut new_node = make_node(&root_dir, "Nested", "text", "nested");
     new_node.path = nested.join("nested.mdoc");
     let nested_path = new_node.path.clone();
 
@@ -772,7 +772,7 @@ fn test_create_and_add_dependency_rejects_dotdot_escape() {
     let dir = tempfile::TempDir::new().unwrap();
     let root_dir = dir.path().canonicalize().unwrap();
 
-    let root_node = make_node(&root_dir, "Root", "natl", "root");
+    let root_node = make_node(&root_dir, "Root", "text", "root");
     root_node.save().unwrap();
     let mut graph = DepGraph::new(root_dir.clone(), &root_node.fnode).unwrap();
     graph.cache.upsert_path(&root_node.path).unwrap();
@@ -781,7 +781,7 @@ fn test_create_and_add_dependency_rejects_dotdot_escape() {
     // Use the unique temp dir name as the stem so parallel runs don't share a filename.
     let stem = root_dir.file_name().unwrap().to_str().unwrap();
     let escaped_name = format!("{stem}-escaped.mdoc");
-    let mut new_node = make_node(&root_dir, "Escape", "natl", "escape");
+    let mut new_node = make_node(&root_dir, "Escape", "text", "escape");
     new_node.path = root_dir
         .join("nope")
         .join("..")
@@ -843,7 +843,7 @@ fn test_create_and_add_dependency_rejects_symlink_dotdot_escape() {
     let link_path = root_dir.join("external_link");
     symlink(&outside_canonical, &link_path).unwrap();
 
-    let root_node = make_node(&root_dir, "Root", "natl", "root");
+    let root_node = make_node(&root_dir, "Root", "text", "root");
     root_node.save().unwrap();
     let mut graph = DepGraph::new(root_dir.clone(), &root_node.fnode).unwrap();
     graph.cache.upsert_path(&root_node.path).unwrap();
@@ -852,7 +852,7 @@ fn test_create_and_add_dependency_rejects_symlink_dotdot_escape() {
     // but POSIX resolves external_link → outside, so link/.. = outside/.., OUTSIDE.
     let stem = root_dir.file_name().unwrap().to_str().unwrap();
     let escaped_name = format!("{stem}-sym-escaped.mdoc");
-    let mut new_node = make_node(&root_dir, "Escape", "natl", "escape");
+    let mut new_node = make_node(&root_dir, "Escape", "text", "escape");
     new_node.path = root_dir
         .join("external_link")
         .join("..")
@@ -942,12 +942,12 @@ fn test_scan_all_builds_global_graph() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
 
-    let leaf = make_node(root, "Leaf", "natl", "leaf");
+    let leaf = make_node(root, "Leaf", "text", "leaf");
     leaf.save().unwrap();
-    let mut src = make_node(root, "Src", "natl", "src");
+    let mut src = make_node(root, "Src", "text", "src");
     src.add_dependency(&leaf.fnode);
     src.save().unwrap();
-    let other = make_node(root, "Other", "natl", "other");
+    let other = make_node(root, "Other", "text", "other");
     other.save().unwrap();
 
     let mut graph = DepGraph::new(root.to_path_buf(), &src.fnode).unwrap();
@@ -980,17 +980,17 @@ fn test_global_root_items_include_unreferenced_valid_and_invalid_nodes() {
     let root = dir.path();
     fs::create_dir_all(root.join(".mdc")).unwrap();
 
-    let leaf = make_node(root, "Leaf", "natl", "leaf");
+    let leaf = make_node(root, "Leaf", "text", "leaf");
     leaf.save().unwrap();
 
-    let mut root_valid = make_node(root, "Root Valid", "natl", "root_valid");
+    let mut root_valid = make_node(root, "Root Valid", "text", "root_valid");
     root_valid.add_dependency(&leaf.fnode);
     root_valid.save().unwrap();
 
-    let other_root = make_node(root, "Other Root", "natl", "other_root");
+    let other_root = make_node(root, "Other Root", "text", "other_root");
     other_root.save().unwrap();
 
-    let bad_root = make_node(root, "Broken Root", "natl", "bad_root");
+    let bad_root = make_node(root, "Broken Root", "text", "bad_root");
     bad_root.save().unwrap();
     make_invalid(&bad_root.path);
 
@@ -1034,20 +1034,20 @@ fn test_graph_check_report_collects_missing_invalid_and_cycles() {
     let root = dir.path();
     fs::create_dir_all(root.join(".mdc")).unwrap();
 
-    let bad = make_node(root, "Broken Node", "natl", "bad");
+    let bad = make_node(root, "Broken Node", "text", "bad");
     bad.save().unwrap();
     make_invalid(&bad.path);
 
-    let mut a = make_node(root, "Cycle A", "natl", "a");
+    let mut a = make_node(root, "Cycle A", "text", "a");
     a.save().unwrap();
-    let mut b = make_node(root, "Cycle B", "natl", "b");
+    let mut b = make_node(root, "Cycle B", "text", "b");
     b.save().unwrap();
     a.add_dependency(&b.fnode);
     a.save().unwrap();
     b.add_dependency(&a.fnode);
     b.save().unwrap();
 
-    let mut src = make_node(root, "Source", "natl", "src");
+    let mut src = make_node(root, "Source", "text", "src");
     src.add_dependency("missing-target-001");
     src.add_dependency(&bad.fnode);
     src.save().unwrap();
@@ -1075,11 +1075,11 @@ fn test_dependency_items_show_invalid_placeholder() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
 
-    let dep = make_node(root, "Broken Dep", "natl", "dep");
+    let dep = make_node(root, "Broken Dep", "text", "dep");
     dep.save().unwrap();
     make_invalid(&dep.path);
 
-    let mut src = make_node(root, "Src", "natl", "src");
+    let mut src = make_node(root, "Src", "text", "src");
     src.add_dependency(&dep.fnode);
     src.save().unwrap();
 
@@ -1103,7 +1103,7 @@ fn test_dependency_items_show_duplicate_fnode_placeholder() {
     fs::write(root.join("dup-a.mdoc"), "@fnode: dup-node\n@title: Dup A\n").unwrap();
     fs::write(root.join("dup-b.mdoc"), "@fnode: dup-node\n@title: Dup B\n").unwrap();
 
-    let mut src = make_node(root, "Src", "natl", "src");
+    let mut src = make_node(root, "Src", "text", "src");
     src.add_dependency("dup-node");
     src.save().unwrap();
 

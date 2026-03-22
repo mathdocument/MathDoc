@@ -1,7 +1,7 @@
 mod latex;
 mod lean;
-mod natl;
-mod py;
+mod python;
+mod text;
 
 use anyhow::{bail, Result};
 use std::collections::HashMap;
@@ -15,6 +15,8 @@ pub struct CompilerReq {
     pub mdcroot: PathBuf,
     pub srctype: String,
     pub content: String,
+    pub preamble: String,
+    pub postamble: String,
     /// Config values from `.mdc/config.toml` `[src.<srctype>]` section.
     pub compcfg: HashMap<String, toml::Value>,
     pub progress: Option<Box<dyn Fn(&str)>>,
@@ -76,8 +78,8 @@ impl CompilerRegistry {
     pub fn default_registry() -> Self {
         let mut m: HashMap<String, Box<dyn SrcCompiler>> = HashMap::new();
         for c in [
-            Box::new(natl::CompilerNatl) as Box<dyn SrcCompiler>,
-            Box::new(py::CompilerPy),
+            Box::new(text::CompilerText) as Box<dyn SrcCompiler>,
+            Box::new(python::CompilerPython),
             Box::new(latex::CompilerLatex),
             Box::new(lean::CompilerLean),
         ] {
@@ -105,30 +107,6 @@ fn cfg_positive_int(
         Some(v) => match v.as_integer() {
             Some(n) if n > 0 => Ok(n as u64),
             _ => bail!("config key '{full_key}' must be a positive integer"),
-        },
-    }
-}
-
-fn cfg_str(compcfg: &HashMap<String, toml::Value>, key: &str, full_key: &str) -> Result<String> {
-    match compcfg.get(key) {
-        None => bail!("config key '{full_key}' is required"),
-        Some(v) => match v.as_str() {
-            Some(s) => Ok(s.to_string()),
-            None => bail!("config key '{full_key}' must be a string"),
-        },
-    }
-}
-
-fn cfg_str_opt(
-    compcfg: &HashMap<String, toml::Value>,
-    key: &str,
-    full_key: &str,
-) -> Result<String> {
-    match compcfg.get(key) {
-        None => Ok(String::new()),
-        Some(v) => match v.as_str() {
-            Some(s) => Ok(s.to_string()),
-            None => bail!("config key '{full_key}' must be a string"),
         },
     }
 }

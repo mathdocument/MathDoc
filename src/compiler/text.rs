@@ -1,10 +1,10 @@
 use super::{CompilerReq, CompilerRes, SrcCompiler};
 
-pub(super) struct CompilerNatl;
+pub(super) struct CompilerText;
 
-impl SrcCompiler for CompilerNatl {
+impl SrcCompiler for CompilerText {
     fn srctype(&self) -> &str {
-        "natl"
+        "text"
     }
 
     fn compile(&self, req: &CompilerReq) -> CompilerRes {

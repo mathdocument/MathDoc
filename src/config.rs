@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -13,9 +13,6 @@ pub struct SrcConfig {
     pub reverse_depens: Option<bool>,
     pub timeout_sec: Option<u32>,
     pub setup_timeout_sec: Option<u32>,
-    pub preamble: Option<String>,
-    pub postamble: Option<String>,
-    pub imports: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -45,18 +42,6 @@ impl SrcConfig {
             m.insert(
                 "setup_timeout_sec".to_string(),
                 toml::Value::Integer(v as i64),
-            );
-        }
-        if let Some(ref v) = self.preamble {
-            m.insert("preamble".to_string(), toml::Value::String(v.clone()));
-        }
-        if let Some(ref v) = self.postamble {
-            m.insert("postamble".to_string(), toml::Value::String(v.clone()));
-        }
-        if let Some(ref v) = self.imports {
-            m.insert(
-                "imports".to_string(),
-                toml::Value::Array(v.iter().map(|s| toml::Value::String(s.clone())).collect()),
             );
         }
         m
@@ -92,9 +77,6 @@ impl Config {
             reverse_depens: user.reverse_depens.or(defaults.reverse_depens),
             timeout_sec: user.timeout_sec.or(defaults.timeout_sec),
             setup_timeout_sec: user.setup_timeout_sec.or(defaults.setup_timeout_sec),
-            preamble: user.preamble.or(defaults.preamble),
-            postamble: user.postamble.or(defaults.postamble),
-            imports: user.imports.or(defaults.imports),
         }
     }
 }
@@ -102,7 +84,7 @@ impl Config {
 /// Built-in defaults matching the Python DEFAULT_CONFIG.
 pub fn default_for_srctype(srctype: &str) -> SrcConfig {
     match srctype.to_ascii_lowercase().as_str() {
-        "natl" => SrcConfig {
+        "text" => SrcConfig {
             depens: Some(true),
             reverse_depens: Some(true),
             ..Default::default()
@@ -111,11 +93,9 @@ pub fn default_for_srctype(srctype: &str) -> SrcConfig {
             depens: Some(true),
             reverse_depens: Some(true),
             timeout_sec: Some(30),
-            preamble: Some("\\documentclass{article}\n\\begin{document}\n".to_string()),
-            postamble: Some("\\end{document}\n".to_string()),
             ..Default::default()
         },
-        "py" => SrcConfig {
+        "python" => SrcConfig {
             depens: Some(false),
             reverse_depens: Some(false),
             timeout_sec: Some(30),
@@ -126,10 +106,101 @@ pub fn default_for_srctype(srctype: &str) -> SrcConfig {
             reverse_depens: Some(false),
             timeout_sec: Some(300),
             setup_timeout_sec: Some(1800),
-            imports: Some(vec!["Mathlib".to_string()]),
-            preamble: Some(String::new()),
             ..Default::default()
+        },
+        "rocq" => SrcConfig {
+            depens: Some(true),
+            reverse_depens: Some(false),
+            timeout_sec: Some(300),
+            setup_timeout_sec: Some(1800),
         },
         _ => SrcConfig::default(),
     }
+}
+
+// ── Preamble / postamble file management ─────────────────────────────────────
+
+/// Srctype → file extension.
+pub fn srctype_ext(srctype: &str) -> &str {
+    match srctype {
+        "text" => "txt",
+        "latex" => "tex",
+        "python" => "py",
+        "lean" => "lean",
+        "rocq" => "v",
+        _ => srctype,
+    }
+}
+
+/// Hardcoded default preamble per srctype.
+pub fn default_preamble(srctype: &str) -> &'static str {
+    match srctype {
+        "latex" => "\\documentclass{article}\n\\begin{document}\n",
+        _ => "",
+    }
+}
+
+/// Hardcoded default postamble per srctype.
+pub fn default_postamble(srctype: &str) -> &'static str {
+    match srctype {
+        "latex" => "\\end{document}\n",
+        _ => "",
+    }
+}
+
+fn amble_path(mdcroot: &Path, srctype: &str, kind: &str) -> PathBuf {
+    let ext = srctype_ext(srctype);
+    mdcroot
+        .join(".mdc")
+        .join(srctype)
+        .join(format!("{kind}.{ext}"))
+}
+
+/// Read preamble for `srctype`: file if it exists, else hardcoded default.
+pub fn read_preamble(mdcroot: &Path, srctype: &str) -> String {
+    let path = amble_path(mdcroot, srctype, "preamble");
+    std::fs::read_to_string(&path).unwrap_or_else(|_| default_preamble(srctype).to_string())
+}
+
+/// Read postamble for `srctype`: file if it exists, else hardcoded default.
+pub fn read_postamble(mdcroot: &Path, srctype: &str) -> String {
+    let path = amble_path(mdcroot, srctype, "postamble");
+    std::fs::read_to_string(&path).unwrap_or_else(|_| default_postamble(srctype).to_string())
+}
+
+/// Write preamble file for `srctype`.
+pub fn write_preamble(mdcroot: &Path, srctype: &str, content: &str) -> Result<()> {
+    let path = amble_path(mdcroot, srctype, "preamble");
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    std::fs::write(&path, content)?;
+    Ok(())
+}
+
+/// Write postamble file for `srctype`.
+pub fn write_postamble(mdcroot: &Path, srctype: &str, content: &str) -> Result<()> {
+    let path = amble_path(mdcroot, srctype, "postamble");
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    std::fs::write(&path, content)?;
+    Ok(())
+}
+
+/// Write default preamble/postamble files for all known srctypes.
+/// Called by `mdc init`. Only creates files that don't already exist.
+pub fn init_amble_files(mdcroot: &Path) -> Result<()> {
+    for srctype in &["text", "latex", "python", "lean", "rocq"] {
+        let pre = default_preamble(srctype);
+        let post = default_postamble(srctype);
+        let pre_path = amble_path(mdcroot, srctype, "preamble");
+        let post_path = amble_path(mdcroot, srctype, "postamble");
+        if !pre.is_empty() || !post.is_empty() {
+            std::fs::create_dir_all(pre_path.parent().unwrap())?;
+        }
+        if !pre.is_empty() && !pre_path.exists() {
+            std::fs::write(&pre_path, pre)?;
+        }
+        if !post.is_empty() && !post_path.exists() {
+            std::fs::write(&post_path, post)?;
+        }
+    }
+    Ok(())
 }

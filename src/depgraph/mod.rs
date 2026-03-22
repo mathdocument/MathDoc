@@ -1,5 +1,6 @@
 mod query;
 mod state;
+pub mod workback;
 
 use anyhow::{bail, Result};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -7,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::core::{find_cycle, topo_dependencies_first, DependencyItem, GraphIssue};
 use crate::indcache::IndCache;
-use crate::mdoc::{read_mdoc_head, MdocNode};
+use crate::mdocnode::{read_mdoc_head, MdocNode};
 use crate::workspace::{find_nested_mdcroot, iter_mdoc_files, to_rel_path};
 use query::dependency_items_from_graph;
 use state::{make_invalid_issue, GraphState};
@@ -466,7 +467,7 @@ impl DepGraph {
         let root_fnode = self.state.root_fnode.clone();
 
         // dep_nodes = all nodes except root, in topo order (deepest first)
-        let dep_nodes: Vec<&crate::mdoc::MdocNode> =
+        let dep_nodes: Vec<&crate::mdocnode::MdocNode> =
             nodes.iter().filter(|n| n.fnode != root_fnode).collect();
         let root_node = match nodes.iter().find(|n| n.fnode == root_fnode) {
             Some(n) => n,
@@ -518,6 +519,8 @@ impl DepGraph {
                 mdcroot: self.mdcroot.clone(),
                 srctype: block.srctype.clone(),
                 content,
+                preamble: crate::config::read_preamble(&self.mdcroot, &block.srctype),
+                postamble: crate::config::read_postamble(&self.mdcroot, &block.srctype),
                 compcfg,
                 progress: progress.map(|p| -> Box<dyn Fn(&str)> { Box::new(p) }),
             };

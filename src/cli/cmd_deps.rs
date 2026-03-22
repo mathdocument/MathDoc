@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use crate::core::{DependencyItem, DependencyTraversalReport, IssueKind};
 use crate::depgraph::DepGraph;
 use crate::indcache::IndCache;
-use crate::mdoc::MdocNode;
+use crate::mdocnode::MdocNode;
 
 use super::{
     cwd, fmt_item, open_cache, print_cycles_if_any, print_dep_report, print_missing_with_referrers,

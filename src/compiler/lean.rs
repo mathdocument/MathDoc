@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Result};
 
 use super::{
-    cfg_positive_int, cfg_str_opt, emit_progress, is_timeout_error, require_tool, run_process,
-    CompilerReq, CompilerRes, SrcCompiler,
+    cfg_positive_int, emit_progress, is_timeout_error, require_tool, run_process, CompilerReq,
+    CompilerRes, SrcCompiler,
 };
 
 pub(super) struct CompilerLean;
@@ -70,10 +70,6 @@ impl SrcCompiler for CompilerLean {
             Ok(v) => v,
             Err(e) => return CompilerRes::err(e.to_string()),
         };
-        let preamble = match cfg_str_opt(&req.compcfg, "preamble", "src.lean.preamble") {
-            Ok(v) => v,
-            Err(e) => return CompilerRes::err(e.to_string()),
-        };
 
         let lake = match require_tool("lake") {
             Ok(p) => p,
@@ -103,7 +99,7 @@ impl SrcCompiler for CompilerLean {
             return CompilerRes::err(e.to_string());
         }
 
-        let payload = lean_payload(&req.content, &imports, &preamble);
+        let payload = lean_payload(&req.content, &imports, &req.preamble);
         if let Err(e) = std::fs::write(&workspace.module_path, &payload) {
             return CompilerRes::err(format!("failed to write Lean module: {e}"));
         }

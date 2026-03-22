@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::core::{DependencyItem, GraphIssue, IssueKind};
-use crate::mdoc::MdocNode;
+use crate::mdocnode::MdocNode;
 use crate::workspace::to_rel_path;
 
 pub struct GraphState {

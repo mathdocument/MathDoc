@@ -22,11 +22,12 @@ pub(super) fn cmd_edit(source: String) -> Result<i32> {
 // ── cmd: init ─────────────────────────────────────────────────────────────────
 
 fn generate_config_toml() -> String {
-    const SRCTYPES: &[&str] = &["natl", "latex", "py", "lean"];
+    const SRCTYPES: &[&str] = &["text", "latex", "python", "lean", "rocq"];
 
     let mut out = String::from(
         "# MathDoc configuration\n\
-         # Uncomment and edit sections below to override built-in defaults.\n",
+         # Uncomment and edit sections below to override built-in defaults.\n\
+         # Preamble/postamble are managed as files in .mdc/<srctype>/.\n",
     );
 
     for srctype in SRCTYPES {
@@ -46,32 +47,6 @@ fn generate_config_toml() -> String {
         if let Some(v) = cfg.setup_timeout_sec {
             out.push_str(&format!("# setup_timeout_sec = {v}\n"));
         }
-        if let Some(ref v) = cfg.preamble {
-            if v.contains('\n') {
-                out.push_str("# preamble = \"\"\"\n");
-                for line in v.lines() {
-                    out.push_str(&format!("# {line}\n"));
-                }
-                out.push_str("# \"\"\"\n");
-            } else {
-                out.push_str(&format!("# preamble = \"{v}\"\n"));
-            }
-        }
-        if let Some(ref v) = cfg.postamble {
-            if v.contains('\n') {
-                out.push_str("# postamble = \"\"\"\n");
-                for line in v.lines() {
-                    out.push_str(&format!("# {line}\n"));
-                }
-                out.push_str("# \"\"\"\n");
-            } else {
-                out.push_str(&format!("# postamble = \"{v}\"\n"));
-            }
-        }
-        if let Some(ref v) = cfg.imports {
-            let items: Vec<String> = v.iter().map(|s| format!("\"{s}\"")).collect();
-            out.push_str(&format!("# imports = [{}]\n", items.join(", ")));
-        }
     }
 
     out
@@ -86,6 +61,7 @@ pub(super) fn cmd_init() -> Result<i32> {
     }
     std::fs::create_dir_all(&mdc)?;
     std::fs::write(mdc.join("config.toml"), generate_config_toml())?;
+    crate::config::init_amble_files(&mdcroot)?;
     println!("mdoc folder initialized");
     Ok(0)
 }
