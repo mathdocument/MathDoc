@@ -29,15 +29,22 @@ fn marker_line(srctype: &str, tag: &str) -> String {
 
 // ── merge_work_files ─────────────────────────────────────────────────────────
 
-/// Generate work file content for each srctype present in the dependency subgraph.
-/// Returns a map of srctype → assembled file content.
-///
-/// Node ordering follows `depens`/`reverse_depens` from config, matching `eval_blocks`.
+/// Assembled work file with pre-parsed section content, avoiding a re-parse roundtrip.
+pub struct WorkFile {
+    pub content: String,
+    pub preamble: Option<String>,
+    pub postamble: Option<String>,
+    /// (fnode_prefix, block_content) pairs in file order.
+    pub nodes: Vec<(String, String)>,
+}
+
+/// Generate work files for each srctype present in the dependency subgraph.
+/// Returns a map of srctype → assembled `WorkFile`.
 pub fn merge_work_files(
     graph: &mut DepGraph,
     depth: i32,
     config: &Config,
-) -> Result<HashMap<String, String>> {
+) -> Result<HashMap<String, WorkFile>> {
     let nodes = graph.ordered_nodes(depth)?;
     if nodes.is_empty() {
         return Ok(HashMap::new());
@@ -53,23 +60,21 @@ pub fn merge_work_files(
         }
     }
 
-    let mut result: HashMap<String, String> = HashMap::new();
+    let mut result: HashMap<String, WorkFile> = HashMap::new();
 
     for srctype in &srctypes {
         let src_cfg = config.src_config(srctype);
 
-        // Split into root and dep nodes, same as eval_blocks.
+        // Split into root and dep nodes.
         let dep_nodes: Vec<&MdocNode> = nodes.iter().filter(|n| n.fnode != root_fnode).collect();
         let root_node = match nodes.iter().find(|n| n.fnode == root_fnode) {
             Some(n) => n,
             None => continue,
         };
 
-        // Determine node order based on reverse_depens.
-        // reverse_depens=true: root first, then deps nearest→deepest (reversed topo).
-        // reverse_depens=false: deps deepest→nearest (topo order), then root last.
-        let ordered: Vec<&MdocNode> = if src_cfg.effective_depens(srctype) && !dep_nodes.is_empty()
-        {
+        // Determine node order: reverse_depens=true → root first, deps nearest→deepest;
+        // reverse_depens=false → deps deepest→nearest, root last.
+        let ordered: Vec<&MdocNode> = if src_cfg.effective_depens() && !dep_nodes.is_empty() {
             if src_cfg.effective_reverse_depens() {
                 let mut v = vec![root_node];
                 v.extend(dep_nodes.iter().rev().copied());
@@ -85,22 +90,23 @@ pub fn merge_work_files(
         };
 
         let mut out = String::new();
+        let mut wf_nodes: Vec<(String, String)> = Vec::new();
 
-        // Preamble
+        // Preamble — always emitted so users can fill it in.
         let preamble = crate::config::read_preamble(&graph.mdcroot, srctype);
-        if !preamble.is_empty() {
-            out.push_str(&marker_line(srctype, "preamble"));
+        out.push_str(&marker_line(srctype, "preamble"));
+        out.push('\n');
+        let pre_trimmed = preamble.trim_end_matches('\n');
+        if !pre_trimmed.is_empty() {
+            out.push_str(pre_trimmed);
             out.push('\n');
-            out.push_str(preamble.trim_end_matches('\n'));
-            out.push('\n');
-            out.push_str(&marker_line(srctype, "end"));
-            out.push_str("\n\n");
         }
+        out.push_str(&marker_line(srctype, "end"));
+        out.push_str("\n\n");
 
         // Node sections
         for (i, node) in ordered.iter().enumerate() {
-            let short = &node.fnode[..node.fnode.len().min(8)];
-            out.push_str(&marker_line(srctype, &format!("fnode: {}", short)));
+            out.push_str(&marker_line(srctype, &format!("fnode: {}", node.fnode)));
             out.push('\n');
             out.push_str(&marker_line(srctype, &format!("title: {}", node.title)));
             out.push('\n');
@@ -118,6 +124,8 @@ pub fn merge_work_files(
                 out.push('\n');
             }
 
+            wf_nodes.push((node.fnode.clone(), content));
+
             out.push_str(&marker_line(srctype, "end"));
             if i < ordered.len() - 1 {
                 out.push_str("\n\n");
@@ -126,19 +134,36 @@ pub fn merge_work_files(
             }
         }
 
-        // Postamble
+        // Postamble — always emitted so users can fill it in.
         let postamble = crate::config::read_postamble(&graph.mdcroot, srctype);
-        if !postamble.is_empty() {
-            out.push('\n');
-            out.push_str(&marker_line(srctype, "postamble"));
-            out.push('\n');
-            out.push_str(postamble.trim_end_matches('\n'));
-            out.push('\n');
-            out.push_str(&marker_line(srctype, "end"));
+        out.push('\n');
+        out.push_str(&marker_line(srctype, "postamble"));
+        out.push('\n');
+        let post_trimmed = postamble.trim_end_matches('\n');
+        if !post_trimmed.is_empty() {
+            out.push_str(post_trimmed);
             out.push('\n');
         }
+        out.push_str(&marker_line(srctype, "end"));
+        out.push('\n');
 
-        result.insert(srctype.clone(), out);
+        result.insert(
+            srctype.clone(),
+            WorkFile {
+                content: out,
+                preamble: if pre_trimmed.is_empty() {
+                    None
+                } else {
+                    Some(pre_trimmed.to_string())
+                },
+                postamble: if post_trimmed.is_empty() {
+                    None
+                } else {
+                    Some(post_trimmed.to_string())
+                },
+                nodes: wf_nodes,
+            },
+        );
     }
 
     Ok(result)
@@ -147,8 +172,8 @@ pub fn merge_work_files(
 // ── extract_work_file ────────────────────────────────────────────────────────
 
 pub struct ExtractedContent {
-    /// (fnode_prefix, content) pairs in file order.
-    pub nodes: Vec<(String, String)>,
+    /// (fnode_prefix, title_as_written, content) triples in file order.
+    pub nodes: Vec<(String, String, String)>,
     /// Preamble content (if present in the work file).
     pub preamble: Option<String>,
     /// Postamble content (if present in the work file).
@@ -166,7 +191,7 @@ pub fn extract_work_file(path: &Path, srctype: &str) -> Result<ExtractedContent>
     let prefix = comment_prefix(srctype);
     let rocq = prefix == "(*";
 
-    let mut nodes: Vec<(String, String)> = Vec::new();
+    let mut nodes: Vec<(String, String, String)> = Vec::new();
     let mut preamble: Option<String> = None;
     let mut postamble: Option<String> = None;
     let mut warnings: Vec<String> = Vec::new();
@@ -181,6 +206,7 @@ pub fn extract_work_file(path: &Path, srctype: &str) -> Result<ExtractedContent>
 
     let mut state = State::Outside;
     let mut current_content = String::new();
+    let mut current_title = String::new();
     let mut title_seen = false; // only one title: allowed per fnode block
 
     for line in text.lines() {
@@ -208,6 +234,7 @@ pub fn extract_work_file(path: &Path, srctype: &str) -> Result<ExtractedContent>
                     let fnode = t.trim_start_matches("fnode: ").to_string();
                     state = State::InFnode(fnode);
                     current_content.clear();
+                    current_title.clear();
                     title_seen = false;
                 }
                 continue;
@@ -217,15 +244,18 @@ pub fn extract_work_file(path: &Path, srctype: &str) -> Result<ExtractedContent>
                     State::InFnode(ref fnode) => {
                         // Trim trailing newline from content.
                         let content = current_content.trim_end_matches('\n').to_string();
-                        nodes.push((fnode.clone(), content));
+                        nodes.push((fnode.clone(), current_title.clone(), content));
                         current_content.clear();
+                        current_title.clear();
                     }
                     State::InPreamble => {
-                        preamble = Some(current_content.trim_end_matches('\n').to_string());
+                        let s = current_content.trim_end_matches('\n').to_string();
+                        preamble = if s.is_empty() { None } else { Some(s) };
                         current_content.clear();
                     }
                     State::InPostamble => {
-                        postamble = Some(current_content.trim_end_matches('\n').to_string());
+                        let s = current_content.trim_end_matches('\n').to_string();
+                        postamble = if s.is_empty() { None } else { Some(s) };
                         current_content.clear();
                     }
                     State::Outside => {
@@ -240,6 +270,7 @@ pub fn extract_work_file(path: &Path, srctype: &str) -> Result<ExtractedContent>
                 if let State::InFnode(_) = state {
                     if !title_seen {
                         title_seen = true;
+                        current_title = t.trim_start_matches("title: ").to_string();
                         continue;
                     }
                     warnings.push(format!("duplicate title marker in fnode block: {}", t));
@@ -275,7 +306,7 @@ pub fn extract_work_file(path: &Path, srctype: &str) -> Result<ExtractedContent>
         State::InFnode(fnode) => {
             warnings.push(format!("unclosed block for fnode {}", fnode));
             let content = current_content.trim_end_matches('\n').to_string();
-            nodes.push((fnode.clone(), content));
+            nodes.push((fnode.clone(), current_title.clone(), content));
         }
         State::InPreamble => {
             warnings.push("unclosed preamble at end of file".to_string());

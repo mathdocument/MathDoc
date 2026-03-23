@@ -1,6 +1,6 @@
 use super::{
-    cfg_positive_int, is_timeout_error, require_tool, run_process, CompilerReq, CompilerRes,
-    SrcCompiler,
+    cfg_positive_int, is_timeout_error, require_tool, run_process, source_path, CompilerReq,
+    CompilerRes, SrcCompiler,
 };
 
 pub(super) struct CompilerPython;
@@ -20,7 +20,9 @@ impl SrcCompiler for CompilerPython {
             Ok(p) => p,
             Err(e) => return CompilerRes::err_code(e.to_string(), 127),
         };
-        match run_process(&[&python, "-c", &req.content], "python", timeout_sec, None) {
+        let src = source_path(&req.mdcroot, "python");
+        let src_str = src.to_string_lossy();
+        match run_process(&[&python, &src_str], "python", timeout_sec, None) {
             Ok((rtcode, stdout, stderr)) => CompilerRes {
                 result: rtcode == 0,
                 stdout,

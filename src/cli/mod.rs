@@ -1,6 +1,5 @@
 mod cmd_core;
 mod cmd_deps;
-mod cmd_eval;
 mod cmd_graph;
 mod cmd_tui;
 mod cmd_work;
@@ -113,18 +112,14 @@ enum Commands {
         command: GraphCommands,
     },
 
-    /// Compile and run all blocks in a mdoc.
-    Eval {
-        source: String,
-        #[arg(short, long, default_value = "1", allow_hyphen_values = true)]
-        depth: i32,
-    },
-
     /// Generate merged work files for editing in native tools.
     Work {
         source: String,
         #[arg(short, long, default_value = "1", allow_hyphen_values = true)]
         depth: i32,
+        /// Compile all generated work files after merging.
+        #[arg(short, long)]
+        compile: bool,
     },
 
     /// Extract edits from work files and write back to mdoc files.
@@ -202,8 +197,11 @@ fn dispatch(cmd: Commands) -> Result<i32> {
             GraphCommands::Roots => cmd_graph::cmd_graph_roots(),
             GraphCommands::Tui { source } => cmd_tui::cmd_graph_tui(source),
         },
-        Commands::Eval { source, depth } => cmd_eval::cmd_eval(source, depth),
-        Commands::Work { source, depth } => cmd_work::cmd_work(source, depth),
+        Commands::Work {
+            source,
+            depth,
+            compile,
+        } => cmd_work::cmd_work(source, depth, compile),
         Commands::Back => cmd_work::cmd_back(),
         Commands::Dep { command } => match command {
             DepCommands::Add {

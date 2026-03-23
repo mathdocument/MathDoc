@@ -1,6 +1,7 @@
 mod latex;
 mod lean;
 mod python;
+mod rocq;
 mod text;
 
 use anyhow::{bail, Result};
@@ -13,10 +14,6 @@ use std::time::{Duration, Instant};
 
 pub struct CompilerReq {
     pub mdcroot: PathBuf,
-    pub srctype: String,
-    pub content: String,
-    pub preamble: String,
-    pub postamble: String,
     /// Config values from `.mdc/config.toml` `[src.<srctype>]` section.
     pub compcfg: HashMap<String, toml::Value>,
     pub progress: Option<Box<dyn Fn(&str)>>,
@@ -56,13 +53,6 @@ impl CompilerRes {
     }
 }
 
-/// One compiled block, as returned by `DepGraph::eval_blocks`.
-pub struct BlockResult {
-    pub node_fnode: String,
-    pub srctype: String,
-    pub res: CompilerRes,
-}
-
 pub trait SrcCompiler: Send + Sync {
     fn srctype(&self) -> &str;
     fn compile(&self, req: &CompilerReq) -> CompilerRes;
@@ -82,6 +72,7 @@ impl CompilerRegistry {
             Box::new(python::CompilerPython),
             Box::new(latex::CompilerLatex),
             Box::new(lean::CompilerLean),
+            Box::new(rocq::CompilerRocq),
         ] {
             m.insert(c.srctype().to_ascii_lowercase(), c);
         }
@@ -96,6 +87,15 @@ impl CompilerRegistry {
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
+
+/// Resolve the path to the work/source file for a given srctype.
+fn source_path(mdcroot: &Path, srctype: &str) -> PathBuf {
+    let ext = crate::config::srctype_ext(srctype);
+    mdcroot
+        .join(".mdc")
+        .join(srctype)
+        .join(format!("MdcWork.{ext}"))
+}
 
 fn cfg_positive_int(
     compcfg: &HashMap<String, toml::Value>,
@@ -235,6 +235,82 @@ mod tests {
             result.unwrap_err().to_string().contains("timed out after"),
             "timed-out process must produce a timed-out error"
         );
+    }
+
+    fn make_req(mdcroot: &std::path::Path, srctype: &str) -> CompilerReq {
+        let cfg = crate::config::default_for_srctype(srctype);
+        CompilerReq {
+            mdcroot: mdcroot.to_path_buf(),
+            compcfg: cfg.to_compiler_cfg(),
+            progress: None,
+        }
+    }
+
+    /// Write source content directly to the MdcWork file so the compiler can find it.
+    fn write_source(mdcroot: &std::path::Path, srctype: &str, content: &str) {
+        let path = source_path(mdcroot, srctype);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_latex_compiles_hello_world() {
+        if which::which("latexmk").is_err() || which::which("xelatex").is_err() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let mdcroot = tmp.path();
+        std::fs::create_dir_all(mdcroot.join(".mdc")).unwrap();
+        write_source(
+            mdcroot,
+            "latex",
+            "\\documentclass{article}\n\\begin{document}\nHello, world!\n\\end{document}\n",
+        );
+        let req = make_req(mdcroot, "latex");
+        let registry = CompilerRegistry::default_registry();
+        let compiler = registry.resolve("latex").unwrap();
+        let res = compiler.compile(&req);
+        assert!(res.result, "latex compilation failed: {}", res.stderr);
+        assert!(mdcroot.join(".mdc/latex/MdcWork.pdf").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_lean_compiles_hello_world() {
+        if which::which("lake").is_err() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let mdcroot = tmp.path();
+        std::fs::create_dir_all(mdcroot.join(".mdc")).unwrap();
+        write_source(mdcroot, "lean", "#check Nat\n");
+        let req = make_req(mdcroot, "lean");
+        let registry = CompilerRegistry::default_registry();
+        let compiler = registry.resolve("lean").unwrap();
+        let res = compiler.compile(&req);
+        assert!(res.result, "lean compilation failed: {}", res.stderr);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_rocq_compiles_hello_world() {
+        if which::which("rocq").is_err() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let mdcroot = tmp.path();
+        std::fs::create_dir_all(mdcroot.join(".mdc")).unwrap();
+        write_source(
+            mdcroot,
+            "rocq",
+            "Theorem trivial : True.\nProof. exact I. Qed.\n",
+        );
+        let req = make_req(mdcroot, "rocq");
+        let registry = CompilerRegistry::default_registry();
+        let compiler = registry.resolve("rocq").unwrap();
+        let res = compiler.compile(&req);
+        assert!(res.result, "rocq compilation failed: {}", res.stderr);
     }
 }
 

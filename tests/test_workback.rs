@@ -40,10 +40,10 @@ fn test_merge_single_node_latex() {
     let files = workback::merge_work_files(&mut graph, 1, &config).unwrap();
 
     assert!(files.contains_key("latex"));
-    let tex = &files["latex"];
+    let tex = &files["latex"].content;
     assert!(tex.contains("% mdc: preamble"));
     assert!(tex.contains("\\documentclass"));
-    assert!(tex.contains(&format!("% mdc: fnode: {}", &src.fnode[..8])));
+    assert!(tex.contains(&format!("% mdc: fnode: {}", &src.fnode)));
     assert!(tex.contains("% mdc: title: Hello"));
     assert!(tex.contains("\\section{Hello}"));
     assert!(tex.contains("% mdc: postamble"));
@@ -66,14 +66,10 @@ fn test_merge_with_deps_respects_reverse_depens() {
     let config = load_config(root);
     let files = workback::merge_work_files(&mut graph, -1, &config).unwrap();
 
-    let tex = &files["latex"];
+    let tex = &files["latex"].content;
     // latex default: reverse_depens=true → root first, then deps.
-    let src_pos = tex
-        .find(&format!("% mdc: fnode: {}", &src.fnode[..8]))
-        .unwrap();
-    let dep_pos = tex
-        .find(&format!("% mdc: fnode: {}", &dep.fnode[..8]))
-        .unwrap();
+    let src_pos = tex.find(&format!("% mdc: fnode: {}", &src.fnode)).unwrap();
+    let dep_pos = tex.find(&format!("% mdc: fnode: {}", &dep.fnode)).unwrap();
     assert!(
         src_pos < dep_pos,
         "root should come before dep with reverse_depens=true"
@@ -96,13 +92,13 @@ fn test_merge_lean_reverse_depens_false() {
     let config = load_config(root);
     let files = workback::merge_work_files(&mut graph, -1, &config).unwrap();
 
-    let lean = &files["lean"];
+    let lean = &files["lean"].content;
     // lean default: reverse_depens=false → deps first, then root.
     let src_pos = lean
-        .find(&format!("-- mdc: fnode: {}", &src.fnode[..8]))
+        .find(&format!("-- mdc: fnode: {}", &src.fnode))
         .unwrap();
     let dep_pos = lean
-        .find(&format!("-- mdc: fnode: {}", &dep.fnode[..8]))
+        .find(&format!("-- mdc: fnode: {}", &dep.fnode))
         .unwrap();
     assert!(
         dep_pos < src_pos,
@@ -123,8 +119,8 @@ fn test_merge_empty_block_still_included() {
     let files = workback::merge_work_files(&mut graph, 1, &config).unwrap();
 
     assert!(files.contains_key("latex"));
-    let tex = &files["latex"];
-    assert!(tex.contains(&format!("% mdc: fnode: {}", &src.fnode[..8])));
+    let tex = &files["latex"].content;
+    assert!(tex.contains(&format!("% mdc: fnode: {}", &src.fnode)));
 }
 
 #[test]
@@ -167,9 +163,79 @@ fn test_merge_text_uses_hash_comments() {
     let config = load_config(root);
     let files = workback::merge_work_files(&mut graph, 1, &config).unwrap();
 
-    let txt = &files["text"];
+    let txt = &files["text"].content;
     assert!(txt.contains("# mdc: fnode:"));
     assert!(txt.contains("# mdc: end"));
+}
+
+#[test]
+fn test_merge_always_emits_preamble_postamble() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+
+    // text srctype has empty default preamble/postamble.
+    let src = make_node(root, "Note", "text", "some text\n");
+    src.save().unwrap();
+
+    let mut graph = DepGraph::new(root.to_path_buf(), &src.fnode).unwrap();
+    let config = load_config(root);
+    let files = workback::merge_work_files(&mut graph, 1, &config).unwrap();
+
+    let txt = &files["text"].content;
+    // Even with empty defaults, preamble and postamble blocks are present.
+    assert!(txt.contains("# mdc: preamble\n# mdc: end"));
+    assert!(txt.contains("# mdc: postamble\n# mdc: end"));
+}
+
+#[test]
+fn test_merge_rocq_uses_block_comments() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+
+    let src = make_node(
+        root,
+        "Proof",
+        "rocq",
+        "Theorem foo : True. Proof. trivial. Qed.\n",
+    );
+    src.save().unwrap();
+
+    let mut graph = DepGraph::new(root.to_path_buf(), &src.fnode).unwrap();
+    let config = load_config(root);
+    let files = workback::merge_work_files(&mut graph, 1, &config).unwrap();
+
+    let v = &files["rocq"].content;
+    assert!(v.contains("(* mdc: fnode:"));
+    assert!(v.contains("(* mdc: end *)"));
+    assert!(v.contains("(* mdc: preamble *)"));
+    assert!(v.contains("(* mdc: postamble *)"));
+}
+
+#[test]
+fn test_extract_rocq_markers() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("MdcWork.v");
+    fs::write(
+        &path,
+        "(* mdc: preamble *)\n(* mdc: end *)\n\n\
+         (* mdc: fnode: aabbccdd *)\n(* mdc: title: Proof *)\nTheorem foo : True.\n(* mdc: end *)\n\n\
+         (* mdc: postamble *)\n(* mdc: end *)\n",
+    )
+    .unwrap();
+
+    let result = workback::extract_work_file(&path, "rocq").unwrap();
+    assert_eq!(result.nodes.len(), 1);
+    assert_eq!(result.nodes[0].0, "aabbccdd");
+    assert_eq!(result.nodes[0].2, "Theorem foo : True.");
+    assert!(result.warnings.is_empty());
+    assert!(
+        result.preamble.is_none(),
+        "empty preamble block should normalize to None"
+    );
+    assert!(
+        result.postamble.is_none(),
+        "empty postamble block should normalize to None"
+    );
 }
 
 // ── extract_work_file tests ──────────────────────────────────────────────────
@@ -177,7 +243,7 @@ fn test_merge_text_uses_hash_comments() {
 #[test]
 fn test_extract_basic_latex() {
     let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("mdc-work.tex");
+    let path = dir.path().join("MdcWork.tex");
     fs::write(
         &path,
         "% mdc: preamble\n\\documentclass{article}\n% mdc: end\n\n\
@@ -189,14 +255,14 @@ fn test_extract_basic_latex() {
     let result = workback::extract_work_file(&path, "latex").unwrap();
     assert_eq!(result.nodes.len(), 1);
     assert_eq!(result.nodes[0].0, "aabbccdd");
-    assert_eq!(result.nodes[0].1, "\\section{Hello}");
+    assert_eq!(result.nodes[0].2, "\\section{Hello}");
     assert!(result.warnings.is_empty());
 }
 
 #[test]
 fn test_extract_multiple_nodes() {
     let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("mdc-work.tex");
+    let path = dir.path().join("MdcWork.tex");
     fs::write(
         &path,
         "% mdc: fnode: aaaaaaaa\n% mdc: title: A\ncontent a\n% mdc: end\n\n\
@@ -207,15 +273,15 @@ fn test_extract_multiple_nodes() {
     let result = workback::extract_work_file(&path, "latex").unwrap();
     assert_eq!(result.nodes.len(), 2);
     assert_eq!(result.nodes[0].0, "aaaaaaaa");
-    assert_eq!(result.nodes[0].1, "content a");
+    assert_eq!(result.nodes[0].2, "content a");
     assert_eq!(result.nodes[1].0, "bbbbbbbb");
-    assert_eq!(result.nodes[1].1, "content b");
+    assert_eq!(result.nodes[1].2, "content b");
 }
 
 #[test]
 fn test_extract_empty_content() {
     let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("mdc-work.tex");
+    let path = dir.path().join("MdcWork.tex");
     fs::write(
         &path,
         "% mdc: fnode: aaaaaaaa\n% mdc: title: Empty\n% mdc: end\n",
@@ -224,13 +290,13 @@ fn test_extract_empty_content() {
 
     let result = workback::extract_work_file(&path, "latex").unwrap();
     assert_eq!(result.nodes.len(), 1);
-    assert_eq!(result.nodes[0].1, "");
+    assert_eq!(result.nodes[0].2, "");
 }
 
 #[test]
 fn test_extract_warns_on_content_outside_markers() {
     let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("mdc-work.tex");
+    let path = dir.path().join("MdcWork.tex");
     fs::write(
         &path,
         "stray line\n% mdc: fnode: aaaaaaaa\n% mdc: title: A\ncontent\n% mdc: end\n",
@@ -246,7 +312,7 @@ fn test_extract_warns_on_content_outside_markers() {
 #[test]
 fn test_extract_lean_markers() {
     let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("mdc-work.lean");
+    let path = dir.path().join("MdcWork.lean");
     fs::write(
         &path,
         "-- mdc: preamble\nimport Mathlib\n-- mdc: end\n\n\
@@ -257,13 +323,13 @@ fn test_extract_lean_markers() {
     let result = workback::extract_work_file(&path, "lean").unwrap();
     assert_eq!(result.nodes.len(), 1);
     assert_eq!(result.nodes[0].0, "aabbccdd");
-    assert_eq!(result.nodes[0].1, "def foo := 1");
+    assert_eq!(result.nodes[0].2, "def foo := 1");
 }
 
 #[test]
 fn test_extract_text_hash_comments() {
     let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("mdc-work.txt");
+    let path = dir.path().join("MdcWork.txt");
     fs::write(
         &path,
         "# mdc: fnode: aabbccdd\n# mdc: title: Note\nsome text\n# mdc: end\n",
@@ -272,7 +338,7 @@ fn test_extract_text_hash_comments() {
 
     let result = workback::extract_work_file(&path, "text").unwrap();
     assert_eq!(result.nodes.len(), 1);
-    assert_eq!(result.nodes[0].1, "some text");
+    assert_eq!(result.nodes[0].2, "some text");
 }
 
 // ── roundtrip: merge → extract ───────────────────────────────────────────────
@@ -294,8 +360,8 @@ fn test_merge_then_extract_roundtrip() {
     let files = workback::merge_work_files(&mut graph, -1, &config).unwrap();
 
     // Write to a temp file, then extract.
-    let work_path = dir.path().join("mdc-work.tex");
-    fs::write(&work_path, &files["latex"]).unwrap();
+    let work_path = dir.path().join("MdcWork.tex");
+    fs::write(&work_path, &files["latex"].content).unwrap();
 
     let extracted = workback::extract_work_file(&work_path, "latex").unwrap();
     assert!(extracted.warnings.is_empty());
@@ -304,13 +370,13 @@ fn test_merge_then_extract_roundtrip() {
     let fnode_map: HashMap<&str, &str> = extracted
         .nodes
         .iter()
-        .map(|(f, c)| (f.as_str(), c.as_str()))
+        .map(|(f, _t, c)| (f.as_str(), c.as_str()))
         .collect();
 
-    assert!(fnode_map.contains_key(&src.fnode[..8]));
-    assert!(fnode_map.contains_key(&dep.fnode[..8]));
-    assert_eq!(fnode_map[&src.fnode[..8]], "src body");
-    assert_eq!(fnode_map[&dep.fnode[..8]], "dep body");
+    assert!(fnode_map.contains_key(src.fnode.as_str()));
+    assert!(fnode_map.contains_key(dep.fnode.as_str()));
+    assert_eq!(fnode_map[src.fnode.as_str()], "src body");
+    assert_eq!(fnode_map[dep.fnode.as_str()], "dep body");
 }
 
 // ── back: hash not updated on warnings ───────────────────────────────────────
@@ -318,7 +384,7 @@ fn test_merge_then_extract_roundtrip() {
 #[test]
 fn test_extract_unclosed_block_warns() {
     let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("mdc-work.tex");
+    let path = dir.path().join("MdcWork.tex");
     fs::write(
         &path,
         "% mdc: fnode: aaaaaaaa\n% mdc: title: Oops\nsome content\n",
@@ -328,7 +394,7 @@ fn test_extract_unclosed_block_warns() {
     let result = workback::extract_work_file(&path, "latex").unwrap();
     // Content is still extracted but a warning is emitted.
     assert_eq!(result.nodes.len(), 1);
-    assert_eq!(result.nodes[0].1, "some content");
+    assert_eq!(result.nodes[0].2, "some content");
     assert_eq!(result.warnings.len(), 1);
     assert!(result.warnings[0].contains("unclosed"));
 }
@@ -336,7 +402,7 @@ fn test_extract_unclosed_block_warns() {
 #[test]
 fn test_extract_nested_open_warns() {
     let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("mdc-work.tex");
+    let path = dir.path().join("MdcWork.tex");
     // Second fnode opened without closing the first.
     fs::write(
         &path,
@@ -356,7 +422,7 @@ fn test_extract_nested_open_warns() {
 #[test]
 fn test_extract_fnode_inside_preamble_warns() {
     let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("mdc-work.tex");
+    let path = dir.path().join("MdcWork.tex");
     // fnode marker appears while preamble is still open.
     fs::write(
         &path,
@@ -378,7 +444,7 @@ fn test_extract_fnode_inside_preamble_warns() {
 #[test]
 fn test_extract_stray_end_marker_warns() {
     let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("mdc-work.tex");
+    let path = dir.path().join("MdcWork.tex");
     // A valid block followed by an extra end marker.
     fs::write(
         &path,
@@ -400,7 +466,7 @@ fn test_extract_stray_end_marker_warns() {
 #[test]
 fn test_extract_title_outside_fnode_warns() {
     let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("mdc-work.py");
+    let path = dir.path().join("MdcWork.py");
     // title marker appears outside any block.
     fs::write(
         &path,
@@ -423,7 +489,7 @@ fn test_extract_title_outside_fnode_warns() {
 #[test]
 fn test_extract_title_inside_preamble_warns() {
     let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("mdc-work.tex");
+    let path = dir.path().join("MdcWork.tex");
     // title marker inside preamble — not a fnode block.
     fs::write(
         &path,
@@ -446,7 +512,7 @@ fn test_extract_title_inside_preamble_warns() {
 #[test]
 fn test_extract_duplicate_title_in_fnode_warns() {
     let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("mdc-work.py");
+    let path = dir.path().join("MdcWork.py");
     // A second title: line inside the fnode block content.
     fs::write(
         &path,
@@ -471,7 +537,7 @@ fn test_extract_duplicate_title_in_fnode_warns() {
 #[test]
 fn test_extract_unclosed_preamble_warns() {
     let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("mdc-work.tex");
+    let path = dir.path().join("MdcWork.tex");
     fs::write(&path, "% mdc: preamble\n\\documentclass{article}\n").unwrap();
 
     let result = workback::extract_work_file(&path, "latex").unwrap();
@@ -485,7 +551,7 @@ fn test_extract_unclosed_preamble_warns() {
 #[test]
 fn test_extract_unclosed_postamble_warns() {
     let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("mdc-work.tex");
+    let path = dir.path().join("MdcWork.tex");
     fs::write(
         &path,
         "% mdc: fnode: aaaaaaaa\n% mdc: title: A\ncontent\n% mdc: end\n\
@@ -504,11 +570,10 @@ fn test_extract_unclosed_postamble_warns() {
         .any(|w| w.contains("unclosed postamble")));
 }
 
-// ── end-to-end: work → edit preamble → back → eval picks up change ──────────
+// ── end-to-end: work → edit preamble → back → re-merge picks up change ──────
 
 #[test]
-fn test_preamble_roundtrip_work_back_eval() {
-    use mathdoc::compiler::CompilerRegistry;
+fn test_preamble_roundtrip_work_back() {
     use mathdoc::config::{read_preamble, write_preamble};
 
     let dir = tempfile::TempDir::new().unwrap();
@@ -524,14 +589,14 @@ fn test_preamble_roundtrip_work_back_eval() {
     let mut graph = DepGraph::new(root.to_path_buf(), &src.fnode).unwrap();
     let config = load_config(root);
     let files = workback::merge_work_files(&mut graph, 1, &config).unwrap();
-    let tex = &files["latex"];
+    let tex = &files["latex"].content;
     assert!(
         tex.contains("\\documentclass{book}"),
         "work file should contain custom preamble"
     );
 
     // 2) User edits the preamble in the work file.
-    let work_path = dir.path().join("mdc-work.tex");
+    let work_path = dir.path().join("MdcWork.tex");
     let edited = tex.replace("\\documentclass{book}", "\\documentclass{report}");
     fs::write(&work_path, &edited).unwrap();
 
@@ -543,35 +608,21 @@ fn test_preamble_roundtrip_work_back_eval() {
     assert!(pre.contains("\\documentclass{report}"));
     write_preamble(root, "latex", &format!("{pre}\n")).unwrap();
 
-    // 4) Verify the file now reflects the edit.
+    // 4) Verify the preamble file reflects the edit.
     let new_pre = read_preamble(root, "latex");
     assert!(new_pre.contains("report"));
     assert!(!new_pre.contains("book"));
 
-    // 5) mdc eval: compiler should receive the updated preamble.
+    // 5) Re-merge: new work file should use the updated preamble.
     let mut graph2 = DepGraph::new(root.to_path_buf(), &src.fnode).unwrap();
-    let results = graph2
-        .eval_blocks(
-            1,
-            &CompilerRegistry::default_registry(),
-            &config,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-    assert_eq!(results.len(), 1);
-    // latex compiler needs latexmk — it will fail with tool-not-found, but we can
-    // verify the error is NOT about a missing preamble config key (which would mean
-    // the new preamble wasn't fed to the compiler).
-    // If latexmk IS available, it would compile with the new preamble.
-    let res = &results[0].res;
-    if !res.result {
-        // Acceptable: tool not found. NOT acceptable: "config key 'preamble' is required".
-        assert!(
-            !res.stderr.contains("preamble"),
-            "compiler should not complain about missing preamble; got: {}",
-            res.stderr
-        );
-    }
+    let files2 = workback::merge_work_files(&mut graph2, 1, &config).unwrap();
+    let tex2 = &files2["latex"].content;
+    assert!(
+        tex2.contains("\\documentclass{report}"),
+        "re-merged work file should contain updated preamble"
+    );
+    assert!(
+        !tex2.contains("\\documentclass{book}"),
+        "old preamble should be gone"
+    );
 }

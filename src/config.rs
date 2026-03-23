@@ -23,7 +23,7 @@ pub struct Config {
 
 impl SrcConfig {
     /// Whether dependency blocks should be merged into this srctype's block.
-    pub fn effective_depens(&self, _srctype: &str) -> bool {
+    pub fn effective_depens(&self) -> bool {
         self.depens.unwrap_or(false)
     }
 
@@ -112,7 +112,7 @@ pub fn default_for_srctype(srctype: &str) -> SrcConfig {
             depens: Some(true),
             reverse_depens: Some(false),
             timeout_sec: Some(300),
-            setup_timeout_sec: Some(1800),
+            ..Default::default()
         },
         _ => SrcConfig::default(),
     }

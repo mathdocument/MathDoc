@@ -49,7 +49,7 @@ fn src_config_returns_defaults_for_known_srctypes() {
     assert_eq!(rocq.depens, Some(true));
     assert_eq!(rocq.reverse_depens, Some(false));
     assert_eq!(rocq.timeout_sec, Some(300));
-    assert_eq!(rocq.setup_timeout_sec, Some(1800));
+    assert_eq!(rocq.setup_timeout_sec, None);
 }
 
 #[test]

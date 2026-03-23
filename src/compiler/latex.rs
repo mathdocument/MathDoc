@@ -1,6 +1,6 @@
 use super::{
-    cfg_positive_int, is_timeout_error, require_tool, run_process, CompilerReq, CompilerRes,
-    SrcCompiler,
+    cfg_positive_int, is_timeout_error, require_tool, run_process, source_path, CompilerReq,
+    CompilerRes, SrcCompiler,
 };
 
 pub(super) struct CompilerLatex;
@@ -26,26 +26,9 @@ impl SrcCompiler for CompilerLatex {
         }
 
         let tex_dir = req.mdcroot.join(".mdc").join("latex");
-        if let Err(e) = std::fs::create_dir_all(&tex_dir) {
-            return CompilerRes::err(format!("failed to create latex artifact dir: {e}"));
-        }
-        let stem = format!(
-            "temp-latex-{}",
-            &uuid::Uuid::new_v4().simple().to_string()[..8]
-        );
-        let tex_path = tex_dir.join(format!("{stem}.tex"));
-        let pdf_path = tex_dir.join(format!("{stem}.pdf"));
+        let tex_path = source_path(&req.mdcroot, "latex");
+        let pdf_path = tex_dir.join("MdcWork.pdf");
 
-        let payload = latex_payload(&req.content, &req.preamble, &req.postamble);
-        if let Err(e) = std::fs::write(&tex_path, &payload) {
-            return CompilerRes::err(format!("failed to write latex source: {e}"));
-        }
-
-        let tex_name = tex_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
         match run_process(
             &[
                 &latexmk,
@@ -54,7 +37,7 @@ impl SrcCompiler for CompilerLatex {
                 "-interaction=nonstopmode",
                 "-halt-on-error",
                 "-outdir=.",
-                &tex_name,
+                "MdcWork.tex",
             ],
             "latexmk",
             timeout_sec,
@@ -86,21 +69,6 @@ impl SrcCompiler for CompilerLatex {
             Err(e) => CompilerRes::err_code(e.to_string(), 127),
         }
     }
-}
-
-fn latex_payload(content: &str, preamble: &str, postamble: &str) -> String {
-    if content.contains(r"\documentclass") {
-        return content.to_string();
-    }
-    let preamble_text = preamble.trim_end_matches('\n');
-    let body = content.trim_end_matches('\n');
-    let postamble_text = postamble.trim_matches('\n');
-
-    let mut parts = vec![preamble_text, body];
-    if !postamble_text.is_empty() {
-        parts.push(postamble_text);
-    }
-    format!("{}\n", parts.join("\n"))
 }
 
 fn summarize_latex_error(stdout: &str, stderr: &str) -> String {

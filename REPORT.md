@@ -40,6 +40,7 @@
 | ----------------- | ---------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------ |
 | `mdc init`        | —                            | —                                                              | Creates `.mdc/`; does not touch the index                          |
 | `mdc new`         | —                            | `upsert_path()` on the created file                            | Immediately indexed after creation                                 |
+| `mdc edit`        | `discover_workspace_changes` | `upsert_path()` on the edited file (after editor exits)        | Opens `$EDITOR`; single-file reindex on close                      |
 | `mdc sync`        | —                            | `refresh_all()` (full walk + `refresh_all_derived_data`)       | Intentional full-rescan escape hatch                               |
 | `mdc search`      | `discover_workspace_changes` | —                                                              | Queries `mdocs`; external changes picked up via discovery          |
 | `mdc dep add`     | via `DepGraph::from_ref`     | inside `add/create_and_add_dependency`                         | Index update is part of the DepGraph mutation; cycle-creating deps rejected |
@@ -50,7 +51,8 @@
 | `mdc graph check` | `refresh_workspace_index()`  | re-stats all indexed file content                              | Discovers new/deleted files and re-reads content of known files    |
 | `mdc graph roots` | `discover_workspace_changes` | —                                                              | Reads topo_depth + component_size from DB; graph load only if dirty |
 | `mdc graph tui`   | `discover_workspace_changes` | inside DepGraph mutation API, then `discover_workspace_changes` | add/rm/create delegate to DepGraph which handles upsert; `refresh_after_op` uses discovery |
-| `mdc eval`        | `discover_workspace_changes` | `upsert_path()` + `refresh_reachable_from_path()`              | Preflight: exits 1 on broken deps or cycles; then runs blocks      |
+| `mdc work`        | `discover_workspace_changes` | `upsert_path()` on source + `refresh_reachable_from_path()`    | Aborts per-srctype if work file has unsaved edits; exits 1 if any skipped |
+| `mdc back`        | `discover_workspace_changes` | `resolve_ref()` reads per node (no upsert after write)         | Writes `.mdoc` files but does not re-upsert; cache goes stale until next discovery |
 
 ## How file state changes are discovered
 

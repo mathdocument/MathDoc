@@ -7,7 +7,7 @@ impl SrcCompiler for CompilerText {
         "text"
     }
 
-    fn compile(&self, req: &CompilerReq) -> CompilerRes {
-        CompilerRes::ok(req.content.trim_end_matches('\n'))
+    fn compile(&self, _req: &CompilerReq) -> CompilerRes {
+        CompilerRes::ok("")
     }
 }
