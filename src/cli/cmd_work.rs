@@ -71,7 +71,10 @@ pub(super) fn cmd_work(source: String, depth: i32, compile: bool) -> Result<i32>
     let mut generated: Vec<(String, String)> = Vec::new(); // (srctype, path)
     let mut skipped: Vec<String> = Vec::new();
 
-    for (srctype, work_file) in &files {
+    let mut sorted_srctypes: Vec<&String> = files.keys().collect();
+    sorted_srctypes.sort();
+    for srctype in sorted_srctypes {
+        let work_file = &files[srctype];
         let ext = crate::config::srctype_ext(srctype);
         let dir = mdc_dir.join(srctype);
         std::fs::create_dir_all(&dir)?;
