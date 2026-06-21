@@ -1,0 +1,41 @@
+{
+  "name": "mdc-mdoc",
+  "displayName": "mdoc Language Support",
+  "description": "Syntax highlighting and language support for .mdoc files (mdc workspace)",
+  "version": "0.1.0",
+  "publisher": "mdc",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "mdoc",
+        "aliases": [
+          "mdoc",
+          "MathDoc"
+        ],
+        "extensions": [
+          ".mdoc"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "mdoc",
+        "scopeName": "source.mdoc",
+        "path": "./syntaxes/mdoc.tmLanguage.json",
+        "embeddedLanguages": {
+          "meta.embedded.block.python": "python",
+          "meta.embedded.block.latex": "latex",
+          "meta.embedded.block.lean": "lean4",
+          "meta.embedded.block.rocq": "rocq"
+        }
+      }
+    ]
+  }
+}

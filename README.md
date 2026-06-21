@@ -9,6 +9,15 @@ cargo build --release
 # binary: target/release/mdc
 ```
 
+## Editor support
+
+A VS Code extension for `.mdoc` syntax highlighting and folding is included under
+`editors/vscode/`. To install the packaged extension locally:
+
+```bash
+code --install-extension editors/vscode/mdc-mdoc-0.1.0.vsix --force
+```
+
 ## `.mdoc` file format
 
 ```

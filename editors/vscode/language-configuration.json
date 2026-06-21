@@ -1,0 +1,11 @@
+{
+  "folding": {
+    "markers": {
+      "start": "^@(dep|src):",
+      "end": "^@end\\s*$"
+    }
+  },
+  "brackets": [],
+  "autoClosingPairs": [],
+  "surroundingPairs": []
+}

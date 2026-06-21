@@ -1,0 +1,214 @@
+{
+  "name": "mdoc",
+  "scopeName": "source.mdoc",
+  "fileTypes": [
+    "mdoc"
+  ],
+  "patterns": [
+    {
+      "include": "#directive-fnode"
+    },
+    {
+      "include": "#directive-title"
+    },
+    {
+      "include": "#block-dep"
+    },
+    {
+      "include": "#block-src-python"
+    },
+    {
+      "include": "#block-src-latex"
+    },
+    {
+      "include": "#block-src-lean"
+    },
+    {
+      "include": "#block-src-rocq"
+    },
+    {
+      "include": "#block-src-generic"
+    }
+  ],
+  "repository": {
+    "directive-fnode": {
+      "match": "^(@fnode)(:)\\s*(\\S+)",
+      "captures": {
+        "1": {
+          "name": "keyword.control.directive.mdoc"
+        },
+        "2": {
+          "name": "punctuation.separator.mdoc"
+        },
+        "3": {
+          "name": "constant.numeric.uuid.mdoc"
+        }
+      }
+    },
+    "directive-title": {
+      "match": "^(@title)(:)\\s*(.+)",
+      "captures": {
+        "1": {
+          "name": "keyword.control.directive.mdoc"
+        },
+        "2": {
+          "name": "punctuation.separator.mdoc"
+        },
+        "3": {
+          "name": "string.unquoted.title.mdoc"
+        }
+      }
+    },
+    "block-dep": {
+      "begin": "^(@dep)(:)\\s*$",
+      "end": "^(@end)\\s*$",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.control.block.mdoc"
+        },
+        "2": {
+          "name": "punctuation.separator.mdoc"
+        }
+      },
+      "endCaptures": {
+        "1": {
+          "name": "keyword.control.block.mdoc"
+        }
+      },
+      "patterns": [
+        {
+          "match": "^\\s*(\\S+)\\s*$",
+          "captures": {
+            "1": {
+              "name": "constant.numeric.uuid.mdoc"
+            }
+          }
+        }
+      ]
+    },
+    "block-src-python": {
+      "begin": "^(@src)(:)\\s*(python)\\s*$",
+      "end": "^(@end)\\s*$",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.control.block.mdoc"
+        },
+        "2": {
+          "name": "punctuation.separator.mdoc"
+        },
+        "3": {
+          "name": "entity.name.type.srctype.mdoc"
+        }
+      },
+      "endCaptures": {
+        "1": {
+          "name": "keyword.control.block.mdoc"
+        }
+      },
+      "contentName": "meta.embedded.block.python",
+      "patterns": [
+        {
+          "include": "source.python"
+        }
+      ]
+    },
+    "block-src-latex": {
+      "begin": "^(@src)(:)\\s*(latex)\\s*$",
+      "end": "^(@end)\\s*$",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.control.block.mdoc"
+        },
+        "2": {
+          "name": "punctuation.separator.mdoc"
+        },
+        "3": {
+          "name": "entity.name.type.srctype.mdoc"
+        }
+      },
+      "endCaptures": {
+        "1": {
+          "name": "keyword.control.block.mdoc"
+        }
+      },
+      "contentName": "meta.embedded.block.latex",
+      "patterns": [
+        {
+          "include": "text.tex.latex"
+        }
+      ]
+    },
+    "block-src-lean": {
+      "begin": "^(@src)(:)\\s*(lean)\\s*$",
+      "end": "^(@end)\\s*$",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.control.block.mdoc"
+        },
+        "2": {
+          "name": "punctuation.separator.mdoc"
+        },
+        "3": {
+          "name": "entity.name.type.srctype.mdoc"
+        }
+      },
+      "endCaptures": {
+        "1": {
+          "name": "keyword.control.block.mdoc"
+        }
+      },
+      "contentName": "meta.embedded.block.lean",
+      "patterns": [
+        {
+          "include": "source.lean4"
+        }
+      ]
+    },
+    "block-src-rocq": {
+      "begin": "^(@src)(:)\\s*(rocq)\\s*$",
+      "end": "^(@end)\\s*$",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.control.block.mdoc"
+        },
+        "2": {
+          "name": "punctuation.separator.mdoc"
+        },
+        "3": {
+          "name": "entity.name.type.srctype.mdoc"
+        }
+      },
+      "endCaptures": {
+        "1": {
+          "name": "keyword.control.block.mdoc"
+        }
+      },
+      "contentName": "meta.embedded.block.rocq",
+      "patterns": [
+        {
+          "include": "source.rocq"
+        }
+      ]
+    },
+    "block-src-generic": {
+      "begin": "^(@src)(:)\\s*(\\w+)\\s*$",
+      "end": "^(@end)\\s*$",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.control.block.mdoc"
+        },
+        "2": {
+          "name": "punctuation.separator.mdoc"
+        },
+        "3": {
+          "name": "entity.name.type.srctype.mdoc"
+        }
+      },
+      "endCaptures": {
+        "1": {
+          "name": "keyword.control.block.mdoc"
+        }
+      }
+    }
+  }
+}
