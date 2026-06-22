@@ -16,6 +16,13 @@ cargo test <name>               # run tests matching a name substring
 cargo test --test test_indcache # run one integration test target
 cargo fmt                       # format Rust code
 cargo clippy                    # lint
+
+# Web frontend (mdc serve)
+cd web && npm install           # first-time setup
+cd web && npm run build         # write web/dist/ (embedded by cargo build --release)
+cd web && npm run check         # svelte-check type/syntax pass
+cargo run --features dev-web -- serve   # dev mode: serve web/ via tower-http ServeDir
+cd web && npm run dev                  #   (separate terminal) Vite HMR on :5173
 ```
 
 Integration tests live in `tests/`. Unit tests are inline in source files.
@@ -64,10 +71,12 @@ Important format details:
 | `src/depgraph/workback.rs` | Work-file merge and extraction logic for `mdc work` / `mdc back` |
 | `src/compiler/` | Synchronous subprocess compilers and `CompilerRegistry` |
 | `src/cli/` | `clap` command definitions, command handlers, and terminal output |
+| `src/web/` | `mdc serve` HTTP server (axum): JSON API over `IndCache`/`DepGraph` + SPA asset serving |
 | `src/core/` | Shared models and graph algorithms: topo order, cycle detection, SCC |
 | `src/config.rs` | `.mdc/config.toml`, srctype defaults, preamble/postamble files |
 | `src/workspace.rs` | Workspace discovery, `.mdoc` iteration, relative path helpers |
 | `editors/vscode/` | VS Code language extension for `.mdoc` files |
+| `web/` | Svelte 5 + Vite + TypeScript frontend; built output is embedded into the `mdc` binary via `rust-embed` |
 
 ## `.mdoc` Parsing
 
@@ -193,6 +202,7 @@ recovered on the next open.
 | `mdc graph tui` | `discover_workspace_changes()` | DepGraph mutation APIs plus post-op discovery | TUI add/rm/create delegate to DepGraph |
 | `mdc work` | `discover_workspace_changes()` | `upsert_path()` on source and `refresh_reachable_from_path()` | Skips work files with unsaved edits |
 | `mdc back` | `discover_workspace_changes()` before write | none after write | Writes `.mdoc` files; cache metadata may remain stale until targeted refresh or `mdc sync` |
+| `mdc serve` | `discover_workspace_changes()` on every read handler | `upsert_path()` after every write handler | Web server holds `Arc<Mutex<IndCache>>`; handlers lock per-request. Write handlers route dep mutations through `DepGraph` so cycle checks are atomic with the write. |
 
 ### File Change Detection
 
@@ -236,6 +246,85 @@ Important constructors and operations:
 
 Direct file edits can still create cycles. `mdc graph check` is the authoritative
 reporting path for cycles introduced outside the mutation API.
+
+## Web Frontend (`mdc serve`)
+
+`mdc serve` runs an axum HTTP server that serves a JSON API over
+`IndCache`/`DepGraph` and a Svelte 5 SPA. The SPA is the interactive
+replacement for `mdc graph tui`: a vertical three-column layout
+(upstream referrers on the left, focused-node editor in the center,
+downstream dependencies on the right). Clicking a card or pressing
+`h`/`j`/`k`/`l`/`Enter` navigates between nodes; navigation is animated
+via the View Transitions API with a synchronous fallback.
+
+### Architecture
+
+- `src/web/mod.rs` defines `AppState`, a `Clone` struct holding the
+  workspace root and an `Arc<Mutex<IndCache>>`. Every handler locks the
+  cache for the duration of its synchronous work; no handler holds the
+  lock across `.await`.
+- `src/web/api.rs` contains the handlers. Read handlers
+  (`graph_roots`, `graph_check`, `search`, `resolve_ref`, `node_detail`,
+  `node_referrers`, `node_children`) call `discover_workspace_changes`
+  then a single cache query. Write handlers
+  (`node_put_block`, `node_delete_block`, `node_put_title`,
+  `node_add_dep`, `node_rm_deps`, `node_new`) load the `MdocNode`,
+  mutate it, call `node.save()`, then `upsert_path` +
+  `discover_workspace_changes` so the index and derived data stay
+  consistent.
+- `src/web/server.rs` builds the router, binds a free port (or a
+  caller-supplied `--bind` address), opens the browser, and handles
+  graceful shutdown on SIGINT/SIGTERM.
+- `src/web/assets.rs` embeds `web/dist` via `rust-embed`. With the
+  `dev-web` cargo feature, `tower-http::ServeDir` serves `web/`
+  directly so Vite HMR works.
+- `web/` is a standalone Vite + Svelte 5 + TypeScript project.
+  `web/src/lib/state.svelte.ts` holds navigation state in runes;
+  `web/src/components/BlockEditor.svelte` wraps a CodeMirror 6 editor
+  per source block.
+
+### API Surface
+
+```
+GET  /api/graph/roots
+GET  /api/graph/check
+GET  /api/search?q=&n=
+GET  /api/resolve?ref=
+GET  /api/node/:fnode
+GET  /api/node/:fnode/referrers
+GET  /api/node/:fnode/children
+PUT  /api/node/:fnode/title                 { title }
+PUT  /api/node/:fnode/block/:srctype        { content }   # create-or-replace
+DELETE /api/node/:fnode/block/:srctype
+POST /api/node/:fnode/dep/add               { dep_fnode }
+POST /api/node/:fnode/dep/rm                { dep_fnodes: [] }
+POST /api/node/new                          { title, file?, parent_fnode? }
+```
+
+All `:fnode` path params accept an exact fnode, a unique fnode prefix,
+or a path-like ref (resolved via `IndCache::resolve_ref`). Write
+handlers return the canonical `NodeDetail` of the affected node so the
+SPA can refresh without a second round-trip.
+
+### Concurrency Model
+
+`IndCache` owns a single SQLite connection. The web server wraps it in
+`Arc<Mutex<IndCache>>`, so handlers serialize on the mutex. This is
+fine for a single-user local tool. SQLite's WAL mode means a concurrent
+`DepGraph::new` (which opens its own connection for cycle checks in
+`node_add_dep` / `node_new`) can read without blocking the shared
+write connection.
+
+### Frontend Build
+
+Release builds embed `web/dist` at compile time. The committed
+`web/dist/index.html` is a placeholder so fresh clones compile without
+running `npm install`; run `cd web && npm install && npm run build`
+before `cargo build --release` to get the real SPA. `web/dist/assets/`
+is gitignored.
+
+For development, use the `dev-web` cargo feature and run Vite in a
+second terminal — see the Commands section above.
 
 ## Work/Back and Compilers
 

@@ -205,6 +205,22 @@ Defaults to the node with the largest dependency subtree. `<ref>` starts at a sp
 
 ---
 
+### Web frontend
+
+#### `mdc serve`
+
+Start the interactive web frontend (a local HTTP server + SPA):
+```bash
+mdc serve
+mdc serve notes/theorem.mdoc
+mdc serve --bind 127.0.0.1:7878 --no-open
+```
+- `source` (optional) — start at this node (fnode prefix, path, or title). Defaults to the deepest root.
+- `--bind` — bind address (default `127.0.0.1:0` picks a free port).
+- `--no-open` — do not auto-open the browser.
+
+---
+
 ### Work / back
 
 The work/back cycle lets you edit source blocks in native tools without leaving them as embedded text.
@@ -249,12 +265,12 @@ root content here
 
 Comment prefixes by srctype:
 
-| srctype  | prefix     |
-|----------|------------|
-| `latex`  | `%`        |
-| `lean`   | `--`       |
-| `rocq`   | `(* … *)`  |
-| `text`, `python` | `#` |
+| srctype          | prefix    |
+| ---------------- | --------- |
+| `latex`          | `%`       |
+| `lean`           | `--`      |
+| `rocq`           | `(* … *)` |
+| `text`, `python` | `#`       |
 
 Node order follows `depens`/`reverse_depens` config (see below).
 
@@ -292,7 +308,7 @@ setup_timeout_sec = 1800
 Built-in defaults:
 
 | Setting             | `text` | `latex` | `python` | `lean` | `rocq` |
-|---------------------|--------|---------|----------|--------|--------|
+| ------------------- | ------ | ------- | -------- | ------ | ------ |
 | `depens`            | true   | true    | false    | true   | true   |
 | `reverse_depens`    | true   | true    | false    | false  | false  |
 | `timeout_sec`       | —      | 30      | 30       | 300    | 300    |

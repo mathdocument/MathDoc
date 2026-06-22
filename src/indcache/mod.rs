@@ -217,6 +217,11 @@ impl IndCache {
         queries::all_topo_depths(&self.conn)
     }
 
+    /// All (src_fnode, dst_fnode) edges between valid nodes.
+    pub fn all_valid_edges(&self) -> Result<Vec<(String, String)>> {
+        queries::all_valid_edges(&self.conn)
+    }
+
     pub fn is_reachable(&self, from_fnode: &str, to_fnode: &str) -> Result<bool> {
         queries::is_reachable(&self.conn, from_fnode, to_fnode)
     }

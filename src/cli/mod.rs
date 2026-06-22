@@ -2,6 +2,7 @@ mod cmd_core;
 mod cmd_deps;
 mod cmd_graph;
 mod cmd_tui;
+mod cmd_web;
 mod cmd_work;
 
 use anyhow::Result;
@@ -130,6 +131,18 @@ enum Commands {
         #[command(subcommand)]
         command: DepCommands,
     },
+
+    /// Start the interactive web frontend (local HTTP server + SPA).
+    Serve {
+        /// Start at this node (fnode prefix, path, or title). Defaults to deepest root.
+        source: Option<String>,
+        /// Bind address. Default 127.0.0.1:0 picks a free port.
+        #[arg(long, default_value = "127.0.0.1:0")]
+        bind: String,
+        /// Do not auto-open the browser.
+        #[arg(long)]
+        no_open: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -214,6 +227,11 @@ fn dispatch(cmd: Commands) -> Result<i32> {
             DepCommands::Rm { source } => cmd_deps::cmd_dep_rm(source),
             DepCommands::Refs { target, depth } => cmd_deps::cmd_dep_refs(target, depth),
         },
+        Commands::Serve {
+            source,
+            bind,
+            no_open,
+        } => cmd_web::cmd_serve(source, bind, no_open),
     }
 }
 

@@ -5,4 +5,5 @@ pub mod core;
 pub mod depgraph;
 pub mod indcache;
 pub mod mdocnode;
+pub mod web;
 pub mod workspace;

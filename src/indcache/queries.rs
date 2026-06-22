@@ -1102,3 +1102,22 @@ pub fn path_for_fnode_if_unique(conn: &Connection, fnode: &str) -> Result<Option
         None
     })
 }
+
+/// All dependency edges between valid nodes, as `(src_fnode, dst_fnode)`.
+/// Used by `mdc serve`'s force-graph view to render the full workspace graph.
+pub fn all_valid_edges(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT e.src_fnode, e.dst_fnode
+         FROM mdoc_edges e
+         WHERE NOT EXISTS (
+             SELECT 1 FROM mdoc_issues i
+             WHERE i.path = e.src_path
+               AND i.kind IN ('invalid', 'duplicate')
+         )
+         ORDER BY e.src_fnode, e.ord",
+    )?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}

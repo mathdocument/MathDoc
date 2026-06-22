@@ -1,16 +1,17 @@
 use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SrcBlock {
     pub srctype: String,
     pub content: String,
     pub metadata: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MdocNode {
     pub mdcroot: PathBuf,
     pub path: PathBuf,

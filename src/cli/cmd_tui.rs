@@ -407,9 +407,9 @@ fn adddep_search_fields(
     let existing: std::collections::HashSet<&str> = std::iter::once(focused_fnode)
         .chain(children.iter().map(|c| c.fnode.as_str()))
         .collect();
-    let mut results: Vec<NodeInfo> = cache
-        .search(q)
-        .unwrap_or_default()
+    let raw = cache.search(q).unwrap_or_default();
+    let raw_had_matches = !raw.is_empty();
+    let mut results: Vec<NodeInfo> = raw
         .into_iter()
         .filter(|(f, _, _)| !existing.contains(f.as_str()))
         .take(20)
@@ -421,7 +421,9 @@ fn adddep_search_fields(
             broken: false,
         })
         .collect();
-    if results.is_empty() && !q.is_empty() {
+    // Only offer to create if the raw search had zero matches — not if
+    // all matches were filtered out because they're already dependencies.
+    if results.is_empty() && !q.is_empty() && !raw_had_matches {
         results.push(NodeInfo {
             fnode: NEW_NODE_SENTINEL.to_string(),
             title: format!("✦ Create new: {q}"),

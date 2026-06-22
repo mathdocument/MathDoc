@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DependencyItem {
     pub depth: u32,
     pub fnode: String,
@@ -8,7 +10,7 @@ pub struct DependencyItem {
     pub rel_path: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphRootItem {
     pub fnode: String,
     pub title: String,
@@ -20,7 +22,7 @@ pub struct GraphRootItem {
 
 /// Issue kind surfaced through the API.
 /// "duplicate" and "broken" are internal DB/depgraph states; both map to Invalid here.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IssueKind {
     Missing,
     Invalid,
@@ -41,7 +43,7 @@ impl std::fmt::Display for IssueKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphIssue {
     pub kind: IssueKind,
     pub fnode: String,
@@ -50,7 +52,7 @@ pub struct GraphIssue {
     pub error: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphCheckReport {
     pub nodes: u32,
     pub edges: u32,

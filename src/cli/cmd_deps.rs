@@ -120,6 +120,12 @@ pub(super) fn cmd_dep_add(source: String, query: String, max_results: usize) -> 
         .collect();
 
     if candidates.is_empty() {
+        if !all_rows.is_empty() {
+            // Search returned matches, but they are all already dependencies
+            // (or the source itself). Don't prompt to create a duplicate.
+            println!("All matches for '{q}' are already dependencies of this node.");
+            return Ok(0);
+        }
         println!("No results for '{q}'.");
         if !dialoguer::Confirm::new()
             .with_prompt("Create a new note?")

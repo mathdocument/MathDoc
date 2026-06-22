@@ -1,6 +1,6 @@
 [package]
 name = "mathdoc"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 
@@ -23,6 +23,22 @@ regex = "1"
 dialoguer = "0.12.0"
 ratatui = "0.29"
 crossterm = "0.28"
+# Web frontend (mdc serve)
+axum = { version = "0.7", default-features = false, features = ["http1", "json", "tokio", "macros", "tower-log", "query"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "fs"] }
+tower = { version = "0", features = ["util"] }
+tower-http = { version = "0", features = ["cors", "fs", "trace"] }
+rust-embed = "8"
+mime_guess = "2"
+open = "5"
+
+[features]
+default = []
+# Serve frontend from web/ via tower-http ServeDir (hot reload during development).
+# When disabled, rust-embed embeds web/dist at compile time.
+dev-web = []
 
 [dev-dependencies]
 tempfile = "3"
+tower = { version = "0", features = ["util"] }
+axum = { version = "0.7", default-features = false, features = ["http1", "json", "tokio", "macros", "tower-log", "query"] }
