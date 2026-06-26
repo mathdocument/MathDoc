@@ -11,7 +11,6 @@ const SRCTYPE_TO_LANG: Record<string, string> = {
   latex: "latex",
   python: "python",
   lean: "lean",
-  lean4: "lean4",
   rocq: "coq",
 };
 
@@ -20,7 +19,7 @@ let highlighterPromise: Promise<Highlighter> | null = null;
 export function getHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
     highlighterPromise = createHighlighter({
-      langs: ["markdown", "latex", "python", "lean", "lean4", "coq"],
+      langs: ["markdown", "latex", "python", "lean", "coq"],
       themes: ["tokyo-night"],
     });
   }

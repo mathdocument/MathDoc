@@ -9,7 +9,7 @@
   }
   let { fnode, existingSrctypes, onAdded }: Props = $props();
 
-  const ALL_SRCTYPES = ["text", "latex", "python", "lean", "lean4", "rocq"] as const;
+  const ALL_SRCTYPES = ["text", "latex", "python", "lean", "rocq"] as const;
 
   let open = $state(false);
   let adding: string | null = $state(null);

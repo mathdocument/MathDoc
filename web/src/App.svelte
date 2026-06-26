@@ -140,7 +140,7 @@
     }
   }
 
-  function toggleGraphView() {
+  async function toggleGraphView() {
     if (view === "columns") {
       // Enter graph view: select the current column-view node.
       const currentFnode = appState.load.kind === "ready" ? appState.load.node.fnode : null;
@@ -152,16 +152,16 @@
       }
       view = "force";
     } else {
-      // Exit graph view: navigate to the selected node in columns.
-      // Skip the view transition to avoid a flash — the CSS display swap
-      // (force-layout → columns) is instant, and the cross-fade animation
-      // would conflict with it.
-      if (forceSelectedFnode) {
-        void navigate(forceSelectedFnode, { skipTransition: true });
-      }
-      view = "columns";
+      // Exit graph view. Keep the force view visible while navigating
+      // to avoid flashing the old column-view node (A) before the new
+      // one (B) arrives.
+      const target = forceSelectedFnode;
       forceSelectedFnode = null;
       forceNodeLoad = { kind: "idle" };
+      if (target) {
+        await navigate(target, { skipTransition: true });
+      }
+      view = "columns";
     }
   }
 </script>

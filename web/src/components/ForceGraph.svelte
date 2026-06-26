@@ -327,7 +327,10 @@
     canvas.height = rect.height * dpr;
     canvas.style.width = `${rect.width}px`;
     canvas.style.height = `${rect.height}px`;
-    requestRender();
+    // Render synchronously — setting canvas.width clears it to transparent,
+    // so we must redraw before the browser paints. Using requestRender()
+    // (deferred to next RAF) would leave a blank frame.
+    render();
   }
 
   // ── Interaction ─────────────────────────────────────────────────────────────
@@ -483,7 +486,7 @@
     viewK = Math.max(0.1, Math.min(5, Math.min(scaleX, scaleY) * (1 - margin)));
     viewX = cw / 2 - cx * viewK;
     viewY = ch / 2 - cy * viewK;
-    requestRender();
+    render();
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────────────────
