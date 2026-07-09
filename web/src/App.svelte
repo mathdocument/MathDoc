@@ -65,6 +65,13 @@
     await navigate(fnode, { pushHistory: false, skipTransition: true });
   }
 
+  function refreshView() {
+    // Refresh both views so switching between them doesn't show stale data.
+    graphRevision++;
+    void refreshForceNodeRaw();
+    void refreshCurrent();
+  }
+
   function refreshForceNode(node: NodeDetail) {
     forceNodeLoad = { kind: "ready", node };
   }
@@ -208,6 +215,11 @@
       class:primary={view === "force"}
       title={view === "force" ? "back to columns" : "force-directed graph view"}
     >graph</button>
+    <button
+      class="tool"
+      onclick={refreshView}
+      title="refresh — pick up external file changes"
+    >refresh</button>
     <span class="spacer"></span>
     <span class="status">{statusLine()}</span>
   </header>
@@ -256,7 +268,11 @@
   <SearchOverlay
     onPick={(fnode) => {
       showSearch = false;
-      void navigate(fnode, { direction: "neutral" });
+      if (view === "force") {
+        void onForceSelect(fnode);
+      } else {
+        void navigate(fnode, { direction: "neutral" });
+      }
     }}
     onClose={() => (showSearch = false)}
   />

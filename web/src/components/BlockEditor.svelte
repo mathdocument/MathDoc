@@ -146,15 +146,19 @@
     editorView = null;
   });
 
-  // Update content when fnode or srctype changes.
+  // Update content when fnode, srctype, or content changes (e.g. external
+  // edit picked up by the refresh button).
   let prevFnode = fnode;
   let prevSrctype = block.srctype;
+  let prevContent = block.content;
   $effect(() => {
     void fnode;
     void block.srctype;
-    if (fnode === prevFnode && block.srctype === prevSrctype) return;
+    void block.content;
+    if (fnode === prevFnode && block.srctype === prevSrctype && block.content === prevContent) return;
     prevFnode = fnode;
     prevSrctype = block.srctype;
+    prevContent = block.content;
     if (editorView) {
       editorView.dispatch({
         changes: { from: 0, to: editorView.state.doc.length, insert: block.content },

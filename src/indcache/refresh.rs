@@ -204,6 +204,13 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
     match parse_result {
         Ok(node) => {
             new_fnode = Some(node.fnode.clone());
+
+            // Before inserting, remove any stale rows that share this fnode
+            // at a different path (file was renamed/moved). This must happen
+            // BEFORE upsert_search_row to avoid UNIQUE constraint violations
+            // if the DB schema enforces fnode uniqueness.
+            cleanup_stale_fnode_paths(conn, &root_resolved, &node.fnode, &rel_path)?;
+
             upsert_search_row(
                 conn,
                 &rel_path,
@@ -230,6 +237,7 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
             new_fnode = head.as_ref().map(|(f, _)| f.clone());
             match &head {
                 Some((fnode, title)) => {
+                    cleanup_stale_fnode_paths(conn, &root_resolved, fnode, &rel_path)?;
                     upsert_search_row(conn, &rel_path, fnode, title, mtime_sec, mtime_ns, size)?;
                 }
                 None => {
@@ -237,21 +245,6 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
                 }
             }
             insert_issue(conn, &rel_path, "invalid", ref_fnode, &e.to_string())?;
-        }
-    }
-
-    // If the file was renamed, the old path for this fnode is still in the cache.
-    // Clean it up now so that refresh_duplicate_issues_for_fnode doesn't flag a
-    // spurious duplicate.
-    if let Some(ref nf) = new_fnode {
-        let mut stmt = conn.prepare("SELECT path FROM mdocs WHERE fnode = ? AND path != ?")?;
-        let stale_paths: Vec<String> = stmt
-            .query_map(rusqlite::params![nf, rel_path], |r| r.get::<_, String>(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        for stale_rel in stale_paths {
-            if !root_resolved.join(&stale_rel).exists() {
-                delete_indexed_path(conn, &stale_rel)?;
-            }
         }
     }
 
@@ -746,6 +739,30 @@ fn insert_issue(
          ON CONFLICT(path, kind, ref_fnode) DO UPDATE SET error = excluded.error",
         rusqlite::params![path, kind, ref_fnode, error],
     )?;
+    Ok(())
+}
+
+/// Remove any stale index entries that share `fnode` but have a different path.
+/// Used when a file was renamed/moved: the new path gets the fnode, and the old
+/// path (which no longer exists on disk) must be cleaned up BEFORE the new row
+/// is inserted to avoid UNIQUE constraint violations.
+fn cleanup_stale_fnode_paths(
+    conn: &Connection,
+    root: &Path,
+    fnode: &str,
+    keep_path: &str,
+) -> Result<()> {
+    let mut stmt = conn.prepare("SELECT path FROM mdocs WHERE fnode = ? AND path != ?")?;
+    let stale_paths: Vec<String> = stmt
+        .query_map(rusqlite::params![fnode, keep_path], |r| {
+            r.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for stale_rel in stale_paths {
+        if !root.join(&stale_rel).exists() {
+            delete_indexed_path(conn, &stale_rel)?;
+        }
+    }
     Ok(())
 }
 

@@ -564,7 +564,6 @@
     onmouseup={onMouseUp}
   ></canvas>
   <button class="ctrl-btn reset-btn" onclick={() => fitToNodes()} title="reset view">⤢</button>
-  <button class="ctrl-btn reload-btn" onclick={() => void reloadGraph()} title="reload graph">⟳</button>
 </div>
 
 <style>
@@ -613,8 +612,5 @@
   }
   .reset-btn {
     right: 1rem;
-  }
-  .reload-btn {
-    right: 3.5rem;
   }
 </style>
