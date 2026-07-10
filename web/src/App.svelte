@@ -12,6 +12,7 @@
     commitFocusedHistory,
     initialHistoryOptions,
     type BrowserHistoryMode,
+    type LoadState,
   } from "./lib/state.svelte";
   import { api } from "./lib/api";
   import NodeColumn from "./components/NodeColumn.svelte";
@@ -51,12 +52,7 @@
   let viewRequest = 0;
   let forceEditorRevision = $state(0);
   // NodeDetail for the force-graph side panel (fetched on selection).
-  let forceNodeLoad = $state<
-    | { kind: "idle" }
-    | { kind: "loading" }
-    | { kind: "ready"; node: NodeDetail }
-    | { kind: "error"; message: string }
-  >({ kind: "idle" });
+  let forceNodeLoad = $state<LoadState>({ kind: "idle" });
 
   onMount(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {

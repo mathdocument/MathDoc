@@ -958,7 +958,7 @@ fn cleanup_stale_fnode_paths(
 
 fn refresh_duplicate_issues_for_fnode(conn: &Connection, fnode: Option<&str>) -> Result<()> {
     let fnode = match fnode {
-        Some(f) if !f.is_empty() && !(f.starts_with('<') && f.ends_with('>')) => f,
+        Some(f) if !(f.is_empty() || f.starts_with('<') && f.ends_with('>')) => f,
         _ => return Ok(()),
     };
     conn.execute(
@@ -1004,7 +1004,7 @@ fn refresh_missing_issues_for_source(conn: &Connection, src_path: &str) -> Resul
 
 fn refresh_missing_issues_for_target(conn: &Connection, target_fnode: Option<&str>) -> Result<()> {
     let target = match target_fnode {
-        Some(f) if !f.is_empty() && !(f.starts_with('<') && f.ends_with('>')) => f,
+        Some(f) if !(f.is_empty() || f.starts_with('<') && f.ends_with('>')) => f,
         _ => return Ok(()),
     };
     conn.execute(

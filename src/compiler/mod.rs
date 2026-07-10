@@ -14,11 +14,13 @@ use std::time::{Duration, Instant};
 
 // ── Public types ───────────────────────────────────────────────────────────────
 
+pub type ProgressCallback = Box<dyn Fn(&str)>;
+
 pub struct CompilerReq {
     pub mdcroot: PathBuf,
     /// Config values from `.mdc/config.toml` `[src.<srctype>]` section.
     pub compcfg: HashMap<String, toml::Value>,
-    pub progress: Option<Box<dyn Fn(&str)>>,
+    pub progress: Option<ProgressCallback>,
 }
 
 pub struct CompilerRes {
@@ -908,6 +910,27 @@ where
     result
 }
 
+fn process_error_result(error: anyhow::Error, fallback: i32) -> CompilerRes {
+    let (rtcode, interrupted) = match error.downcast_ref::<ProcessControlError>() {
+        Some(ProcessControlError::Timeout { .. }) => (124, false),
+        Some(ProcessControlError::Interrupted { signal, .. }) => (128 + signal, true),
+        None => (fallback, false),
+    };
+    CompilerRes {
+        result: false,
+        stdout: String::new(),
+        stderr: error.to_string(),
+        rtcode,
+        interrupted,
+    }
+}
+
+fn emit_progress(progress: &Option<ProgressCallback>, msg: &str) {
+    if let Some(progress) = progress {
+        progress(msg);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1318,26 +1341,5 @@ mod tests {
         let compiler = registry.resolve("rocq").unwrap();
         let res = compiler.compile(&req);
         assert!(res.result, "rocq compilation failed: {}", res.stderr);
-    }
-}
-
-fn process_error_result(error: anyhow::Error, fallback: i32) -> CompilerRes {
-    let (rtcode, interrupted) = match error.downcast_ref::<ProcessControlError>() {
-        Some(ProcessControlError::Timeout { .. }) => (124, false),
-        Some(ProcessControlError::Interrupted { signal, .. }) => (128 + signal, true),
-        None => (fallback, false),
-    };
-    CompilerRes {
-        result: false,
-        stdout: String::new(),
-        stderr: error.to_string(),
-        rtcode,
-        interrupted,
-    }
-}
-
-fn emit_progress(progress: &Option<Box<dyn Fn(&str)>>, msg: &str) {
-    if let Some(p) = progress {
-        p(msg);
     }
 }

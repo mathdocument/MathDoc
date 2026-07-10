@@ -26,7 +26,7 @@ pub(super) fn cmd_graph_check() -> Result<i32> {
     }
 
     if !report.missing.is_empty() {
-        print_missing_with_referrers(&report.missing, &cache);
+        print_missing_with_referrers(&report.missing, &cache)?;
     }
     if !report.invalid.is_empty() {
         println!("  {RED}invalid ({}):{RST}", report.invalid.len());
@@ -39,7 +39,7 @@ pub(super) fn cmd_graph_check() -> Result<i32> {
         println!("  {RED}cycles ({}):{RST}", report.cycles.len());
         for cycle in &report.cycles {
             let fnode_refs: Vec<&str> = cycle.iter().map(|s| s.as_str()).collect();
-            let label_map = cache.lookup_by_fnode(&fnode_refs).unwrap_or_default();
+            let label_map = cache.lookup_by_fnode(&fnode_refs)?;
             super::print_cycle(cycle, &label_map);
         }
     }

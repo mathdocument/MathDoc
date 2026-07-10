@@ -231,7 +231,7 @@ export async function navigate(
 }
 
 /** Refresh only the focused node detail after a write (no view transition). */
-export async function refreshFocused(node: NodeDetail) {
+export function refreshFocused(node: NodeDetail) {
   // Replace the ready node in place so the editor doesn't remount.
   if (appState.load.kind === "ready" && appState.load.node.fnode === node.fnode) {
     appState.load = { kind: "ready", node };

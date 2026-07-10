@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 pub(crate) const CHUNK_SIZE: usize = 500;
 
+use super::SearchMatch;
 use crate::core::{
     component_has_cycle, representative_cycle, strongly_connected_components, DependencyItem,
     DependencyTraversalReport, GraphCheckReport, GraphIssue, GraphRootItem, IssueKind,
@@ -996,7 +997,7 @@ pub fn search_with_metadata(
     conn: &Connection,
     query: &str,
     limit: usize,
-) -> Result<Vec<(String, String, String, bool, u32)>> {
+) -> Result<Vec<SearchMatch>> {
     let query_lc = query.to_lowercase();
     let escaped = escape_like_pattern(&query_lc);
     let like = format!("%{escaped}%");
@@ -1019,13 +1020,13 @@ pub fn search_with_metadata(
         .query_map(
             rusqlite::params![like, like, prefix_like, query_lc, query_lc, limit],
             |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get::<_, u32>(4)?,
-                ))
+                Ok(SearchMatch {
+                    fnode: row.get(0)?,
+                    title: row.get(1)?,
+                    rel_path: row.get(2)?,
+                    broken: row.get(3)?,
+                    depth: row.get(4)?,
+                })
             },
         )?
         .collect::<rusqlite::Result<_>>()?;

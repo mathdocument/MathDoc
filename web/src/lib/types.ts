@@ -25,6 +25,22 @@ export interface NodeDetail {
   blocks: SrcBlock[];
 }
 
+export interface ResolveResponse {
+  fnode: string;
+  title: string;
+  rel_path: string;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+}
+
+export interface GraphFull {
+  nodes: NodeInfo[];
+  edges: GraphEdge[];
+}
+
 export interface GraphRootItem {
   fnode: string;
   title: string;

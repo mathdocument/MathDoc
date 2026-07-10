@@ -243,14 +243,6 @@ fn assets_spa_fallback(uri: axum::http::Uri, dist_dir: &std::path::Path) -> Resp
     }
 }
 
-/// Pick a free port by binding to :0 and returning the assigned port.
-/// Used only for tests; not currently wired in production code.
-#[allow(dead_code)]
-pub fn pick_free_port(host: &str) -> Result<SocketAddr> {
-    let listener = std::net::TcpListener::bind((host, 0))?;
-    Ok(listener.local_addr()?)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{encode_fragment_value, validate_bind};

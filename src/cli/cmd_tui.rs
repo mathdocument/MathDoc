@@ -133,10 +133,11 @@ pub(super) fn cmd_graph_tui(source: Option<String>) -> Result<i32> {
         }
     } else {
         let roots = cache.global_root_items()?;
-        if roots.is_empty() {
-            anyhow::bail!("no nodes in workspace");
-        }
-        roots.into_iter().next().unwrap().fnode
+        roots
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("no nodes in workspace"))?
+            .fnode
     };
 
     let mut app = TuiApp::new(cache, mdcroot, start_fnode)?;
@@ -207,7 +208,7 @@ enum Overlay {
         step: CreateStep,
         title: String,
         file: String,
-        default_file: String,
+        fnode: String,
     },
 }
 
@@ -238,7 +239,7 @@ struct TuiApp {
 
 impl TuiApp {
     fn new(cache: crate::indcache::IndCache, mdcroot: PathBuf, fnode: String) -> Result<Self> {
-        let topo_depths = cache.all_topo_depths().unwrap_or_default();
+        let topo_depths = cache.all_topo_depths()?;
         let mut app = TuiApp {
             mdcroot,
             cache,
@@ -273,7 +274,7 @@ impl TuiApp {
             .resolve_ref(fnode, None)
             .unwrap_or_else(|_| (fnode.to_string(), "<unknown>".into(), PathBuf::new()));
         let rel_path = crate::workspace::to_rel_path(&self.mdcroot, &p);
-        let broken = self.cache.has_issues(&f).unwrap_or(false);
+        let broken = self.cache.has_issues(&f)?;
         let depth = self.topo_depths.get(&f).copied().unwrap_or(0);
         self.focused = NodeInfo {
             fnode: f.clone(),
@@ -288,18 +289,18 @@ impl TuiApp {
                 .cache
                 .direct_referrers_for_fnode(&f)?
                 .into_iter()
-                .map(|(rf, rt, rp)| {
-                    let broken = self.cache.has_issues(&rf).unwrap_or(false);
+                .map(|(rf, rt, rp)| -> Result<NodeInfo> {
+                    let broken = self.cache.has_issues(&rf)?;
                     let depth = self.topo_depths.get(&rf).copied().unwrap_or(0);
-                    NodeInfo {
+                    Ok(NodeInfo {
                         fnode: rf,
                         title: rt,
                         rel_path: rp,
                         broken,
                         depth,
-                    }
+                    })
                 })
-                .collect();
+                .collect::<Result<_>>()?;
             v.sort_by_key(|n| std::cmp::Reverse(n.depth));
             v
         };
@@ -401,7 +402,7 @@ impl TuiApp {
         // discover_workspace_changes picks up any concurrent external changes with
         // incremental topo updates, without re-stating every indexed file.
         self.cache.discover_workspace_changes()?;
-        self.topo_depths = self.cache.all_topo_depths().unwrap_or_default();
+        self.topo_depths = self.cache.all_topo_depths()?;
         let fnode = self.focused.fnode.clone();
         self.load_view(&fnode)
     }
@@ -414,7 +415,7 @@ impl TuiApp {
         dep_broken: bool,
     ) -> Result<()> {
         let mut graph = crate::depgraph::DepGraph::new(self.mdcroot.clone(), &self.focused.fnode)?;
-        let (added, _, _) = graph.add_direct_dependencies(vec![dep_fnode.clone()])?;
+        let (added, _, _) = graph.add_direct_dependency_ref(&dep_fnode)?;
         if !added.is_empty() {
             let src = fmt_item(
                 &self.focused.fnode,
@@ -515,29 +516,59 @@ fn record_edit_result(app: &mut TuiApp, rel_path: &str, result: Result<()>) {
 
 const NEW_NODE_SENTINEL: &str = "\x00new";
 
+fn prepare_new_dependency_node(
+    mdcroot: &std::path::Path,
+    title: &str,
+    raw_target: &str,
+    fnode: &str,
+) -> Result<crate::mdocnode::MdocNode> {
+    let target = if raw_target.trim().is_empty() {
+        "."
+    } else {
+        raw_target
+    };
+    let path = crate::depgraph::resolve_new_node_path(mdcroot, target, fnode)?;
+    let mut node = crate::mdocnode::MdocNode::new_at_path(mdcroot, &path, title);
+    node.fnode = fnode.to_string();
+    Ok(node)
+}
+
+fn search_fields(cache: &crate::indcache::IndCache, q: &str) -> Result<Vec<NodeInfo>> {
+    Ok(cache
+        .search_with_metadata(q, 20)?
+        .into_iter()
+        .map(|item| NodeInfo {
+            fnode: item.fnode,
+            title: item.title,
+            rel_path: item.rel_path,
+            broken: item.broken,
+            depth: item.depth,
+        })
+        .collect())
+}
+
 /// Free function so it can be called while `app.overlay` is mutably borrowed.
 fn adddep_search_fields(
     cache: &crate::indcache::IndCache,
-    topo_depths: &HashMap<String, u32>,
     focused_fnode: &str,
     children: &[NodeInfo],
     q: &str,
-) -> Vec<NodeInfo> {
+) -> Result<Vec<NodeInfo>> {
     let existing: std::collections::HashSet<&str> = std::iter::once(focused_fnode)
         .chain(children.iter().map(|c| c.fnode.as_str()))
         .collect();
-    let raw = cache.search(q).unwrap_or_default();
+    let raw = cache.search_with_metadata(q, usize::MAX)?;
     let raw_had_matches = !raw.is_empty();
     let mut results: Vec<NodeInfo> = raw
         .into_iter()
-        .filter(|(f, _, _)| !existing.contains(f.as_str()))
+        .filter(|item| !existing.contains(item.fnode.as_str()))
         .take(20)
-        .map(|(f, t, p)| NodeInfo {
-            depth: topo_depths.get(&f).copied().unwrap_or(0),
-            fnode: f,
-            title: t,
-            rel_path: p,
-            broken: false,
+        .map(|item| NodeInfo {
+            fnode: item.fnode,
+            title: item.title,
+            rel_path: item.rel_path,
+            broken: item.broken,
+            depth: item.depth,
         })
         .collect();
     // Only offer to create if the raw search had zero matches — not if
@@ -551,7 +582,7 @@ fn adddep_search_fields(
             depth: 0,
         });
     }
-    results
+    Ok(results)
 }
 
 // ── Event loop ────────────────────────────────────────────────────────────────
@@ -597,10 +628,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                     }
                     app.overlay = Overlay::None;
                 }
-                KeyCode::Down => {
-                    if *sel + 1 < results.len() {
-                        *sel += 1;
-                    }
+                KeyCode::Down if *sel + 1 < results.len() => {
+                    *sel += 1;
                 }
                 KeyCode::Up => {
                     *sel = sel.saturating_sub(1);
@@ -608,35 +637,13 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                 KeyCode::Backspace => {
                     input.pop();
                     let q = input.clone();
-                    let rows = app.cache.search(&q).unwrap_or_default();
-                    *results = rows
-                        .into_iter()
-                        .take(20)
-                        .map(|(f, t, p)| NodeInfo {
-                            depth: app.topo_depths.get(&f).copied().unwrap_or(0),
-                            fnode: f,
-                            title: t,
-                            rel_path: p,
-                            broken: false,
-                        })
-                        .collect();
+                    *results = search_fields(&app.cache, &q)?;
                     *sel = 0;
                 }
                 KeyCode::Char(c) => {
                     input.push(c);
                     let q = input.clone();
-                    let rows = app.cache.search(&q).unwrap_or_default();
-                    *results = rows
-                        .into_iter()
-                        .take(20)
-                        .map(|(f, t, p)| NodeInfo {
-                            depth: app.topo_depths.get(&f).copied().unwrap_or(0),
-                            fnode: f,
-                            title: t,
-                            rel_path: p,
-                            broken: false,
-                        })
-                        .collect();
+                    *results = search_fields(&app.cache, &q)?;
                     *sel = 0;
                 }
                 _ => {}
@@ -652,14 +659,12 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                         sel: 0,
                     };
                 }
-                KeyCode::Char('r') if !app.focused.broken => {
-                    if !app.children.is_empty() {
-                        let selected = vec![false; app.children.len()];
-                        app.overlay = Overlay::RmDep {
-                            selected,
-                            cursor: 0,
-                        };
-                    }
+                KeyCode::Char('r') if !app.focused.broken && !app.children.is_empty() => {
+                    let selected = vec![false; app.children.len()];
+                    app.overlay = Overlay::RmDep {
+                        selected,
+                        cursor: 0,
+                    };
                 }
                 KeyCode::Char('e') => {
                     let rel = app.focused.rel_path.clone();
@@ -705,14 +710,13 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                         if let Some(node) = results.get(*sel) {
                             let q = input.clone();
                             if node.fnode == NEW_NODE_SENTINEL {
-                                let default_file = format!("{}.mdoc", Uuid::new_v4());
                                 (
                                     None,
                                     Overlay::CreateDep {
                                         step: CreateStep::Title,
                                         title: q,
                                         file: String::new(),
-                                        default_file,
+                                        fnode: Uuid::new_v4().to_string(),
                                     },
                                 )
                             } else {
@@ -746,10 +750,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                         }
                     }
                 }
-                KeyCode::Down => {
-                    if *sel + 1 < results.len() {
-                        *sel += 1;
-                    }
+                KeyCode::Down if *sel + 1 < results.len() => {
+                    *sel += 1;
                 }
                 KeyCode::Up => {
                     *sel = sel.saturating_sub(1);
@@ -757,25 +759,15 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                 KeyCode::Backspace => {
                     input.pop();
                     let q = input.clone();
-                    *results = adddep_search_fields(
-                        &app.cache,
-                        &app.topo_depths,
-                        &app.focused.fnode,
-                        &app.children,
-                        &q,
-                    );
+                    *results =
+                        adddep_search_fields(&app.cache, &app.focused.fnode, &app.children, &q)?;
                     *sel = 0;
                 }
                 KeyCode::Char(c) => {
                     input.push(c);
                     let q = input.clone();
-                    *results = adddep_search_fields(
-                        &app.cache,
-                        &app.topo_depths,
-                        &app.focused.fnode,
-                        &app.children,
-                        &q,
-                    );
+                    *results =
+                        adddep_search_fields(&app.cache, &app.focused.fnode, &app.children, &q)?;
                     *sel = 0;
                 }
                 _ => {}
@@ -784,18 +776,14 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
             // ── Remove dep overlay ────────────────────────────────────────────
             Overlay::RmDep { selected, cursor } => match key.code {
                 KeyCode::Esc => app.overlay = Overlay::ActionMenu,
-                KeyCode::Char('j') | KeyCode::Down => {
-                    if *cursor + 1 < app.children.len() {
-                        *cursor += 1;
-                    }
+                KeyCode::Char('j') | KeyCode::Down if *cursor + 1 < app.children.len() => {
+                    *cursor += 1;
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
                     *cursor = cursor.saturating_sub(1);
                 }
-                KeyCode::Char(' ') => {
-                    if *cursor < selected.len() {
-                        selected[*cursor] = !selected[*cursor];
-                    }
+                KeyCode::Char(' ') if *cursor < selected.len() => {
+                    selected[*cursor] = !selected[*cursor];
                 }
                 KeyCode::Enter => {
                     let fnodes: Vec<String> = if let Overlay::RmDep { selected, .. } = &app.overlay
@@ -834,13 +822,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                     } else {
                         String::new()
                     };
-                    let results = adddep_search_fields(
-                        &app.cache,
-                        &app.topo_depths,
-                        &app.focused.fnode,
-                        &app.children,
-                        &q,
-                    );
+                    let results =
+                        adddep_search_fields(&app.cache, &app.focused.fnode, &app.children, &q)?;
                     app.overlay = Overlay::AddDep {
                         input: q,
                         results,
@@ -859,34 +842,19 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                         }
                     } else {
                         let data = if let Overlay::CreateDep {
-                            title,
-                            file,
-                            default_file,
-                            ..
+                            title, file, fnode, ..
                         } = &app.overlay
                         {
-                            let actual = if file.is_empty() {
-                                default_file.clone()
-                            } else {
-                                file.clone()
-                            };
-                            Some((title.clone(), actual))
+                            Some((title.clone(), file.clone(), fnode.clone()))
                         } else {
                             None
                         };
-                        if let Some((title, actual_file)) = data {
-                            let file_path = if actual_file.ends_with(".mdoc") {
-                                app.mdcroot.join(&actual_file)
-                            } else {
-                                app.mdcroot.join(format!("{actual_file}.mdoc"))
-                            };
+                        if let Some((title, file, fnode)) = data {
                             app.overlay = Overlay::None;
-                            let new_node = crate::mdocnode::MdocNode::new_at_path(
-                                &app.mdcroot,
-                                &file_path,
-                                &title,
-                            );
-                            match app.do_create_and_add_dep(new_node) {
+                            let result =
+                                prepare_new_dependency_node(&app.mdcroot, &title, &file, &fnode)
+                                    .and_then(|node| app.do_create_and_add_dep(node));
+                            match result {
                                 Ok(()) => {
                                     app.set_notify("node created and added", true);
                                 }
@@ -1083,7 +1051,7 @@ fn render(f: &mut ratatui::Frame, app: &mut TuiApp) {
 fn render_notify(f: &mut ratatui::Frame, area: Rect, msg: &str, success: bool) {
     let color = if success { Color::Green } else { Color::Red };
     let icon = if success { "✓" } else { "✗" };
-    let max_w = (area.width / 2).max(20).min(60);
+    let max_w = (area.width / 2).clamp(20, 60);
     let text: String = msg
         .lines()
         .next()
@@ -1132,7 +1100,7 @@ fn render_overlay(f: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
             results,
             sel,
         } => {
-            let h = (results.len() as u16 + 4).min(16).max(5);
+            let h = (results.len().saturating_add(4)).clamp(5, 16) as u16;
             let r = overlay_rect(area, 70, h);
             f.render_widget(Clear, r);
             let block = Block::default()
@@ -1214,7 +1182,7 @@ fn render_overlay(f: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
             results,
             sel,
         } => {
-            let h = (results.len() as u16 + 4).min(16).max(6);
+            let h = (results.len().saturating_add(4)).clamp(6, 16) as u16;
             let r = overlay_rect(area, 70, h);
             f.render_widget(Clear, r);
             let block = Block::default()
@@ -1232,8 +1200,9 @@ fn render_overlay(f: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
             step,
             title,
             file,
-            default_file,
+            fnode,
         } => {
+            let default_file = format!("{fnode}.mdoc");
             let r = overlay_rect(area, 60, 7);
             f.render_widget(Clear, r);
             let block = Block::default()
@@ -1303,8 +1272,7 @@ fn render_overlay(f: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
             );
         }
         Overlay::RmDep { selected, cursor } => {
-            let n = app.children.len() as u16;
-            let h = (n + 4).min(20).max(6);
+            let h = (app.children.len().saturating_add(4)).clamp(6, 20) as u16;
             let r = overlay_rect(area, 70, h);
             f.render_widget(Clear, r);
             let block = Block::default()
@@ -1796,6 +1764,40 @@ mod tests {
                 "cleanup failure at {failure}"
             );
         }
+    }
+
+    #[test]
+    fn default_dependency_path_uses_the_node_fnode() {
+        let dir = tempfile::tempdir().unwrap();
+        let fnode = "new-node-0001";
+        let node = prepare_new_dependency_node(dir.path(), "New Node", "", fnode).unwrap();
+
+        assert_eq!(node.fnode, fnode);
+        assert_eq!(
+            node.path.parent().unwrap(),
+            dir.path().canonicalize().unwrap()
+        );
+        assert_eq!(
+            node.path.file_name().unwrap(),
+            std::ffi::OsStr::new(&format!("{fnode}.mdoc"))
+        );
+    }
+
+    #[test]
+    fn search_results_preserve_broken_state() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".mdc")).unwrap();
+        std::fs::write(
+            dir.path().join("invalid.mdoc"),
+            "@fnode: invalid-node\n@title: Invalid Node\n@unknown: value\n",
+        )
+        .unwrap();
+        let mut cache = crate::indcache::IndCache::open(dir.path().to_path_buf()).unwrap();
+        cache.refresh_all().unwrap();
+
+        let results = search_fields(&cache, "Invalid").unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].broken);
     }
 
     fn test_app() -> (tempfile::TempDir, TuiApp, PathBuf) {

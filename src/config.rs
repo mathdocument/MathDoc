@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-const KNOWN_SRCTYPES: [&str; 5] = ["text", "latex", "python", "lean", "rocq"];
+pub const BUILTIN_SRCTYPES: [&str; 5] = ["text", "latex", "python", "lean", "rocq"];
 
 pub fn canonical_srctype(srctype: &str) -> &str {
-    KNOWN_SRCTYPES
+    BUILTIN_SRCTYPES
         .iter()
         .copied()
         .find(|known| known.eq_ignore_ascii_case(srctype))
@@ -111,7 +111,7 @@ impl Config {
     }
 }
 
-/// Built-in defaults matching the Python DEFAULT_CONFIG.
+/// Built-in defaults for the compilers shipped with MathDoc.
 pub fn default_for_srctype(srctype: &str) -> SrcConfig {
     match canonical_srctype(srctype) {
         "text" => SrcConfig {
@@ -136,7 +136,6 @@ pub fn default_for_srctype(srctype: &str) -> SrcConfig {
             reverse_depens: Some(false),
             timeout_sec: Some(300),
             setup_timeout_sec: Some(1800),
-            ..Default::default()
         },
         "rocq" => SrcConfig {
             depens: Some(true),
@@ -238,7 +237,7 @@ pub fn init_amble_files(mdcroot: &Path) -> Result<bool> {
     let mdc_dir = mdcroot.join(".mdc");
     crate::safe_file::ensure_regular_directory(&mdc_dir)?;
     let mut changed = false;
-    for srctype in &["text", "latex", "python", "lean", "rocq"] {
+    for srctype in BUILTIN_SRCTYPES {
         let pre = default_preamble(srctype);
         let post = default_postamble(srctype);
         let pre_path = amble_path(mdcroot, srctype, "preamble");

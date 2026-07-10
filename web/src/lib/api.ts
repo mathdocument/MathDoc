@@ -3,9 +3,11 @@
 // server's { error: string } message.
 
 import type {
+  GraphFull,
   GraphRootItem,
   NodeDetail,
   NodeInfo,
+  ResolveResponse,
 } from "./types";
 
 export class ApiError extends Error {
@@ -41,16 +43,11 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   roots: () => req<GraphRootItem[]>("/api/graph/roots"),
-  full: () =>
-    req<{ nodes: NodeInfo[]; edges: { source: string; target: string }[] }>(
-      "/api/graph/full",
-    ),
+  full: () => req<GraphFull>("/api/graph/full"),
   search: (q: string, n = 200) =>
     req<NodeInfo[]>(`/api/search?q=${encodeURIComponent(q)}&n=${n}`),
   resolve: (ref: string) =>
-    req<{ fnode: string; title: string; rel_path: string }>(
-      `/api/resolve?ref=${encodeURIComponent(ref)}`,
-    ),
+    req<ResolveResponse>(`/api/resolve?ref=${encodeURIComponent(ref)}`),
   node: (fnode: string) => req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}`),
   referrers: (fnode: string) =>
     req<NodeInfo[]>(`/api/node/${encodeURIComponent(fnode)}/referrers`),

@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
@@ -7,7 +5,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::core::{DependencyItem, GraphCheckReport, GraphRootItem};
+use crate::core::{GraphCheckReport, GraphRootItem};
 use crate::indcache::IndCache;
 use crate::mdocnode::{MdocNode, SrcBlock};
 use crate::workspace::to_rel_path;
@@ -300,29 +298,18 @@ pub async fn graph_check(State(state): State<AppState>) -> ApiResult<Json<GraphC
 pub async fn graph_full(State(state): State<AppState>) -> ApiResult<Json<GraphFull>> {
     let (nodes, edges) = with_cache(&state, |c| {
         c.discover_workspace_changes()?;
-        // Reuse the valid-node query used by global_root_items so broken /
-        // duplicate / invalid nodes are excluded consistently.
-        let depths = c.all_topo_depths()?;
-        // Use search-like flat rows from the index, filtering out issues.
-        // valid_node_rows is private to queries; reuse search("") which returns
-        // all rows — but that includes invalid ones. Instead, walk mdocs and
-        // filter by has_issues for each (cheap, single SQL per node).
-        let all_rows = c.search("")?;
-        let mut nodes: Vec<NodeInfo> = Vec::with_capacity(all_rows.len());
-        for (fnode, title, rel_path) in all_rows {
-            let broken = c.has_issues(&fnode)?;
-            if broken {
-                continue;
-            }
-            let depth = depths.get(&fnode).copied().unwrap_or(0);
-            nodes.push(NodeInfo {
-                fnode,
-                title,
-                rel_path,
+        let nodes: Vec<NodeInfo> = c
+            .search_with_metadata("", usize::MAX)?
+            .into_iter()
+            .filter(|item| !item.broken)
+            .map(|item| NodeInfo {
+                fnode: item.fnode,
+                title: item.title,
+                rel_path: item.rel_path,
                 broken: false,
-                depth,
-            });
-        }
+                depth: item.depth,
+            })
+            .collect();
         let edges_raw = c.all_valid_edges()?;
         // Filter edges to only those whose both endpoints are in the node set.
         let known: std::collections::HashSet<&str> =
@@ -347,12 +334,12 @@ pub async fn search(
         let rows = c.search_with_metadata(&q.q, limit)?;
         Ok::<_, anyhow::Error>(
             rows.into_iter()
-                .map(|(fnode, title, rel_path, broken, depth)| NodeInfo {
-                    fnode,
-                    title,
-                    rel_path,
-                    broken,
-                    depth,
+                .map(|item| NodeInfo {
+                    fnode: item.fnode,
+                    title: item.title,
+                    rel_path: item.rel_path,
+                    broken: item.broken,
+                    depth: item.depth,
                 })
                 .collect(),
         )
@@ -524,9 +511,10 @@ pub struct TitleBody {
 /// The five built-in srctypes. Rejecting unknown srctypes keeps the work/back
 /// pipeline (which keys off the compiler registry) consistent.
 fn validate_srctype(srctype: &str) -> ApiResult<()> {
-    match srctype {
-        "text" | "latex" | "python" | "lean" | "rocq" => Ok(()),
-        _ => bail!("unsupported srctype '{srctype}'"),
+    if crate::config::BUILTIN_SRCTYPES.contains(&srctype) {
+        Ok(())
+    } else {
+        bail!("unsupported srctype '{srctype}'")
     }
 }
 
@@ -649,12 +637,6 @@ fn save_and_index(
     Ok(())
 }
 
-// Unused for now but re-exported so future write handlers share the same DTO.
-#[allow(dead_code)]
-fn _dep_item_to_info(state: &AppState, item: &DependencyItem) -> ApiResult<NodeInfo> {
-    node_info(state, &item.fnode, &item.title, &item.rel_path)
-}
-
 // ── Dependency mutation handlers ──────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -763,11 +745,6 @@ pub async fn node_new(
         }
     })
 }
-
-// Keep Arc referenced for future handlers; avoids unused-import noise in the
-// minimal skeleton.
-#[allow(dead_code)]
-type _ArcState = Arc<AppState>;
 
 #[cfg(test)]
 mod tests {

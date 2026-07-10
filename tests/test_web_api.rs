@@ -1,7 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode, Uri};
+#[cfg(not(feature = "dev-web"))]
+use axum::http::Uri;
+use axum::http::{Request, StatusCode};
+#[cfg(not(feature = "dev-web"))]
 use regex::Regex;
 use tempfile::TempDir;
 
@@ -286,6 +289,7 @@ async fn spa_index_is_not_cached() {
 }
 
 #[tokio::test]
+#[cfg(not(feature = "dev-web"))]
 async fn embedded_index_assets_use_release_mime_and_cache_policy() {
     let dir = TempDir::new().unwrap();
     let (_root, app) = build_app(&dir);

@@ -20,7 +20,7 @@ fn print_dep_report_sections(
     source_item: &DependencyItem,
     count_label: &str,
     report: &DependencyTraversalReport,
-) -> i32 {
+) -> Result<i32> {
     print_dep_report(
         "source",
         source_item,
@@ -34,29 +34,21 @@ fn print_dep_report_sections(
         .filter(|i| i.kind == IssueKind::Missing)
         .cloned()
         .collect();
-    print_missing_with_referrers(&missing, cache);
-    print_cycles_if_any(&report.cycles, cache);
-    if report.cycles.is_empty() {
-        0
-    } else {
-        1
-    }
+    print_missing_with_referrers(&missing, cache)?;
+    print_cycles_if_any(&report.cycles, cache)?;
+    Ok(if report.cycles.is_empty() { 0 } else { 1 })
 }
 
 // ── Shared setup for read commands ───────────────────────────────────────────
 
 /// Open cache, discover changes, do a targeted refresh up to `refresh_depth`,
 /// and resolve `source` to a `DependencyItem`. Used by dep show and dep leaf.
-fn open_and_resolve_source(
-    source: &str,
-    refresh_depth: i32,
-) -> Result<(IndCache, std::path::PathBuf, DependencyItem)> {
+fn open_and_resolve_source(source: &str, refresh_depth: i32) -> Result<(IndCache, DependencyItem)> {
     let mdcroot = require_mdcroot()?;
     let mut cache = open_cache(mdcroot.clone())?;
     cache.discover_workspace_changes()?;
-    if let Ok(src_path) = cache.resolve_edit_target_path(source, Some(&cwd())) {
-        let _ = cache.refresh_reachable_from_path(&src_path, refresh_depth);
-    }
+    let src_path = cache.resolve_edit_target_path(source, Some(&cwd()))?;
+    cache.refresh_reachable_from_path(&src_path, refresh_depth)?;
     let source_item = cache
         .resolve_ref(source, Some(&cwd()))
         .map(|(f, t, p)| DependencyItem {
@@ -65,33 +57,23 @@ fn open_and_resolve_source(
             title: t,
             rel_path: crate::workspace::to_rel_path(&mdcroot, &p),
         })?;
-    Ok((cache, mdcroot, source_item))
+    Ok((cache, source_item))
 }
 
 // ── cmd: dep show ─────────────────────────────────────────────────────────────
 
 pub(super) fn cmd_dep_show(source: String, depth: i32) -> Result<i32> {
-    let (cache, _, source_item) = open_and_resolve_source(&source, depth)?;
+    let (cache, source_item) = open_and_resolve_source(&source, depth)?;
     let report = cache.dependency_report(&source_item.fnode, depth)?;
-    Ok(print_dep_report_sections(
-        &cache,
-        &source_item,
-        "depens",
-        &report,
-    ))
+    print_dep_report_sections(&cache, &source_item, "depens", &report)
 }
 
 // ── cmd: dep leaf ─────────────────────────────────────────────────────────────
 
 pub(super) fn cmd_dep_leaf(source: String) -> Result<i32> {
-    let (cache, _, source_item) = open_and_resolve_source(&source, -1)?;
+    let (cache, source_item) = open_and_resolve_source(&source, -1)?;
     let report = cache.leaf_dependency_report(&source_item.fnode)?;
-    Ok(print_dep_report_sections(
-        &cache,
-        &source_item,
-        "leaves",
-        &report,
-    ))
+    print_dep_report_sections(&cache, &source_item, "leaves", &report)
 }
 
 // ── cmd: dep add ──────────────────────────────────────────────────────────────
@@ -146,19 +128,20 @@ pub(super) fn cmd_dep_add(
     let mdcroot = require_mdcroot()?;
     let mut cache = open_cache(mdcroot.clone())?;
     cache.discover_workspace_changes()?;
-    let target_item = target
-        .as_deref()
-        .map(|target_ref| resolve_existing_target(&mut cache, &mdcroot, target_ref))
-        .transpose()?;
     let (mut graph, _) = DepGraph::from_ref(cache, &source, Some(&cwd()))?;
     let source_item = graph.root_item()?;
 
-    if let Some(target_item) = target_item {
-        if target_item.fnode == source_item.fnode {
+    if let Some(target_ref) = target.as_deref() {
+        let (added, skipped_existing, skipped_self) =
+            graph.add_direct_dependency_ref(target_ref)?;
+        if !skipped_self.is_empty() {
             bail!("cannot add a node as its own dependency");
         }
-        let (added, skipped_existing, _) =
-            graph.add_direct_dependencies(vec![target_item.fnode.clone()])?;
+        let target_fnode = added
+            .first()
+            .or_else(|| skipped_existing.first())
+            .ok_or_else(|| anyhow::anyhow!("target was not added"))?;
+        let target_item = graph.ref_item_for_fnode(target_fnode, 0)?;
         if !skipped_existing.is_empty() {
             println!(
                 "already a dependency  {}",
@@ -170,9 +153,6 @@ pub(super) fn cmd_dep_add(
                 )
             );
             return Ok(0);
-        }
-        if added.is_empty() {
-            bail!("target was not added");
         }
         println!(
             "added  {}",
@@ -393,16 +373,16 @@ pub(super) fn cmd_dep_rm(source: String, target: Option<String>) -> Result<i32> 
 
     let items: Vec<(&str, &str, &str, bool)> = dep_items
         .iter()
-        .map(|item| {
-            let broken = graph.is_broken_fnode(&item.fnode);
-            (
+        .map(|item| -> Result<_> {
+            let broken = graph.is_broken_fnode(&item.fnode)?;
+            Ok((
                 item.fnode.as_str(),
                 item.title.as_str(),
                 item.rel_path.as_str(),
                 broken,
-            )
+            ))
         })
-        .collect();
+        .collect::<Result<_>>()?;
 
     let selected = match select_multi("Select dependencies to remove", &items)? {
         None => {
@@ -444,9 +424,8 @@ pub(super) fn cmd_dep_refs(target: String, depth: i32) -> Result<i32> {
     let mdcroot = require_mdcroot()?;
     let mut cache = open_cache(mdcroot.clone())?;
     cache.discover_workspace_changes()?;
-    if let Ok(src_path) = cache.resolve_edit_target_path(&target, Some(&cwd())) {
-        let _ = cache.upsert_path(&src_path);
-    }
+    let target_path = cache.resolve_edit_target_path(&target, Some(&cwd()))?;
+    cache.upsert_path(&target_path)?;
     let (fnode, title, path) = cache.resolve_ref(&target, Some(&cwd()))?;
     let rel_path = crate::workspace::to_rel_path(&mdcroot, &path);
     let target_item = DependencyItem {

@@ -36,15 +36,13 @@ pub(super) fn cmd_edit(source: String) -> Result<i32> {
 // ── cmd: init ─────────────────────────────────────────────────────────────────
 
 fn generate_config_toml() -> String {
-    const SRCTYPES: &[&str] = &["text", "latex", "python", "lean", "rocq"];
-
     let mut out = String::from(
         "# MathDoc configuration\n\
          # Uncomment and edit sections below to override built-in defaults.\n\
          # Preamble/postamble are managed as files in .mdc/<srctype>/.\n",
     );
 
-    for srctype in SRCTYPES {
+    for srctype in crate::config::BUILTIN_SRCTYPES {
         let cfg = default_for_srctype(srctype);
         out.push('\n');
         out.push_str(&format!("# [src.{srctype}]\n"));
@@ -89,56 +87,6 @@ fn init_workspace(mdcroot: &Path) -> Result<bool> {
     )?;
     changed |= crate::config::init_amble_files(mdcroot)?;
     Ok(changed)
-}
-
-#[cfg(test)]
-mod init_tests {
-    use super::*;
-
-    #[test]
-    fn init_repairs_partial_workspace_without_overwriting_files() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let mdc = dir.path().join(".mdc");
-        std::fs::create_dir(&mdc).unwrap();
-        std::fs::write(mdc.join("config.toml"), "# custom\n").unwrap();
-        std::fs::create_dir(mdc.join("latex")).unwrap();
-        std::fs::write(mdc.join("latex/preamble.tex"), "custom preamble\n").unwrap();
-
-        assert!(init_workspace(dir.path()).unwrap());
-        assert_eq!(
-            std::fs::read_to_string(mdc.join("config.toml")).unwrap(),
-            "# custom\n"
-        );
-        assert_eq!(
-            std::fs::read_to_string(mdc.join("latex/preamble.tex")).unwrap(),
-            "custom preamble\n"
-        );
-        assert_eq!(
-            std::fs::read_to_string(mdc.join("latex/postamble.tex")).unwrap(),
-            crate::config::default_postamble("latex")
-        );
-        assert!(!init_workspace(dir.path()).unwrap());
-    }
-
-    #[test]
-    fn init_rejects_non_directory_control_path() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join(".mdc"), "not a directory").unwrap();
-        assert!(init_workspace(dir.path()).is_err());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn init_rejects_symlinked_control_path() {
-        use std::os::unix::fs::symlink;
-
-        let dir = tempfile::TempDir::new().unwrap();
-        let outside = tempfile::TempDir::new().unwrap();
-        symlink(outside.path(), dir.path().join(".mdc")).unwrap();
-
-        assert!(init_workspace(dir.path()).is_err());
-        assert!(!outside.path().join("config.toml").exists());
-    }
 }
 
 // ── cmd: new ──────────────────────────────────────────────────────────────────
@@ -191,4 +139,54 @@ pub(super) fn cmd_search(query: String, max_results: usize) -> Result<i32> {
         println!("  {}", fmt_item(fnode, title, rel_path, false));
     }
     Ok(0)
+}
+
+#[cfg(test)]
+mod init_tests {
+    use super::*;
+
+    #[test]
+    fn init_repairs_partial_workspace_without_overwriting_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mdc = dir.path().join(".mdc");
+        std::fs::create_dir(&mdc).unwrap();
+        std::fs::write(mdc.join("config.toml"), "# custom\n").unwrap();
+        std::fs::create_dir(mdc.join("latex")).unwrap();
+        std::fs::write(mdc.join("latex/preamble.tex"), "custom preamble\n").unwrap();
+
+        assert!(init_workspace(dir.path()).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(mdc.join("config.toml")).unwrap(),
+            "# custom\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(mdc.join("latex/preamble.tex")).unwrap(),
+            "custom preamble\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(mdc.join("latex/postamble.tex")).unwrap(),
+            crate::config::default_postamble("latex")
+        );
+        assert!(!init_workspace(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn init_rejects_non_directory_control_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join(".mdc"), "not a directory").unwrap();
+        assert!(init_workspace(dir.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_rejects_symlinked_control_path() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        symlink(outside.path(), dir.path().join(".mdc")).unwrap();
+
+        assert!(init_workspace(dir.path()).is_err());
+        assert!(!outside.path().join("config.toml").exists());
+    }
 }

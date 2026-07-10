@@ -213,11 +213,11 @@ impl DepGraph {
 
     // ── Issue queries ─────────────────────────────────────────────────────────
 
-    pub fn is_broken_fnode(&self, fnode: &str) -> bool {
+    pub fn is_broken_fnode(&self, fnode: &str) -> Result<bool> {
         if self.has_local_state(fnode) {
-            return self.state.is_broken(fnode);
+            return Ok(self.state.is_broken(fnode));
         }
-        self.cache.issue_for_fnode(fnode).ok().flatten().is_some()
+        Ok(self.cache.issue_for_fnode(fnode)?.is_some())
     }
 
     pub fn issue_for_fnode(&self, fnode: &str) -> Result<Option<GraphIssue>> {
@@ -329,7 +329,13 @@ impl DepGraph {
         let (target_fnode, _, _) = self.cache.resolve_ref(target_ref, Some(&self.mdcroot))?;
 
         let paths = self.cache.duplicate_fnode_paths(&target_fnode)?;
-        if paths.len() != 1 {
+        if paths.len() > 1 {
+            bail!(
+                "{}",
+                duplicate_fnode_error(&self.mdcroot, &target_fnode, &paths)
+            );
+        }
+        if paths.is_empty() {
             bail!(
                 "dependency reference must resolve to exactly one node: {}",
                 target_ref

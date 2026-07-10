@@ -27,6 +27,15 @@ pub enum ResolveRefError {
     Invalid(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchMatch {
+    pub fnode: String,
+    pub title: String,
+    pub rel_path: String,
+    pub broken: bool,
+    pub depth: u32,
+}
+
 /// SQLite-backed index of a MathDoc workspace.
 pub struct IndCache {
     pub root: PathBuf,
@@ -208,11 +217,7 @@ impl IndCache {
         queries::search(&self.conn, query)
     }
 
-    pub fn search_with_metadata(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<(String, String, String, bool, u32)>> {
+    pub fn search_with_metadata(&self, query: &str, limit: usize) -> Result<Vec<SearchMatch>> {
         queries::search_with_metadata(&self.conn, query, limit)
     }
 

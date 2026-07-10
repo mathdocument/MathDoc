@@ -5,6 +5,7 @@ use crate::core::{DependencyItem, GraphIssue, IssueKind};
 use crate::mdocnode::MdocNode;
 use crate::workspace::to_rel_path;
 
+#[derive(Default)]
 pub struct GraphState {
     pub root_fnode: String,
     pub dep_graph: HashMap<String, Vec<String>>,
@@ -14,21 +15,6 @@ pub struct GraphState {
     pub broken_issues: HashMap<String, GraphIssue>,
     pub invalid_file_issues: Vec<GraphIssue>,
     pub scanned_file_count: usize,
-}
-
-impl Default for GraphState {
-    fn default() -> Self {
-        GraphState {
-            root_fnode: String::new(),
-            dep_graph: HashMap::new(),
-            nodes_by_fnode: HashMap::new(),
-            missing_fnodes: HashSet::new(),
-            invalid_fnodes: HashSet::new(),
-            broken_issues: HashMap::new(),
-            invalid_file_issues: Vec::new(),
-            scanned_file_count: 0,
-        }
-    }
 }
 
 impl GraphState {

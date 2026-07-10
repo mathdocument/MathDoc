@@ -296,21 +296,22 @@ fn print_cycle(cycle: &[String], label_map: &HashMap<String, (String, String)>) 
     }
 }
 
-pub(super) fn print_cycles_if_any(cycles: &[Vec<String>], cache: &IndCache) {
+pub(super) fn print_cycles_if_any(cycles: &[Vec<String>], cache: &IndCache) -> Result<()> {
     if cycles.is_empty() {
-        return;
+        return Ok(());
     }
     println!("   {RED}cycles ({}):{RST}", cycles.len());
     for cycle in cycles {
         let fnode_refs: Vec<&str> = cycle.iter().map(|s| s.as_str()).collect();
-        let label_map = cache.lookup_by_fnode(&fnode_refs).unwrap_or_default();
+        let label_map = cache.lookup_by_fnode(&fnode_refs)?;
         print_cycle(cycle, &label_map);
     }
+    Ok(())
 }
 
-fn print_missing_with_referrers(issues: &[GraphIssue], cache: &IndCache) {
+fn print_missing_with_referrers(issues: &[GraphIssue], cache: &IndCache) -> Result<()> {
     if issues.is_empty() {
-        return;
+        return Ok(());
     }
     println!("   {RED}missing ({}):{RST}", issues.len());
     for issue in issues {
@@ -318,13 +319,12 @@ fn print_missing_with_referrers(issues: &[GraphIssue], cache: &IndCache) {
             "    {}",
             fmt_item(&issue.fnode, &issue.title, &issue.rel_path, true)
         );
-        let refs = cache
-            .direct_referrers_for_fnode(&issue.fnode)
-            .unwrap_or_default();
+        let refs = cache.direct_referrers_for_fnode(&issue.fnode)?;
         for (f, t, p) in &refs {
             println!("      ← {}", fmt_item(f, t, p, false));
         }
     }
+    Ok(())
 }
 
 fn print_dep_report(

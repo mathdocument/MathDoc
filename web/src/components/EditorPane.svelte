@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import type { NodeDetail } from "../lib/types";
+  import type { LoadState } from "../lib/state.svelte";
   import { shortFnode, errMsg } from "../lib/format";
   import BlockEditor from "./BlockEditor.svelte";
   import AddBlockControl from "./AddBlockControl.svelte";
@@ -15,11 +16,7 @@
   } from "../lib/unsaved";
 
   interface Props {
-    load:
-      | { kind: "idle" }
-      | { kind: "loading" }
-      | { kind: "ready"; node: NodeDetail }
-      | { kind: "error"; message: string };
+    load: LoadState;
     onRefresh?: (node: NodeDetail) => void;
   }
   let { load, onRefresh }: Props = $props();

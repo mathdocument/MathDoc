@@ -433,9 +433,9 @@ pub fn read_mdoc_head(path: &Path) -> Option<(String, String)> {
         let line = raw_line.trim();
         let lower = line.to_ascii_lowercase();
         if lower.starts_with("@fnode:") && fnode.is_empty() {
-            fnode = line.splitn(2, ':').nth(1).unwrap_or("").trim().to_string();
+            fnode = line.split_once(':')?.1.trim().to_string();
         } else if lower.starts_with("@title:") && title.is_empty() {
-            title = line.splitn(2, ':').nth(1).unwrap_or("").trim().to_string();
+            title = line.split_once(':')?.1.trim().to_string();
         }
         if !fnode.is_empty() && !title.is_empty() {
             break;

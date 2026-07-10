@@ -3,7 +3,7 @@ use std::path::Path;
 
 use super::{
     cfg_positive_int, emit_progress, process_error_result, require_tool, run_process, CompilerReq,
-    CompilerRes, SrcCompiler,
+    CompilerRes, ProgressCallback, SrcCompiler,
 };
 
 pub(super) struct CompilerLean;
@@ -75,7 +75,7 @@ fn ensure_workspace(
     root: &Path,
     lake_path: &Path,
     timeout_sec: u64,
-    progress: &Option<Box<dyn Fn(&str)>>,
+    progress: &Option<ProgressCallback>,
 ) -> Result<()> {
     std::fs::create_dir_all(root)?;
     if setup_complete(root)? {

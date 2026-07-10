@@ -109,6 +109,11 @@ fn dep_add_target_rejects_self_missing_ambiguous_and_cyclic_targets() {
     write_node(root, "dup-a.mdoc", "duplicate-target", "Dup A", &[]);
     write_node(root, "dup-b.mdoc", "duplicate-target", "Dup B", &[]);
     write_node(root, "not-mdoc.txt", "text-target", "Text Target", &[]);
+    std::fs::write(
+        root.join("invalid.mdoc"),
+        "@fnode: invalid-target\n@title: Invalid\n@unknown: value\n",
+    )
+    .unwrap();
 
     let output = run_mdc(root, &["dep", "add", "source.mdoc", "-t", "source-node"]);
     assert!(!output.status.success());
@@ -133,6 +138,11 @@ fn dep_add_target_rejects_self_missing_ambiguous_and_cyclic_targets() {
     let output = run_mdc(root, &["dep", "add", "source.mdoc", "-t", "cycle.mdoc"]);
     assert!(!output.status.success());
     assert!(output_text(&output.stderr).contains("cycle"));
+
+    let output = run_mdc(root, &["dep", "add", "source.mdoc", "-t", "invalid.mdoc"]);
+    assert!(!output.status.success());
+    assert!(output_text(&output.stderr).contains("must be valid"));
+
     let source = MdocNode::load(root, &root.join("source.mdoc")).unwrap();
     assert!(source.depens.is_empty());
 }

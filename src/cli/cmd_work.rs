@@ -149,10 +149,6 @@ pub(super) fn cmd_work(source: String, depth: i32, compile: bool) -> Result<i32>
     let mut cache = open_cache(mdcroot.clone())?;
 
     cache.discover_workspace_changes()?;
-    if let Ok(src_path) = cache.resolve_edit_target_path(&source, Some(&cwd())) {
-        let _ = cache.upsert_path(&src_path);
-    }
-
     let (mut graph, _) = DepGraph::from_ref(cache, &source, Some(&cwd()))?;
     let root_path = graph.root_path()?;
     graph.cache.refresh_reachable_from_path(&root_path, depth)?;
@@ -343,29 +339,6 @@ fn aggregate_compile_exit(failure_codes: &[i32], had_skipped: bool) -> i32 {
         ([], false) => 0,
         ([code], false) if (1..=255).contains(code) => *code,
         _ => 1,
-    }
-}
-
-#[cfg(test)]
-mod compile_exit_tests {
-    use super::{aggregate_compile_exit, stable_content_digest};
-
-    #[test]
-    fn compile_exit_aggregation_is_deterministic() {
-        assert_eq!(aggregate_compile_exit(&[], false), 0);
-        assert_eq!(aggregate_compile_exit(&[124], false), 124);
-        assert_eq!(aggregate_compile_exit(&[127], false), 127);
-        assert_eq!(aggregate_compile_exit(&[124, 127], false), 1);
-        assert_eq!(aggregate_compile_exit(&[124], true), 1);
-        assert_eq!(aggregate_compile_exit(&[-1], false), 1);
-    }
-
-    #[test]
-    fn stable_digest_is_sha256() {
-        assert_eq!(
-            stable_content_digest("abc"),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
     }
 }
 
@@ -805,4 +778,27 @@ pub(super) fn cmd_back() -> Result<i32> {
     );
 
     Ok(if had_errors { 1 } else { 0 })
+}
+
+#[cfg(test)]
+mod compile_exit_tests {
+    use super::{aggregate_compile_exit, stable_content_digest};
+
+    #[test]
+    fn compile_exit_aggregation_is_deterministic() {
+        assert_eq!(aggregate_compile_exit(&[], false), 0);
+        assert_eq!(aggregate_compile_exit(&[124], false), 124);
+        assert_eq!(aggregate_compile_exit(&[127], false), 127);
+        assert_eq!(aggregate_compile_exit(&[124, 127], false), 1);
+        assert_eq!(aggregate_compile_exit(&[124], true), 1);
+        assert_eq!(aggregate_compile_exit(&[-1], false), 1);
+    }
+
+    #[test]
+    fn stable_digest_is_sha256() {
+        assert_eq!(
+            stable_content_digest("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 }
