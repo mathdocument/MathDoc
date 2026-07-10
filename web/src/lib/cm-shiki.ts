@@ -8,10 +8,10 @@
 import { ViewPlugin, type DecorationSet, Decoration, EditorView, type ViewUpdate } from "@codemirror/view";
 import { RangeSetBuilder } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
-import type { Highlighter } from "shiki";
+import type { HighlighterCore } from "shiki/core";
 
 export function shikiHighlight(
-  highlighter: Highlighter,
+  highlighter: HighlighterCore,
   lang: string,
   theme: string,
 ): Extension {

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 use crate::mdocnode::MdocNode;
@@ -36,6 +36,7 @@ pub struct WorkFile {
     pub postamble: Option<String>,
     /// (fnode_prefix, block_content) pairs in file order.
     pub nodes: Vec<(String, String)>,
+    pub(crate) input_snapshots: Vec<(PathBuf, crate::safe_file::FileSnapshot)>,
 }
 
 /// Generate work files for each srctype present in the dependency subgraph.
@@ -51,6 +52,28 @@ pub fn merge_work_files(
     }
 
     let root_fnode = graph.state.root_fnode.clone();
+    let mut node_snapshots = Vec::new();
+    for node in &nodes {
+        let snapshot = crate::safe_file::FileSnapshot::capture(&node.path)?;
+        let current = MdocNode::load(&graph.mdcroot, &node.path)?;
+        if current.fnode != node.fnode
+            || current.title != node.title
+            || current.depens != node.depens
+            || current.blocks.len() != node.blocks.len()
+            || current
+                .blocks
+                .iter()
+                .zip(&node.blocks)
+                .any(|(left, right)| {
+                    left.srctype != right.srctype
+                        || left.content != right.content
+                        || left.metadata != right.metadata
+                })
+        {
+            anyhow::bail!("{} changed while preparing work files", node.path.display());
+        }
+        node_snapshots.push((node.path.clone(), snapshot));
+    }
 
     // Collect all srctypes that appear in any node's blocks (even empty content).
     let mut srctypes: HashSet<String> = HashSet::new();
@@ -63,6 +86,7 @@ pub fn merge_work_files(
     let mut result: HashMap<String, WorkFile> = HashMap::new();
 
     for srctype in &srctypes {
+        crate::config::validate_srctype_name(srctype)?;
         let src_cfg = config.src_config(srctype);
 
         // Split into root and dep nodes.
@@ -93,7 +117,12 @@ pub fn merge_work_files(
         let mut wf_nodes: Vec<(String, String)> = Vec::new();
 
         // Preamble — always emitted so users can fill it in.
-        let preamble = crate::config::read_preamble(&graph.mdcroot, srctype);
+        let preamble_path = crate::config::amble_path(&graph.mdcroot, srctype, "preamble");
+        let preamble_snapshot = crate::safe_file::FileSnapshot::capture(&preamble_path)?;
+        let preamble = match preamble_snapshot.content() {
+            Some(content) => std::str::from_utf8(content)?.to_string(),
+            None => crate::config::default_preamble(srctype).to_string(),
+        };
         out.push_str(&marker_line(srctype, "preamble"));
         out.push('\n');
         let pre_trimmed = preamble.trim_end_matches('\n');
@@ -119,6 +148,15 @@ pub fn merge_work_files(
                 .map(|b| b.content.trim_end_matches('\n'))
                 .collect::<Vec<_>>()
                 .join("\n");
+            if content.lines().any(|line| {
+                parse_marker_tag(line, comment_prefix(srctype), srctype == "rocq").is_some()
+            }) {
+                anyhow::bail!(
+                    "source block '{}' in {} contains a reserved work-file marker",
+                    srctype,
+                    node.path.display()
+                );
+            }
             if !content.is_empty() {
                 out.push_str(&content);
                 out.push('\n');
@@ -135,7 +173,12 @@ pub fn merge_work_files(
         }
 
         // Postamble — always emitted so users can fill it in.
-        let postamble = crate::config::read_postamble(&graph.mdcroot, srctype);
+        let postamble_path = crate::config::amble_path(&graph.mdcroot, srctype, "postamble");
+        let postamble_snapshot = crate::safe_file::FileSnapshot::capture(&postamble_path)?;
+        let postamble = match postamble_snapshot.content() {
+            Some(content) => std::str::from_utf8(content)?.to_string(),
+            None => crate::config::default_postamble(srctype).to_string(),
+        };
         out.push('\n');
         out.push_str(&marker_line(srctype, "postamble"));
         out.push('\n');
@@ -162,6 +205,14 @@ pub fn merge_work_files(
                     Some(post_trimmed.to_string())
                 },
                 nodes: wf_nodes,
+                input_snapshots: node_snapshots
+                    .iter()
+                    .cloned()
+                    .chain([
+                        (preamble_path, preamble_snapshot),
+                        (postamble_path, postamble_snapshot),
+                    ])
+                    .collect(),
             },
         );
     }
@@ -178,6 +229,8 @@ pub struct ExtractedContent {
     pub preamble: Option<String>,
     /// Postamble content (if present in the work file).
     pub postamble: Option<String>,
+    pub preamble_present: bool,
+    pub postamble_present: bool,
     /// Lines of content found outside any marker block.
     pub warnings: Vec<String>,
 }
@@ -187,7 +240,11 @@ pub struct ExtractedContent {
 pub fn extract_work_file(path: &Path, srctype: &str) -> Result<ExtractedContent> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("failed to read {}: {}", path.display(), e))?;
+    extract_work_content(&text, srctype)
+}
 
+pub fn extract_work_content(text: &str, srctype: &str) -> Result<ExtractedContent> {
+    crate::config::validate_srctype_name(srctype)?;
     let prefix = comment_prefix(srctype);
     let rocq = prefix == "(*";
 
@@ -208,6 +265,9 @@ pub fn extract_work_file(path: &Path, srctype: &str) -> Result<ExtractedContent>
     let mut current_content = String::new();
     let mut current_title = String::new();
     let mut title_seen = false; // only one title: allowed per fnode block
+    let mut preamble_seen = false;
+    let mut postamble_seen = false;
+    let mut fnodes_seen: HashSet<String> = HashSet::new();
 
     for line in text.lines() {
         let tag = parse_marker_tag(line, prefix, rocq);
@@ -225,13 +285,24 @@ pub fn extract_work_file(path: &Path, srctype: &str) -> Result<ExtractedContent>
                     warnings.push(format!("new block opened while {ctx} is still unclosed"));
                 }
                 if t == "preamble" {
+                    if preamble_seen {
+                        warnings.push("duplicate preamble section".to_string());
+                    }
+                    preamble_seen = true;
                     state = State::InPreamble;
                     current_content.clear();
                 } else if t == "postamble" {
+                    if postamble_seen {
+                        warnings.push("duplicate postamble section".to_string());
+                    }
+                    postamble_seen = true;
                     state = State::InPostamble;
                     current_content.clear();
                 } else {
                     let fnode = t.trim_start_matches("fnode: ").to_string();
+                    if !fnodes_seen.insert(fnode.clone()) {
+                        warnings.push(format!("duplicate fnode section: {fnode}"));
+                    }
                     state = State::InFnode(fnode);
                     current_content.clear();
                     current_title.clear();
@@ -321,6 +392,8 @@ pub fn extract_work_file(path: &Path, srctype: &str) -> Result<ExtractedContent>
         nodes,
         preamble,
         postamble,
+        preamble_present: preamble_seen,
+        postamble_present: postamble_seen,
         warnings,
     })
 }

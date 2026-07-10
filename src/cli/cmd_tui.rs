@@ -1561,8 +1561,7 @@ fn render_status(f: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
 // ── Display helpers ───────────────────────────────────────────────────────────
 
 fn short_fnode_display(fnode: &str) -> &str {
-    let s = fnode.trim_matches(|c| c == '<' || c == '>');
-    s.get(..8).unwrap_or(s)
+    crate::core::short_fnode(fnode)
 }
 
 fn truncate_str(s: &str, max_chars: usize) -> String {

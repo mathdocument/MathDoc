@@ -5,5 +5,7 @@ pub mod core;
 pub mod depgraph;
 pub mod indcache;
 pub mod mdocnode;
+pub(crate) mod mutation_lock;
+pub(crate) mod safe_file;
 pub mod web;
 pub mod workspace;

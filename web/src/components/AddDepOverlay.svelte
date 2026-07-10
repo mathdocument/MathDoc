@@ -19,6 +19,7 @@
   let error: string | null = $state(null);
   let saving = $state(false);
   let inputEl = $state<HTMLInputElement | null>(null);
+  let searchRequest = 0;
   // Whether the raw search (before filtering existing deps) returned any
   // results. Used to distinguish "no matches at all" (can create new) from
   // "all matches are already deps" (should not create a duplicate).
@@ -29,27 +30,38 @@
 
   $effect(() => {
     const q = query;
+    const request = ++searchRequest;
+    const excludedForRequest = excluded;
     if (q.length === 0) {
       results = [];
       rawHadMatches = false;
       selected = 0;
+      loading = false;
       return;
     }
     loading = true;
+    results = [];
+    rawHadMatches = false;
+    selected = 0;
     const handle = setTimeout(async () => {
       try {
         const all = await api.search(q, 50);
+        if (request !== searchRequest) return;
         rawHadMatches = all.length > 0;
-        results = all.filter((r) => !excluded.has(r.fnode));
+        results = all.filter((r) => !excludedForRequest.has(r.fnode));
         selected = 0;
       } catch {
+        if (request !== searchRequest) return;
         results = [];
         rawHadMatches = false;
       } finally {
-        loading = false;
+        if (request === searchRequest) loading = false;
       }
     }, 120);
-    return () => clearTimeout(handle);
+    return () => {
+      clearTimeout(handle);
+      if (request === searchRequest) searchRequest++;
+    };
   });
 
   $effect(() => {

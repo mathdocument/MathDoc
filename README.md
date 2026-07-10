@@ -78,7 +78,7 @@ Preamble and postamble files are created with built-in defaults by `mdc init` wh
 mdc init
 mdc new -t "Background Lemma" -f notes/background
 mdc new -t "Main Theorem"     -f notes/theorem
-mdc dep add notes/theorem.mdoc lemma     # interactive search + select
+mdc dep add notes/theorem.mdoc -t notes/background.mdoc
 mdc work notes/theorem.mdoc -d -1        # generate .mdc/latex/MdcWork.tex (and others)
 # edit .mdc/latex/MdcWork.tex in your LaTeX editor
 mdc back                                  # write changes back to .mdoc files
@@ -141,7 +141,15 @@ Interactively search and add direct dependencies:
 mdc dep add <source> <query>
 mdc dep add <source> <query> -n 50
 ```
-Presents a numbered list; enter comma-separated numbers or ranges to select.
+Or add one uniquely resolved target without prompting:
+```bash
+mdc dep add <source> --target <target-ref>
+mdc dep add <source> -t <target-ref>
+```
+`<target-ref>` may be an exact fnode, unique fnode prefix, or `.mdoc` path. The
+stored dependency is always the target's full fnode. Adding an existing direct
+dependency is an idempotent success; self-dependencies, ambiguous references,
+missing targets, duplicate fnodes, and cycle-creating edges are rejected.
 
 #### `mdc dep rm`
 
@@ -149,6 +157,15 @@ Interactively remove direct dependencies:
 ```bash
 mdc dep rm <source>
 ```
+Or remove one direct dependency without prompting:
+```bash
+mdc dep rm <source> --target <target-ref>
+mdc dep rm <source> -t <target-ref>
+```
+Removal first resolves exact values and unique prefixes among the source's
+direct dependencies, so dangling dependencies can be removed even when their
+target file no longer exists. Paths are accepted for existing targets;
+ambiguous and non-direct targets are rejected.
 
 #### `mdc dep show`
 
@@ -216,8 +233,11 @@ mdc serve notes/theorem.mdoc
 mdc serve --bind 127.0.0.1:7878 --no-open
 ```
 - `source` (optional) — start at this node (fnode prefix, path, or title). Defaults to the deepest root.
-- `--bind` — bind address (default `127.0.0.1:0` picks a free port).
+- `--bind` — numeric loopback bind address (default `127.0.0.1:0` picks a free port).
 - `--no-open` — do not auto-open the browser.
+
+The UI and API are same-origin and local-only. Non-loopback binding is rejected
+because the API has no authentication layer.
 
 ---
 

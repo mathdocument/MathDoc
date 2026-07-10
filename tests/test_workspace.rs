@@ -17,13 +17,26 @@ fn find_mdcroot_from_child() {
     let root = setup_workspace(&dir);
     let subdir = root.join("sub");
     fs::create_dir(&subdir).unwrap();
-    assert_eq!(find_mdcroot(&subdir).unwrap(), root);
+    assert_eq!(find_mdcroot(&subdir).unwrap(), root.canonicalize().unwrap());
 }
 
 #[test]
 fn find_mdcroot_not_found() {
     let dir = TempDir::new().unwrap();
     assert!(find_mdcroot(dir.path()).is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn find_mdcroot_rejects_symlinked_control_directory() {
+    use std::os::unix::fs::symlink;
+
+    let dir = TempDir::new().unwrap();
+    let external = TempDir::new().unwrap();
+    symlink(external.path(), dir.path().join(".mdc")).unwrap();
+
+    assert!(find_mdcroot(dir.path()).is_none());
+    assert!(fs::read_dir(external.path()).unwrap().next().is_none());
 }
 
 #[test]
@@ -62,7 +75,9 @@ fn iter_mdoc_files_basic() {
     fs::create_dir(&sub).unwrap();
     fs::write(sub.join("c.mdoc"), "").unwrap();
 
-    let mut files: Vec<_> = iter_mdoc_files(&root).collect();
+    let mut files = iter_mdoc_files(&root)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
     files.sort();
     assert_eq!(files.len(), 2);
     assert!(files[0].ends_with("a.mdoc"));
@@ -78,7 +93,9 @@ fn iter_mdoc_files_skips_nested_root() {
     fs::create_dir_all(nested.join(".mdc")).unwrap();
     fs::write(nested.join("b.mdoc"), "").unwrap();
 
-    let files: Vec<_> = iter_mdoc_files(&root).collect();
+    let files = iter_mdoc_files(&root)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
     assert_eq!(files.len(), 1);
     assert!(files[0].ends_with("a.mdoc"));
 }

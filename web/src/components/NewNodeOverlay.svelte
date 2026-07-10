@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { api } from "../lib/api";
   import { errMsg } from "../lib/format";
 
@@ -15,6 +16,13 @@
   let error: string | null = $state(null);
   let titleInputEl = $state<HTMLInputElement | null>(null);
   let fileInputEl = $state<HTMLInputElement | null>(null);
+  let alive = true;
+
+  onDestroy(() => { alive = false; });
+
+  function close() {
+    if (!saving) onClose();
+  }
 
   $effect(() => {
     titleInputEl?.focus();
@@ -26,11 +34,12 @@
 
   function onKey(e: KeyboardEvent) {
     if (e.key === "Escape") {
+      if (saving) return;
       e.preventDefault();
       if (step === "file") {
         step = "title";
       } else {
-        onClose();
+        close();
       }
       return;
     }
@@ -62,12 +71,13 @@
       const params: { title: string; file?: string } = { title: title.trim() };
       if (file.trim().length > 0) params.file = file.trim();
       const node = await api.newNode(params);
+      if (!alive) return;
       onCreated(node.fnode);
       onClose();
     } catch (e) {
-      error = errMsg(e);
+      if (alive) error = errMsg(e);
     } finally {
-      saving = false;
+      if (alive) saving = false;
     }
   }
 </script>
@@ -75,7 +85,7 @@
 <svelte:window onkeydown={onKey} />
 
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-<div class="backdrop" onclick={onClose} role="presentation">
+<div class="backdrop" onclick={close} role="presentation">
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="dialog" role="dialog" aria-label="new node" tabindex="-1" onclick={(e) => e.stopPropagation()}>
     <h2>new node</h2>

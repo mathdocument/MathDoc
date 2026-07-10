@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::process::{Command, Output};
 
 use mathdoc::config::Config;
 use mathdoc::depgraph::workback;
@@ -23,6 +24,18 @@ fn make_node(root: &Path, title: &str, srctype: &str, content: &str) -> MdocNode
 
 fn load_config(root: &Path) -> Config {
     Config::load(root).unwrap()
+}
+
+fn run_mdc(root: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_mdc"))
+        .current_dir(root)
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+fn output_text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 // ── merge_work_files tests ───────────────────────────────────────────────────
@@ -532,6 +545,36 @@ fn test_extract_duplicate_title_in_fnode_warns() {
         .any(|w| w.contains("duplicate title")));
 }
 
+#[test]
+fn test_extract_duplicate_closed_sections_warns() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("MdcWork.tex");
+    fs::write(
+        &path,
+        "% mdc: preamble\nfirst\n% mdc: end\n\
+         % mdc: preamble\nsecond\n% mdc: end\n\
+         % mdc: fnode: aaaaaaaa\n% mdc: title: A\nfirst\n% mdc: end\n\
+         % mdc: fnode: aaaaaaaa\n% mdc: title: A\nsecond\n% mdc: end\n\
+         % mdc: postamble\nfirst\n% mdc: end\n\
+         % mdc: postamble\nsecond\n% mdc: end\n",
+    )
+    .unwrap();
+
+    let result = workback::extract_work_file(&path, "latex").unwrap();
+    assert!(result
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("duplicate preamble")));
+    assert!(result
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("duplicate fnode")));
+    assert!(result
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("duplicate postamble")));
+}
+
 // ── [P2] unclosed preamble/postamble at EOF ──────────────────────────────────
 
 #[test]
@@ -625,4 +668,247 @@ fn test_preamble_roundtrip_work_back() {
         !tex2.contains("\\documentclass{book}"),
         "old preamble should be gone"
     );
+}
+
+#[test]
+fn back_rejects_divergent_work_and_source_changes() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let src = make_node(root, "Conflict", "latex", "baseline body\n");
+    src.save().unwrap();
+
+    let output = run_mdc(root, &["work", &src.fnode]);
+    assert!(output.status.success(), "{}", output_text(&output.stderr));
+
+    let work_path = root.join(".mdc/latex/MdcWork.tex");
+    let edited_work = fs::read_to_string(&work_path)
+        .unwrap()
+        .replace("baseline body", "work body");
+    fs::write(&work_path, &edited_work).unwrap();
+
+    let mut changed_source = MdocNode::load(root, &src.path).unwrap();
+    changed_source.blocks[0].content = "source body\n".to_string();
+    changed_source.save().unwrap();
+
+    let output = run_mdc(root, &["back"]);
+    assert!(!output.status.success());
+    assert!(output_text(&output.stderr).contains("conflict in fnode"));
+
+    let current_source = MdocNode::load(root, &src.path).unwrap();
+    assert_eq!(current_source.blocks[0].content, "source body\n");
+    assert!(fs::read_to_string(&work_path)
+        .unwrap()
+        .contains("work body"));
+}
+
+#[test]
+fn back_title_error_writes_nothing_for_work_file() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let src = make_node(root, "Original Title", "latex", "original body\n");
+    src.save().unwrap();
+
+    let output = run_mdc(root, &["work", &src.fnode]);
+    assert!(output.status.success(), "{}", output_text(&output.stderr));
+
+    let work_path = root.join(".mdc/latex/MdcWork.tex");
+    let edited = fs::read_to_string(&work_path)
+        .unwrap()
+        .replace("\\documentclass{article}", "\\documentclass{report}")
+        .replace(
+            "% mdc: title: Original Title",
+            "% mdc: title: Changed Title",
+        )
+        .replace("original body", "work body");
+    fs::write(&work_path, edited).unwrap();
+
+    let output = run_mdc(root, &["back"]);
+    assert!(!output.status.success());
+    assert!(output_text(&output.stderr).contains("title of"));
+    assert!(!root.join(".mdc/latex/preamble.tex").exists());
+
+    let current_source = MdocNode::load(root, &src.path).unwrap();
+    assert_eq!(current_source.blocks[0].content, "original body\n");
+}
+
+#[test]
+fn back_unresolved_target_writes_nothing_for_work_file() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let missing = make_node(root, "Missing", "latex", "dependency body\n");
+    missing.save().unwrap();
+    let mut src = make_node(root, "Source", "latex", "original body\n");
+    src.add_dependency(&missing.fnode);
+    src.save().unwrap();
+
+    let output = run_mdc(root, &["work", &src.fnode]);
+    assert!(output.status.success(), "{}", output_text(&output.stderr));
+
+    let work_path = root.join(".mdc/latex/MdcWork.tex");
+    let edited = fs::read_to_string(&work_path)
+        .unwrap()
+        .replace("\\documentclass{article}", "\\documentclass{report}")
+        .replace("original body", "work body");
+    fs::write(&work_path, edited).unwrap();
+    fs::remove_file(&missing.path).unwrap();
+
+    let output = run_mdc(root, &["back"]);
+    assert!(!output.status.success());
+    assert!(output_text(&output.stderr).contains("cannot resolve fnode"));
+    assert!(!root.join(".mdc/latex/preamble.tex").exists());
+
+    let current_source = MdocNode::load(root, &src.path).unwrap();
+    assert_eq!(current_source.blocks[0].content, "original body\n");
+}
+
+#[test]
+fn back_duplicate_section_writes_nothing_for_work_file() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let src = make_node(root, "Duplicate", "latex", "original body\n");
+    src.save().unwrap();
+
+    let output = run_mdc(root, &["work", &src.fnode]);
+    assert!(output.status.success(), "{}", output_text(&output.stderr));
+
+    let work_path = root.join(".mdc/latex/MdcWork.tex");
+    let mut edited = fs::read_to_string(&work_path)
+        .unwrap()
+        .replace("\\documentclass{article}", "\\documentclass{report}");
+    edited.push_str(&format!(
+        "\n% mdc: fnode: {}\n% mdc: title: Duplicate\nduplicate body\n% mdc: end\n",
+        src.fnode
+    ));
+    fs::write(&work_path, edited).unwrap();
+
+    let output = run_mdc(root, &["back"]);
+    assert!(!output.status.success());
+    assert!(output_text(&output.stderr).contains("duplicate fnode section"));
+    assert!(!root.join(".mdc/latex/preamble.tex").exists());
+
+    let current_source = MdocNode::load(root, &src.path).unwrap();
+    assert_eq!(current_source.blocks[0].content, "original body\n");
+}
+
+#[test]
+fn work_propagates_hash_sidecar_write_failure() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let src = make_node(root, "Sidecar", "latex", "body\n");
+    src.save().unwrap();
+    fs::create_dir_all(root.join(".mdc/latex/.MdcWork.hash")).unwrap();
+
+    let output = run_mdc(root, &["work", &src.fnode]);
+    assert!(!output.status.success());
+    assert!(output_text(&output.stderr).contains("non-regular file"));
+    assert!(!root.join(".mdc/latex/MdcWork.tex").exists());
+}
+
+#[test]
+fn back_rejects_divergent_preamble_changes() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let src = make_node(root, "Amble Conflict", "latex", "body\n");
+    src.save().unwrap();
+    let output = run_mdc(root, &["work", &src.fnode]);
+    assert!(output.status.success(), "{}", output_text(&output.stderr));
+
+    let work_path = root.join(".mdc/latex/MdcWork.tex");
+    let edited = fs::read_to_string(&work_path)
+        .unwrap()
+        .replace("\\documentclass{article}", "\\documentclass{report}");
+    fs::write(&work_path, edited).unwrap();
+    fs::create_dir_all(root.join(".mdc/latex")).unwrap();
+    fs::write(
+        root.join(".mdc/latex/preamble.tex"),
+        "\\documentclass{book}\n\\begin{document}\n",
+    )
+    .unwrap();
+
+    let output = run_mdc(root, &["back"]);
+    assert!(!output.status.success());
+    assert!(output_text(&output.stderr).contains("conflict in preamble"));
+    assert!(fs::read_to_string(root.join(".mdc/latex/preamble.tex"))
+        .unwrap()
+        .contains("book"));
+}
+
+#[test]
+fn back_rejects_missing_amble_section() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let src = make_node(root, "Missing Amble", "latex", "original body\n");
+    src.save().unwrap();
+    let output = run_mdc(root, &["work", &src.fnode]);
+    assert!(output.status.success(), "{}", output_text(&output.stderr));
+
+    let work_path = root.join(".mdc/latex/MdcWork.tex");
+    let work = fs::read_to_string(&work_path).unwrap();
+    let preamble_end = work.find("% mdc: end\n\n").unwrap() + "% mdc: end\n\n".len();
+    fs::write(&work_path, &work[preamble_end..]).unwrap();
+
+    let output = run_mdc(root, &["back"]);
+    assert!(!output.status.success());
+    assert!(output_text(&output.stderr).contains("exactly one preamble"));
+    assert_eq!(
+        MdocNode::load(root, &src.path).unwrap().blocks[0].content,
+        "original body\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn work_rejects_symlink_without_touching_its_target() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let src = make_node(root, "Symlink", "latex", "body\n");
+    src.save().unwrap();
+    fs::create_dir_all(root.join(".mdc/latex")).unwrap();
+    let outside = tempfile::NamedTempFile::new().unwrap();
+    fs::write(outside.path(), "outside").unwrap();
+    symlink(outside.path(), root.join(".mdc/latex/MdcWork.tex")).unwrap();
+
+    let output = run_mdc(root, &["work", &src.fnode]);
+    assert!(!output.status.success());
+    assert!(output_text(&output.stderr).contains("refusing to access symlink"));
+    assert_eq!(fs::read_to_string(outside.path()).unwrap(), "outside");
+}
+
+#[test]
+fn back_rejects_missing_node_section() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let src = make_node(root, "Missing Node", "latex", "original body\n");
+    src.save().unwrap();
+    let output = run_mdc(root, &["work", &src.fnode]);
+    assert!(output.status.success(), "{}", output_text(&output.stderr));
+
+    let work_path = root.join(".mdc/latex/MdcWork.tex");
+    let work = fs::read_to_string(&work_path).unwrap();
+    let node_start = work.find("% mdc: fnode:").unwrap();
+    let postamble_start = work.find("% mdc: postamble").unwrap();
+    let truncated = format!("{}{}", &work[..node_start], &work[postamble_start..]);
+    fs::write(&work_path, truncated).unwrap();
+
+    let output = run_mdc(root, &["back"]);
+    assert!(!output.status.success());
+    assert!(output_text(&output.stderr).contains("node sections do not match"));
+    assert_eq!(
+        MdocNode::load(root, &src.path).unwrap().blocks[0].content,
+        "original body\n"
+    );
+}
+
+#[test]
+fn work_rejects_source_content_that_looks_like_a_marker() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let src = make_node(root, "Marker", "latex", "% mdc: end\n");
+    src.save().unwrap();
+
+    let output = run_mdc(root, &["work", &src.fnode]);
+    assert!(!output.status.success());
+    assert!(output_text(&output.stderr).contains("reserved work-file marker"));
 }

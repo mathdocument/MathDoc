@@ -3,14 +3,29 @@ mod queries;
 mod refresh;
 mod schema;
 
+pub(crate) use refresh::resolve_workspace_path;
+
 use anyhow::{bail, Result};
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::core::{
-    DependencyItem, DependencyTraversalReport, GraphCheckReport, GraphIssue, GraphRootItem,
+    short_fnode, DependencyItem, DependencyTraversalReport, GraphCheckReport, GraphIssue,
+    GraphRootItem,
 };
+
+#[derive(Debug, thiserror::Error)]
+pub enum ResolveRefError {
+    #[error("mdoc reference cannot be empty")]
+    Empty,
+    #[error("no mdoc matched reference: {0}")]
+    NotFound(String),
+    #[error("ambiguous mdoc reference '{reference}', matches: {matches}")]
+    Ambiguous { reference: String, matches: String },
+    #[error("invalid mdoc file: {0}")]
+    Invalid(String),
+}
 
 /// SQLite-backed index of a MathDoc workspace.
 pub struct IndCache {
@@ -21,7 +36,13 @@ pub struct IndCache {
 impl IndCache {
     /// Open (or create) the index database for the workspace rooted at `root`.
     pub fn open(root: PathBuf) -> Result<Self> {
-        let root = root.canonicalize()?;
+        let root = crate::workspace::validate_mdcroot(&root)?;
+        let _mutation_lock = crate::mutation_lock::WorkspaceMutationLock::acquire(&root)?;
+        Self::open_under_mutation_lock(root)
+    }
+
+    pub(crate) fn open_under_mutation_lock(root: PathBuf) -> Result<Self> {
+        let root = crate::workspace::validate_mdcroot(&root)?;
         let db_path = root.join(".mdc").join("index.db");
         let (mut conn, needs_topo_backfill) = schema::open_db(&db_path)?;
         if needs_topo_backfill {
@@ -37,7 +58,9 @@ impl IndCache {
             )?;
             tx.commit()?;
         }
-        Ok(IndCache { root, conn })
+        let mut cache = IndCache { root, conn };
+        cache.bootstrap_if_needed()?;
+        Ok(cache)
     }
 
     /// Absolute path to the SQLite database file.
@@ -102,8 +125,9 @@ impl IndCache {
 
     /// Upsert a single file path with incremental topo and weak component updates.
     pub fn upsert_path(&mut self, file_path: &Path) -> Result<()> {
+        let file_path = resolve_workspace_path(&self.root, file_path)?;
         let tx = self.conn.transaction()?;
-        let rel_path = crate::workspace::to_rel_path(&self.root, file_path);
+        let rel_path = crate::workspace::to_rel_path(&self.root, &file_path);
 
         // Capture pre-upsert state for incremental updates.
         let old_fnode = queries::fnode_for_path(&tx, &rel_path)?;
@@ -112,7 +136,7 @@ impl IndCache {
                 .into_iter()
                 .collect();
 
-        refresh::upsert_mdoc_row(&tx, &self.root, file_path)?;
+        refresh::upsert_mdoc_row(&tx, &self.root, &file_path)?;
 
         // Post-upsert state.
         let new_fnode = queries::fnode_for_path(&tx, &rel_path)?;
@@ -121,11 +145,14 @@ impl IndCache {
                 .into_iter()
                 .collect();
 
-        // Incremental topo refresh.
-        if let Some(ref fnode) = new_fnode {
-            refresh::refresh_topo_depth_upward_from(&tx, fnode)?;
-        } else {
-            refresh::backfill_all_topo_depths(&tx)?;
+        // A rename affects both ancestors of the old token and the new node.
+        match (old_fnode.as_deref(), new_fnode.as_deref()) {
+            (Some(old), Some(new)) if old != new => {
+                refresh::refresh_topo_depth_upward_from(&tx, old)?;
+                refresh::refresh_topo_depth_upward_from(&tx, new)?;
+            }
+            (_, Some(new)) => refresh::refresh_topo_depth_upward_from(&tx, new)?,
+            (_, None) => refresh::backfill_all_topo_depths(&tx)?,
         }
 
         // Incremental weak component update (also clears weak_component_dirty).
@@ -181,16 +208,27 @@ impl IndCache {
         queries::search(&self.conn, query)
     }
 
+    pub fn search_with_metadata(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, String, String, bool, u32)>> {
+        queries::search_with_metadata(&self.conn, query, limit)
+    }
+
     pub fn exact_fnode_rows(&self, fnode: &str) -> Result<Vec<(String, String, String)>> {
         queries::exact_fnode_rows(&self.conn, fnode)
     }
 
     pub fn duplicate_fnode_paths(&self, fnode: &str) -> Result<Vec<PathBuf>> {
         let rows = self.exact_fnode_rows(fnode)?;
-        Ok(rows
-            .into_iter()
-            .map(|(_, _, p)| self.root.join(p))
-            .collect())
+        let mut paths = Vec::new();
+        for (_, _, rel_path) in rows {
+            if let Some(path) = self.valid_cached_path(&rel_path)? {
+                paths.push(path);
+            }
+        }
+        Ok(paths)
     }
 
     pub fn lookup_by_fnode(&self, fnodes: &[&str]) -> Result<HashMap<String, (String, String)>> {
@@ -272,7 +310,7 @@ impl IndCache {
     ) -> Result<(String, String, PathBuf)> {
         let raw_ref = raw_ref.trim();
         if raw_ref.is_empty() {
-            bail!("mdoc reference cannot be empty");
+            return Err(ResolveRefError::Empty.into());
         }
         let base_cwd = cwd
             .map(|c| c.to_path_buf())
@@ -285,50 +323,55 @@ impl IndCache {
             }
             match crate::mdocnode::read_mdoc_head(&candidate) {
                 Some((fnode, title)) if !fnode.is_empty() => return Ok((fnode, title, candidate)),
-                _ => bail!("invalid mdoc file: {}", candidate.display()),
+                _ => return Err(ResolveRefError::Invalid(candidate.display().to_string()).into()),
             }
         }
 
-        let rows = queries::resolve_fnode_ref(&self.conn, raw_ref)?
-            .ok_or_else(|| anyhow::anyhow!("no mdoc matched reference: {raw_ref}"))?;
+        let untrusted_rows = queries::resolve_fnode_ref(&self.conn, raw_ref)?
+            .ok_or_else(|| ResolveRefError::NotFound(raw_ref.to_string()))?;
+        let mut rows = Vec::new();
+        for (fnode, title, rel_path) in untrusted_rows {
+            if let Some(path) = self.valid_cached_path(&rel_path)? {
+                rows.push((fnode, title, rel_path, path));
+            }
+        }
+        if rows.is_empty() {
+            return Err(ResolveRefError::NotFound(raw_ref.to_string()).into());
+        }
 
         let query_lc = raw_ref.to_lowercase();
         let exact: Vec<_> = rows
             .iter()
-            .filter(|(f, _, _)| f.to_lowercase() == query_lc)
+            .filter(|(f, _, _, _)| f.to_lowercase() == query_lc)
             .collect();
 
         let chosen = if !exact.is_empty() {
             if exact.len() == 1 {
                 exact[0]
             } else {
-                bail!(
-                    "ambiguous mdoc reference '{}', matches: {}",
-                    raw_ref,
-                    format_ref_preview(&exact)
-                );
+                return Err(ResolveRefError::Ambiguous {
+                    reference: raw_ref.to_string(),
+                    matches: format_ref_preview(&exact),
+                }
+                .into());
             }
         } else if rows.len() == 1 {
             &rows[0]
         } else {
-            bail!(
-                "ambiguous mdoc reference '{}', matches: {}",
-                raw_ref,
-                format_ref_preview(&rows.iter().collect::<Vec<_>>())
-            );
+            return Err(ResolveRefError::Ambiguous {
+                reference: raw_ref.to_string(),
+                matches: format_ref_preview(&rows.iter().collect::<Vec<_>>()),
+            }
+            .into());
         };
-        Ok((
-            chosen.0.clone(),
-            chosen.1.clone(),
-            self.root.join(&chosen.2),
-        ))
+        Ok((chosen.0.clone(), chosen.1.clone(), chosen.3.clone()))
     }
 
     /// Like `resolve_ref` but returns only the path (also accepts refs that aren't indexed).
     pub fn resolve_edit_target_path(&self, raw_ref: &str, cwd: Option<&Path>) -> Result<PathBuf> {
         let raw_ref = raw_ref.trim();
         if raw_ref.is_empty() {
-            bail!("mdoc reference cannot be empty");
+            return Err(ResolveRefError::Empty.into());
         }
         let base_cwd = cwd
             .map(|c| c.to_path_buf())
@@ -343,6 +386,16 @@ impl IndCache {
 
     // ── Private helpers ──────────────────────────────────────────────────────
 
+    fn valid_cached_path(&self, rel_path: &str) -> Result<Option<PathBuf>> {
+        match refresh::validate_cached_mdoc_path(&self.root, rel_path) {
+            Ok(path) => Ok(Some(path)),
+            Err(_) => {
+                refresh::delete_indexed_path(&self.conn, rel_path)?;
+                Ok(None)
+            }
+        }
+    }
+
     /// If `raw_ref` looks like a path, try to resolve it to an existing file.
     /// Returns `(abs_path, rel_path)` on success.
     fn resolve_existing_path(
@@ -355,26 +408,23 @@ impl IndCache {
         }
         let raw_path = PathBuf::from(raw_ref);
         let candidates: Vec<PathBuf> = if raw_path.is_absolute() {
-            vec![raw_path.canonicalize().unwrap_or(raw_path)]
+            vec![raw_path]
         } else {
-            vec![
-                cwd.join(&raw_path)
-                    .canonicalize()
-                    .unwrap_or_else(|_| cwd.join(&raw_path)),
-                self.root
-                    .join(&raw_path)
-                    .canonicalize()
-                    .unwrap_or_else(|_| self.root.join(&raw_path)),
-            ]
+            vec![cwd.join(&raw_path), self.root.join(&raw_path)]
         };
         for candidate in candidates {
-            if candidate.is_file() {
-                let rel_path = self.workspace_rel_path(&candidate)?;
-                return Ok(Some((candidate, rel_path)));
+            if std::fs::symlink_metadata(&candidate).is_ok() {
+                let resolved = resolve_workspace_path(&self.root, &candidate)?;
+                let meta = std::fs::symlink_metadata(&resolved)?;
+                if meta.file_type().is_symlink() || !meta.is_file() {
+                    bail!("mdoc path is not a regular file: {}", candidate.display());
+                }
+                let rel_path = self.workspace_rel_path(&resolved)?;
+                return Ok(Some((resolved, rel_path)));
             }
         }
         if raw_ref.ends_with(".mdoc") {
-            bail!("mdoc file not found: {raw_ref}");
+            return Err(ResolveRefError::NotFound(raw_ref.to_string()).into());
         }
         Ok(None)
     }
@@ -397,9 +447,9 @@ fn looks_like_path_ref(raw_ref: &str) -> bool {
     raw_ref.contains('/') || raw_ref.ends_with(".mdoc") || raw_ref.starts_with('.')
 }
 
-fn format_ref_preview(rows: &[&(String, String, String)]) -> String {
+fn format_ref_preview(rows: &[&(String, String, String, PathBuf)]) -> String {
     rows.iter()
-        .map(|(f, _, p)| format!("{}:{}", &f[..f.len().min(8)], p))
+        .map(|(f, _, p, _)| format!("{}:{}", short_fnode(f), p))
         .collect::<Vec<_>>()
         .join(", ")
 }

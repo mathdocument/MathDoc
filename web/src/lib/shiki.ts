@@ -2,8 +2,15 @@
 // Pre-loads all mdc srctype grammars so the editor has highlighting
 // once the WASM engine is loaded (async, ~200ms on first use).
 
-import { createHighlighter } from "shiki";
-import type { Highlighter } from "shiki";
+import { createHighlighterCore, type HighlighterCore } from "shiki/core";
+import { createOnigurumaEngine } from "shiki/engine/oniguruma";
+import getWasm from "shiki/wasm";
+import markdown from "@shikijs/langs/markdown";
+import latex from "@shikijs/langs/latex";
+import python from "@shikijs/langs/python";
+import lean from "@shikijs/langs/lean";
+import coq from "@shikijs/langs/coq";
+import tokyoNight from "@shikijs/themes/tokyo-night";
 
 // Map mdc srctype → Shiki language id.
 const SRCTYPE_TO_LANG: Record<string, string> = {
@@ -14,13 +21,14 @@ const SRCTYPE_TO_LANG: Record<string, string> = {
   rocq: "coq",
 };
 
-let highlighterPromise: Promise<Highlighter> | null = null;
+let highlighterPromise: Promise<HighlighterCore> | null = null;
 
-export function getHighlighter(): Promise<Highlighter> {
+export function getHighlighter(): Promise<HighlighterCore> {
   if (!highlighterPromise) {
-    highlighterPromise = createHighlighter({
-      langs: ["markdown", "latex", "python", "lean", "coq"],
-      themes: ["tokyo-night"],
+    highlighterPromise = createHighlighterCore({
+      langs: [markdown, latex, python, lean, coq],
+      themes: [tokyoNight],
+      engine: createOnigurumaEngine(getWasm),
     });
   }
   return highlighterPromise;

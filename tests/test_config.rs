@@ -23,6 +23,33 @@ fn load_config_with_srctype() {
 }
 
 #[test]
+fn load_config_canonicalizes_known_srctype_case() {
+    let dir = TempDir::new().unwrap();
+    let mdc = dir.path().join(".mdc");
+    fs::create_dir(&mdc).unwrap();
+    fs::write(mdc.join("config.toml"), "[src.Python]\ntimeout_sec = 60\n").unwrap();
+
+    let cfg = Config::load(dir.path()).unwrap();
+
+    assert!(cfg.src.contains_key("python"));
+    assert!(!cfg.src.contains_key("Python"));
+}
+
+#[test]
+fn load_config_rejects_case_only_duplicate_srctypes() {
+    let dir = TempDir::new().unwrap();
+    let mdc = dir.path().join(".mdc");
+    fs::create_dir(&mdc).unwrap();
+    fs::write(
+        mdc.join("config.toml"),
+        "[src.Python]\ntimeout_sec = 60\n\n[src.python]\ntimeout_sec = 30\n",
+    )
+    .unwrap();
+
+    assert!(Config::load(dir.path()).is_err());
+}
+
+#[test]
 fn src_config_returns_defaults_for_known_srctypes() {
     let cfg = Config::default();
 

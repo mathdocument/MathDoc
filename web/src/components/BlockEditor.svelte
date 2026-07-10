@@ -12,7 +12,7 @@
     crosshairCursor,
     highlightActiveLineGutter,
   } from "@codemirror/view";
-  import { defaultKeymap, historyKeymap, indentWithTab } from "@codemirror/commands";
+  import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
   import { indentUnit } from "@codemirror/language";
   import type { Extension } from "@codemirror/state";
   import type { SrcBlock } from "../lib/types";
@@ -20,6 +20,7 @@
   import { errMsg } from "../lib/format";
   import { shikiHighlight } from "../lib/cm-shiki";
   import { getHighlighter, srctypeToLang } from "../lib/shiki";
+  import { removeDraft, setDraftDirty, setMutationPending } from "../lib/unsaved";
 
   interface Props {
     fnode: string;
@@ -30,14 +31,23 @@
 
   let host = $state<HTMLDivElement | null>(null);
   let editorView: EditorView | null = null;
+  let editorExtensions: Extension[] = [];
   let dirty = $state(false);
   let saving = $state(false);
-  let lastSavedContent = $state(block.content);
+  let deleting = $state(false);
+  let lastSavedContent = $state("");
   let error: string | null = $state(null);
   let expanded = $state(true);
   let loading = $state(true);
   let shikiError: string | null = $state(null);
   let alive = false;
+  const draftId = Symbol("block draft");
+  const mutationId = Symbol("block mutation");
+  let identityVersion = 0;
+  let prevFnode: string | null = null;
+  let prevSrctype: string | null = null;
+  let prevContent: string | null = null;
+  let pendingSaveContent: string | null = null;
 
   const SHIKI_THEME = "tokyo-night";
 
@@ -50,6 +60,7 @@
       rectangularSelection(),
       crosshairCursor(),
       highlightActiveLineGutter(),
+      history(),
       keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
       EditorState.tabSize.of(4),
       indentUnit.of("    "),
@@ -74,10 +85,15 @@
       }),
       EditorView.updateListener.of((u) => {
         if (u.docChanged) {
-          dirty = u.state.doc.toString() !== lastSavedContent;
+          setDirty(pendingSaveContent !== null || u.state.doc.toString() !== lastSavedContent);
         }
       }),
     ];
+  }
+
+  function setDirty(value: boolean) {
+    dirty = value;
+    setDraftDirty(draftId, value);
   }
 
   onMount(() => {
@@ -87,9 +103,10 @@
         if (!alive || !host) { loading = false; return; }
         const lang = srctypeToLang(block.srctype);
         const shikiExt = shikiHighlight(hl, lang, SHIKI_THEME);
+        editorExtensions = [...buildBaseExtensions(), shikiExt];
         editorView = new EditorView({
           doc: block.content,
-          extensions: [...buildBaseExtensions(), shikiExt],
+          extensions: editorExtensions,
           parent: host,
         });
         loading = false;
@@ -97,75 +114,130 @@
       .catch((e) => {
         shikiError = errMsg(e);
         if (!alive || !host) { loading = false; return; }
+        editorExtensions = buildBaseExtensions();
         editorView = new EditorView({
           doc: block.content,
-          extensions: buildBaseExtensions(),
+          extensions: editorExtensions,
           parent: host,
         });
         loading = false;
       });
   });
 
-  function save() {
-    if (!editorView || !dirty || saving) return;
+  async function save() {
+    if (!editorView || !dirty || saving || deleting) return;
+    const targetFnode = fnode;
+    const targetSrctype = block.srctype;
+    const requestIdentity = identityVersion;
     saving = true;
+    setMutationPending(mutationId, true);
     error = null;
     const content = editorView.state.doc.toString();
-    api
-      .putBlock(fnode, block.srctype, content)
-      .then((node) => {
-        const updated = node.blocks.find((b) => b.srctype === block.srctype);
-        if (updated && editorView) {
-          lastSavedContent = updated.content;
-          if (editorView.state.doc.toString() !== updated.content) {
-            editorView.dispatch({
-              changes: { from: 0, to: editorView.state.doc.length, insert: updated.content },
-            });
-          }
-          dirty = false;
+    pendingSaveContent = content;
+    setDirty(true);
+    const isCurrent = () => alive && requestIdentity === identityVersion &&
+      fnode === targetFnode && block.srctype === targetSrctype;
+
+    try {
+      const node = await api.putBlock(targetFnode, targetSrctype, content);
+      if (!isCurrent() || !editorView) return;
+      const updated = node.blocks.find((b) => b.srctype === targetSrctype);
+      if (!updated) {
+        error = `saved response is missing the ${targetSrctype} block`;
+        return;
+      }
+
+      lastSavedContent = updated.content;
+      // A response may normalize the submitted text, but it must never replace
+      // edits made while that request was in flight.
+      if (editorView.state.doc.toString() === content) {
+        if (content !== updated.content) {
+          editorView.dispatch({
+            changes: { from: 0, to: editorView.state.doc.length, insert: updated.content },
+          });
         }
-      })
-      .catch((e: unknown) => { error = errMsg(e); })
-      .finally(() => { saving = false; });
+      }
+    } catch (e) {
+      if (isCurrent()) error = errMsg(e);
+    } finally {
+      setMutationPending(mutationId, false);
+      if (isCurrent()) {
+        pendingSaveContent = null;
+        if (editorView) setDirty(editorView.state.doc.toString() !== lastSavedContent);
+        saving = false;
+      }
+    }
   }
 
-  function onDelete() {
+  async function onDelete() {
+    if (saving || deleting) return;
     if (!confirm(`Delete the ${block.srctype} block from this node?`)) return;
+    const targetFnode = fnode;
+    const targetSrctype = block.srctype;
+    const requestIdentity = identityVersion;
     error = null;
-    api
-      .deleteBlock(fnode, block.srctype)
-      .then(() => { onDeleted?.(block.srctype); })
-      .catch((e: unknown) => { error = errMsg(e); });
+    deleting = true;
+    setMutationPending(mutationId, true);
+    const isCurrent = () => alive && requestIdentity === identityVersion &&
+      fnode === targetFnode && block.srctype === targetSrctype;
+    try {
+      await api.deleteBlock(targetFnode, targetSrctype);
+      if (!isCurrent()) return;
+      setDirty(false);
+      onDeleted?.(targetSrctype);
+    } catch (e) {
+      if (isCurrent()) error = errMsg(e);
+    } finally {
+      setMutationPending(mutationId, false);
+      if (isCurrent()) deleting = false;
+    }
   }
 
   function toggleExpand() { expanded = !expanded; }
 
   onDestroy(() => {
     alive = false;
+    removeDraft(draftId);
     editorView?.destroy();
     editorView = null;
   });
 
   // Update content when fnode, srctype, or content changes (e.g. external
   // edit picked up by the refresh button).
-  let prevFnode = fnode;
-  let prevSrctype = block.srctype;
-  let prevContent = block.content;
   $effect(() => {
-    void fnode;
-    void block.srctype;
-    void block.content;
-    if (fnode === prevFnode && block.srctype === prevSrctype && block.content === prevContent) return;
-    prevFnode = fnode;
-    prevSrctype = block.srctype;
-    prevContent = block.content;
-    if (editorView) {
-      editorView.dispatch({
-        changes: { from: 0, to: editorView.state.doc.length, insert: block.content },
-      });
-      lastSavedContent = block.content;
-      dirty = false;
+    const nextFnode = fnode;
+    const nextSrctype = block.srctype;
+    const nextContent = block.content;
+    if (nextFnode === prevFnode && nextSrctype === prevSrctype && nextContent === prevContent) return;
+    const identityChanged = prevFnode !== null &&
+      (nextFnode !== prevFnode || nextSrctype !== prevSrctype);
+    if (!identityChanged && (saving || deleting)) return;
+    prevFnode = nextFnode;
+    prevSrctype = nextSrctype;
+    prevContent = nextContent;
+    identityVersion++;
+    pendingSaveContent = null;
+    if (identityChanged) {
+      saving = false;
+      deleting = false;
     }
+    error = null;
+    lastSavedContent = nextContent;
+    if (editorView) {
+      if (identityChanged) {
+        // A keyed block component may be reused for the same srctype on a new
+        // node. Reset state so undo history cannot cross that node boundary.
+        editorView.setState(EditorState.create({
+          doc: nextContent,
+          extensions: editorExtensions,
+        }));
+      } else {
+        editorView.dispatch({
+          changes: { from: 0, to: editorView.state.doc.length, insert: nextContent },
+        });
+      }
+    }
+    setDirty(false);
   });
 </script>
 
@@ -175,13 +247,14 @@
     <span class="spacer"></span>
     {#if dirty}<span class="dirty" title="unsaved">●</span>{/if}
     {#if saving}<span class="saving">saving…</span>{/if}
+    {#if deleting}<span class="saving">deleting…</span>{/if}
     {#if error}<span class="error" title={error}>⚠</span>{/if}
     {#if shikiError}<span class="error" title={`highlight: ${shikiError}`}>⚡</span>{/if}
     <button class="icon-btn expand" onclick={toggleExpand} title={expanded ? "collapse" : "expand"}>
       {#if expanded}▾{:else}▸{/if}
     </button>
-    <button class="save" onclick={save} disabled={!dirty || saving}>save</button>
-    <button class="delete" onclick={onDelete} title="delete block">×</button>
+    <button class="save" onclick={save} disabled={!dirty || saving || deleting}>save</button>
+    <button class="delete" onclick={onDelete} disabled={saving || deleting} title="delete block">×</button>
   </header>
   <div class="editor-host" class:expanded class:collapsed={!expanded} bind:this={host}>
     {#if loading}

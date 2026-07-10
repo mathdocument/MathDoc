@@ -1,18 +1,43 @@
+use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
 
 /// Walk up from `start` looking for a `.mdc/` directory. Returns the workspace root if found.
 pub fn find_mdcroot(start: &Path) -> Option<PathBuf> {
-    let mut current = start.to_path_buf();
+    let mut current = start.canonicalize().ok()?;
     loop {
-        if current.join(".mdc").is_dir() {
+        if is_regular_directory(&current.join(".mdc")) {
             return Some(current);
         }
         if !current.pop() {
             return None;
         }
     }
+}
+
+/// Canonicalize a workspace root and require its `.mdc` control path to be a
+/// real directory rather than a symlink.
+pub fn validate_mdcroot(root: &Path) -> Result<PathBuf> {
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("canonicalizing workspace root {}", root.display()))?;
+    let mdc = root.join(".mdc");
+    let meta = std::fs::symlink_metadata(&mdc)
+        .with_context(|| format!("inspecting workspace control directory {}", mdc.display()))?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        bail!(
+            "workspace control path must be a real directory: {}",
+            mdc.display()
+        );
+    }
+    Ok(root)
+}
+
+fn is_regular_directory(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|meta| !meta.file_type().is_symlink() && meta.is_dir())
+        .unwrap_or(false)
 }
 
 /// Find a nested mdoc root inside the given `root` workspace, searching from `path` upward.
@@ -26,7 +51,7 @@ pub fn find_nested_mdcroot(root: &Path, path: &Path) -> Option<PathBuf> {
         if current == root {
             return None;
         }
-        if current.join(".mdc").is_dir() {
+        if is_regular_directory(&current.join(".mdc")) {
             return Some(current.to_path_buf());
         }
         current = current.parent()?;
@@ -34,7 +59,7 @@ pub fn find_nested_mdcroot(root: &Path, path: &Path) -> Option<PathBuf> {
 }
 
 /// Iterate all `.mdoc` files under `root`, skipping `.mdc/` directories and nested workspaces.
-pub fn iter_mdoc_files(root: &Path) -> impl Iterator<Item = PathBuf> + '_ {
+pub fn iter_mdoc_files(root: &Path) -> impl Iterator<Item = Result<PathBuf>> + '_ {
     WalkDir::new(root)
         .follow_links(false)
         .into_iter()
@@ -51,15 +76,15 @@ pub fn iter_mdoc_files(root: &Path) -> impl Iterator<Item = PathBuf> + '_ {
             }
             true
         })
-        .filter_map(|result| {
-            let entry = result.ok()?;
-            if entry.file_type().is_file()
-                && entry.path().extension().and_then(|e| e.to_str()) == Some("mdoc")
+        .filter_map(|result| match result {
+            Ok(entry)
+                if entry.file_type().is_file()
+                    && entry.path().extension().and_then(|e| e.to_str()) == Some("mdoc") =>
             {
-                Some(entry.into_path())
-            } else {
-                None
+                Some(Ok(entry.into_path()))
             }
+            Ok(_) => None,
+            Err(error) => Some(Err(error.into())),
         })
 }
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount, tick } from "svelte";
   import { navigate, appState, goBack, goForward, canGoBack, canGoForward, refreshFocused } from "./lib/state.svelte";
   import { api } from "./lib/api";
   import NodeColumn from "./components/NodeColumn.svelte";
@@ -9,6 +10,12 @@
   import NewNodeOverlay from "./components/NewNodeOverlay.svelte";
   import ForceGraph from "./components/ForceGraph.svelte";
   import type { NodeDetail } from "./lib/types";
+  import {
+    confirmDiscardDrafts,
+    hasUnsavedDrafts,
+    settlePendingMutations,
+    unsavedDraftRevision,
+  } from "./lib/unsaved";
 
   let showSearch = $state(false);
   let showAddDep = $state(false);
@@ -23,6 +30,9 @@
   let forceSelectedFnode = $state<string | null>(null);
   // Increment after dep mutations to trigger ForceGraph data refresh.
   let graphRevision = $state(0);
+  let forceLoadRequest = 0;
+  let viewRequest = 0;
+  let forceEditorRevision = $state(0);
   // NodeDetail for the force-graph side panel (fetched on selection).
   let forceNodeLoad = $state<
     | { kind: "idle" }
@@ -30,6 +40,16 @@
     | { kind: "ready"; node: NodeDetail }
     | { kind: "error"; message: string }
   >({ kind: "idle" });
+
+  onMount(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!hasUnsavedDrafts()) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  });
 
   // Pick a default starting node on first mount: deepest root, else first.
   $effect(() => {
@@ -59,27 +79,50 @@
     })();
   });
 
-  async function refreshCurrent() {
+  async function refreshCurrent(skipUnsavedGuard = false) {
     if (appState.load.kind !== "ready") return;
     const fnode = appState.load.node.fnode;
-    await navigate(fnode, { pushHistory: false, skipTransition: true });
+    await navigate(fnode, {
+      pushHistory: false,
+      skipTransition: true,
+      skipUnsavedGuard,
+    });
   }
 
-  function refreshView() {
+  async function refreshView() {
+    if (!confirmDiscardDrafts()) return;
+    if (!await settlePendingMutations()) return;
     // Refresh both views so switching between them doesn't show stale data.
     graphRevision++;
-    void refreshForceNodeRaw();
-    void refreshCurrent();
+    void refreshForceNodeRaw(true);
+    void refreshCurrent(true);
   }
 
   function refreshForceNode(node: NodeDetail) {
+    if (node.fnode !== forceSelectedFnode) return;
+    forceLoadRequest++;
+    graphRevision++;
     forceNodeLoad = { kind: "ready", node };
   }
 
-  async function refreshForceNodeRaw() {
+  function refreshColumnNode(node: NodeDetail) {
+    graphRevision++;
+    refreshFocused(node);
+  }
+
+  async function refreshForceNodeRaw(skipUnsavedGuard = false) {
     if (!forceSelectedFnode) return;
+    if (!skipUnsavedGuard && !confirmDiscardDrafts()) return;
+    if (!await settlePendingMutations()) return;
+    if (!forceSelectedFnode) return;
+    const confirmedDraftRevision = unsavedDraftRevision();
+    const targetFnode = forceSelectedFnode;
+    const request = ++forceLoadRequest;
     try {
-      const node = await api.node(forceSelectedFnode);
+      const node = await api.node(targetFnode);
+      if (request !== forceLoadRequest || forceSelectedFnode !== targetFnode) return;
+      if (unsavedDraftRevision() !== confirmedDraftRevision) return;
+      forceEditorRevision++;
       forceNodeLoad = { kind: "ready", node };
     } catch {
       // ignore
@@ -129,17 +172,26 @@
     return "";
   }
 
-  async function onForceSelect(fnode: string | null) {
+  async function onForceSelect(fnode: string | null, skipUnsavedGuard = false) {
+    if (!skipUnsavedGuard && !confirmDiscardDrafts()) return;
+    if (!await settlePendingMutations()) return;
+    const request = ++forceLoadRequest;
     forceSelectedFnode = fnode;
     if (!fnode) {
       forceNodeLoad = { kind: "idle" };
       return;
     }
     forceNodeLoad = { kind: "loading" };
+    await tick();
+    const confirmedDraftRevision = unsavedDraftRevision();
     try {
       const node = await api.node(fnode);
+      if (request !== forceLoadRequest || forceSelectedFnode !== fnode) return;
+      if (unsavedDraftRevision() !== confirmedDraftRevision) return;
+      forceEditorRevision++;
       forceNodeLoad = { kind: "ready", node };
     } catch (e) {
+      if (request !== forceLoadRequest || forceSelectedFnode !== fnode) return;
       forceNodeLoad = {
         kind: "error",
         message: e instanceof Error ? e.message : String(e),
@@ -148,26 +200,34 @@
   }
 
   async function toggleGraphView() {
+    if (!confirmDiscardDrafts()) return;
+    const request = ++viewRequest;
     if (view === "columns") {
       // Enter graph view: select the current column-view node.
       const currentFnode = appState.load.kind === "ready" ? appState.load.node.fnode : null;
-      forceSelectedFnode = currentFnode;
+      view = "force";
+      await tick();
+      if (request !== viewRequest) return;
       if (currentFnode) {
-        void onForceSelect(currentFnode);
+        await onForceSelect(currentFnode, true);
       } else {
+        forceSelectedFnode = null;
+        forceLoadRequest++;
         forceNodeLoad = { kind: "idle" };
       }
-      view = "force";
     } else {
       // Exit graph view. Keep the force view visible while navigating
       // to avoid flashing the old column-view node (A) before the new
       // one (B) arrives.
       const target = forceSelectedFnode;
       forceSelectedFnode = null;
+      forceLoadRequest++;
       forceNodeLoad = { kind: "idle" };
+      await tick();
       if (target) {
-        await navigate(target, { skipTransition: true });
+        await navigate(target, { skipTransition: true, skipUnsavedGuard: true });
       }
+      if (request !== viewRequest) return;
       view = "columns";
     }
   }
@@ -231,13 +291,16 @@
     </div>
     {#if view === "force" && forceSelectedFnode}
       <div class="force-editor-wrap">
-        <EditorPane load={forceNodeLoad} onRefresh={refreshForceNode} />
+        {#key `${forceSelectedFnode}:${forceEditorRevision}`}
+          <EditorPane load={forceNodeLoad} onRefresh={refreshForceNode} />
+        {/key}
       </div>
     {/if}
   </main>
 
-  <!-- Column view: hidden when in force mode. -->
-  <main class="layout" class:hidden={view === "force"}>
+  <!-- Unmount editors after a confirmed view switch so hidden drafts cannot linger. -->
+  {#if view === "columns"}
+  <main class="layout">
     {#if initialError}
       <div class="full-error">{initialError}</div>
     {:else}
@@ -250,7 +313,9 @@
         onSelect={(fnode) => navigate(fnode, { direction: "up" })}
         onHover={(i) => (appState.referrers.selected = i)}
       />
-      <EditorPane load={appState.load} onRefresh={refreshFocused} />
+      {#key appState.editorRevision}
+        <EditorPane load={appState.load} onRefresh={refreshColumnNode} />
+      {/key}
       <NodeColumn
         title="downstream · dependencies"
         items={appState.children.items}
@@ -262,6 +327,7 @@
       />
     {/if}
   </main>
+  {/if}
 </div>
 
 {#if showSearch}
@@ -407,9 +473,6 @@
     min-height: 0;
   }
   .force-layout.hidden {
-    display: none;
-  }
-  .layout.hidden {
     display: none;
   }
   .force-canvas-wrap {

@@ -1,5 +1,5 @@
 use super::{
-    cfg_positive_int, is_timeout_error, require_tool, run_process, source_path, CompilerReq,
+    cfg_positive_int, process_error_result, require_tool, run_process, source_path, CompilerReq,
     CompilerRes, SrcCompiler,
 };
 
@@ -28,9 +28,9 @@ impl SrcCompiler for CompilerPython {
                 stdout,
                 stderr,
                 rtcode,
+                interrupted: false,
             },
-            Err(e) if is_timeout_error(&e) => CompilerRes::err_code(e.to_string(), 124),
-            Err(e) => CompilerRes::err_code(e.to_string(), 127),
+            Err(e) => process_error_result(e, 127),
         }
     }
 }

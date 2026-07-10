@@ -2,7 +2,7 @@ use anyhow::{bail, Result};
 use std::path::Path;
 
 use super::{
-    cfg_positive_int, emit_progress, is_timeout_error, require_tool, run_process, CompilerReq,
+    cfg_positive_int, emit_progress, process_error_result, require_tool, run_process, CompilerReq,
     CompilerRes, SrcCompiler,
 };
 
@@ -37,7 +37,7 @@ impl SrcCompiler for CompilerLean {
 
         let ws_root = req.mdcroot.join(".mdc").join("lean");
         if let Err(e) = ensure_workspace(&ws_root, &lake, setup_timeout_sec, &req.progress) {
-            return CompilerRes::err(e.to_string());
+            return process_error_result(e, 1);
         }
 
         emit_progress(
@@ -63,10 +63,10 @@ impl SrcCompiler for CompilerLean {
                     stdout: out,
                     stderr: err,
                     rtcode,
+                    interrupted: false,
                 }
             }
-            Err(e) if is_timeout_error(&e) => CompilerRes::err_code(e.to_string(), 124),
-            Err(e) => CompilerRes::err_code(e.to_string(), 1),
+            Err(e) => process_error_result(e, 1),
         }
     }
 }

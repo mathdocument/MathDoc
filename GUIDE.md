@@ -21,11 +21,14 @@ cargo clippy                    # lint
 cd web && npm install           # first-time setup
 cd web && npm run build         # write web/dist/ (embedded by cargo build --release)
 cd web && npm run check         # svelte-check type/syntax pass
-cargo run --features dev-web -- serve   # dev mode: serve web/ via tower-http ServeDir
-cd web && npm run dev                  #   (separate terminal) Vite HMR on :5173
+cargo run --features dev-web -- serve --bind 127.0.0.1:7599 --no-open
+cd web && npm run dev                  # separate terminal; open Vite HMR on :5173
 ```
 
 Integration tests live in `tests/`. Unit tests are inline in source files.
+Release builds embed the committed `web/dist/` output. Keep it in sync with web
+source changes by running `npm run build`; the build intentionally bundles only
+the five supported source languages and one theme.
 
 ## Product Model
 
@@ -192,8 +195,8 @@ recovered on the next open.
 | `mdc edit` | `discover_workspace_changes()` | `upsert_path()` after editor exits | Opens `$EDITOR` |
 | `mdc sync` | none | `refresh_all()` | Intentional full-rescan escape hatch |
 | `mdc search` | `discover_workspace_changes()` | none | Reads `mdocs`; does not re-stat unchanged known files |
-| `mdc dep add` | through `DepGraph::from_ref` | inside `add_direct_dependencies()` or `create_and_add_dependency()` | Cycle-creating dependencies are rejected before write |
-| `mdc dep rm` | through `DepGraph::from_ref` | inside `remove_direct_dependencies()` | Index update is part of DepGraph mutation |
+| `mdc dep add` | through `DepGraph::from_ref` | inside `add_direct_dependencies()` or `create_and_add_dependency()` | `--target` refreshes and uniquely resolves one target before cycle checking |
+| `mdc dep rm` | through `DepGraph::from_ref` | inside `remove_direct_dependencies()` | `--target` also resolves prefixes of dangling direct dependencies |
 | `mdc dep show` | `discover_workspace_changes()` | `refresh_reachable_from_path()` on source | Targeted reachable refresh; exits `1` if cycles are reported |
 | `mdc dep leaf` | `discover_workspace_changes()` | `refresh_reachable_from_path()` on source | Targeted reachable refresh; exits `1` if cycles are reported |
 | `mdc dep refs` | `discover_workspace_changes()` | `upsert_path()` on target | Target refreshed before reverse-edge query |
@@ -202,7 +205,7 @@ recovered on the next open.
 | `mdc graph tui` | `discover_workspace_changes()` | DepGraph mutation APIs plus post-op discovery | TUI add/rm/create delegate to DepGraph |
 | `mdc work` | `discover_workspace_changes()` | `upsert_path()` on source and `refresh_reachable_from_path()` | Skips work files with unsaved edits |
 | `mdc back` | `discover_workspace_changes()` before write | none after write | Writes `.mdoc` files; cache metadata may remain stale until targeted refresh or `mdc sync` |
-| `mdc serve` | `discover_workspace_changes()` on every read handler | `upsert_path()` after every write handler | Web server holds `Arc<Mutex<IndCache>>`; handlers lock per-request. Write handlers route dep mutations through `DepGraph` so cycle checks are atomic with the write. |
+| `mdc serve` | `discover_workspace_changes()` on every read handler | `upsert_path()` after every write handler | A process-wide mutation mutex serializes each complete resolve/load/mutate/save/reindex operation; dep writes route through `DepGraph` while holding it. |
 
 ### File Change Detection
 
@@ -317,11 +320,9 @@ write connection.
 
 ### Frontend Build
 
-Release builds embed `web/dist` at compile time. The committed
-`web/dist/index.html` is a placeholder so fresh clones compile without
-running `npm install`; run `cd web && npm install && npm run build`
-before `cargo build --release` to get the real SPA. `web/dist/assets/`
-is gitignored.
+Release builds embed the committed production output in `web/dist` at compile
+time. Frontend source changes must include a fresh `cd web && npm run build` so
+the hashed JS/CSS assets and `index.html` remain synchronized.
 
 For development, use the `dev-web` cargo feature and run Vite in a
 second terminal — see the Commands section above.

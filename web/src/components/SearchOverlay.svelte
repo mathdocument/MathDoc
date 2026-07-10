@@ -14,26 +14,37 @@
   let selected = $state(0);
   let loading = $state(false);
   let inputEl = $state<HTMLInputElement | null>(null);
+  let searchRequest = 0;
 
   $effect(() => {
     const q = query;
+    const request = ++searchRequest;
     if (q.length === 0) {
       results = [];
       selected = 0;
+      loading = false;
       return;
     }
     loading = true;
+    results = [];
+    selected = 0;
     const handle = setTimeout(async () => {
       try {
-        results = await api.search(q, 50);
+        const fresh = await api.search(q, 50);
+        if (request !== searchRequest) return;
+        results = fresh;
         selected = 0;
       } catch {
+        if (request !== searchRequest) return;
         results = [];
       } finally {
-        loading = false;
+        if (request === searchRequest) loading = false;
       }
     }, 120);
-    return () => clearTimeout(handle);
+    return () => {
+      clearTimeout(handle);
+      if (request === searchRequest) searchRequest++;
+    };
   });
 
   $effect(() => {

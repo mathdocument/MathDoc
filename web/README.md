@@ -8,7 +8,7 @@ binary at compile time via `rust-embed`.
 Two terminals:
 
 ```bash
-# 1) Backend with hot-reload feature (serves web/ via tower-http ServeDir)
+# 1) Backend (serves web/dist as a restricted fallback)
 cargo run --features dev-web -- serve
 
 # 2) Vite dev server (HMR)

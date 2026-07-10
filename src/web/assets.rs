@@ -6,8 +6,7 @@ use axum::response::{IntoResponse, Response};
 ///
 /// In `dev-web` builds this module is unused — `tower-http ServeDir` serves
 /// `web/` directly so Vite hot-reload works. The struct still needs to compile,
-/// so we point rust-embed at `web/dist` which always exists (a placeholder
-/// index.html is committed for fresh clones before the frontend is built).
+/// so we point rust-embed at the committed production build in `web/dist`.
 #[derive(rust_embed::RustEmbed)]
 #[folder = "web/dist"]
 #[prefix = ""]
@@ -23,7 +22,19 @@ pub fn serve_asset(uri: Uri) -> Response {
         return asset_response(path, file);
     }
 
-    // SPA fallback: serve index.html for non-API, non-file paths.
+    // Missing file-like requests must be 404s. Returning the SPA shell for a
+    // missing module produces a misleading 200 text/html response and a blank UI.
+    if path == "assets"
+        || path.starts_with("assets/")
+        || path
+            .rsplit('/')
+            .next()
+            .is_some_and(|segment| segment.contains('.'))
+    {
+        return (StatusCode::NOT_FOUND, "asset not found").into_response();
+    }
+
+    // SPA fallback for client-side routes.
     if let Some(file) = WebAssets::get("index.html") {
         return asset_response("index.html", file);
     }
@@ -42,8 +53,11 @@ fn asset_response(path: &str, file: rust_embed::EmbeddedFile) -> Response {
         file.data,
     )
         .into_response();
-    if path != "index.html" {
-        // Cache hashed assets aggressively; never cache index.html.
+    if path == "index.html" {
+        resp.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    } else {
+        // Cache hashed assets aggressively.
         resp.headers_mut().insert(
             header::CACHE_CONTROL,
             HeaderValue::from_static("public, max-age=31536000, immutable"),

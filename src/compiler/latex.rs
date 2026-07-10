@@ -1,5 +1,5 @@
 use super::{
-    cfg_positive_int, is_timeout_error, require_tool, run_process, source_path, CompilerReq,
+    cfg_positive_int, process_error_result, require_tool, run_process, source_path, CompilerReq,
     CompilerRes, SrcCompiler,
 };
 
@@ -50,6 +50,7 @@ impl SrcCompiler for CompilerLatex {
                         stdout: String::new(),
                         stderr: summarize_latex_error(&stdout, &stderr),
                         rtcode,
+                        interrupted: false,
                     };
                 }
                 if !pdf_path.is_file() {
@@ -65,8 +66,7 @@ impl SrcCompiler for CompilerLatex {
                     pdf_path.display()
                 ))
             }
-            Err(e) if is_timeout_error(&e) => CompilerRes::err_code(e.to_string(), 124),
-            Err(e) => CompilerRes::err_code(e.to_string(), 127),
+            Err(e) => process_error_result(e, 127),
         }
     }
 }

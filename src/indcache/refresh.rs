@@ -1,7 +1,8 @@
 use anyhow::{bail, Result};
 use rusqlite::Connection;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use crate::indcache::queries::{
@@ -13,44 +14,25 @@ use crate::workspace::{find_nested_mdcroot, iter_mdoc_files, to_rel_path};
 
 // ── Public write functions ────────────────────────────────────────────────────
 
-/// Full workspace scan: upsert changed files, delete stale paths, rebuild dir index.
+/// Full workspace scan: reparse every file, delete stale paths, rebuild dir index.
 pub fn refresh_search_index(conn: &Connection, root: &Path) -> Result<()> {
-    let mut stmt = conn.prepare("SELECT path, mtime_ns, size FROM mdoc_files")?;
-    let cached_by_path: std::collections::HashMap<String, (i64, i64)> = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, i64>(2)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?
-        .into_iter()
-        .map(|(p, ns, sz)| (p, (ns, sz)))
-        .collect();
-
-    let mut stmt2 = conn.prepare(
+    let mut stmt = conn.prepare(
         "SELECT path FROM mdoc_files
          UNION SELECT path FROM mdocs
          UNION SELECT path FROM mdoc_issues
          UNION SELECT src_path AS path FROM mdoc_edges",
     )?;
-    let indexed_paths: HashSet<String> = stmt2
+    let indexed_paths: HashSet<String> = stmt
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<_>>()?;
 
     let mut seen_paths: HashSet<String> = HashSet::new();
     for file_path in iter_mdoc_files(root) {
+        let file_path = file_path?;
         let rel_path = to_rel_path(root, &file_path);
         seen_paths.insert(rel_path.clone());
-        let meta = match std::fs::metadata(&file_path) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let (mtime_ns, size) = metadata_state(&meta);
-        if cached_by_path.get(&rel_path) == Some(&(mtime_ns, size)) {
-            continue;
-        }
+        // A force refresh intentionally parses every discovered file. Metadata
+        // equality is not a content guarantee.
         upsert_mdoc_row(conn, root, &file_path)?;
     }
 
@@ -69,16 +51,23 @@ pub fn refresh_search_index(conn: &Connection, root: &Path) -> Result<()> {
 
 /// Re-check all already-indexed paths; delete those that have vanished, re-upsert changed ones.
 pub fn refresh_indexed_paths(conn: &Connection, root: &Path) -> Result<()> {
-    let mut stmt = conn.prepare("SELECT path, mtime_ns, size FROM mdoc_files")?;
-    let rows: Vec<(String, i64, i64)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+    let mut stmt = conn.prepare("SELECT path, mtime_ns, size, digest FROM mdoc_files")?;
+    let rows: Vec<(String, i64, i64, Vec<u8>)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    for (rel_path, cached_ns, cached_sz) in rows {
-        let file_path = root.join(&rel_path);
+    for (rel_path, cached_ns, cached_sz, cached_digest) in rows {
+        let file_path = match validate_cached_mdoc_path(root, &rel_path) {
+            Ok(path) => path,
+            Err(_) => {
+                delete_indexed_path(conn, &rel_path)?;
+                continue;
+            }
+        };
         match std::fs::metadata(&file_path) {
             Ok(meta) => {
                 let (mtime_ns, size) = metadata_state(&meta);
-                if (mtime_ns, size) != (cached_ns, cached_sz) {
+                let digest = file_digest(&file_path)?;
+                if (mtime_ns, size, &digest) != (cached_ns, cached_sz, &cached_digest) {
                     upsert_mdoc_row(conn, root, &file_path)?;
                 }
             }
@@ -96,32 +85,32 @@ pub fn refresh_reachable_from_path(
     root: &Path,
     root_path: &Path,
     depth: i32,
-) -> Result<Vec<String>> {
+) -> Result<HashSet<String>> {
     if depth < -1 {
         bail!("depth must be -1 (infinite) or >= 0");
     }
     let mut seen: HashSet<String> = HashSet::new();
-    let mut upserted_fnodes: Vec<String> = Vec::new();
+    let mut affected_fnodes: HashSet<String> = HashSet::new();
     let mut queue: std::collections::VecDeque<(std::path::PathBuf, u32)> =
         std::collections::VecDeque::new();
-    let canonical_root = root_path
-        .canonicalize()
-        .unwrap_or_else(|_| root_path.to_path_buf());
+    let canonical_root = resolve_workspace_path(root, root_path)?;
     queue.push_back((canonical_root, 0));
 
     while let Some((file_path, item_depth)) = queue.pop_front() {
+        let file_path = resolve_workspace_path(root, &file_path)?;
         let rel_path = to_rel_path(root, &file_path);
         if !seen.insert(rel_path.clone()) {
             continue;
         }
-        // Skip files that no longer exist at the cached path — they may have been
-        // renamed. Cleaning up stale paths is sync's job, not a targeted refresh.
-        if !file_path.exists() {
-            continue;
+        if let Some(old_fnode) = fnode_for_path(conn, &rel_path)? {
+            affected_fnodes.insert(old_fnode);
         }
         upsert_mdoc_row(conn, root, &file_path)?;
         if let Some(fnode) = fnode_for_path(conn, &rel_path)? {
-            upserted_fnodes.push(fnode);
+            affected_fnodes.insert(fnode);
+        }
+        if !file_path.exists() {
+            continue;
         }
         if depth != -1 && item_depth as i32 >= depth {
             continue;
@@ -135,13 +124,155 @@ pub fn refresh_reachable_from_path(
             }
         }
     }
-    Ok(upserted_fnodes)
+    Ok(affected_fnodes)
+}
+
+pub(crate) fn resolve_workspace_path(root: &Path, file_path: &Path) -> Result<PathBuf> {
+    let root = root.canonicalize()?;
+    let candidate = if file_path.is_absolute() {
+        file_path.to_path_buf()
+    } else {
+        root.join(file_path)
+    };
+
+    if candidate.extension().and_then(|ext| ext.to_str()) != Some("mdoc") {
+        bail!("mdoc path must end in .mdoc: {}", file_path.display());
+    }
+    if let Ok(relative) = candidate.strip_prefix(&root) {
+        validate_relative_components(relative, file_path)?;
+        let mut current = root.clone();
+        for component in relative.components() {
+            current.push(component.as_os_str());
+            match std::fs::symlink_metadata(&current) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    bail!(
+                        "refusing mdoc path with symlink component {}",
+                        current.display()
+                    )
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    let resolved =
+        match candidate.canonicalize() {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let mut existing = candidate.as_path();
+                let mut suffix = Vec::new();
+                while !existing.exists() {
+                    suffix.push(existing.file_name().ok_or_else(|| {
+                        anyhow::anyhow!("invalid mdoc path {}", file_path.display())
+                    })?);
+                    existing = existing.parent().ok_or_else(|| {
+                        anyhow::anyhow!("invalid mdoc path {}", file_path.display())
+                    })?;
+                }
+                let mut resolved = existing.canonicalize()?;
+                for component in suffix.into_iter().rev() {
+                    resolved.push(component);
+                }
+                resolved
+            }
+            Err(error) => return Err(error.into()),
+        };
+    if !resolved.starts_with(&root) {
+        bail!("mdoc path is outside workspace: {}", file_path.display());
+    }
+    let relative = resolved
+        .strip_prefix(&root)
+        .expect("workspace containment checked above");
+    validate_relative_components(relative, file_path)?;
+
+    let parent = resolved.parent().unwrap_or(&resolved);
+    let parent = parent
+        .canonicalize()
+        .unwrap_or_else(|_| parent.to_path_buf());
+    if let Some(nested) = find_nested_mdcroot(&root, &parent) {
+        bail!("mdoc path is inside nested mdoc root: {}", nested.display());
+    }
+    Ok(resolved)
+}
+
+pub(crate) fn validate_cached_mdoc_path(root: &Path, rel_path: &str) -> Result<PathBuf> {
+    let rel_path = Path::new(rel_path);
+    if rel_path.is_absolute() {
+        bail!("cached mdoc path must be relative: {}", rel_path.display());
+    }
+    let resolved = resolve_workspace_path(root, rel_path)?;
+    let meta = std::fs::symlink_metadata(&resolved)?;
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        bail!(
+            "cached mdoc path is not a regular file: {}",
+            resolved.display()
+        );
+    }
+    Ok(resolved)
+}
+
+pub(crate) fn validate_cached_directory_path(root: &Path, rel_path: &str) -> Result<PathBuf> {
+    let root = root.canonicalize()?;
+    if rel_path.is_empty() {
+        return Ok(root);
+    }
+    let relative = Path::new(rel_path);
+    if relative.is_absolute() {
+        bail!(
+            "cached directory path must be relative: {}",
+            relative.display()
+        );
+    }
+    validate_relative_components(relative, relative)?;
+
+    let mut current = root.clone();
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        let meta = std::fs::symlink_metadata(&current)?;
+        if meta.file_type().is_symlink() {
+            bail!(
+                "refusing cached directory with symlink component {}",
+                current.display()
+            );
+        }
+    }
+    let resolved = current.canonicalize()?;
+    if !resolved.starts_with(&root) {
+        bail!(
+            "cached directory is outside workspace: {}",
+            relative.display()
+        );
+    }
+    if !std::fs::symlink_metadata(&resolved)?.is_dir() {
+        bail!("cached path is not a directory: {}", resolved.display());
+    }
+    if let Some(nested) = find_nested_mdcroot(&root, &resolved) {
+        bail!(
+            "cached directory is inside nested mdoc root: {}",
+            nested.display()
+        );
+    }
+    Ok(resolved)
+}
+
+fn validate_relative_components(relative: &Path, original: &Path) -> Result<()> {
+    for (index, component) in relative.components().enumerate() {
+        let std::path::Component::Normal(name) = component else {
+            bail!("invalid mdoc path: {}", original.display());
+        };
+        if index == 0 && name == ".mdc" {
+            bail!("mdoc path cannot be inside .mdc: {}", original.display());
+        }
+    }
+    Ok(())
 }
 
 /// Upsert a single .mdoc file: update metadata, parse, rebuild edges and issues.
 pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Result<()> {
+    let file_path = resolve_workspace_path(root, file_path)?;
     // Guard: file must not be inside a nested workspace
-    let parent = file_path.parent().unwrap_or(file_path);
+    let parent = file_path.parent().unwrap_or(&file_path);
     let root_resolved = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let parent_resolved = parent
         .canonicalize()
@@ -150,13 +281,10 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
         bail!("mdoc path is inside nested mdoc root: {}", nested.display());
     }
 
-    let file_resolved = file_path
-        .canonicalize()
-        .unwrap_or_else(|_| file_path.to_path_buf());
-    let rel_path = to_rel_path(&root_resolved, &file_resolved);
+    let rel_path = to_rel_path(&root_resolved, &file_path);
     let old_fnode = fnode_for_path(conn, &rel_path)?;
 
-    let meta = match std::fs::metadata(file_path) {
+    let meta = match std::fs::metadata(&file_path) {
         Ok(m) if m.is_file() => m,
         _ => {
             delete_indexed_path(conn, &rel_path)?;
@@ -165,6 +293,7 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
     };
 
     let (mtime_ns, size) = metadata_state(&meta);
+    let digest = file_digest(&file_path)?;
     let mtime_sec = meta
         .modified()
         .ok()
@@ -173,17 +302,18 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
         .unwrap_or(0);
 
     conn.execute(
-        "INSERT INTO mdoc_files (path, mtime_sec, mtime_ns, size)
-         VALUES (?, ?, ?, ?)
+        "INSERT INTO mdoc_files (path, mtime_sec, mtime_ns, size, digest)
+         VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(path) DO UPDATE SET
              mtime_sec = excluded.mtime_sec,
              mtime_ns = excluded.mtime_ns,
-             size = excluded.size",
-        rusqlite::params![rel_path, mtime_sec, mtime_ns, size],
+             size = excluded.size,
+             digest = excluded.digest",
+        rusqlite::params![rel_path, mtime_sec, mtime_ns, size, digest],
     )?;
 
     // Quick head read (fallback for mdocs row if full parse fails)
-    let head = read_mdoc_head(file_path);
+    let head = read_mdoc_head(&file_path);
 
     // Snapshot old edge targets before clearing
     let old_dst_fnodes: HashSet<String> = {
@@ -197,7 +327,7 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
     conn.execute("DELETE FROM mdoc_issues WHERE path = ?", [&rel_path])?;
 
     // Full parse (headers + deps, no block content)
-    let parse_result = MdocNode::load_head(&root_resolved, file_path);
+    let parse_result = MdocNode::load_head(&root_resolved, &file_path);
     let new_fnode: Option<String>;
     let mut new_dst_fnodes: HashSet<String> = HashSet::new();
 
@@ -315,7 +445,7 @@ fn compute_node_topo_depth(conn: &Connection, fnode: &str) -> Result<u32> {
     let max_dep: Option<u32> = conn.query_row(
         "SELECT MAX(m.topo_depth)
          FROM mdoc_edges e
-         JOIN mdocs m ON m.fnode = e.dst_fnode
+         LEFT JOIN mdocs m ON m.fnode = e.dst_fnode
          WHERE e.src_fnode = ?
            AND NOT EXISTS (
              SELECT 1 FROM mdoc_issues i
@@ -324,44 +454,89 @@ fn compute_node_topo_depth(conn: &Connection, fnode: &str) -> Result<u32> {
         [fnode],
         |r| r.get::<_, Option<u32>>(0),
     )?;
-    Ok(max_dep.map(|d| d + 1).unwrap_or(0))
+    let has_deps: bool = conn.query_row(
+        "SELECT EXISTS (
+             SELECT 1 FROM mdoc_edges e
+             WHERE e.src_fnode = ?
+               AND NOT EXISTS (
+                 SELECT 1 FROM mdoc_issues i
+                 WHERE i.path = e.src_path AND i.kind IN ('invalid', 'duplicate')
+               )
+         )",
+        [fnode],
+        |row| row.get(0),
+    )?;
+    Ok(if has_deps {
+        max_dep.unwrap_or(0) + 1
+    } else {
+        0
+    })
 }
 
-/// BFS upward from `start_fnode` through reverse edges, recomputing and persisting
-/// `topo_depth` for each ancestor whose depth changes.
+/// Recompute `start_fnode` and its reverse-reachable ancestors in dependency-first order.
 pub(crate) fn refresh_topo_depth_upward_from(conn: &Connection, start_fnode: &str) -> Result<()> {
-    use std::collections::{HashSet, VecDeque};
+    use std::collections::VecDeque;
+
+    let mut affected: HashSet<String> = HashSet::from([start_fnode.to_string()]);
+    let mut reverse: HashMap<String, Vec<String>> = HashMap::new();
     let mut queue: VecDeque<String> = VecDeque::from([start_fnode.to_string()]);
-    let mut visited: HashSet<String> = HashSet::new();
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT e.src_fnode
+         FROM mdoc_edges e
+         WHERE e.dst_fnode = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM mdoc_issues i
+             WHERE i.path = e.src_path AND i.kind IN ('invalid', 'duplicate')
+           )",
+    )?;
     while let Some(fnode) = queue.pop_front() {
-        if !visited.insert(fnode.clone()) {
-            continue;
+        let parents: Vec<String> = stmt
+            .query_map([&fnode], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for parent in &parents {
+            if affected.insert(parent.clone()) {
+                queue.push_back(parent.clone());
+            }
         }
+        reverse.insert(fnode, parents);
+    }
+    drop(stmt);
+
+    // An ancestor is ready only after all of its affected dependencies have been
+    // refreshed. This allows nodes reached by both short and long paths to settle once.
+    let mut remaining: HashMap<String, usize> = affected.iter().map(|f| (f.clone(), 0)).collect();
+    for parents in reverse.values() {
+        for parent in parents {
+            *remaining.entry(parent.clone()).or_default() += 1;
+        }
+    }
+    let mut ready: VecDeque<String> = remaining
+        .iter()
+        .filter(|(_, count)| **count == 0)
+        .map(|(fnode, _)| fnode.clone())
+        .collect();
+    let mut processed = 0;
+    while let Some(fnode) = ready.pop_front() {
         let new_depth = compute_node_topo_depth(conn, &fnode)?;
-        let old_depth: Option<u32> = conn
-            .query_row(
-                "SELECT topo_depth FROM mdocs WHERE fnode = ?",
-                [&fnode],
-                |r| r.get(0),
-            )
-            .ok();
-        if old_depth != Some(new_depth) {
-            conn.execute(
-                "UPDATE mdocs SET topo_depth = ? WHERE fnode = ?",
-                rusqlite::params![new_depth, &fnode],
-            )?;
-            // Propagate to nodes that have this fnode as a dependency.
-            let mut stmt =
-                conn.prepare("SELECT DISTINCT src_fnode FROM mdoc_edges WHERE dst_fnode = ?")?;
-            let parents: Vec<String> = stmt
-                .query_map([&fnode], |r| r.get(0))?
-                .collect::<rusqlite::Result<_>>()?;
-            for parent in parents {
-                if !visited.contains(&parent) {
-                    queue.push_back(parent);
+        conn.execute(
+            "UPDATE mdocs SET topo_depth = ? WHERE fnode = ?",
+            rusqlite::params![new_depth, &fnode],
+        )?;
+        processed += 1;
+        for parent in reverse.get(&fnode).into_iter().flatten() {
+            if let Some(count) = remaining.get_mut(parent) {
+                *count -= 1;
+                if *count == 0 {
+                    ready.push_back(parent.clone());
                 }
             }
         }
+    }
+
+    // Cycles have no dependency-first ordering and repeated local relaxation would
+    // increase forever. Match the established full-graph cycle behavior instead.
+    if processed != affected.len() {
+        backfill_all_topo_depths(conn)?;
     }
     Ok(())
 }
@@ -436,8 +611,8 @@ fn union_components(conn: &Connection, u: &str, v: &str) -> Result<()> {
     };
     conn.execute(
         "UPDATE mdoc_weak_component SET component_id = ?, component_size = ?
-         WHERE component_id = ?",
-        rusqlite::params![keep, new_size, replace],
+         WHERE component_id IN (?, ?)",
+        rusqlite::params![keep, new_size, keep, replace],
     )?;
     Ok(())
 }
@@ -603,6 +778,16 @@ pub(crate) fn update_weak_component_incremental(
     old_dsts: &HashSet<String>,
     new_dsts: &HashSet<String>,
 ) -> Result<()> {
+    let was_dirty: bool = conn.query_row(
+        "SELECT weak_component_dirty != 0 FROM mdoc_index_state WHERE id = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    if was_dirty {
+        super::queries::recompute_weak_components_full(conn)?;
+        return Ok(());
+    }
+
     match (old_fnode, new_fnode) {
         (None, None) => {}
 
@@ -694,6 +879,11 @@ fn metadata_state(meta: &std::fs::Metadata) -> (i64, i64) {
     (mtime_ns, size)
 }
 
+pub(crate) fn file_digest(path: &Path) -> Result<Vec<u8>> {
+    let content = std::fs::read(path)?;
+    Ok(Sha256::digest(content).to_vec())
+}
+
 fn upsert_search_row(
     conn: &Connection,
     rel_path: &str,
@@ -759,7 +949,7 @@ fn cleanup_stale_fnode_paths(
         })?
         .collect::<rusqlite::Result<_>>()?;
     for stale_rel in stale_paths {
-        if !root.join(&stale_rel).exists() {
+        if validate_cached_mdoc_path(root, &stale_rel).is_err() {
             delete_indexed_path(conn, &stale_rel)?;
         }
     }

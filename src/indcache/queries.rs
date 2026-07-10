@@ -991,6 +991,45 @@ pub fn search(conn: &Connection, query: &str) -> Result<Vec<(String, String, Str
     Ok(rows)
 }
 
+pub fn search_with_metadata(
+    conn: &Connection,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<(String, String, String, bool, u32)>> {
+    let query_lc = query.to_lowercase();
+    let like = format!("%{query_lc}%");
+    let prefix_like = format!("{query_lc}%");
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let mut stmt = conn.prepare(
+        "SELECT m.fnode, m.title, m.path,
+                EXISTS(SELECT 1 FROM mdoc_issues i WHERE i.ref_fnode = m.fnode),
+                m.topo_depth
+         FROM mdocs m
+         WHERE m.title_lc LIKE ? OR lower(m.fnode) LIKE ?
+         ORDER BY
+             CASE WHEN lower(m.fnode) LIKE ? THEN 0 ELSE 1 END,
+             CASE WHEN instr(m.title_lc, ?) > 0 THEN instr(m.title_lc, ?) ELSE 999999 END,
+             length(m.title),
+             m.path
+         LIMIT ?",
+    )?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![like, like, prefix_like, query_lc, query_lc, limit],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get::<_, u32>(4)?,
+                ))
+            },
+        )?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
 pub fn exact_fnode_rows(conn: &Connection, fnode: &str) -> Result<Vec<(String, String, String)>> {
     let fnode_lc = fnode.to_lowercase();
     let mut stmt =

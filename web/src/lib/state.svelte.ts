@@ -1,5 +1,10 @@
 import type { NodeDetail, NodeInfo } from "./types";
 import { api } from "./api";
+import {
+  confirmDiscardDrafts,
+  settlePendingMutations,
+  unsavedDraftRevision,
+} from "./unsaved";
 
 export type LoadState =
   | { kind: "idle" }
@@ -22,6 +27,7 @@ export const appState = $state({
   children: emptyColumn(),
   history: [] as string[],
   historyIdx: -1,
+  editorRevision: 0,
   /** fnode of the previously focused node — highlighted in columns. */
   lastVisitedFnode: null as string | null,
 });
@@ -37,7 +43,10 @@ function supportsViewTransitions(): boolean {
  * otherwise run it synchronously. The callback must perform all reactive
  * updates that should be part of the transition.
  */
-function withViewTransition(direction: "up" | "down" | "neutral", mutate: () => void): void {
+async function withViewTransition(
+  direction: "up" | "down" | "neutral",
+  mutate: () => void,
+): Promise<void> {
   if (!supportsViewTransitions()) {
     mutate();
     return;
@@ -45,7 +54,10 @@ function withViewTransition(direction: "up" | "down" | "neutral", mutate: () => 
   document.body.dataset.vtDirection = direction;
   try {
     const vt = (document as Document & {
-      startViewTransition: (cb: () => void) => { finished: Promise<void> };
+      startViewTransition: (cb: () => void) => {
+        finished: Promise<void>;
+        updateCallbackDone: Promise<void>;
+      };
     }).startViewTransition(() => {
       mutate();
     });
@@ -54,24 +66,34 @@ function withViewTransition(direction: "up" | "down" | "neutral", mutate: () => 
     }).catch(() => {
       delete document.body.dataset.vtDirection;
     });
+    await vt.updateCallbackDone;
   } catch {
     delete document.body.dataset.vtDirection;
     mutate();
   }
 }
 
+let navigationRequest = 0;
+
 /** Navigate to a node by fnode. Updates the center, both columns, and history. */
 export async function navigate(
   fnode: string,
-  opts: { pushHistory?: boolean; direction?: "up" | "down" | "neutral"; skipTransition?: boolean } = {},
-) {
+  opts: {
+    pushHistory?: boolean;
+    direction?: "up" | "down" | "neutral";
+    skipTransition?: boolean;
+    skipUnsavedGuard?: boolean;
+    historyIndex?: number;
+  } = {},
+): Promise<boolean> {
+  if (!opts.skipUnsavedGuard && !confirmDiscardDrafts()) return false;
+  if (!await settlePendingMutations()) return false;
+
+  const confirmedDraftRevision = unsavedDraftRevision();
+  const request = ++navigationRequest;
   const push = opts.pushHistory ?? true;
   const direction = opts.direction ?? "neutral";
   const skipTransition = opts.skipTransition ?? false;
-
-  // Record where we're leaving from for the last-visited highlight.
-  const leaving = appState.load.kind === "ready" ? appState.load.node.fnode : null;
-  appState.lastVisitedFnode = leaving;
 
   // Fetch new node data while keeping the old node visible.
   // The old content stays on screen until the View Transition snapshot
@@ -83,7 +105,13 @@ export async function navigate(
       api.children(fnode),
     ]);
 
+    let committed = false;
     const apply = () => {
+      if (request !== navigationRequest || committed) return;
+      if (unsavedDraftRevision() !== confirmedDraftRevision) return;
+      const leaving = appState.load.kind === "ready" ? appState.load.node.fnode : null;
+      appState.lastVisitedFnode = leaving;
+      appState.editorRevision++;
       appState.load = { kind: "ready", node };
       appState.referrers = { items: refs, selected: -1 };
       appState.children = { items: kids, selected: -1 };
@@ -93,19 +121,28 @@ export async function navigate(
           fnode,
         ];
         appState.historyIdx = appState.history.length - 1;
+      } else if (opts.historyIndex !== undefined) {
+        appState.historyIdx = opts.historyIndex;
       }
+      committed = true;
     };
 
     if (skipTransition) {
       apply();
     } else {
-      withViewTransition(direction, apply);
+      await withViewTransition(direction, apply);
     }
+    return committed;
   } catch (e) {
+    if (request !== navigationRequest) return false;
+    // Keep an existing editor mounted on navigation failure; replacing it with
+    // an error page could discard drafts created while the request was pending.
+    if (appState.load.kind === "ready") return false;
     appState.load = {
       kind: "error",
       message: e instanceof Error ? e.message : String(e),
     };
+    return false;
   }
 }
 
@@ -127,14 +164,14 @@ export function canGoForward(): boolean {
 
 export async function goBack() {
   if (!canGoBack()) return;
-  const target = appState.history[appState.historyIdx - 1]!;
-  await navigate(target, { pushHistory: false });
-  appState.historyIdx -= 1;
+  const historyIndex = appState.historyIdx - 1;
+  const target = appState.history[historyIndex]!;
+  await navigate(target, { pushHistory: false, historyIndex });
 }
 
 export async function goForward() {
   if (!canGoForward()) return;
-  const target = appState.history[appState.historyIdx + 1]!;
-  await navigate(target, { pushHistory: false });
-  appState.historyIdx += 1;
+  const historyIndex = appState.historyIdx + 1;
+  const target = appState.history[historyIndex]!;
+  await navigate(target, { pushHistory: false, historyIndex });
 }

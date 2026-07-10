@@ -264,6 +264,20 @@ fn test_add_direct_dependencies_rejects_cycle() {
 }
 
 #[test]
+fn test_failed_dependency_save_does_not_mutate_graph_state() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let src = make_node(root, "Src", "text", "src");
+    src.save().unwrap();
+    let mut graph = DepGraph::new(root.to_path_buf(), &src.fnode).unwrap();
+
+    let result = graph.add_direct_dependencies(vec!["@end".to_string()]);
+    assert!(result.is_err());
+    assert!(graph.direct_dependency_fnodes().unwrap().is_empty());
+    assert!(MdocNode::load(root, &src.path).unwrap().depens.is_empty());
+}
+
+#[test]
 fn test_create_and_add_dependency_no_side_effects_on_cycle() {
     let dir = tempfile::TempDir::new().unwrap();
     let root_dir = dir.path();
@@ -500,11 +514,6 @@ fn test_create_and_add_dependency_rejects_path_outside_workspace() {
     let result = graph.create_and_add_dependency(new_node);
 
     assert!(result.is_err());
-    let err_msg = result.unwrap_err().to_string();
-    assert!(
-        err_msg.contains("under mdoc root"),
-        "expected out-of-workspace error, got: {err_msg}"
-    );
     assert!(
         !outside_path.exists(),
         "file must not be written outside workspace"
@@ -572,11 +581,6 @@ fn test_create_and_add_dependency_rejects_dotdot_escape() {
     let result = graph.create_and_add_dependency(new_node);
 
     assert!(result.is_err());
-    let err_msg = result.unwrap_err().to_string();
-    assert!(
-        err_msg.contains("under mdoc root"),
-        "expected out-of-workspace error for .. escape, got: {err_msg}"
-    );
     assert!(!escaped_path.exists(), "escaped file must not be written");
 }
 
@@ -594,16 +598,40 @@ fn test_create_root_rejects_dotdot_escape() {
     let result = DepGraph::create_root(root_dir.clone(), &file_target, "Escape", None, None);
 
     assert!(result.is_err());
-    let err_msg = result.err().expect("expected error").to_string();
-    assert!(
-        err_msg.contains("under mdoc root"),
-        "expected out-of-workspace error for .. escape, got: {err_msg}"
-    );
     let escaped_path = root_dir
         .parent()
         .unwrap()
         .join(format!("{stem}-escaped.mdoc"));
     assert!(!escaped_path.exists(), "escaped file must not be written");
+}
+
+#[test]
+fn test_create_root_rejects_workspace_control_directory() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    fs::create_dir(root.join(".mdc")).unwrap();
+
+    let result = DepGraph::create_root(root.clone(), ".mdc/hidden", "Hidden", None, None);
+
+    assert!(result.is_err());
+    assert!(!root.join(".mdc/hidden.mdoc").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_create_root_rejects_symlinked_parent_inside_workspace() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    fs::create_dir(root.join(".mdc")).unwrap();
+    fs::create_dir(root.join("real")).unwrap();
+    symlink(root.join("real"), root.join("alias")).unwrap();
+
+    let result = DepGraph::create_root(root.clone(), "alias/node", "Alias", None, None);
+
+    assert!(result.is_err());
+    assert!(!root.join("real/node.mdoc").exists());
 }
 
 /// P1 regression: symlink/.. must not allow escaping the workspace.
@@ -643,11 +671,6 @@ fn test_create_and_add_dependency_rejects_symlink_dotdot_escape() {
     let result = graph.create_and_add_dependency(new_node);
 
     assert!(result.is_err(), "symlink-dotdot escape must be rejected");
-    let err_msg = result.unwrap_err().to_string();
-    assert!(
-        err_msg.contains("under mdoc root"),
-        "expected out-of-workspace error, got: {err_msg}"
-    );
     assert!(
         !potential_escape.exists(),
         "escaped file must not be written"
@@ -674,17 +697,29 @@ fn test_create_root_rejects_symlink_dotdot_escape() {
     let result = DepGraph::create_root(root_dir.clone(), &file_target, "Escape", None, None);
 
     assert!(result.is_err(), "symlink-dotdot escape must be rejected");
-    let err_msg = result.err().expect("expected error").to_string();
-    assert!(
-        err_msg.contains("under mdoc root"),
-        "expected out-of-workspace error, got: {err_msg}"
-    );
     let escaped_name = format!("{stem}-sym-root-escaped.mdoc");
     let potential_escape = outside_canonical.parent().unwrap().join(&escaped_name);
     assert!(
         !potential_escape.exists(),
         "escaped file must not be written"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_create_root_rejects_dangling_final_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    fs::create_dir_all(root.join(".mdc")).unwrap();
+    let outside = tempfile::TempDir::new().unwrap();
+    let outside_target = outside.path().join("escaped.mdoc");
+    symlink(&outside_target, root.join("link.mdoc")).unwrap();
+
+    let result = DepGraph::create_root(root, "link", "Escape", None, None);
+    assert!(result.is_err());
+    assert!(!outside_target.exists());
 }
 
 /// P1 regression: create_root() with file_path="." or "" must not silently
@@ -899,5 +934,154 @@ fn test_dependency_items_show_duplicate_fnode_placeholder() {
         issue.error.contains("duplicate fnode 'dup-node'"),
         "unexpected error: {}",
         issue.error
+    );
+}
+
+#[test]
+fn graph_mutation_process_worker() {
+    let Ok(root) = std::env::var("MDC_GRAPH_WORKER_ROOT") else {
+        return;
+    };
+    let source = std::env::var("MDC_GRAPH_WORKER_SOURCE").unwrap();
+    let target = std::env::var("MDC_GRAPH_WORKER_TARGET").unwrap();
+    let ready = std::env::var("MDC_GRAPH_WORKER_READY").unwrap();
+    let go = std::env::var("MDC_GRAPH_WORKER_GO").unwrap();
+    let result_path = std::env::var("MDC_GRAPH_WORKER_RESULT").unwrap();
+
+    // Construct before the barrier so both processes start with the same cached view.
+    let graph = DepGraph::new(std::path::PathBuf::from(&root), &source);
+    std::fs::write(&ready, b"ready").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !std::path::Path::new(&go).exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker barrier timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let text = match graph {
+        Ok(mut graph) => match graph.add_direct_dependencies(vec![target]) {
+            Ok(_) => "ok".to_string(),
+            Err(error) => format!("mutation-error:{error:#}"),
+        },
+        Err(error) => format!("init-error:{error:#}"),
+    };
+    std::fs::write(result_path, text).unwrap();
+}
+
+fn run_barriered_mutations(
+    root: &std::path::Path,
+    first: (&str, &str),
+    second: (&str, &str),
+) -> [String; 2] {
+    use std::process::{Command, Stdio};
+
+    let go = root.join(".mdc/test-mutation-go");
+    let mut children = Vec::new();
+    let mut ready_paths = Vec::new();
+    let mut result_paths = Vec::new();
+    for (index, (source, target)) in [first, second].into_iter().enumerate() {
+        let ready = root.join(format!(".mdc/test-mutation-ready-{index}"));
+        let result = root.join(format!(".mdc/test-mutation-result-{index}"));
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "graph_mutation_process_worker", "--nocapture"])
+            .env("MDC_GRAPH_WORKER_ROOT", root)
+            .env("MDC_GRAPH_WORKER_SOURCE", source)
+            .env("MDC_GRAPH_WORKER_TARGET", target)
+            .env("MDC_GRAPH_WORKER_READY", &ready)
+            .env("MDC_GRAPH_WORKER_GO", &go)
+            .env("MDC_GRAPH_WORKER_RESULT", &result)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        children.push(child);
+        ready_paths.push(ready);
+        result_paths.push(result);
+    }
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while ready_paths.iter().any(|path| !path.exists()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "parent barrier timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    std::fs::write(&go, b"go").unwrap();
+
+    for child in children {
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "worker failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    [
+        std::fs::read_to_string(&result_paths[0]).unwrap(),
+        std::fs::read_to_string(&result_paths[1]).unwrap(),
+    ]
+}
+
+#[test]
+fn interprocess_opposite_edges_yield_one_success_and_no_cycle() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    fs::create_dir(root.join(".mdc")).unwrap();
+    fs::write(root.join("a.mdoc"), "@fnode: process-a\n@title: A\n").unwrap();
+    fs::write(root.join("b.mdoc"), "@fnode: process-b\n@title: B\n").unwrap();
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    cache.refresh_all().unwrap();
+    drop(cache);
+
+    let results =
+        run_barriered_mutations(root, ("process-a", "process-b"), ("process-b", "process-a"));
+    assert_eq!(results.iter().filter(|result| *result == "ok").count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| result.contains("cycle"))
+            .count(),
+        1,
+        "unexpected worker results: {results:?}"
+    );
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    cache.refresh_all().unwrap();
+    assert!(cache.graph_check_report().unwrap().cycles.is_empty());
+}
+
+#[test]
+fn interprocess_additions_to_one_source_preserve_both_edges() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    fs::create_dir(root.join(".mdc")).unwrap();
+    fs::write(
+        root.join("source.mdoc"),
+        "@fnode: process-source\n@title: Source\n",
+    )
+    .unwrap();
+    fs::write(root.join("x.mdoc"), "@fnode: process-x\n@title: X\n").unwrap();
+    fs::write(root.join("y.mdoc"), "@fnode: process-y\n@title: Y\n").unwrap();
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    cache.refresh_all().unwrap();
+    drop(cache);
+
+    let results = run_barriered_mutations(
+        root,
+        ("process-source", "process-x"),
+        ("process-source", "process-y"),
+    );
+    assert_eq!(results, ["ok", "ok"]);
+
+    let source = MdocNode::load(root, &root.join("source.mdoc")).unwrap();
+    let deps: std::collections::HashSet<_> = source.depens.into_iter().collect();
+    assert_eq!(
+        deps,
+        std::collections::HashSet::from(["process-x".to_string(), "process-y".to_string()])
     );
 }

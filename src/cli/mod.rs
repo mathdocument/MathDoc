@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::core::{DependencyItem, GraphIssue};
+use crate::core::{escape_terminal, short_fnode, DependencyItem, GraphIssue};
 use crate::indcache::IndCache;
 use crate::workspace::find_mdcroot;
 
@@ -25,12 +25,7 @@ const YLW: &str = "\x1b[33m";
 const CYN: &str = "\x1b[36m";
 
 fn eprintln_err(msg: &str) {
-    eprintln!("{RED}error:{RST} {msg}");
-}
-
-fn short_fnode(fnode: &str) -> &str {
-    let s = fnode.trim_matches(|c| c == '<' || c == '>');
-    &s[..s.len().min(8)]
+    eprintln!("{RED}error:{RST} {}", escape_terminal(msg));
 }
 
 const TITLE_WIDTH: usize = 40;
@@ -60,14 +55,17 @@ fn truncate_path(path: &str) -> String {
 }
 
 fn fmt_item(fnode: &str, title: &str, rel_path: &str, broken: bool) -> String {
-    let sf = short_fnode(fnode);
+    let fnode = escape_terminal(fnode);
+    let title = escape_terminal(title);
+    let rel_path = escape_terminal(rel_path);
+    let sf = short_fnode(&fnode);
     let marker = if broken {
         format!("{RED}✗{RST} ")
     } else {
         String::new()
     };
-    let title_col = truncate_title(title);
-    let path_col = truncate_path(rel_path);
+    let title_col = truncate_title(&title);
+    let path_col = truncate_path(&rel_path);
     format!("{DIM}{sf}{RST}  {marker}{BLD}{title_col}{RST}  {DIM}{path_col}{RST}")
 }
 
@@ -163,7 +161,11 @@ enum DepCommands {
     /// Search and add dependencies to a mdoc.
     Add {
         source: String,
-        query: String,
+        #[arg(required_unless_present = "target", conflicts_with = "target")]
+        query: Option<String>,
+        /// Add one dependency non-interactively by fnode, prefix, or path.
+        #[arg(short = 't', long)]
+        target: Option<String>,
         #[arg(short = 'n', long, default_value = "200")]
         max_results: usize,
     },
@@ -175,8 +177,13 @@ enum DepCommands {
     },
     /// Show all leaf dependencies (no further deps).
     Leaf { source: String },
-    /// Interactively remove dependencies from a mdoc.
-    Rm { source: String },
+    /// Remove dependencies from a mdoc.
+    Rm {
+        source: String,
+        /// Remove one dependency non-interactively by fnode, prefix, or path.
+        #[arg(short = 't', long)]
+        target: Option<String>,
+    },
     /// Show reverse dependencies (who depends on this).
     Refs {
         target: String,
@@ -220,11 +227,12 @@ fn dispatch(cmd: Commands) -> Result<i32> {
             DepCommands::Add {
                 source,
                 query,
+                target,
                 max_results,
-            } => cmd_deps::cmd_dep_add(source, query, max_results),
+            } => cmd_deps::cmd_dep_add(source, query, target, max_results),
             DepCommands::Show { source, depth } => cmd_deps::cmd_dep_show(source, depth),
             DepCommands::Leaf { source } => cmd_deps::cmd_dep_leaf(source),
-            DepCommands::Rm { source } => cmd_deps::cmd_dep_rm(source),
+            DepCommands::Rm { source, target } => cmd_deps::cmd_dep_rm(source, target),
             DepCommands::Refs { target, depth } => cmd_deps::cmd_dep_refs(target, depth),
         },
         Commands::Serve {

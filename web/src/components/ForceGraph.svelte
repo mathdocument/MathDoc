@@ -89,10 +89,13 @@
   }
 
   // ── Data ────────────────────────────────────────────────────────────────────
+  let graphRequest = 0;
 
   async function loadGraph() {
+    const request = ++graphRequest;
     try {
       const data = await api.full();
+      if (request !== graphRequest) return;
       nodes = data.nodes.map((n: NodeInfo) => ({
         id: n.fnode,
         title: n.title,
@@ -108,6 +111,7 @@
       computeMetadata(nodes, links);
       buildSimulation();
     } catch (e) {
+      if (request !== graphRequest) return;
       loadError = e instanceof Error ? e.message : String(e);
     }
   }
@@ -116,8 +120,10 @@
   // so the graph doesn't jump. New nodes appear near the centroid; removed
   // nodes are dropped. Simulation restarts gently with alpha(0.5).
   async function reloadGraph() {
+    const request = ++graphRequest;
     try {
       const data = await api.full();
+      if (request !== graphRequest) return;
       loadError = null;
       // Preserve positions of existing nodes.
       const posMap = new Map<string, { x: number; y: number }>();
@@ -159,10 +165,14 @@
         const linkForce = sim.force("link") as any;
         if (linkForce) linkForce.links(links);
         sim.alpha(0.5).restart();
+      } else {
+        buildSimulation();
       }
       requestRender();
-    } catch {
-      // ignore reload errors — keep showing the old graph
+    } catch (e) {
+      if (request === graphRequest && !sim) {
+        loadError = e instanceof Error ? e.message : String(e);
+      }
     }
   }
 
@@ -528,6 +538,7 @@
   });
 
   onDestroy(() => {
+    graphRequest++;
     running = false;
     if (rafId) cancelAnimationFrame(rafId);
     resizeObserver?.disconnect();

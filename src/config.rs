@@ -1,8 +1,30 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+
+const KNOWN_SRCTYPES: [&str; 5] = ["text", "latex", "python", "lean", "rocq"];
+
+pub fn canonical_srctype(srctype: &str) -> &str {
+    KNOWN_SRCTYPES
+        .iter()
+        .copied()
+        .find(|known| known.eq_ignore_ascii_case(srctype))
+        .unwrap_or(srctype)
+}
+
+pub fn validate_srctype_name(srctype: &str) -> Result<()> {
+    if srctype.is_empty()
+        || matches!(srctype, "." | "..")
+        || !srctype
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'+'))
+    {
+        anyhow::bail!("unsafe srctype name '{srctype}'");
+    }
+    Ok(())
+}
 
 /// Per-srctype compiler configuration. All fields are optional at the TOML level;
 /// `Config::src_config()` always returns a fully-merged value with built-in defaults applied.
@@ -59,19 +81,27 @@ impl Config {
         if text.trim().is_empty() {
             return Ok(Config::default());
         }
-        toml::from_str(&text).with_context(|| format!("invalid TOML in {}", config_path.display()))
+        let parsed: Config = toml::from_str(&text)
+            .with_context(|| format!("invalid TOML in {}", config_path.display()))?;
+        let mut src = HashMap::new();
+        let mut seen = HashSet::new();
+        for (srctype, config) in parsed.src {
+            validate_srctype_name(&srctype)?;
+            if !seen.insert(srctype.to_ascii_lowercase()) {
+                anyhow::bail!("duplicate srctype configuration '{srctype}' ignoring case");
+            }
+            let canonical = canonical_srctype(&srctype).to_string();
+            src.insert(canonical, config);
+        }
+        Ok(Config { src })
     }
 
     /// Return a fully-merged `SrcConfig` for `srctype`: built-in defaults overlaid by any
     /// user settings from `.mdc/config.toml`. User `Some` values always win.
     pub fn src_config(&self, srctype: &str) -> SrcConfig {
+        let srctype = canonical_srctype(srctype);
         let defaults = default_for_srctype(srctype);
-        let user = self
-            .src
-            .get(srctype)
-            .or_else(|| self.src.get(&srctype.to_ascii_lowercase()))
-            .cloned()
-            .unwrap_or_default();
+        let user = self.src.get(srctype).cloned().unwrap_or_default();
         SrcConfig {
             depens: user.depens.or(defaults.depens),
             reverse_depens: user.reverse_depens.or(defaults.reverse_depens),
@@ -83,7 +113,7 @@ impl Config {
 
 /// Built-in defaults matching the Python DEFAULT_CONFIG.
 pub fn default_for_srctype(srctype: &str) -> SrcConfig {
-    match srctype.to_ascii_lowercase().as_str() {
+    match canonical_srctype(srctype) {
         "text" => SrcConfig {
             depens: Some(true),
             reverse_depens: Some(true),
@@ -122,7 +152,7 @@ pub fn default_for_srctype(srctype: &str) -> SrcConfig {
 
 /// Srctype → file extension.
 pub fn srctype_ext(srctype: &str) -> &str {
-    match srctype {
+    match canonical_srctype(srctype) {
         "text" => "txt",
         "latex" => "tex",
         "python" => "py",
@@ -134,7 +164,7 @@ pub fn srctype_ext(srctype: &str) -> &str {
 
 /// Hardcoded default preamble per srctype.
 pub fn default_preamble(srctype: &str) -> &'static str {
-    match srctype {
+    match canonical_srctype(srctype) {
         "latex" => "\\documentclass{article}\n\\begin{document}\n",
         _ => "",
     }
@@ -142,13 +172,14 @@ pub fn default_preamble(srctype: &str) -> &'static str {
 
 /// Hardcoded default postamble per srctype.
 pub fn default_postamble(srctype: &str) -> &'static str {
-    match srctype {
+    match canonical_srctype(srctype) {
         "latex" => "\\end{document}\n",
         _ => "",
     }
 }
 
-fn amble_path(mdcroot: &Path, srctype: &str, kind: &str) -> PathBuf {
+pub(crate) fn amble_path(mdcroot: &Path, srctype: &str, kind: &str) -> PathBuf {
+    let srctype = canonical_srctype(srctype);
     let ext = srctype_ext(srctype);
     mdcroot
         .join(".mdc")
@@ -170,17 +201,34 @@ pub fn read_postamble(mdcroot: &Path, srctype: &str) -> String {
 
 /// Write preamble file for `srctype`.
 pub fn write_preamble(mdcroot: &Path, srctype: &str, content: &str) -> Result<()> {
-    let path = amble_path(mdcroot, srctype, "preamble");
-    std::fs::create_dir_all(path.parent().unwrap())?;
-    std::fs::write(&path, content)?;
-    Ok(())
+    write_amble(mdcroot, srctype, "preamble", content)
 }
 
 /// Write postamble file for `srctype`.
 pub fn write_postamble(mdcroot: &Path, srctype: &str, content: &str) -> Result<()> {
-    let path = amble_path(mdcroot, srctype, "postamble");
-    std::fs::create_dir_all(path.parent().unwrap())?;
-    std::fs::write(&path, content)?;
+    write_amble(mdcroot, srctype, "postamble", content)
+}
+
+fn write_amble(mdcroot: &Path, srctype: &str, kind: &str, content: &str) -> Result<()> {
+    validate_srctype_name(srctype)?;
+    let srctype = canonical_srctype(srctype);
+    let mdc_dir = mdcroot.join(".mdc");
+    match std::fs::symlink_metadata(&mdc_dir) {
+        Ok(_) => crate::safe_file::ensure_regular_directory(&mdc_dir)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir(&mdc_dir)?
+        }
+        Err(error) => return Err(error.into()),
+    }
+    let dir = mdc_dir.join(srctype);
+    match std::fs::symlink_metadata(&dir) {
+        Ok(_) => crate::safe_file::ensure_regular_directory(&dir)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir(&dir)?,
+        Err(error) => return Err(error.into()),
+    }
+    let path = amble_path(mdcroot, srctype, kind);
+    let snapshot = crate::safe_file::FileSnapshot::capture(&path)?;
+    crate::safe_file::atomic_replace(&path, &snapshot, content.as_bytes())?;
     Ok(())
 }
 

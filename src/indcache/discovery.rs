@@ -1,18 +1,23 @@
-//! Incremental workspace change detection using directory mtime tracking.
+//! Incremental workspace change detection using directory mtimes and file digests.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 use super::queries::fnode_for_path;
-use super::refresh::{delete_indexed_path, upsert_mdoc_row};
+use super::refresh::{
+    delete_indexed_path, file_digest, upsert_mdoc_row, validate_cached_directory_path,
+    validate_cached_mdoc_path,
+};
+
+type FileState = (i64, i64, Vec<u8>);
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Efficiently detect and index workspace changes using directory mtime comparison.
+/// Efficiently detect and index workspace changes using metadata plus content digests.
 ///
 /// Returns `(changed_fnodes, has_deletion)`:
 /// - `changed_fnodes`: fnodes of added/updated files (use for incremental topo).
@@ -54,7 +59,7 @@ pub fn discover_workspace_changes(conn: &Connection, root: &Path) -> Result<(Vec
 /// Rebuild the mdoc_dirs table from scratch by walking the workspace.
 pub fn rebuild_directory_index(conn: &Connection, root: &Path) -> Result<()> {
     conn.execute("DELETE FROM mdoc_dirs", [])?;
-    for (rel_dir, mtime_ns) in scan_workspace_dirs(root) {
+    for (rel_dir, mtime_ns) in scan_workspace_dirs(root)? {
         conn.execute(
             "INSERT INTO mdoc_dirs (path, mtime_ns)
              VALUES (?, ?)
@@ -69,7 +74,7 @@ pub fn rebuild_directory_index(conn: &Connection, root: &Path) -> Result<()> {
 
 struct DiscoveryState {
     known_dirs: HashMap<String, i64>,
-    known_file_states: HashMap<String, (i64, i64)>,
+    known_file_states: HashMap<String, FileState>,
     child_dirs_by_parent: HashMap<String, HashSet<String>>,
     files_by_parent: HashMap<String, HashSet<String>>,
     seen_dirs: HashSet<String>,
@@ -87,10 +92,13 @@ fn scan_dir_step(
     state: &mut DiscoveryState,
     stack: &mut Vec<String>,
 ) -> Result<()> {
-    let dir_path = if rel_dir.is_empty() {
-        root.to_path_buf()
-    } else {
-        root.join(rel_dir)
+    let dir_path = match validate_cached_directory_path(root, rel_dir) {
+        Ok(path) => path,
+        Err(error) if rel_dir.is_empty() => return Err(error),
+        Err(_) => {
+            purge_subtree(conn, rel_dir, state)?;
+            return Ok(());
+        }
     };
 
     // Nested workspace root — purge and stop descending
@@ -99,26 +107,27 @@ fn scan_dir_step(
         return Ok(());
     }
 
-    // Gone — purge
-    if !dir_path.is_dir() {
-        purge_subtree(conn, rel_dir, state)?;
-        return Ok(());
-    }
-
     let meta = match std::fs::metadata(&dir_path) {
         Ok(m) => m,
-        Err(_) => {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             purge_subtree(conn, rel_dir, state)?;
             return Ok(());
         }
+        Err(e) => return Err(e).with_context(|| format!("reading {}", dir_path.display())),
     };
+    if !meta.is_dir() {
+        purge_subtree(conn, rel_dir, state)?;
+        return Ok(());
+    }
 
     state.seen_dirs.insert(rel_dir.to_string());
     let current_mtime_ns = mtime_ns_from_meta(&meta);
     let known_mtime_ns = state.known_dirs.get(rel_dir).copied();
 
-    // Unchanged known directory: just push known children
+    // Editing an existing file normally does not change its parent directory's
+    // mtime, so known files still need to be re-statted on the fast path.
     if known_mtime_ns == Some(current_mtime_ns) {
+        refresh_known_files(conn, root, rel_dir, state)?;
         let mut children: Vec<String> = state
             .child_dirs_by_parent
             .get(rel_dir)
@@ -135,15 +144,12 @@ fn scan_dir_step(
     }
 
     // Directory is new or changed: scan its entries
-    let entries = match std::fs::read_dir(&dir_path) {
-        Ok(e) => e,
-        Err(_) => {
-            purge_subtree(conn, rel_dir, state)?;
-            return Ok(());
-        }
-    };
+    let entries = std::fs::read_dir(&dir_path)
+        .with_context(|| format!("reading directory {}", dir_path.display()))?;
 
-    let mut entry_list: Vec<std::fs::DirEntry> = entries.filter_map(|e| e.ok()).collect();
+    let mut entry_list: Vec<std::fs::DirEntry> = entries
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("reading entries in {}", dir_path.display()))?;
     entry_list.sort_by_key(|e| e.file_name());
 
     let mut discovered_child_dirs: HashSet<String> = HashSet::new();
@@ -155,10 +161,9 @@ fn scan_dir_step(
             continue;
         }
         let child_rel = join_rel_dir(rel_dir, &name);
-        let ft = match entry.file_type() {
-            Ok(ft) => ft,
-            Err(_) => continue,
-        };
+        let ft = entry
+            .file_type()
+            .with_context(|| format!("reading file type for {}", entry.path().display()))?;
         if ft.is_dir() {
             discovered_child_dirs.insert(child_rel);
             continue;
@@ -168,18 +173,18 @@ fn scan_dir_step(
         }
         seen_files.insert(child_rel.clone());
 
-        let entry_meta = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let current_state = (mtime_ns_from_meta(&entry_meta), entry_meta.len() as i64);
-        if state.known_file_states.get(&child_rel).copied() == Some(current_state) {
+        let entry_meta = entry
+            .metadata()
+            .with_context(|| format!("reading metadata for {}", entry.path().display()))?;
+        let current_state = (
+            mtime_ns_from_meta(&entry_meta),
+            entry_meta.len() as i64,
+            file_digest(&entry.path())?,
+        );
+        if state.known_file_states.get(&child_rel) == Some(&current_state) {
             continue;
         }
-        upsert_mdoc_row(conn, root, &dir_path.join(&name))?;
-        if let Some(fnode) = fnode_for_path(conn, &child_rel)? {
-            state.changed_fnodes.push(fnode);
-        }
+        upsert_changed_file(conn, root, &dir_path.join(&name), &child_rel, state)?;
         state.known_file_states.insert(child_rel, current_state);
     }
 
@@ -238,6 +243,84 @@ fn scan_dir_step(
     Ok(())
 }
 
+fn refresh_known_files(
+    conn: &Connection,
+    root: &Path,
+    rel_dir: &str,
+    state: &mut DiscoveryState,
+) -> Result<()> {
+    let mut known_files: Vec<String> = state
+        .files_by_parent
+        .get(rel_dir)
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect();
+    known_files.sort();
+
+    for rel_path in known_files {
+        let path = match validate_cached_mdoc_path(root, &rel_path) {
+            Ok(path) => path,
+            Err(_) => {
+                delete_indexed_path(conn, &rel_path)?;
+                state.known_file_states.remove(&rel_path);
+                state.has_deletion = true;
+                continue;
+            }
+        };
+        let meta = match std::fs::metadata(&path) {
+            Ok(meta) if meta.is_file() => meta,
+            Ok(_) => {
+                delete_indexed_path(conn, &rel_path)?;
+                state.known_file_states.remove(&rel_path);
+                state.has_deletion = true;
+                continue;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                delete_indexed_path(conn, &rel_path)?;
+                state.known_file_states.remove(&rel_path);
+                state.has_deletion = true;
+                continue;
+            }
+            Err(e) => {
+                return Err(e).with_context(|| format!("reading metadata for {}", path.display()))
+            }
+        };
+        let current_state = (
+            mtime_ns_from_meta(&meta),
+            meta.len() as i64,
+            file_digest(&path)?,
+        );
+        if state.known_file_states.get(&rel_path) == Some(&current_state) {
+            continue;
+        }
+        upsert_changed_file(conn, root, &path, &rel_path, state)?;
+        state.known_file_states.insert(rel_path, current_state);
+    }
+    Ok(())
+}
+
+fn upsert_changed_file(
+    conn: &Connection,
+    root: &Path,
+    path: &Path,
+    rel_path: &str,
+    state: &mut DiscoveryState,
+) -> Result<()> {
+    let old_fnode = fnode_for_path(conn, rel_path)?;
+    upsert_mdoc_row(conn, root, path)?;
+    let new_fnode = fnode_for_path(conn, rel_path)?;
+    if old_fnode != new_fnode {
+        if let Some(old_fnode) = old_fnode {
+            state.changed_fnodes.push(old_fnode);
+        }
+    }
+    if let Some(new_fnode) = new_fnode {
+        state.changed_fnodes.push(new_fnode);
+    }
+    Ok(())
+}
+
 fn purge_subtree(conn: &Connection, rel_dir: &str, state: &mut DiscoveryState) -> Result<()> {
     let prefix = if rel_dir.is_empty() {
         String::new()
@@ -284,31 +367,36 @@ fn purge_subtree(conn: &Connection, rel_dir: &str, state: &mut DiscoveryState) -
 
 // ── Workspace directory walk ──────────────────────────────────────────────────
 
-fn scan_workspace_dirs(root: &Path) -> Vec<(String, i64)> {
+fn scan_workspace_dirs(root: &Path) -> Result<Vec<(String, i64)>> {
     let mut results: Vec<(String, i64)> = Vec::new();
-    let mut stack: Vec<(std::path::PathBuf, String)> = vec![(
-        root.canonicalize().unwrap_or_else(|_| root.to_path_buf()),
-        String::new(),
-    )];
+    let mut stack: Vec<(std::path::PathBuf, String)> = vec![(root.canonicalize()?, String::new())];
 
     while let Some((dir_path, rel_dir)) = stack.pop() {
         if !rel_dir.is_empty() && dir_path.join(".mdc").is_dir() {
             continue;
         }
-        let mtime_ns = std::fs::metadata(&dir_path)
-            .ok()
-            .as_ref()
-            .map(mtime_ns_from_meta)
-            .unwrap_or(0);
+        let meta = std::fs::metadata(&dir_path)
+            .with_context(|| format!("reading directory metadata {}", dir_path.display()))?;
+        let mtime_ns = mtime_ns_from_meta(&meta);
         results.push((rel_dir.clone(), mtime_ns));
 
-        let mut entries: Vec<_> = std::fs::read_dir(&dir_path)
-            .into_iter()
-            .flatten()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
-            .filter(|e| e.file_name() != ".mdc")
-            .collect();
+        let raw_entries = std::fs::read_dir(&dir_path)
+            .with_context(|| format!("reading directory {}", dir_path.display()))?
+            .collect::<std::io::Result<Vec<_>>>()
+            .with_context(|| format!("reading entries in {}", dir_path.display()))?;
+        let mut entries = Vec::new();
+        for entry in raw_entries {
+            if entry.file_name() == ".mdc" {
+                continue;
+            }
+            if entry
+                .file_type()
+                .with_context(|| format!("reading file type for {}", entry.path().display()))?
+                .is_dir()
+            {
+                entries.push(entry);
+            }
+        }
         entries.sort_by_key(|e| e.file_name());
         entries.reverse(); // push in reverse so sorted order is processed first
         for entry in entries {
@@ -316,7 +404,7 @@ fn scan_workspace_dirs(root: &Path) -> Vec<(String, i64)> {
             stack.push((entry.path(), join_rel_dir(&rel_dir, &name)));
         }
     }
-    results
+    Ok(results)
 }
 
 // ── DB snapshot helpers ───────────────────────────────────────────────────────
@@ -329,18 +417,22 @@ fn dir_mtimes(conn: &Connection) -> Result<HashMap<String, i64>> {
     Ok(rows)
 }
 
-fn file_states(conn: &Connection) -> Result<HashMap<String, (i64, i64)>> {
-    let mut stmt = conn.prepare("SELECT path, mtime_ns, size FROM mdoc_files")?;
-    let rows: Vec<(String, i64, i64)> = stmt
+fn file_states(conn: &Connection) -> Result<HashMap<String, FileState>> {
+    let mut stmt = conn.prepare("SELECT path, mtime_ns, size, digest FROM mdoc_files")?;
+    let rows: Vec<(String, i64, i64, Vec<u8>)> = stmt
         .query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, i64>(1)?,
                 r.get::<_, i64>(2)?,
+                r.get::<_, Vec<u8>>(3)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows.into_iter().map(|(p, ns, sz)| (p, (ns, sz))).collect())
+    Ok(rows
+        .into_iter()
+        .map(|(p, ns, sz, digest)| (p, (ns, sz, digest)))
+        .collect())
 }
 
 fn group_dirs_by_parent(dirs: &HashMap<String, i64>) -> HashMap<String, HashSet<String>> {
@@ -359,7 +451,7 @@ fn group_dirs_by_parent(dirs: &HashMap<String, i64>) -> HashMap<String, HashSet<
 }
 
 fn group_files_by_parent(
-    file_states: &HashMap<String, (i64, i64)>,
+    file_states: &HashMap<String, FileState>,
 ) -> HashMap<String, HashSet<String>> {
     let mut grouped: HashMap<String, HashSet<String>> = HashMap::new();
     grouped.entry(String::new()).or_default();

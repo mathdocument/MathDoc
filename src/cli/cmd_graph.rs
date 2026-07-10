@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::core::{GraphIssue, IssueKind};
+use crate::core::{escape_terminal, GraphIssue, IssueKind};
 
 use super::{
     fmt_item, open_cache, print_missing_with_referrers, require_mdcroot, BLD, DIM, GRN, RED, RST,
@@ -32,7 +32,7 @@ pub(super) fn cmd_graph_check() -> Result<i32> {
         println!("  {RED}invalid ({}):{RST}", report.invalid.len());
         for issue in &report.invalid {
             println!("    {}", fmt_issue(issue));
-            println!("      {DIM}{}{RST}", issue.error);
+            println!("      {DIM}{}{RST}", escape_terminal(&issue.error));
         }
     }
     if !report.cycles.is_empty() {
@@ -85,8 +85,8 @@ fn fmt_issue(issue: &GraphIssue) -> String {
     };
     format!(
         "{DIM}{}{RST}  {marker}  {BLD}{}{RST}  {DIM}{}{RST}",
-        short_fnode(&issue.fnode),
-        issue.title,
-        issue.rel_path
+        short_fnode(&escape_terminal(&issue.fnode)),
+        escape_terminal(&issue.title),
+        escape_terminal(&issue.rel_path)
     )
 }

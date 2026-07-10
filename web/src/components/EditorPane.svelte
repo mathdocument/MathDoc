@@ -1,9 +1,18 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import type { NodeDetail } from "../lib/types";
   import { shortFnode, errMsg } from "../lib/format";
   import BlockEditor from "./BlockEditor.svelte";
   import AddBlockControl from "./AddBlockControl.svelte";
   import { api } from "../lib/api";
+  import {
+    confirmDiscardDrafts,
+    removeDraft,
+    settlePendingMutations,
+    setDraftDirty,
+    setMutationPending,
+    unsavedDraftRevision,
+  } from "../lib/unsaved";
 
   interface Props {
     load:
@@ -21,12 +30,35 @@
   let titleError: string | null = $state(null);
   let titleSaving = $state(false);
   let titleInputEl = $state<HTMLInputElement | null>(null);
+  const titleDraftId = Symbol("title draft");
+  const titleMutationId = Symbol("title mutation");
+  let displayedFnode: string | null = null;
+  let titleRequest = 0;
+  let refreshRequest = 0;
+  let editorResetRevision = $state(0);
 
   // Reset title editing state when the displayed node changes.
   $effect(() => {
-    if (load.kind === "ready") void load.node.fnode;
+    const fnode = load.kind === "ready" ? load.node.fnode : null;
+    if (fnode === displayedFnode) return;
+    displayedFnode = fnode;
+    titleRequest++;
+    refreshRequest++;
     editingTitle = false;
+    titleSaving = false;
     titleError = null;
+  });
+
+  $effect(() => {
+    const isDirty = editingTitle && load.kind === "ready" &&
+      titleDraft !== load.node.title;
+    setDraftDirty(titleDraftId, isDirty);
+  });
+
+  onDestroy(() => {
+    titleRequest++;
+    refreshRequest++;
+    removeDraft(titleDraftId);
   });
 
   // Refocus input when entering edit mode.
@@ -52,16 +84,25 @@
       titleError = null;
       return;
     }
+    const targetFnode = load.node.fnode;
+    const request = ++titleRequest;
+    const isCurrent = () => request === titleRequest && load.kind === "ready" &&
+      load.node.fnode === targetFnode;
     titleSaving = true;
+    setMutationPending(titleMutationId, true);
     titleError = null;
     try {
-      const updated = await api.putTitle(load.node.fnode, newTitle);
-      onRefresh?.(updated);
+      const updated = await api.putTitle(targetFnode, newTitle);
+      if (!isCurrent() || load.kind !== "ready") return;
+      // A title write returns the whole node, but unrelated block drafts may
+      // be newer than the blocks in that response.
+      onRefresh?.({ ...load.node, title: updated.title });
       editingTitle = false;
     } catch (e) {
-      titleError = errMsg(e);
+      if (isCurrent()) titleError = errMsg(e);
     } finally {
-      titleSaving = false;
+      setMutationPending(titleMutationId, false);
+      if (isCurrent()) titleSaving = false;
     }
   }
 
@@ -72,8 +113,23 @@
 
   async function refreshNode() {
     if (load.kind !== "ready") return;
+    if (!confirmDiscardDrafts()) return;
+    if (!await settlePendingMutations()) return;
+    if (load.kind !== "ready") return;
+    const confirmedDraftRevision = unsavedDraftRevision();
+    const targetFnode = load.node.fnode;
+    const request = ++refreshRequest;
     try {
-      const fresh = await api.node(load.node.fnode);
+      const fresh = await api.node(targetFnode);
+      if (request !== refreshRequest || load.kind !== "ready" ||
+        load.node.fnode !== targetFnode) return;
+      if (unsavedDraftRevision() !== confirmedDraftRevision) return;
+      titleRequest++;
+      editingTitle = false;
+      titleSaving = false;
+      titleError = null;
+      titleDraft = fresh.title;
+      editorResetRevision++;
       onRefresh?.(fresh);
     } catch {
       // ignore
@@ -109,7 +165,7 @@
         <button class="title-cancel" onclick={cancelEditTitle} disabled={titleSaving}>×</button>
         {#if titleError}<span class="title-error">{titleError}</span>{/if}
       {:else}
-        <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events -->
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events, a11y_no_noninteractive_element_to_interactive_role -->
         <h1
           class="title"
           tabindex="0"
@@ -126,6 +182,7 @@
         {#if node.broken}<span class="broken">✗ broken</span>{/if}
       </div>
     </header>
+    {#key `${node.fnode}:${editorResetRevision}`}
     <div class="blocks">
       {#if node.blocks.length === 0}
         <div class="placeholder">no source blocks</div>
@@ -144,6 +201,7 @@
         onAdded={refreshNode}
       />
     </div>
+    {/key}
   {/if}
 </section>
 

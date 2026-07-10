@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -44,6 +45,12 @@ impl MdocNode {
         Self::load_inner(mdcroot, path, false)
     }
 
+    pub(crate) fn load_bytes(mdcroot: &Path, path: &Path, content: &[u8]) -> Result<Self> {
+        let content = std::str::from_utf8(content)
+            .with_context(|| format!("reading {} as UTF-8", path.display()))?;
+        Self::parse_content(mdcroot, path, content, true)
+    }
+
     pub fn add_dependency(&mut self, dep_fnode: &str) {
         if !self.depens.iter().any(|d| d == dep_fnode) {
             self.depens.push(dep_fnode.to_string());
@@ -56,10 +63,73 @@ impl MdocNode {
 
     /// Save node content to file.
     pub fn save(&self) -> Result<()> {
+        self.save_inner(false)
+    }
+
+    /// Create a new node without replacing any path that appears concurrently.
+    pub fn save_new(&self) -> Result<()> {
+        self.save_inner(true)
+    }
+
+    fn save_inner(&self, create_new: bool) -> Result<()> {
+        let payload = self.render_payload()?;
+
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating parent dirs for {}", self.path.display()))?;
         }
+
+        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        let existing_permissions = std::fs::symlink_metadata(&self.path)
+            .ok()
+            .filter(|meta| meta.file_type().is_file())
+            .map(|meta| meta.permissions());
+        if existing_permissions
+            .as_ref()
+            .is_some_and(std::fs::Permissions::readonly)
+        {
+            bail!("refusing to replace read-only file {}", self.path.display());
+        }
+        let mut builder = tempfile::Builder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Match ordinary file creation: requested 0666 is restricted by umask.
+            builder.permissions(std::fs::Permissions::from_mode(0o666));
+        }
+        let mut temp = builder
+            .tempfile_in(parent)
+            .with_context(|| format!("creating temporary file in {}", parent.display()))?;
+        if let Some(permissions) = existing_permissions {
+            temp.as_file_mut().set_permissions(permissions)?;
+        }
+        temp.write_all(payload.as_bytes())
+            .with_context(|| format!("writing temporary file for {}", self.path.display()))?;
+        temp.as_file_mut()
+            .sync_all()
+            .with_context(|| format!("syncing temporary file for {}", self.path.display()))?;
+
+        if create_new {
+            temp.persist_noclobber(&self.path)
+                .map_err(|e| e.error)
+                .with_context(|| format!("creating new mdoc {}", self.path.display()))?;
+        } else {
+            temp.persist(&self.path)
+                .map_err(|e| e.error)
+                .with_context(|| format!("replacing {}", self.path.display()))?;
+        }
+
+        #[cfg(unix)]
+        {
+            // The payload itself is durable. Directory sync is best-effort because
+            // some filesystems reject it after the rename has already committed.
+            let _ = std::fs::File::open(parent).and_then(|dir| dir.sync_all());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn render_payload(&self) -> Result<String> {
+        self.validate_for_save()?;
 
         let mut lines: Vec<String> = vec![
             format!("@fnode: {}", self.fnode),
@@ -83,15 +153,74 @@ impl MdocNode {
             lines.push(String::new());
         }
 
-        let payload = lines.join("\n").trim_end().to_string() + "\n";
-        std::fs::write(&self.path, payload.as_bytes())
-            .with_context(|| format!("writing {}", self.path.display()))
+        Ok(lines.join("\n").trim_end().to_string() + "\n")
+    }
+
+    fn validate_for_save(&self) -> Result<()> {
+        validate_fnode("@fnode", &self.fnode)?;
+        validate_single_line("@title", &self.title)?;
+        if self.fnode != self.fnode.trim() || self.title != self.title.trim() {
+            bail!("fnode and title must not have leading or trailing whitespace");
+        }
+
+        let mut seen_deps: HashSet<&str> = HashSet::new();
+        for dep in &self.depens {
+            if dep == "@end" {
+                bail!("dependency cannot be the reserved '@end' marker");
+            }
+            validate_fnode("dependency", dep)?;
+            if dep != dep.trim() {
+                bail!("dependency must not have leading or trailing whitespace");
+            }
+            if !seen_deps.insert(dep) {
+                bail!("duplicate dependency '{dep}'");
+            }
+        }
+
+        let mut seen_srctypes: HashSet<String> = HashSet::new();
+        for block in &self.blocks {
+            validate_single_line("srctype", &block.srctype)?;
+            crate::config::validate_srctype_name(&block.srctype)?;
+            if !seen_srctypes.insert(block.srctype.to_ascii_lowercase()) {
+                bail!("duplicate srctype '{}'", block.srctype);
+            }
+            for (key, value) in &block.metadata {
+                validate_single_line("src metadata key", key)?;
+                validate_no_controls(&format!("src metadata value for '{key}'"), value)?;
+            }
+
+            let header = format_src_header(&block.srctype, &block.metadata);
+            let payload = header.strip_prefix("@src:").unwrap_or_default().trim();
+            let (srctype, metadata) = parse_src_header(payload, 0, &self.path)?;
+            if srctype != block.srctype || metadata != block.metadata {
+                bail!(
+                    "@src header for '{}' cannot be represented without changing its value",
+                    block.srctype
+                );
+            }
+
+            if block.content.lines().any(|line| line.trim() == "@end") {
+                bail!(
+                    "source block '{}' cannot contain a line equal to the reserved '@end' marker",
+                    block.srctype
+                );
+            }
+        }
+        Ok(())
     }
 
     fn load_inner(mdcroot: &Path, path: &Path, include_blocks: bool) -> Result<Self> {
         let content =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        Self::parse_content(mdcroot, path, &content, include_blocks)
+    }
 
+    fn parse_content(
+        mdcroot: &Path,
+        path: &Path,
+        content: &str,
+        include_blocks: bool,
+    ) -> Result<Self> {
         let mut fnode = String::new();
         let mut title = String::new();
         let mut depens: Vec<String> = Vec::new();
@@ -108,6 +237,12 @@ impl MdocNode {
 
         for (idx, raw_line) in content.lines().enumerate() {
             let lineno = idx + 1;
+            if status != Status::Src && raw_line.chars().any(char::is_control) {
+                bail!(
+                    "line {lineno}: control characters are not allowed in structural fields in {}",
+                    path.display()
+                );
+            }
             let line = raw_line.trim();
 
             match status {
@@ -122,6 +257,9 @@ impl MdocNode {
                             path.display()
                         );
                     }
+                    validate_fnode("dependency", line).with_context(|| {
+                        format!("line {lineno}: invalid dependency in {}", path.display())
+                    })?;
                     if depens.iter().any(|d| d == line) {
                         bail!(
                             "line {lineno}: Duplicate dependency '{line}' in {}",
@@ -161,6 +299,9 @@ impl MdocNode {
                         path.display()
                     );
                 }
+                validate_fnode("@fnode", val).with_context(|| {
+                    format!("line {lineno}: invalid '@fnode' in {}", path.display())
+                })?;
                 fnode = val.to_string();
                 continue;
             }
@@ -176,6 +317,9 @@ impl MdocNode {
                         path.display()
                     );
                 }
+                validate_single_line("@title", val).with_context(|| {
+                    format!("line {lineno}: invalid '@title' in {}", path.display())
+                })?;
                 title = val.to_string();
                 continue;
             }
@@ -190,13 +334,17 @@ impl MdocNode {
 
             if let Some(rest) = line.strip_prefix("@src:") {
                 let (srctype, metadata) = parse_src_header(rest.trim(), lineno, path)?;
-                if seen_srctypes.contains(&srctype) {
+                crate::config::validate_srctype_name(&srctype).with_context(|| {
+                    format!("line {lineno}: invalid srctype in {}", path.display())
+                })?;
+                let srctype_identity = srctype.to_ascii_lowercase();
+                if seen_srctypes.contains(&srctype_identity) {
                     bail!(
                         "line {lineno}: Duplicate '@src' srctype '{srctype}' in {}",
                         path.display()
                     );
                 }
-                seen_srctypes.insert(srctype.clone());
+                seen_srctypes.insert(srctype_identity);
                 if include_blocks {
                     blocks.push(SrcBlock {
                         srctype,
@@ -238,6 +386,38 @@ impl MdocNode {
             blocks,
         })
     }
+}
+
+fn validate_single_line(field: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        bail!("{field} must be non-empty");
+    }
+    if value.contains(['\r', '\n']) {
+        bail!("{field} must be a single line");
+    }
+    validate_no_controls(field, value)
+}
+
+fn validate_no_controls(field: &str, value: &str) -> Result<()> {
+    if value.chars().any(char::is_control) {
+        bail!("{field} must not contain control characters");
+    }
+    Ok(())
+}
+
+/// Persisted node identifiers are lowercase ASCII words separated by hyphens.
+/// Keeping one grammar makes exact graph keys and case-insensitive user lookup agree.
+fn validate_fnode(field: &str, value: &str) -> Result<()> {
+    validate_single_line(field, value)?;
+    let bytes = value.as_bytes();
+    let is_word = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
+    if !is_word(bytes[0])
+        || !is_word(*bytes.last().expect("non-empty value checked above"))
+        || !bytes.iter().all(|byte| is_word(*byte) || *byte == b'-')
+    {
+        bail!("{field} must contain only lowercase ASCII letters, digits, and internal hyphens");
+    }
+    Ok(())
 }
 
 /// Quick header read: returns (fnode, title) or None on error/missing fields.
@@ -287,13 +467,16 @@ fn parse_src_header(
         bail!("line {lineno}: Invalid '@src' header in {}", path.display());
     }
 
-    let srctype = tokens[0].clone();
+    let srctype = crate::config::canonical_srctype(&tokens[0]).to_string();
     let mut metadata = HashMap::new();
 
     for token in &tokens[1..] {
         match token.split_once('=') {
             Some((key, value)) if !key.trim().is_empty() => {
-                metadata.insert(key.trim().to_string(), value.to_string());
+                let key = key.trim();
+                validate_single_line("src metadata key", key)?;
+                validate_no_controls(&format!("src metadata value for '{key}'"), value)?;
+                metadata.insert(key.to_string(), value.to_string());
             }
             _ => {
                 bail!(
