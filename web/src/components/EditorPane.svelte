@@ -30,6 +30,7 @@
   let titleError: string | null = $state(null);
   let titleSaving = $state(false);
   let titleInputEl = $state<HTMLInputElement | null>(null);
+  let refreshError: string | null = $state(null);
   const titleDraftId = Symbol("title draft");
   const titleMutationId = Symbol("title mutation");
   let displayedFnode: string | null = null;
@@ -119,6 +120,7 @@
     const confirmedDraftRevision = unsavedDraftRevision();
     const targetFnode = load.node.fnode;
     const request = ++refreshRequest;
+    refreshError = null;
     try {
       const fresh = await api.node(targetFnode);
       if (request !== refreshRequest || load.kind !== "ready" ||
@@ -131,8 +133,8 @@
       titleDraft = fresh.title;
       editorResetRevision++;
       onRefresh?.(fresh);
-    } catch {
-      // ignore
+    } catch (e) {
+      if (request === refreshRequest) refreshError = errMsg(e);
     }
   }
 </script>
@@ -150,6 +152,12 @@
   {:else}
     {@const node = load.node}
     <header class="head">
+      {#if refreshError}
+        <div class="refresh-error" role="alert">
+          <span>refresh failed: {refreshError}</span>
+          <button onclick={() => void refreshNode()}>retry</button>
+        </div>
+      {/if}
       {#if editingTitle}
         <input
           class="title-input"
@@ -219,6 +227,21 @@
   .head {
     padding: 0.9rem 1.1rem;
     border-bottom: 1px solid var(--mdc-border);
+  }
+  .refresh-error {
+    display: flex;
+    gap: 0.5rem;
+    color: var(--mdc-error);
+    font-family: var(--mdc-mono);
+    font-size: 0.76rem;
+    margin-bottom: 0.5rem;
+  }
+  .refresh-error button {
+    color: inherit;
+    background: transparent;
+    border: 1px solid currentColor;
+    border-radius: 3px;
+    cursor: pointer;
   }
   .title {
     margin: 0;

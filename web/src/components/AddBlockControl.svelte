@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { api } from "../lib/api";
   import { errMsg } from "../lib/format";
+  import { setMutationPending } from "../lib/unsaved";
 
   interface Props {
     fnode: string;
@@ -14,6 +16,10 @@
   let open = $state(false);
   let adding: string | null = $state(null);
   let error: string | null = $state(null);
+  const mutationId = Symbol("add block mutation");
+  let alive = true;
+
+  onDestroy(() => { alive = false; });
 
   let available = $derived(
     ALL_SRCTYPES.filter((s) => !existingSrctypes.includes(s)),
@@ -27,16 +33,23 @@
 
   async function add(srctype: string) {
     if (adding) return;
+    const targetFnode = fnode;
     adding = srctype;
+    let pending = true;
+    setMutationPending(mutationId, true);
     error = null;
     try {
-      await api.putBlock(fnode, srctype, "");
+      await api.putBlock(targetFnode, srctype, "");
+      setMutationPending(mutationId, false);
+      pending = false;
+      if (!alive || fnode !== targetFnode) return;
       open = false;
       onAdded?.();
     } catch (e) {
-      error = errMsg(e);
+      if (alive && fnode === targetFnode) error = errMsg(e);
     } finally {
-      adding = null;
+      if (pending) setMutationPending(mutationId, false);
+      if (alive && fnode === targetFnode) adding = null;
     }
   }
 </script>

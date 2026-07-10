@@ -117,10 +117,8 @@ fn cfg_positive_int(
     }
 }
 
-fn require_tool(name: &str) -> Result<String> {
-    which::which(name)
-        .map(|p| p.to_string_lossy().into_owned())
-        .map_err(|_| anyhow::anyhow!("{name} not found in PATH"))
+fn require_tool(name: &str) -> Result<PathBuf> {
+    which::which(name).map_err(|_| anyhow::anyhow!("{name} not found in PATH"))
 }
 
 /// At most 1 MiB of raw bytes is retained for each output stream. The first and
@@ -217,6 +215,59 @@ struct DrainResult {
     error: Option<String>,
 }
 
+#[derive(Clone, Copy)]
+struct PipePoll {
+    #[cfg(unix)]
+    fd: libc::c_int,
+    #[cfg(windows)]
+    handle: isize,
+}
+
+#[cfg(unix)]
+fn pipe_poll<T: std::os::fd::AsRawFd>(pipe: &T) -> PipePoll {
+    PipePoll {
+        fd: pipe.as_raw_fd(),
+    }
+}
+
+#[cfg(windows)]
+fn pipe_poll<T: std::os::windows::io::AsRawHandle>(pipe: &T) -> PipePoll {
+    PipePoll {
+        handle: pipe.as_raw_handle() as isize,
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn pipe_poll<T>(_pipe: &T) -> PipePoll {
+    PipePoll {}
+}
+
+#[cfg(windows)]
+fn windows_pipe_available(poll: PipePoll) -> std::io::Result<Option<usize>> {
+    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+
+    let mut available = 0;
+    let succeeded = unsafe {
+        PeekNamedPipe(
+            poll.handle as windows_sys::Win32::Foundation::HANDLE,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            &mut available,
+            std::ptr::null_mut(),
+        )
+    };
+    if succeeded != 0 {
+        return Ok(Some(available as usize));
+    }
+    let error = std::io::Error::last_os_error();
+    if matches!(error.raw_os_error(), Some(109 | 232)) {
+        Ok(None)
+    } else {
+        Err(error)
+    }
+}
+
 struct PipeDrain {
     stream_name: &'static str,
     receiver: std::sync::mpsc::Receiver<DrainResult>,
@@ -226,11 +277,7 @@ struct PipeDrain {
 }
 
 impl PipeDrain {
-    fn spawn<R>(
-        mut pipe: R,
-        stream_name: &'static str,
-        poll_fd: Option<libc::c_int>,
-    ) -> std::io::Result<Self>
+    fn spawn<R>(mut pipe: R, stream_name: &'static str, poll: PipePoll) -> std::io::Result<Self>
     where
         R: Read + Send + 'static,
     {
@@ -246,26 +293,37 @@ impl PipeDrain {
                     if thread_stop.load(Ordering::Relaxed) {
                         break None;
                     }
-                    match pipe.read(&mut chunk) {
+                    #[cfg(windows)]
+                    let read_limit = match windows_pipe_available(poll) {
+                        Ok(None) => break None,
+                        Ok(Some(0)) => {
+                            std::thread::sleep(Duration::from_millis(10));
+                            continue;
+                        }
+                        Ok(Some(available)) => available.min(chunk.len()),
+                        Err(error) => break Some(error.to_string()),
+                    };
+                    #[cfg(not(windows))]
+                    let read_limit = chunk.len();
+
+                    match pipe.read(&mut chunk[..read_limit]) {
                         Ok(0) => break None,
                         Ok(read) => capture.push(&chunk[..read]),
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             #[cfg(unix)]
                             {
-                                if let Some(fd) = poll_fd {
-                                    let mut descriptor = libc::pollfd {
-                                        fd,
-                                        events: libc::POLLIN,
-                                        revents: 0,
-                                    };
-                                    // SAFETY: descriptor contains the valid pipe fd owned by this thread.
-                                    unsafe { libc::poll(&mut descriptor, 1, 100) };
-                                }
+                                let mut descriptor = libc::pollfd {
+                                    fd: poll.fd,
+                                    events: libc::POLLIN,
+                                    revents: 0,
+                                };
+                                // SAFETY: descriptor contains the valid pipe fd owned by this thread.
+                                unsafe { libc::poll(&mut descriptor, 1, 100) };
                             }
                             #[cfg(not(unix))]
                             {
-                                let _ = poll_fd;
+                                let _ = poll;
                                 std::thread::sleep(Duration::from_millis(10));
                             }
                         }
@@ -346,7 +404,24 @@ impl PipeDrain {
         if self.result.is_some() {
             return;
         }
-        // Non-Unix blocking pipe APIs cannot always be interrupted from here.
+        #[cfg(windows)]
+        {
+            let panicked = self
+                .handle
+                .take()
+                .is_some_and(|handle| handle.join().is_err());
+            let mut result = self.receiver.try_recv().unwrap_or(DrainResult {
+                output: String::new(),
+                error: Some("output drain thread stopped unexpectedly".to_string()),
+            });
+            if panicked {
+                result.error = Some("output drain thread panicked".to_string());
+            }
+            self.result = Some(result);
+            return;
+        }
+        // Unknown non-Unix pipe APIs cannot always be interrupted from here.
+        #[cfg(not(windows))]
         self.handle.take();
         self.result = Some(DrainResult {
             output: format!(
@@ -409,18 +484,85 @@ fn output_diagnostics_strings(stdout: &str, stderr: &str) -> String {
     diagnostics
 }
 
-#[cfg(unix)]
-fn terminate_process(child: &mut std::process::Child, leader_reaped: bool) {
-    let process_group = child.id() as libc::pid_t;
-    // The command is placed in a group whose id is its pid before exec. Sending
-    // SIGKILL to that group closes pipes inherited by ordinary descendants.
-    // SAFETY: process_group is the positive pid/pgid assigned to this child by
-    // `CommandExt::process_group(0)`; killpg does not dereference memory.
-    unsafe {
-        libc::killpg(process_group, libc::SIGKILL);
+struct DescendantGuard {
+    #[cfg(windows)]
+    job: std::os::windows::io::OwnedHandle,
+}
+
+impl DescendantGuard {
+    fn attach(child: &std::process::Child) -> std::io::Result<Self> {
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::{AsRawHandle, FromRawHandle};
+            use windows_sys::Win32::System::JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+                SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            };
+
+            let raw_job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if raw_job.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+            let job = unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw_job.cast()) };
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let configured = unsafe {
+                SetInformationJobObject(
+                    job.as_raw_handle().cast(),
+                    JobObjectExtendedLimitInformation,
+                    (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                    std::mem::size_of_val(&limits) as u32,
+                )
+            };
+            if configured == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let assigned = unsafe {
+                AssignProcessToJobObject(job.as_raw_handle().cast(), child.as_raw_handle().cast())
+            };
+            if assigned == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            return Ok(Self { job });
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = child;
+            Ok(Self {})
+        }
     }
+
+    #[cfg(windows)]
+    fn terminate(&self) {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+
+        unsafe {
+            TerminateJobObject(self.job.as_raw_handle().cast(), 1);
+        }
+    }
+}
+
+fn terminate_process(
+    child: &mut std::process::Child,
+    leader_reaped: bool,
+    descendants: &mut DescendantGuard,
+) {
+    #[cfg(unix)]
+    {
+        let _ = descendants;
+        let process_group = child.id() as libc::pid_t;
+        // The command is placed in a group whose id is its pid before exec.
+        unsafe {
+            libc::killpg(process_group, libc::SIGKILL);
+        }
+    }
+    #[cfg(windows)]
+    descendants.terminate();
+
     if !leader_reaped {
-        // Also try the direct process in case group signaling failed, then reap it.
+        // Also try the direct process in case group/job termination failed, then reap it.
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -559,31 +701,28 @@ impl Drop for SignalListener {
 }
 
 #[cfg(unix)]
-fn interrupt_process(child: &mut std::process::Child, signal: i32, listener: &SignalListener) {
+fn interrupt_process(
+    child: &mut std::process::Child,
+    signal: i32,
+    listener: &SignalListener,
+    descendants: &mut DescendantGuard,
+) {
     let process_group = child.id() as libc::pid_t;
     // SAFETY: the child was placed in this process group before exec.
     unsafe { libc::killpg(process_group, signal) };
     let deadline = Instant::now() + Duration::from_millis(500);
     while Instant::now() < deadline {
         if listener.received().is_some() {
-            terminate_process(child, false);
+            terminate_process(child, false, descendants);
             return;
         }
         if child.try_wait().ok().flatten().is_some() {
-            terminate_process(child, true);
+            terminate_process(child, true, descendants);
             return;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    terminate_process(child, false);
-}
-
-#[cfg(not(unix))]
-fn terminate_process(child: &mut std::process::Child, leader_reaped: bool) {
-    if !leader_reaped {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
+    terminate_process(child, false, descendants);
 }
 
 /// Run a subprocess and wait, with a polling timeout. Returns `(rtcode, stdout, stderr)`.
@@ -592,12 +731,18 @@ fn terminate_process(child: &mut std::process::Child, leader_reaped: bool) {
 /// Without this, a child that fills an OS pipe would block while the parent waits.
 /// On Unix the command has its own process group so timeout and I/O error cleanup
 /// also terminates descendants that inherited either pipe.
-fn run_process(
-    args: &[&str],
+fn run_process<P, I, S>(
+    program: P,
+    args: I,
     tool_name: &str,
     timeout_sec: u64,
     cwd: Option<&Path>,
-) -> Result<(i32, String, String)> {
+) -> Result<(i32, String, String)>
+where
+    P: AsRef<std::ffi::OsStr>,
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
     use std::process::Stdio;
 
     #[cfg(unix)]
@@ -606,8 +751,8 @@ fn run_process(
         let started = Instant::now();
         let timeout = Duration::from_secs(timeout_sec);
 
-        let mut cmd = std::process::Command::new(args[0]);
-        cmd.args(&args[1..])
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -638,49 +783,51 @@ fn run_process(
         let mut child = cmd
             .spawn()
             .map_err(|e| anyhow::anyhow!("failed to run {tool_name}: {e}"))?;
+        let mut descendants = match DescendantGuard::attach(&child) {
+            Ok(descendants) => descendants,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                bail!("failed to contain {tool_name} process tree: {error}");
+            }
+        };
 
         // Take the pipes before entering the wait loop so the drain threads hold
         // the only read ends; the child can write freely without blocking.
         let stdout_pipe = child.stdout.take().expect("stdout is piped");
         let stderr_pipe = child.stderr.take().expect("stderr is piped");
-        #[cfg(unix)]
-        let (stdout_fd, stderr_fd) = {
-            use std::os::fd::AsRawFd;
-            (Some(stdout_pipe.as_raw_fd()), Some(stderr_pipe.as_raw_fd()))
-        };
-        #[cfg(not(unix))]
-        let (stdout_fd, stderr_fd) = (None, None);
+        let stdout_poll = pipe_poll(&stdout_pipe);
+        let stderr_poll = pipe_poll(&stderr_pipe);
         #[cfg(unix)]
         if let Err(error) =
             set_pipe_nonblocking(&stdout_pipe).and_then(|_| set_pipe_nonblocking(&stderr_pipe))
         {
-            terminate_process(&mut child, false);
+            terminate_process(&mut child, false, &mut descendants);
             bail!("failed to configure compiler output pipes: {error}");
         }
-        let mut stdout_drain = match PipeDrain::spawn(stdout_pipe, "stdout", stdout_fd) {
+        let mut stdout_drain = match PipeDrain::spawn(stdout_pipe, "stdout", stdout_poll) {
             Ok(drain) => drain,
             Err(error) => {
-                terminate_process(&mut child, false);
+                terminate_process(&mut child, false, &mut descendants);
                 bail!("failed to start stdout drain: {error}");
             }
         };
-        let mut stderr_drain = match PipeDrain::spawn(stderr_pipe, "stderr", stderr_fd) {
+        let mut stderr_drain = match PipeDrain::spawn(stderr_pipe, "stderr", stderr_poll) {
             Ok(drain) => drain,
             Err(error) => {
-                terminate_process(&mut child, false);
+                terminate_process(&mut child, false, &mut descendants);
                 stdout_drain.mark_unavailable();
                 bail!("failed to start stderr drain: {error}");
             }
         };
 
-        let mut status = None;
-        loop {
+        let status = loop {
             stdout_drain.poll();
             stderr_drain.poll();
 
             #[cfg(unix)]
             if let Some(signal) = signal_listener.received() {
-                interrupt_process(&mut child, signal, &signal_listener);
+                interrupt_process(&mut child, signal, &signal_listener, &mut descendants);
                 wait_for_drains(&mut stdout_drain, &mut stderr_drain);
                 return Err(ProcessControlError::Interrupted {
                     tool: tool_name.to_string(),
@@ -690,8 +837,45 @@ fn run_process(
                 .into());
             }
 
+            match child.try_wait() {
+                Ok(Some(exit_status)) => {
+                    // Completion is recorded before descendant/drain cleanup so
+                    // cleanup latency cannot turn a completed process into a timeout.
+                    terminate_process(&mut child, true, &mut descendants);
+                    wait_for_drains(&mut stdout_drain, &mut stderr_drain);
+                    #[cfg(unix)]
+                    if let Some(signal) = signal_listener.received() {
+                        return Err(ProcessControlError::Interrupted {
+                            tool: tool_name.to_string(),
+                            signal,
+                            diagnostics: output_diagnostics(&stdout_drain, &stderr_drain),
+                        }
+                        .into());
+                    }
+                    break exit_status;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    terminate_process(&mut child, false, &mut descendants);
+                    wait_for_drains(&mut stdout_drain, &mut stderr_drain);
+                    bail!(
+                        "failed while waiting for {tool_name}: {e}{}",
+                        output_diagnostics(&stdout_drain, &stderr_drain)
+                    );
+                }
+            }
+
+            if let Some(error) = stdout_drain.error().or_else(|| stderr_drain.error()) {
+                terminate_process(&mut child, false, &mut descendants);
+                wait_for_drains(&mut stdout_drain, &mut stderr_drain);
+                bail!(
+                    "{error}{}",
+                    output_diagnostics(&stdout_drain, &stderr_drain)
+                );
+            }
+
             if started.elapsed() >= timeout {
-                terminate_process(&mut child, status.is_some());
+                terminate_process(&mut child, false, &mut descendants);
                 wait_for_drains(&mut stdout_drain, &mut stderr_drain);
                 return Err(ProcessControlError::Timeout {
                     tool: tool_name.to_string(),
@@ -700,72 +884,9 @@ fn run_process(
                 }
                 .into());
             }
-
-            if let Some(error) = stdout_drain.error().or_else(|| stderr_drain.error()) {
-                terminate_process(&mut child, status.is_some());
-                wait_for_drains(&mut stdout_drain, &mut stderr_drain);
-                bail!(
-                    "{error}{}",
-                    output_diagnostics(&stdout_drain, &stderr_drain)
-                );
-            }
-
-            if status.is_none() {
-                match child.try_wait() {
-                    Ok(Some(exit_status)) => {
-                        status = Some(exit_status);
-                        // Give EOF a brief chance to reach both drains. If a
-                        // descendant retained a pipe, clean up the remaining group.
-                        let drain_grace = Instant::now() + Duration::from_millis(50);
-                        while Instant::now() < drain_grace {
-                            stdout_drain.poll();
-                            stderr_drain.poll();
-                            if stdout_drain.is_done() && stderr_drain.is_done() {
-                                break;
-                            }
-                            std::thread::sleep(Duration::from_millis(5));
-                        }
-                        // A compiler invocation owns its complete process group,
-                        // including helpers that redirected their output.
-                        terminate_process(&mut child, true);
-                        wait_for_drains(&mut stdout_drain, &mut stderr_drain);
-                        #[cfg(unix)]
-                        if let Some(signal) = signal_listener.received() {
-                            return Err(ProcessControlError::Interrupted {
-                                tool: tool_name.to_string(),
-                                signal,
-                                diagnostics: output_diagnostics(&stdout_drain, &stderr_drain),
-                            }
-                            .into());
-                        }
-                        if started.elapsed() >= timeout {
-                            return Err(ProcessControlError::Timeout {
-                                tool: tool_name.to_string(),
-                                timeout_sec,
-                                diagnostics: output_diagnostics(&stdout_drain, &stderr_drain),
-                            }
-                            .into());
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        terminate_process(&mut child, false);
-                        wait_for_drains(&mut stdout_drain, &mut stderr_drain);
-                        bail!(
-                            "failed while waiting for {tool_name}: {e}{}",
-                            output_diagnostics(&stdout_drain, &stderr_drain)
-                        );
-                    }
-                }
-            }
-
-            if status.is_some() && stdout_drain.is_done() && stderr_drain.is_done() {
-                break;
-            }
             std::thread::sleep(Duration::from_millis(20));
-        }
+        };
 
-        let status = status.expect("completed process must have an exit status");
         let stdout = stdout_drain.into_output();
         let stderr = stderr_drain.into_output();
         Ok((status.code().unwrap_or(-1), stdout, stderr))
@@ -802,9 +923,14 @@ mod tests {
             "printf 'stdout-start\\n'; yes x | head -c {output_bytes}; printf '\\nstdout-end\\n'; \
              {{ printf 'stderr-start\\n'; yes y | head -c {output_bytes}; printf '\\nstderr-end\\n'; }} >&2"
         );
-        let (code, stdout, stderr) =
-            run_process(&["/bin/sh", "-c", &script], "large-output helper", 10, None)
-                .expect("large output must not be misreported as timeout");
+        let (code, stdout, stderr) = run_process(
+            "/bin/sh",
+            ["-c", script.as_str()],
+            "large-output helper",
+            10,
+            None,
+        )
+        .expect("large output must not be misreported as timeout");
         assert_eq!(code, 0);
         assert!(stdout.contains("stdout-start"));
         assert!(stdout.contains("stdout-end"));
@@ -820,8 +946,8 @@ mod tests {
     #[test]
     fn test_non_utf8_output_is_preserved_lossily() {
         let (code, stdout, stderr) = run_process(
-            &[
-                "/bin/sh",
+            "/bin/sh",
+            [
                 "-c",
                 "printf 'valid-before:\\377:valid-after\\n'; printf 'error-before:\\376:error-after\\n' >&2",
             ],
@@ -839,17 +965,71 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_real_timeout_is_reported() {
-        let (cmd, name) = if which::which("sleep").is_ok() {
-            (vec!["sleep", "60"], "sleep")
-        } else {
+        if which::which("sleep").is_err() {
             return; // skip if no suitable blocking command
-        };
-        let result = run_process(&cmd, name, 1, None);
+        }
+        let result = run_process("sleep", ["60"], "sleep", 1, None);
         assert!(result.is_err());
         assert!(
             result.unwrap_err().to_string().contains("timed out after"),
             "timed-out process must produce a timed-out error"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_completion_near_timeout_is_not_overwritten() {
+        let started = Instant::now();
+        let result = run_process(
+            "/bin/sh",
+            ["-c", "sleep 0.8; exit 0"],
+            "near-deadline helper",
+            1,
+            None,
+        );
+        assert_eq!(
+            result
+                .expect("completed process must win the timeout race")
+                .0,
+            0
+        );
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_slow_drain_does_not_overwrite_completed_status() {
+        let Some(python) = ["python3", "python"]
+            .into_iter()
+            .find_map(|name| which::which(name).ok())
+        else {
+            return;
+        };
+        let python = python.to_string_lossy();
+        let tmp = tempfile::tempdir().unwrap();
+        let pid_path = tmp.path().join("slow-drain.pid");
+        let pid_path_text = pid_path.to_string_lossy();
+        let started = Instant::now();
+        let result = run_process(
+            "/bin/sh",
+            [
+                "-c",
+                "\"$1\" -c 'import os,sys,time; os.setsid(); p=open(sys.argv[1],\"w\"); p.write(str(os.getpid())); p.close(); time.sleep(10)' \"$2\" & while [ ! -s \"$2\" ]; do :; done; exit 0",
+                "sh",
+                python.as_ref(),
+                pid_path_text.as_ref(),
+            ],
+            "slow-drain helper",
+            1,
+            None,
+        );
+        assert_eq!(result.expect("leader exited before drain cleanup").0, 0);
+        assert!(started.elapsed() < Duration::from_secs(4));
+
+        if let Ok(Ok(pid)) = std::fs::read_to_string(&pid_path).map(|pid| pid.trim().parse::<i32>())
+        {
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
     }
 
     #[cfg(unix)]
@@ -862,13 +1042,13 @@ mod tests {
         let survived_path = survived_path.to_string_lossy();
         let started = Instant::now();
         let result = run_process(
-            &[
-                "/bin/sh",
+            "/bin/sh",
+            [
                 "-c",
                 "trap '' HUP; (sleep 2; printf survived > \"$2\") & echo $! > \"$1\"; exit 0",
                 "sh",
-                &pid_path,
-                &survived_path,
+                pid_path.as_ref(),
+                survived_path.as_ref(),
             ],
             "descendant helper",
             5,
@@ -893,12 +1073,12 @@ mod tests {
         let survived_path = tmp.path().join("redirected-descendant-survived");
         let survived_path = survived_path.to_string_lossy();
         let result = run_process(
-            &[
-                "/bin/sh",
+            "/bin/sh",
+            [
                 "-c",
                 "(sleep 1; printf survived > \"$1\") >/dev/null 2>&1 & exit 0",
                 "sh",
-                &survived_path,
+                survived_path.as_ref(),
             ],
             "redirected descendant helper",
             5,
@@ -920,12 +1100,12 @@ mod tests {
         let pid_path_text = pid_path.to_string_lossy();
         let started = Instant::now();
         let result = run_process(
-            &[
-                "/bin/sh",
+            "/bin/sh",
+            [
                 "-c",
                 "setsid sh -c 'echo $$ > \"$1\"; sleep 10' sh \"$1\" & exit 0",
                 "sh",
-                &pid_path_text,
+                pid_path_text.as_ref(),
             ],
             "escaped descendant helper",
             5,
@@ -939,6 +1119,45 @@ mod tests {
             // SAFETY: the test owns this escaped helper pid.
             unsafe { libc::kill(pid, libc::SIGKILL) };
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_timeout_kills_windows_descendants_and_joins_drains() {
+        let tmp = tempfile::tempdir().unwrap();
+        let survived = tmp.path().join("descendant-survived");
+        let child_script = tmp.path().join("child.cmd");
+        let parent_script = tmp.path().join("parent.cmd");
+        std::fs::write(
+            &child_script,
+            format!(
+                "@echo off\r\nping -n 4 127.0.0.1 >nul\r\necho survived>\"{}\"\r\n",
+                survived.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &parent_script,
+            format!(
+                "@echo off\r\nstart \"\" /b cmd.exe /d /c call \"{}\"\r\nping -n 30 127.0.0.1 >nul\r\n",
+                child_script.display()
+            ),
+        )
+        .unwrap();
+
+        let started = Instant::now();
+        let result = run_process(
+            "cmd.exe",
+            ["/d", "/c", "call", parent_script.to_str().unwrap()],
+            "Windows descendant helper",
+            1,
+            None,
+        );
+        assert!(result.unwrap_err().to_string().contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(4));
+
+        std::thread::sleep(Duration::from_millis(3500));
+        assert!(!survived.exists(), "job descendant survived timeout");
     }
 
     #[cfg(unix)]
@@ -977,6 +1196,68 @@ mod tests {
         let path = source_path(mdcroot, srctype);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, content).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_python_accepts_non_utf8_workspace_path() {
+        use std::os::unix::ffi::OsStringExt;
+
+        if which::which("python3").is_err() && which::which("python").is_err() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp
+            .path()
+            .join(std::ffi::OsString::from_vec(b"workspace-\xff".to_vec()));
+        std::fs::create_dir_all(root.join(".mdc")).unwrap();
+        write_source(
+            &root,
+            "python",
+            "import pathlib\npathlib.Path('cwd-marker').write_text('ok')\n",
+        );
+
+        let req = make_req(&root, "python");
+        let registry = CompilerRegistry::default_registry();
+        let result = registry.resolve("python").unwrap().compile(&req);
+        assert!(
+            result.result,
+            "Python compilation failed: {}",
+            result.stderr
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join(".mdc/python/cwd-marker")).unwrap(),
+            "ok"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_python_uses_deterministic_working_directory() {
+        if which::which("python3").is_err() && which::which("python").is_err() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        write_source(
+            root,
+            "python",
+            "import pathlib\npathlib.Path('cwd-marker').write_text('ok')\n",
+        );
+
+        let req = make_req(root, "python");
+        let registry = CompilerRegistry::default_registry();
+        let result = registry.resolve("python").unwrap().compile(&req);
+        assert!(
+            result.result,
+            "Python compilation failed: {}",
+            result.stderr
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join(".mdc/python/cwd-marker")).unwrap(),
+            "ok"
+        );
     }
 
     #[cfg(unix)]

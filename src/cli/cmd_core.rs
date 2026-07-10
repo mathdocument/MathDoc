@@ -1,4 +1,6 @@
 use anyhow::Result;
+use std::ffi::OsStr;
+use std::path::Path;
 
 use crate::config::default_for_srctype;
 use crate::depgraph::DepGraph;
@@ -8,13 +10,25 @@ use super::{cwd, fmt_item, open_cache, require_mdcroot, BLD, CYN, RST};
 
 // ── cmd: edit ─────────────────────────────────────────────────────────────────
 
+pub(super) fn launch_editor(path: &Path) -> Result<()> {
+    let editor = std::env::var_os("EDITOR").unwrap_or_else(|| "vi".into());
+    launch_editor_with(&editor, path)
+}
+
+pub(super) fn launch_editor_with(editor: &OsStr, path: &Path) -> Result<()> {
+    let status = std::process::Command::new(editor).arg(path).status()?;
+    if !status.success() {
+        anyhow::bail!("editor exited with {status}");
+    }
+    Ok(())
+}
+
 pub(super) fn cmd_edit(source: String) -> Result<i32> {
     let mdcroot = require_mdcroot()?;
     let mut cache = open_cache(mdcroot)?;
     cache.discover_workspace_changes()?;
     let path = cache.resolve_edit_target_path(&source, Some(&cwd()))?;
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-    std::process::Command::new(&editor).arg(&path).status()?;
+    launch_editor(&path)?;
     cache.upsert_path(&path)?;
     Ok(0)
 }
@@ -54,16 +68,77 @@ fn generate_config_toml() -> String {
 
 pub(super) fn cmd_init() -> Result<i32> {
     let mdcroot = cwd();
-    let mdc = mdcroot.join(".mdc");
-    if mdc.is_dir() {
-        println!("Already initialized as mdoc directory: {}", mdc.display());
-        return Ok(0);
+    let changed = init_workspace(&mdcroot)?;
+    if changed {
+        println!("mdoc folder initialized");
+    } else {
+        println!(
+            "Already initialized as mdoc directory: {}",
+            mdcroot.join(".mdc").display()
+        );
     }
-    std::fs::create_dir_all(&mdc)?;
-    std::fs::write(mdc.join("config.toml"), generate_config_toml())?;
-    crate::config::init_amble_files(&mdcroot)?;
-    println!("mdoc folder initialized");
     Ok(0)
+}
+
+fn init_workspace(mdcroot: &Path) -> Result<bool> {
+    let mdc = mdcroot.join(".mdc");
+    let mut changed = crate::safe_file::ensure_regular_directory_exists(&mdc)?;
+    changed |= crate::safe_file::atomic_create_if_missing(
+        &mdc.join("config.toml"),
+        generate_config_toml().as_bytes(),
+    )?;
+    changed |= crate::config::init_amble_files(mdcroot)?;
+    Ok(changed)
+}
+
+#[cfg(test)]
+mod init_tests {
+    use super::*;
+
+    #[test]
+    fn init_repairs_partial_workspace_without_overwriting_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mdc = dir.path().join(".mdc");
+        std::fs::create_dir(&mdc).unwrap();
+        std::fs::write(mdc.join("config.toml"), "# custom\n").unwrap();
+        std::fs::create_dir(mdc.join("latex")).unwrap();
+        std::fs::write(mdc.join("latex/preamble.tex"), "custom preamble\n").unwrap();
+
+        assert!(init_workspace(dir.path()).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(mdc.join("config.toml")).unwrap(),
+            "# custom\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(mdc.join("latex/preamble.tex")).unwrap(),
+            "custom preamble\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(mdc.join("latex/postamble.tex")).unwrap(),
+            crate::config::default_postamble("latex")
+        );
+        assert!(!init_workspace(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn init_rejects_non_directory_control_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join(".mdc"), "not a directory").unwrap();
+        assert!(init_workspace(dir.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_rejects_symlinked_control_path() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        symlink(outside.path(), dir.path().join(".mdc")).unwrap();
+
+        assert!(init_workspace(dir.path()).is_err());
+        assert!(!outside.path().join("config.toml").exists());
+    }
 }
 
 // ── cmd: new ──────────────────────────────────────────────────────────────────

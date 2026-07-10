@@ -47,3 +47,72 @@ fn ctrl_c_escalates_and_returns_signal_exit_code() {
     std::thread::sleep(Duration::from_millis(2200));
     assert!(!survived.exists(), "compiler survived Ctrl-C escalation");
 }
+
+#[cfg(unix)]
+fn python_workspace() -> (tempfile::TempDir, String) {
+    use mathdoc::mdocnode::{MdocNode, SrcBlock};
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join(".mdc")).unwrap();
+    let mut node = MdocNode::new_at_path(root, &root.join("node.mdoc"), "Exit Status");
+    node.blocks.push(SrcBlock {
+        srctype: "python".to_string(),
+        content: "print('compile')\n".to_string(),
+        metadata: Default::default(),
+    });
+    let fnode = node.fnode.clone();
+    node.save().unwrap();
+    (dir, fnode)
+}
+
+#[cfg(unix)]
+#[test]
+fn tool_missing_returns_127_from_cli() {
+    use std::process::Command;
+
+    let (dir, fnode) = python_workspace();
+    let empty_path = dir.path().join("empty-path");
+    std::fs::create_dir(&empty_path).unwrap();
+    let status = Command::new(env!("CARGO_BIN_EXE_mdc"))
+        .current_dir(dir.path())
+        .env("PATH", &empty_path)
+        .args(["work", &fnode, "--compile"])
+        .status()
+        .unwrap();
+
+    assert_eq!(status.code(), Some(127));
+}
+
+#[cfg(unix)]
+#[test]
+fn compiler_timeout_returns_124_from_cli() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    let (dir, fnode) = python_workspace();
+    std::fs::write(
+        dir.path().join(".mdc/config.toml"),
+        "[src.python]\ntimeout_sec = 1\n",
+    )
+    .unwrap();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let python = bin.join("python3");
+    std::fs::write(&python, "#!/bin/sh\n/bin/sleep 10\n").unwrap();
+    let mut permissions = std::fs::metadata(&python).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&python, permissions).unwrap();
+
+    let started = Instant::now();
+    let status = Command::new(env!("CARGO_BIN_EXE_mdc"))
+        .current_dir(dir.path())
+        .env("PATH", &bin)
+        .args(["work", &fnode, "--compile"])
+        .status()
+        .unwrap();
+
+    assert_eq!(status.code(), Some(124));
+    assert!(started.elapsed() < Duration::from_secs(5));
+}

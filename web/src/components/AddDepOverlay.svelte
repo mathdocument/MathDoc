@@ -1,16 +1,24 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { api } from "../lib/api";
   import { errMsg } from "../lib/format";
   import type { NodeInfo } from "../lib/types";
   import { shortFnode } from "../lib/format";
+  import { modal } from "../lib/modal";
+  import {
+    confirmDiscardDrafts,
+    removeDraft,
+    setDraftDirty,
+    setMutationPending,
+  } from "../lib/unsaved";
 
   interface Props {
-    fnode: string;
+    targetFnode: string;
     existingDepFnodes: string[];
     onAdded: () => void;
     onClose: () => void;
   }
-  let { fnode, existingDepFnodes, onAdded, onClose }: Props = $props();
+  let { targetFnode, existingDepFnodes, onAdded, onClose }: Props = $props();
 
   let query = $state("");
   let results = $state<NodeInfo[]>([]);
@@ -20,13 +28,48 @@
   let saving = $state(false);
   let inputEl = $state<HTMLInputElement | null>(null);
   let searchRequest = 0;
+  let creatingFile = $state("");
+  let createMode = $state(false);
+  const draftId = Symbol("add dependency creation draft");
+  const mutationId = Symbol("add dependency mutation");
+  let alive = true;
+
+  function firstSelectable(items: NodeInfo[]): number {
+    return items.findIndex((item) => !item.broken);
+  }
+
+  function moveSelection(direction: -1 | 1) {
+    for (
+      let index = selected + direction;
+      index >= 0 && index < results.length;
+      index += direction
+    ) {
+      if (!results[index]!.broken) {
+        selected = index;
+        return;
+      }
+    }
+  }
   // Whether the raw search (before filtering existing deps) returned any
   // results. Used to distinguish "no matches at all" (can create new) from
   // "all matches are already deps" (should not create a duplicate).
   let rawHadMatches = $state(false);
 
   // Existing deps + self are excluded from search results.
-  let excluded = $derived(new Set([...existingDepFnodes, fnode]));
+  let excluded = $derived(new Set([...existingDepFnodes, targetFnode]));
+
+  onDestroy(() => {
+    alive = false;
+    searchRequest++;
+    removeDraft(draftId);
+  });
+
+  $effect(() => {
+    setDraftDirty(
+      draftId,
+      createMode && (query.trim().length > 0 || creatingFile.trim().length > 0),
+    );
+  });
 
   $effect(() => {
     const q = query;
@@ -49,7 +92,7 @@
         if (request !== searchRequest) return;
         rawHadMatches = all.length > 0;
         results = all.filter((r) => !excludedForRequest.has(r.fnode));
-        selected = 0;
+        selected = firstSelectable(results);
       } catch {
         if (request !== searchRequest) return;
         results = [];
@@ -71,22 +114,31 @@
   // When results are empty, show a "create new" option — but only if the
   // raw search had zero matches (not if all matches were already deps).
   let canCreate = $derived(query.trim().length > 0 && results.length === 0 && !loading && !rawHadMatches);
-  let creatingFile = $state("");
-  let createMode = $state(false);
+
+  function close() {
+    if (saving || !confirmDiscardDrafts()) return;
+    onClose();
+  }
 
   async function submit() {
     const node = results[selected];
-    if (!node || saving) return;
+    if (!node || node.broken || saving) return;
     saving = true;
+    let pending = true;
+    setMutationPending(mutationId, true);
     error = null;
     try {
-      await api.addDep(fnode, node.fnode);
+      await api.addDep(targetFnode, node.fnode);
+      setMutationPending(mutationId, false);
+      pending = false;
+      if (!alive) return;
       onAdded();
       onClose();
     } catch (e) {
-      error = errMsg(e);
+      if (alive) error = errMsg(e);
     } finally {
-      saving = false;
+      if (pending) setMutationPending(mutationId, false);
+      if (alive) saving = false;
     }
   }
 
@@ -97,20 +149,27 @@
   async function createAndAdd() {
     if (saving || !query.trim()) return;
     saving = true;
+    let pending = true;
+    setMutationPending(mutationId, true);
     error = null;
     try {
       const params: { title: string; parent_fnode: string; file?: string } = {
         title: query.trim(),
-        parent_fnode: fnode,
+        parent_fnode: targetFnode,
       };
       if (creatingFile.trim().length > 0) params.file = creatingFile.trim();
       await api.newNode(params);
+      setMutationPending(mutationId, false);
+      pending = false;
+      if (!alive) return;
+      removeDraft(draftId);
       onAdded();
       onClose();
     } catch (e) {
-      error = errMsg(e);
+      if (alive) error = errMsg(e);
     } finally {
-      saving = false;
+      if (pending) setMutationPending(mutationId, false);
+      if (alive) saving = false;
     }
   }
 
@@ -122,7 +181,7 @@
           createMode = false;
           creatingFile = "";
         } else {
-          onClose();
+          close();
         }
         break;
       case "Enter":
@@ -137,11 +196,11 @@
         break;
       case "ArrowDown":
         e.preventDefault();
-        if (selected + 1 < results.length) selected += 1;
+        moveSelection(1);
         break;
       case "ArrowUp":
         e.preventDefault();
-        selected = Math.max(0, selected - 1);
+        moveSelection(-1);
         break;
     }
   }
@@ -150,9 +209,17 @@
 <svelte:window onkeydown={onKey} />
 
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-<div class="backdrop" onclick={onClose} role="presentation">
+<div class="backdrop" onclick={close} role="presentation">
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <div class="dialog" role="dialog" aria-label="add dependency" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+  <div
+    class="dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-label="add dependency"
+    tabindex="-1"
+    use:modal
+    onclick={(e) => e.stopPropagation()}
+  >
     <input
       bind:this={inputEl}
       bind:value={query}

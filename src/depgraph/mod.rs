@@ -911,7 +911,11 @@ fn validate_new_node_path(mdcroot: &Path, path: &Path) -> Result<PathBuf> {
 
 /// Resolve the path for a new `.mdoc` file given a relative target (no extension).
 /// Returns the absolute path with `.mdoc` appended to the last component.
-fn resolve_new_node_path(mdcroot: &Path, raw_target: &str, fnode: &str) -> Result<PathBuf> {
+pub(crate) fn resolve_new_node_path(
+    mdcroot: &Path,
+    raw_target: &str,
+    fnode: &str,
+) -> Result<PathBuf> {
     let target = raw_target.trim();
     if target.is_empty() || target == "." {
         return validate_new_node_path(mdcroot, &mdcroot.join(format!("{fnode}.mdoc")));
@@ -921,6 +925,9 @@ fn resolve_new_node_path(mdcroot: &Path, raw_target: &str, fnode: &str) -> Resul
         bail!("target path must be relative to the mdoc root");
     }
     let joined = mdcroot.join(rel);
+    if joined.extension().and_then(|ext| ext.to_str()) == Some("mdoc") {
+        return validate_new_node_path(mdcroot, &joined);
+    }
     let stem = joined
         .file_name()
         .ok_or_else(|| anyhow::anyhow!("invalid target path"))?

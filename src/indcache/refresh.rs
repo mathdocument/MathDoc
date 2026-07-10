@@ -1011,12 +1011,13 @@ fn refresh_missing_issues_for_target(conn: &Connection, target_fnode: Option<&st
         "DELETE FROM mdoc_issues WHERE kind = 'missing' AND ref_fnode = ?",
         [target],
     )?;
-    // If exactly 1 node claims this fnode, it's not missing
+    // Any claimant means the target is present. Multiple claimants are
+    // reported separately as a duplicate/ambiguous target.
     let mut stmt = conn.prepare("SELECT path FROM mdocs WHERE fnode = ? ORDER BY path LIMIT 2")?;
     let node_paths: Vec<String> = stmt
         .query_map([target], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<_>>()?;
-    if node_paths.len() == 1 {
+    if !node_paths.is_empty() {
         return Ok(());
     }
     let error = format!("missing dependency target: {target}");

@@ -930,11 +930,16 @@ fn test_dependency_items_show_duplicate_fnode_placeholder() {
     assert_eq!(items[0].title, "<invalid>");
 
     let issue = graph.issue_for_fnode("dup-node").unwrap().unwrap();
+    assert_eq!(issue.kind, IssueKind::Invalid);
     assert!(
         issue.error.contains("duplicate fnode 'dup-node'"),
         "unexpected error: {}",
         issue.error
     );
+
+    let report = graph.cache.graph_check_report().unwrap();
+    assert!(report.invalid.iter().any(|issue| issue.fnode == "dup-node"));
+    assert!(!report.missing.iter().any(|issue| issue.fnode == "dup-node"));
 }
 
 #[test]

@@ -971,13 +971,14 @@ pub fn resolve_ref_by_path(conn: &Connection, rel_path: &str) -> Result<Option<(
 
 pub fn search(conn: &Connection, query: &str) -> Result<Vec<(String, String, String)>> {
     let query_lc = query.to_lowercase();
-    let like = format!("%{query_lc}%");
-    let prefix_like = format!("{query_lc}%");
+    let escaped = escape_like_pattern(&query_lc);
+    let like = format!("%{escaped}%");
+    let prefix_like = format!("{escaped}%");
     let mut stmt = conn.prepare(
         "SELECT fnode, title, path FROM mdocs
-         WHERE title_lc LIKE ? OR lower(fnode) LIKE ?
+         WHERE title_lc LIKE ? ESCAPE '\\' OR lower(fnode) LIKE ? ESCAPE '\\'
          ORDER BY
-             CASE WHEN lower(fnode) LIKE ? THEN 0 ELSE 1 END,
+             CASE WHEN lower(fnode) LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END,
              CASE WHEN instr(title_lc, ?) > 0 THEN instr(title_lc, ?) ELSE 999999 END,
              length(title),
              path",
@@ -997,17 +998,18 @@ pub fn search_with_metadata(
     limit: usize,
 ) -> Result<Vec<(String, String, String, bool, u32)>> {
     let query_lc = query.to_lowercase();
-    let like = format!("%{query_lc}%");
-    let prefix_like = format!("{query_lc}%");
+    let escaped = escape_like_pattern(&query_lc);
+    let like = format!("%{escaped}%");
+    let prefix_like = format!("{escaped}%");
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
     let mut stmt = conn.prepare(
         "SELECT m.fnode, m.title, m.path,
                 EXISTS(SELECT 1 FROM mdoc_issues i WHERE i.ref_fnode = m.fnode),
                 m.topo_depth
          FROM mdocs m
-         WHERE m.title_lc LIKE ? OR lower(m.fnode) LIKE ?
+         WHERE m.title_lc LIKE ? ESCAPE '\\' OR lower(m.fnode) LIKE ? ESCAPE '\\'
          ORDER BY
-             CASE WHEN lower(m.fnode) LIKE ? THEN 0 ELSE 1 END,
+             CASE WHEN lower(m.fnode) LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END,
              CASE WHEN instr(m.title_lc, ?) > 0 THEN instr(m.title_lc, ?) ELSE 999999 END,
              length(m.title),
              m.path
@@ -1062,10 +1064,10 @@ pub fn resolve_fnode_ref(
     raw_ref: &str,
 ) -> Result<Option<Vec<(String, String, String)>>> {
     let query_lc = raw_ref.to_lowercase();
-    let prefix_like = format!("{query_lc}%");
+    let prefix_like = format!("{}%", escape_like_pattern(&query_lc));
     let mut stmt = conn.prepare(
         "SELECT fnode, title, path FROM mdocs
-         WHERE lower(fnode) = ? OR lower(fnode) LIKE ?
+         WHERE lower(fnode) = ? OR lower(fnode) LIKE ? ESCAPE '\\'
          ORDER BY CASE WHEN lower(fnode) = ? THEN 0 ELSE 1 END, path",
     )?;
     let rows: Vec<(String, String, String)> = stmt
@@ -1078,6 +1080,17 @@ pub fn resolve_fnode_ref(
     } else {
         Ok(Some(rows))
     }
+}
+
+fn escape_like_pattern(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        if matches!(character, '%' | '_' | '\\') {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
 }
 
 pub fn knows_fnode(conn: &Connection, fnode: &str) -> Result<bool> {

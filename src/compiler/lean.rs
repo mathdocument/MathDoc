@@ -9,6 +9,8 @@ use super::{
 pub(super) struct CompilerLean;
 
 const MODULE_NAME: &str = "MdcWork";
+const SETUP_MARKER: &str = ".mdc-setup-v1";
+const SETUP_MARKER_CONTENT: &[u8] = b"lake-init-v1\n";
 
 impl SrcCompiler for CompilerLean {
     fn srctype(&self) -> &str {
@@ -44,14 +46,10 @@ impl SrcCompiler for CompilerLean {
             &req.progress,
             &format!("building with `lake build +{MODULE_NAME}`"),
         );
+        let module = format!("+{MODULE_NAME}");
         match run_process(
-            &[
-                &lake,
-                "--quiet",
-                "--no-ansi",
-                "build",
-                &format!("+{MODULE_NAME}"),
-            ],
+            &lake,
+            ["--quiet", "--no-ansi", "build", module.as_str()],
             &format!("lake build +{MODULE_NAME}"),
             timeout_sec,
             Some(&ws_root),
@@ -75,29 +73,100 @@ impl SrcCompiler for CompilerLean {
 
 fn ensure_workspace(
     root: &Path,
-    lake_path: &str,
+    lake_path: &Path,
     timeout_sec: u64,
     progress: &Option<Box<dyn Fn(&str)>>,
 ) -> Result<()> {
-    if root.join("lakefile.toml").is_file() || root.join("lakefile.lean").is_file() {
+    std::fs::create_dir_all(root)?;
+    if setup_complete(root)? {
         return Ok(());
     }
-    std::fs::create_dir_all(root)?;
+
+    if has_lakefile(root) && validate_workspace(root, lake_path, timeout_sec).is_ok() {
+        crate::safe_file::atomic_create_if_missing(&root.join(SETUP_MARKER), SETUP_MARKER_CONTENT)?;
+        return Ok(());
+    }
 
     emit_progress(
         progress,
         "initializing Lean workspace with `lake init mdc_work`",
     );
+    let staging = tempfile::Builder::new()
+        .prefix(".mdc-lean-init-")
+        .tempdir_in(root.parent().unwrap_or(root))?;
     let (rtcode, stdout, stderr) = run_process(
-        &[lake_path, "init", "mdc_work"],
+        lake_path,
+        ["init", "mdc_work"],
         "lake init",
         timeout_sec,
-        Some(root),
+        Some(staging.path()),
     )?;
     if rtcode != 0 {
         bail!("lake init failed:\n{}", combine_output(&stdout, &stderr));
     }
 
+    install_setup_file(staging.path(), root, "lakefile.toml")?;
+    install_setup_file(staging.path(), root, "lakefile.lean")?;
+    install_setup_file(staging.path(), root, "lean-toolchain")?;
+    validate_workspace(root, lake_path, timeout_sec)?;
+    crate::safe_file::atomic_create_if_missing(&root.join(SETUP_MARKER), SETUP_MARKER_CONTENT)?;
+    Ok(())
+}
+
+fn setup_complete(root: &Path) -> Result<bool> {
+    let marker = root.join(SETUP_MARKER);
+    match std::fs::symlink_metadata(&marker) {
+        Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
+            bail!("invalid Lean setup marker: {}", marker.display())
+        }
+        Ok(_) => {
+            if std::fs::read(&marker)? != SETUP_MARKER_CONTENT {
+                bail!("invalid Lean setup marker: {}", marker.display());
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn has_lakefile(root: &Path) -> bool {
+    root.join("lakefile.toml").is_file() || root.join("lakefile.lean").is_file()
+}
+
+fn validate_workspace(root: &Path, lake_path: &Path, timeout_sec: u64) -> Result<()> {
+    let (rtcode, stdout, stderr) = run_process(
+        lake_path,
+        ["env", "lean", "--version"],
+        "lake env lean --version",
+        timeout_sec,
+        Some(root),
+    )?;
+    if rtcode != 0 {
+        bail!(
+            "Lean workspace validation failed:\n{}",
+            combine_output(&stdout, &stderr)
+        );
+    }
+    Ok(())
+}
+
+fn install_setup_file(staging: &Path, root: &Path, name: &str) -> Result<()> {
+    let generated_path = staging.join(name);
+    let Ok(generated) = std::fs::read(&generated_path) else {
+        return Ok(());
+    };
+    let target = root.join(name);
+    let snapshot = crate::safe_file::FileSnapshot::capture(&target)?;
+    match snapshot.content() {
+        None => {
+            crate::safe_file::atomic_replace(&target, &snapshot, &generated)?;
+        }
+        Some(existing) if existing != generated && generated.starts_with(existing) => {
+            crate::safe_file::atomic_replace(&target, &snapshot, &generated)?;
+        }
+        Some(_) => {}
+    }
     Ok(())
 }
 
@@ -164,4 +233,55 @@ fn is_noise_line(line: &str) -> bool {
         }
     }
     false
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn interrupted_setup_repairs_partial_lakefile_and_marks_completion() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path().join("lean");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("lakefile.toml"), "name = \"mdc_work\"\n").unwrap();
+
+        let lake = dir.path().join("fake-lake");
+        std::fs::write(
+            &lake,
+            r#"#!/bin/sh
+if [ "$1" = "env" ]; then
+  grep -q 'version = "0.1.0"' lakefile.toml
+  exit $?
+fi
+if [ "$1" = "init" ]; then
+  printf x >> "$(dirname "$0")/init-count"
+  printf 'name = "mdc_work"\nversion = "0.1.0"\n' > lakefile.toml
+  printf 'leanprover/lean4:stable\n' > lean-toolchain
+  exit 0
+fi
+exit 1
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&lake).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&lake, permissions).unwrap();
+
+        ensure_workspace(&root, &lake, 5, &None).unwrap();
+        assert!(std::fs::read_to_string(root.join("lakefile.toml"))
+            .unwrap()
+            .contains("version = \"0.1.0\""));
+        assert_eq!(
+            std::fs::read(root.join(SETUP_MARKER)).unwrap(),
+            SETUP_MARKER_CONTENT
+        );
+
+        ensure_workspace(&root, &lake, 5, &None).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("init-count")).unwrap(),
+            "x"
+        );
+    }
 }

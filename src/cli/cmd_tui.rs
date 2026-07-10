@@ -24,6 +24,103 @@ use super::{cwd, fmt_item, open_cache, require_mdcroot, BLD, CYN, GRN, RED, RST}
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
+trait TerminalControl {
+    fn enable_raw(&mut self) -> io::Result<()>;
+    fn disable_raw(&mut self) -> io::Result<()>;
+    fn enter_alternate_screen(&mut self) -> io::Result<()>;
+    fn leave_alternate_screen(&mut self) -> io::Result<()>;
+    fn hide_cursor(&mut self) -> io::Result<()>;
+    fn show_cursor(&mut self) -> io::Result<()>;
+}
+
+struct CrosstermControl;
+
+impl TerminalControl for CrosstermControl {
+    fn enable_raw(&mut self) -> io::Result<()> {
+        enable_raw_mode()
+    }
+
+    fn disable_raw(&mut self) -> io::Result<()> {
+        disable_raw_mode()
+    }
+
+    fn enter_alternate_screen(&mut self) -> io::Result<()> {
+        execute!(io::stdout(), EnterAlternateScreen)
+    }
+
+    fn leave_alternate_screen(&mut self) -> io::Result<()> {
+        execute!(io::stdout(), LeaveAlternateScreen)
+    }
+
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        execute!(io::stdout(), cursor::Hide)
+    }
+
+    fn show_cursor(&mut self) -> io::Result<()> {
+        execute!(io::stdout(), cursor::Show)
+    }
+}
+
+struct TerminalGuard<C: TerminalControl> {
+    control: C,
+    raw: bool,
+    alternate_screen: bool,
+    cursor_hidden: bool,
+}
+
+impl<C: TerminalControl> TerminalGuard<C> {
+    fn new(control: C) -> Self {
+        Self {
+            control,
+            raw: false,
+            alternate_screen: false,
+            cursor_hidden: false,
+        }
+    }
+
+    fn enter(&mut self) -> io::Result<()> {
+        self.control.enable_raw()?;
+        self.raw = true;
+        self.control.enter_alternate_screen()?;
+        self.alternate_screen = true;
+        self.control.hide_cursor()?;
+        self.cursor_hidden = true;
+        Ok(())
+    }
+
+    fn restore(&mut self) -> io::Result<()> {
+        let mut first_error = None;
+        if self.cursor_hidden {
+            if let Err(error) = self.control.show_cursor() {
+                first_error = Some(error);
+            }
+            self.cursor_hidden = false;
+        }
+        if self.alternate_screen {
+            if let Err(error) = self.control.leave_alternate_screen() {
+                first_error.get_or_insert(error);
+            }
+            self.alternate_screen = false;
+        }
+        if self.raw {
+            if let Err(error) = self.control.disable_raw() {
+                first_error.get_or_insert(error);
+            }
+            self.raw = false;
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+impl<C: TerminalControl> Drop for TerminalGuard<C> {
+    fn drop(&mut self) {
+        let _ = self.restore();
+    }
+}
+
 pub(super) fn cmd_graph_tui(source: Option<String>) -> Result<i32> {
     let mdcroot = require_mdcroot()?;
     let mut cache = open_cache(mdcroot.clone())?;
@@ -44,19 +141,16 @@ pub(super) fn cmd_graph_tui(source: Option<String>) -> Result<i32> {
 
     let mut app = TuiApp::new(cache, mdcroot, start_fnode)?;
 
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
+    let mut guard = TerminalGuard::new(CrosstermControl);
+    guard.enter()?;
+    let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
     let result = run_app(&mut terminal, &mut app);
-
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-
+    drop(terminal);
+    let restore_result = guard.restore();
     result?;
+    restore_result?;
 
     if !app.action_log.is_empty() {
         println!();
@@ -394,6 +488,31 @@ impl TuiApp {
     }
 }
 
+fn refresh_after_edit(app: &mut TuiApp, path: &std::path::Path) -> Result<()> {
+    app.cache.upsert_path(path)?;
+    app.topo_depths = app.cache.all_topo_depths()?;
+    let fnode = app.focused.fnode.clone();
+    app.load_view(&fnode)
+}
+
+fn record_edit_result(app: &mut TuiApp, rel_path: &str, result: Result<()>) {
+    match result {
+        Ok(()) => {
+            app.action_log.push(format!(
+                "  {CYN}~{RST} {BLD}edit{RST}     {}",
+                fmt_item(
+                    &app.focused.fnode,
+                    &app.focused.title,
+                    rel_path,
+                    app.focused.broken
+                ),
+            ));
+            app.set_notify("file edited", true);
+        }
+        Err(error) => app.set_notify(format!("edit failed: {error}"), false),
+    }
+}
+
 const NEW_NODE_SENTINEL: &str = "\x00new";
 
 /// Free function so it can be called while `app.overlay` is mutably borrowed.
@@ -555,25 +674,13 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                         )?;
                         disable_raw_mode()?;
                         execute!(io::stdout(), LeaveAlternateScreen, cursor::Show)?;
-                        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-                        let _ = std::process::Command::new(&editor).arg(&abs_path).status();
+                        let edit_result = super::cmd_core::launch_editor(&abs_path);
                         execute!(io::stdout(), EnterAlternateScreen, cursor::Hide)?;
                         enable_raw_mode()?;
                         terminal.clear()?;
-                        let _ = app.cache.upsert_path(&abs_path);
-                        app.topo_depths = app.cache.all_topo_depths().unwrap_or_default();
-                        let fnode = app.focused.fnode.clone();
-                        app.load_view(&fnode)?;
-                        app.action_log.push(format!(
-                            "  {CYN}~{RST} {BLD}edit{RST}     {}",
-                            fmt_item(
-                                &app.focused.fnode,
-                                &app.focused.title,
-                                &rel,
-                                app.focused.broken
-                            ),
-                        ));
-                        app.set_notify("file edited", true);
+                        let edit_result =
+                            edit_result.and_then(|_| refresh_after_edit(app, &abs_path));
+                        record_edit_result(app, &rel, edit_result);
                     }
                     app.overlay = Overlay::None;
                 }
@@ -1573,5 +1680,169 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
     } else {
         let t: String = chars[..max_chars - 1].iter().collect();
         format!("{t}…")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    struct FakeTerminalControl {
+        calls: Rc<RefCell<Vec<&'static str>>>,
+        fail_on: Option<&'static str>,
+    }
+
+    impl FakeTerminalControl {
+        fn call(&self, name: &'static str) -> io::Result<()> {
+            self.calls.borrow_mut().push(name);
+            if self.fail_on == Some(name) {
+                Err(io::Error::other(format!("injected {name} failure")))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl TerminalControl for FakeTerminalControl {
+        fn enable_raw(&mut self) -> io::Result<()> {
+            self.call("enable")
+        }
+
+        fn disable_raw(&mut self) -> io::Result<()> {
+            self.call("disable")
+        }
+
+        fn enter_alternate_screen(&mut self) -> io::Result<()> {
+            self.call("enter")
+        }
+
+        fn leave_alternate_screen(&mut self) -> io::Result<()> {
+            self.call("leave")
+        }
+
+        fn hide_cursor(&mut self) -> io::Result<()> {
+            self.call("hide")
+        }
+
+        fn show_cursor(&mut self) -> io::Result<()> {
+            self.call("show")
+        }
+    }
+
+    fn fake_guard(
+        fail_on: Option<&'static str>,
+    ) -> (
+        TerminalGuard<FakeTerminalControl>,
+        Rc<RefCell<Vec<&'static str>>>,
+    ) {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        (
+            TerminalGuard::new(FakeTerminalControl {
+                calls: Rc::clone(&calls),
+                fail_on,
+            }),
+            calls,
+        )
+    }
+
+    #[test]
+    fn terminal_guard_restores_partial_initialization() {
+        for (failure, expected) in [
+            ("enable", vec!["enable"]),
+            ("enter", vec!["enable", "enter", "disable"]),
+            ("hide", vec!["enable", "enter", "hide", "leave", "disable"]),
+        ] {
+            let (mut guard, calls) = fake_guard(Some(failure));
+            assert!(guard.enter().is_err());
+            drop(guard);
+            assert_eq!(*calls.borrow(), expected, "failure at {failure}");
+        }
+    }
+
+    #[test]
+    fn terminal_guard_restores_after_event_error_and_panic() {
+        let (mut guard, calls) = fake_guard(None);
+        guard.enter().unwrap();
+        drop(guard);
+        assert_eq!(
+            *calls.borrow(),
+            vec!["enable", "enter", "hide", "show", "leave", "disable"]
+        );
+
+        let (mut guard, calls) = fake_guard(None);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            guard.enter().unwrap();
+            panic!("injected event-loop panic");
+        }));
+        assert!(panic.is_err());
+        assert_eq!(
+            *calls.borrow(),
+            vec!["enable", "enter", "hide", "show", "leave", "disable"]
+        );
+    }
+
+    #[test]
+    fn terminal_guard_attempts_every_cleanup_after_failure() {
+        for failure in ["show", "leave", "disable"] {
+            let (mut guard, calls) = fake_guard(Some(failure));
+            guard.enter().unwrap();
+            calls.borrow_mut().clear();
+            assert!(guard.restore().is_err());
+            assert_eq!(
+                *calls.borrow(),
+                vec!["show", "leave", "disable"],
+                "cleanup failure at {failure}"
+            );
+        }
+    }
+
+    fn test_app() -> (tempfile::TempDir, TuiApp, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        let path = root.join("node.mdoc");
+        let node = crate::mdocnode::MdocNode::new_at_path(root, &path, "Editor");
+        let fnode = node.fnode.clone();
+        node.save().unwrap();
+        let mut cache = crate::indcache::IndCache::open(root.to_path_buf()).unwrap();
+        cache.refresh_all().unwrap();
+        let app = TuiApp::new(cache, root.to_path_buf(), fnode).unwrap();
+        (dir, app, path)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_editor_does_not_report_tui_success() {
+        let (_dir, mut app, path) = test_app();
+        let editor = which::which("false").unwrap();
+        let result = super::super::cmd_core::launch_editor_with(editor.as_os_str(), &path);
+        record_edit_result(&mut app, "node.mdoc", result);
+
+        assert!(app.action_log.is_empty());
+        let (message, success, _) = app.notify.as_ref().unwrap();
+        assert!(!success);
+        assert!(message.contains("editor exited"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cache_refresh_failure_is_shown_as_tui_error() {
+        use std::os::unix::fs::symlink;
+
+        let (dir, mut app, path) = test_app();
+        let outside = dir.path().join("outside.mdoc");
+        std::fs::write(&outside, "@fnode: outside\n@title: Outside\n").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        symlink(&outside, &path).unwrap();
+
+        let result = refresh_after_edit(&mut app, &path);
+        assert!(result.is_err());
+        record_edit_result(&mut app, "node.mdoc", result);
+        assert!(app.action_log.is_empty());
+        let (message, success, _) = app.notify.as_ref().unwrap();
+        assert!(!success);
+        assert!(message.contains("edit failed"));
     }
 }

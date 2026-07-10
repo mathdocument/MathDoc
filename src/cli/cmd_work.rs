@@ -1,9 +1,11 @@
 use anyhow::Result;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::Path;
+
+use sha2::{Digest, Sha256};
 
 use crate::compiler::CompilerRegistry;
 use crate::config::Config;
@@ -18,10 +20,14 @@ use super::{
 
 // ── Hash helpers ─────────────────────────────────────────────────────────────
 
-fn content_hash(content: &str) -> String {
+fn legacy_content_hash(content: &str) -> String {
     let mut hasher = DefaultHasher::new();
     content.hash(&mut hasher);
     format!("{:016x}", hasher.finish())
+}
+
+fn stable_content_digest(content: &str) -> String {
+    format!("{:x}", Sha256::digest(content.as_bytes()))
 }
 
 fn hash_path(work_path: &Path) -> std::path::PathBuf {
@@ -32,10 +38,26 @@ fn hash_path(work_path: &Path) -> std::path::PathBuf {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct WorkHashes {
     version: u32,
+    #[serde(default)]
+    algorithm: Option<String>,
     file: String,
     preamble: String,
     postamble: String,
     nodes: HashMap<String, String>,
+}
+
+impl WorkHashes {
+    fn digest(&self, content: &str) -> Result<String> {
+        match (self.version, self.algorithm.as_deref()) {
+            (1, None) => Ok(legacy_content_hash(content)),
+            (2, Some("sha256")) => Ok(stable_content_digest(content)),
+            _ => anyhow::bail!(
+                "unsupported work hash sidecar version {} algorithm {}",
+                self.version,
+                self.algorithm.as_deref().unwrap_or("<missing>")
+            ),
+        }
+    }
 }
 
 fn parse_hashes(snapshot: &FileSnapshot) -> Result<Option<WorkHashes>> {
@@ -44,9 +66,7 @@ fn parse_hashes(snapshot: &FileSnapshot) -> Result<Option<WorkHashes>> {
     };
     let text = std::str::from_utf8(content)?;
     if let Ok(sidecar) = serde_json::from_str::<WorkHashes>(text) {
-        if sidecar.version != 1 {
-            anyhow::bail!("unsupported work hash sidecar version {}", sidecar.version);
-        }
+        sidecar.digest("")?;
         return Ok(Some(sidecar));
     }
 
@@ -63,6 +83,7 @@ fn parse_hashes(snapshot: &FileSnapshot) -> Result<Option<WorkHashes>> {
     };
     Ok(Some(WorkHashes {
         version: 1,
+        algorithm: None,
         file: file.clone(),
         preamble: legacy.get("@preamble").cloned().unwrap_or_default(),
         postamble: legacy.get("@postamble").cloned().unwrap_or_default(),
@@ -74,6 +95,7 @@ fn parse_hashes(snapshot: &FileSnapshot) -> Result<Option<WorkHashes>> {
 }
 
 fn render_hashes(hashes: &WorkHashes) -> Result<Vec<u8>> {
+    hashes.digest("")?;
     Ok(serde_json::to_vec_pretty(hashes)?)
 }
 
@@ -172,9 +194,12 @@ pub(super) fn cmd_work(source: String, depth: i32, compile: bool) -> Result<i32>
         if let Some(existing) = work_snapshot.content() {
             let existing = std::str::from_utf8(existing)?;
             let stored = parse_hashes(&sidecar_snapshot)?;
-            let current = content_hash(existing);
+            let current = stored
+                .as_ref()
+                .map(|hashes| hashes.digest(existing))
+                .transpose()?;
 
-            if stored.as_ref().map(|hashes| hashes.file.as_str()) != Some(&current) {
+            if stored.as_ref().map(|hashes| hashes.file.as_str()) != current.as_deref() {
                 eprintln!(
                     "{YLW}warning:{RST} {BLD}{}{RST} has unsaved changes, skipping. Run {BLD}mdc back{RST} first or delete it.",
                     work_path.display()
@@ -186,13 +211,14 @@ pub(super) fn cmd_work(source: String, depth: i32, compile: bool) -> Result<i32>
 
         let mut node_hashes = HashMap::new();
         for (fnode, node_content) in &work_file.nodes {
-            node_hashes.insert(fnode.clone(), content_hash(node_content));
+            node_hashes.insert(fnode.clone(), stable_content_digest(node_content));
         }
         let hashes = WorkHashes {
-            version: 1,
-            file: content_hash(&work_file.content),
-            preamble: content_hash(work_file.preamble.as_deref().unwrap_or("")),
-            postamble: content_hash(work_file.postamble.as_deref().unwrap_or("")),
+            version: 2,
+            algorithm: Some("sha256".to_string()),
+            file: stable_content_digest(&work_file.content),
+            preamble: stable_content_digest(work_file.preamble.as_deref().unwrap_or("")),
+            postamble: stable_content_digest(work_file.postamble.as_deref().unwrap_or("")),
             nodes: node_hashes,
         };
         prepared.push(PreparedWork {
@@ -263,7 +289,7 @@ pub(super) fn cmd_work(source: String, depth: i32, compile: bool) -> Result<i32>
     println!();
     let registry = CompilerRegistry::default_registry();
     let total = generated.len();
-    let mut failed = 0;
+    let mut failure_codes = Vec::new();
 
     for (i, (srctype, _work_path_str)) in generated.iter().enumerate() {
         println!("[{}/{}] {BLD}{srctype}{RST}", i + 1, total);
@@ -300,7 +326,7 @@ pub(super) fn cmd_work(source: String, depth: i32, compile: bool) -> Result<i32>
         if res.result {
             println!("{GRN}✓{RST} (exit {})", res.rtcode);
         } else {
-            failed += 1;
+            failure_codes.push(res.rtcode);
             println!("{RED}✗{RST} (exit {})", res.rtcode);
         }
         println!();
@@ -309,11 +335,38 @@ pub(super) fn cmd_work(source: String, depth: i32, compile: bool) -> Result<i32>
         }
     }
 
-    Ok(if failed > 0 || !skipped.is_empty() {
-        1
-    } else {
-        0
-    })
+    Ok(aggregate_compile_exit(&failure_codes, !skipped.is_empty()))
+}
+
+fn aggregate_compile_exit(failure_codes: &[i32], had_skipped: bool) -> i32 {
+    match (failure_codes, had_skipped) {
+        ([], false) => 0,
+        ([code], false) if (1..=255).contains(code) => *code,
+        _ => 1,
+    }
+}
+
+#[cfg(test)]
+mod compile_exit_tests {
+    use super::{aggregate_compile_exit, stable_content_digest};
+
+    #[test]
+    fn compile_exit_aggregation_is_deterministic() {
+        assert_eq!(aggregate_compile_exit(&[], false), 0);
+        assert_eq!(aggregate_compile_exit(&[124], false), 124);
+        assert_eq!(aggregate_compile_exit(&[127], false), 127);
+        assert_eq!(aggregate_compile_exit(&[124, 127], false), 1);
+        assert_eq!(aggregate_compile_exit(&[124], true), 1);
+        assert_eq!(aggregate_compile_exit(&[-1], false), 1);
+    }
+
+    #[test]
+    fn stable_digest_is_sha256() {
+        assert_eq!(
+            stable_content_digest("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 }
 
 // ── cmd: back ────────────────────────────────────────────────────────────────
@@ -327,11 +380,35 @@ pub(super) fn cmd_back() -> Result<i32> {
     let mut total_synced = 0usize;
     let mut had_errors = false;
     let mut found_any = false;
+    struct PendingBackWrite {
+        path: std::path::PathBuf,
+        original: FileSnapshot,
+        content: Vec<u8>,
+        label: String,
+    }
+    struct PreparedBack {
+        srctype: String,
+        work_path: std::path::PathBuf,
+        work_snapshot: FileSnapshot,
+        sidecar_path: std::path::PathBuf,
+        sidecar_snapshot: FileSnapshot,
+        sidecar_content: Vec<u8>,
+        input_snapshots: Vec<(std::path::PathBuf, FileSnapshot)>,
+        source_writes: Vec<PendingBackWrite>,
+    }
+    struct PendingBackNode {
+        path: std::path::PathBuf,
+        original: FileSnapshot,
+        node: crate::mdocnode::MdocNode,
+        labels: Vec<(String, String)>,
+    }
+    let mut prepared = Vec::new();
+    let mut pending_nodes = BTreeMap::new();
 
     // Scan .mdc/*/MdcWork.* for active work files.
-    let entries = std::fs::read_dir(&mdc_dir)?;
+    let mut entries = std::fs::read_dir(&mdc_dir)?.collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
-        let entry = entry?;
         if !entry.file_type()?.is_dir() {
             continue;
         }
@@ -406,8 +483,12 @@ pub(super) fn cmd_back() -> Result<i32> {
         let mut validation_failed = false;
 
         let pre = extracted.preamble.as_deref().unwrap_or("");
-        let pre_hash = content_hash(pre);
+        let pre_hash = stored.digest(pre)?;
         let pre_changed = stored.preamble != pre_hash;
+        if let Err(error) = workback::validate_work_section_content(pre, &srctype, "preamble") {
+            eprintln!("  {YLW}warning:{RST} {error}");
+            validation_failed = true;
+        }
         let preamble_path = amble_path(&mdcroot, &srctype, "preamble");
         let preamble_snapshot = FileSnapshot::capture(&preamble_path)?;
         let current_pre = snapshot_text(
@@ -415,7 +496,7 @@ pub(super) fn cmd_back() -> Result<i32> {
             crate::config::default_preamble(&srctype),
         )?;
         let current_pre = current_pre.trim_end_matches('\n');
-        let pre_source_changed = stored.preamble != content_hash(current_pre);
+        let pre_source_changed = stored.preamble != stored.digest(current_pre)?;
         if pre_changed && pre_source_changed && pre != current_pre {
             eprintln!(
                 "  {YLW}warning:{RST} conflict in preamble: both work file and source changed"
@@ -424,8 +505,12 @@ pub(super) fn cmd_back() -> Result<i32> {
         }
 
         let post = extracted.postamble.as_deref().unwrap_or("");
-        let post_hash = content_hash(post);
+        let post_hash = stored.digest(post)?;
         let post_changed = stored.postamble != post_hash;
+        if let Err(error) = workback::validate_work_section_content(post, &srctype, "postamble") {
+            eprintln!("  {YLW}warning:{RST} {error}");
+            validation_failed = true;
+        }
         let postamble_path = amble_path(&mdcroot, &srctype, "postamble");
         let postamble_snapshot = FileSnapshot::capture(&postamble_path)?;
         let current_post = snapshot_text(
@@ -433,7 +518,7 @@ pub(super) fn cmd_back() -> Result<i32> {
             crate::config::default_postamble(&srctype),
         )?;
         let current_post = current_post.trim_end_matches('\n');
-        let post_source_changed = stored.postamble != content_hash(current_post);
+        let post_source_changed = stored.postamble != stored.digest(current_post)?;
         if post_changed && post_source_changed && post != current_post {
             eprintln!(
                 "  {YLW}warning:{RST} conflict in postamble: both work file and source changed"
@@ -441,26 +526,45 @@ pub(super) fn cmd_back() -> Result<i32> {
             validation_failed = true;
         }
 
-        struct PendingNode {
-            full_fnode: String,
-            title: String,
-            abs_path: std::path::PathBuf,
-            payload: Option<Vec<u8>>,
-            needs_sync: bool,
-            original: FileSnapshot,
+        let mut input_snapshots = vec![
+            (preamble_path.clone(), preamble_snapshot.clone()),
+            (postamble_path.clone(), postamble_snapshot.clone()),
+        ];
+        let mut source_writes = Vec::new();
+        if pre_changed {
+            source_writes.push(PendingBackWrite {
+                path: preamble_path.clone(),
+                original: preamble_snapshot.clone(),
+                content: if pre.is_empty() {
+                    Vec::new()
+                } else {
+                    format!("{pre}\n").into_bytes()
+                },
+                label: "preamble".to_string(),
+            });
         }
-
-        let mut pending_nodes = Vec::new();
+        if post_changed {
+            source_writes.push(PendingBackWrite {
+                path: postamble_path.clone(),
+                original: postamble_snapshot.clone(),
+                content: if post.is_empty() {
+                    Vec::new()
+                } else {
+                    format!("{post}\n").into_bytes()
+                },
+                label: "postamble".to_string(),
+            });
+        }
 
         // Resolve and load every target before writing any part of this work file.
         for (fnode, extracted_title, content) in &extracted.nodes {
-            let hash = content_hash(content);
-            new_node_hashes.insert(fnode.clone(), hash.clone());
+            let hash = stored.digest(content)?;
+            new_node_hashes.insert(fnode.clone(), stable_content_digest(content));
 
             match cache.resolve_ref(fnode, None) {
                 Ok((full_fnode, title, abs_path)) => {
                     let original = FileSnapshot::capture(&abs_path)?;
-                    let mut node = match crate::mdocnode::MdocNode::load(&mdcroot, &abs_path) {
+                    let node = match crate::mdocnode::MdocNode::load(&mdcroot, &abs_path) {
                         Ok(node) => node,
                         Err(error) => {
                             eprintln!(
@@ -477,6 +581,7 @@ pub(super) fn cmd_back() -> Result<i32> {
                         validation_failed = true;
                         continue;
                     }
+                    input_snapshots.push((abs_path.clone(), original.clone()));
 
                     if node.fnode != full_fnode {
                         eprintln!(
@@ -509,7 +614,7 @@ pub(super) fn cmd_back() -> Result<i32> {
                         .map(|b| b.content.trim_end_matches('\n'))
                         .collect::<Vec<_>>()
                         .join("\n");
-                    let current_hash = content_hash(&current_content);
+                    let current_hash = stored.digest(&current_content)?;
                     let work_changed = baseline_hash != &hash;
                     let source_changed = baseline_hash != &current_hash;
 
@@ -528,6 +633,14 @@ pub(super) fn cmd_back() -> Result<i32> {
                         );
                         validation_failed = true;
                     }
+                    if let Err(error) = workback::validate_work_section_content(
+                        content,
+                        &srctype,
+                        &format!("fnode {}", short_fnode(fnode)),
+                    ) {
+                        eprintln!("  {YLW}warning:{RST} {error}");
+                        validation_failed = true;
+                    }
 
                     let needs_sync = work_changed && hash != current_hash;
                     if needs_sync {
@@ -536,32 +649,33 @@ pub(super) fn cmd_back() -> Result<i32> {
                         } else {
                             format!("{content}\n")
                         };
-                        match node
+                        let rel_path = crate::workspace::to_rel_path(&mdcroot, &abs_path);
+                        let pending = pending_nodes.entry(abs_path.clone()).or_insert_with(|| {
+                            PendingBackNode {
+                                path: abs_path,
+                                original,
+                                node,
+                                labels: Vec::new(),
+                            }
+                        });
+                        match pending
+                            .node
                             .blocks
                             .iter_mut()
                             .find(|block| block.srctype == srctype)
                         {
                             Some(block) => block.content = new_content,
-                            None => node.blocks.push(crate::mdocnode::SrcBlock {
+                            None => pending.node.blocks.push(crate::mdocnode::SrcBlock {
                                 srctype: srctype.clone(),
                                 content: new_content,
                                 metadata: std::collections::HashMap::new(),
                             }),
                         }
+                        pending.labels.push((
+                            srctype.clone(),
+                            fmt_item(&full_fnode, &title, &rel_path, false),
+                        ));
                     }
-                    let payload = if needs_sync {
-                        Some(node.render_payload()?.into_bytes())
-                    } else {
-                        None
-                    };
-                    pending_nodes.push(PendingNode {
-                        full_fnode,
-                        title,
-                        original,
-                        abs_path,
-                        payload,
-                        needs_sync,
-                    });
                 }
                 Err(error) => {
                     eprintln!("  {YLW}warning:{RST} cannot resolve fnode {fnode}: {error}");
@@ -579,90 +693,87 @@ pub(super) fn cmd_back() -> Result<i32> {
         }
 
         let new_hashes = WorkHashes {
-            version: 1,
-            file: content_hash(file_content),
-            preamble: pre_hash,
-            postamble: post_hash,
+            version: 2,
+            algorithm: Some("sha256".to_string()),
+            file: stable_content_digest(file_content),
+            preamble: stable_content_digest(pre),
+            postamble: stable_content_digest(post),
             nodes: new_node_hashes,
         };
-        let sidecar_content = render_hashes(&new_hashes)?;
-        let mut synced_labels = Vec::new();
+        prepared.push(PreparedBack {
+            srctype,
+            work_path,
+            work_snapshot,
+            sidecar_path,
+            sidecar_snapshot,
+            sidecar_content: render_hashes(&new_hashes)?,
+            input_snapshots,
+            source_writes,
+        });
+    }
 
-        let preconditions_unchanged = work_snapshot.unchanged(&work_path)?
-            && sidecar_snapshot.unchanged(&sidecar_path)?
-            && preamble_snapshot.unchanged(&preamble_path)?
-            && postamble_snapshot.unchanged(&postamble_path)?
-            && pending_nodes.iter().all(|pending| {
-                pending
-                    .original
-                    .unchanged(&pending.abs_path)
-                    .unwrap_or(false)
-            });
-        if !preconditions_unchanged {
-            eprintln!(
-                "  {YLW}aborted:{RST} a work, sidecar, amble, or node file changed during validation; no changes were written."
-            );
-            had_errors = true;
-            continue;
+    if !found_any {
+        println!("No active work files found");
+        return Ok(0);
+    }
+
+    let mut node_writes = Vec::new();
+    if !had_errors {
+        for pending in pending_nodes.into_values() {
+            node_writes.push((
+                pending.path,
+                pending.original,
+                pending.node.render_payload()?.into_bytes(),
+                pending.labels,
+            ));
         }
+    }
 
+    if !had_errors {
+        for item in &prepared {
+            let mut unchanged = item.work_snapshot.unchanged(&item.work_path)?
+                && item.sidecar_snapshot.unchanged(&item.sidecar_path)?;
+            for (path, snapshot) in &item.input_snapshots {
+                unchanged &= snapshot.unchanged(path)?;
+            }
+            if !unchanged {
+                eprintln!(
+                    "  {YLW}aborted:{RST} a work, sidecar, amble, or node file changed during validation; no changes were written."
+                );
+                had_errors = true;
+                break;
+            }
+        }
+    }
+
+    if !had_errors {
         let mut applied = Vec::new();
         let apply_result = (|| -> Result<()> {
-            if pre_changed {
-                let content = if pre.is_empty() {
-                    String::new()
-                } else {
-                    format!("{pre}\n")
-                };
-                applied.push(atomic_replace(
-                    &preamble_path,
-                    &preamble_snapshot,
-                    content.as_bytes(),
-                )?);
-                synced_labels.push("preamble".to_string());
+            for item in &prepared {
+                for write in &item.source_writes {
+                    applied.push(atomic_replace(
+                        &write.path,
+                        &write.original,
+                        &write.content,
+                    )?);
+                }
             }
-            if post_changed {
-                let content = if post.is_empty() {
-                    String::new()
-                } else {
-                    format!("{post}\n")
-                };
-                applied.push(atomic_replace(
-                    &postamble_path,
-                    &postamble_snapshot,
-                    content.as_bytes(),
-                )?);
-                synced_labels.push("postamble".to_string());
+            for (path, original, content, _) in &node_writes {
+                applied.push(atomic_replace(path, original, content)?);
             }
-
-            for pending in &pending_nodes {
-                if !pending.needs_sync {
-                    continue;
+            for item in &prepared {
+                if !item.work_snapshot.unchanged(&item.work_path)? {
+                    anyhow::bail!(
+                        "{} changed while source updates were being applied",
+                        item.work_path.display()
+                    );
                 }
                 applied.push(atomic_replace(
-                    &pending.abs_path,
-                    &pending.original,
-                    pending
-                        .payload
-                        .as_deref()
-                        .expect("changed node has payload"),
+                    &item.sidecar_path,
+                    &item.sidecar_snapshot,
+                    &item.sidecar_content,
                 )?);
-                let rel_path = crate::workspace::to_rel_path(&mdcroot, &pending.abs_path);
-                synced_labels.push(fmt_item(
-                    &pending.full_fnode,
-                    &pending.title,
-                    &rel_path,
-                    false,
-                ));
             }
-            if !work_snapshot.unchanged(&work_path)? {
-                anyhow::bail!("work file changed while source updates were being applied");
-            }
-            applied.push(atomic_replace(
-                &sidecar_path,
-                &sidecar_snapshot,
-                &sidecar_content,
-            )?);
             Ok(())
         })();
 
@@ -672,18 +783,20 @@ pub(super) fn cmd_back() -> Result<i32> {
                 return Err(anyhow::anyhow!("{error}; additionally {rollback_error}"));
             }
             had_errors = true;
-            continue;
+        } else {
+            for item in &prepared {
+                for write in &item.source_writes {
+                    println!("  synced [{}]: {}", item.srctype, write.label);
+                    total_synced += 1;
+                }
+            }
+            for (_, _, _, labels) in &node_writes {
+                for (srctype, label) in labels {
+                    println!("  synced [{srctype}]: {label}");
+                    total_synced += 1;
+                }
+            }
         }
-
-        for label in synced_labels {
-            println!("  synced: {label}");
-            total_synced += 1;
-        }
-    }
-
-    if !found_any {
-        println!("No active work files found");
-        return Ok(0);
     }
 
     println!(

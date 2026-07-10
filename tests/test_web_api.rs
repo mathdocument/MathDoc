@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{Request, StatusCode, Uri};
+use regex::Regex;
 use tempfile::TempDir;
 
 use mathdoc::indcache::IndCache;
@@ -282,6 +283,76 @@ async fn spa_index_is_not_cached() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+}
+
+#[tokio::test]
+async fn embedded_index_assets_use_release_mime_and_cache_policy() {
+    let dir = TempDir::new().unwrap();
+    let (_root, app) = build_app(&dir);
+    let embedded_index = web::assets::WebAssets::get("index.html").unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(local_request().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers().get("content-type").unwrap(), "text/html");
+    assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+    let index = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(index.as_ref(), embedded_index.data.as_ref());
+
+    let index = std::str::from_utf8(&index).unwrap();
+    let url_pattern = Regex::new(r#"(?:src|href)="([^"]+)""#).unwrap();
+    let mut asset_count = 0;
+    for captures in url_pattern.captures_iter(index) {
+        let url = &captures[1];
+        if url.starts_with("data:") {
+            continue;
+        }
+        let uri: Uri = url.parse().unwrap();
+        assert!(
+            uri.scheme().is_none() && uri.authority().is_none(),
+            "external URL: {url}"
+        );
+        let path = uri.path().trim_start_matches('/').to_string();
+        let embedded = web::assets::WebAssets::get(&path)
+            .unwrap_or_else(|| panic!("index references missing embedded asset: {url}"));
+
+        let response = app
+            .clone()
+            .oneshot(local_request().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "failed to serve {url}");
+        let expected_mime = mime_guess::from_path(&path)
+            .first_or_octet_stream()
+            .essence_str()
+            .to_string();
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            &expected_mime
+        );
+        assert_eq!(
+            response.headers().get("cache-control").unwrap(),
+            "public, max-age=31536000, immutable"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            body.as_ref(),
+            embedded.data.as_ref(),
+            "wrong body for {url}"
+        );
+        asset_count += 1;
+    }
+    assert!(
+        asset_count > 0,
+        "index.html contains no embedded asset URLs"
+    );
 }
 
 #[tokio::test]
@@ -1056,6 +1127,114 @@ async fn new_node_standalone_no_parent() {
     assert_eq!(status, StatusCode::OK, "val={val}");
     assert_eq!(val["title"], "Lone Node");
     assert_eq!(val["rel_path"], "notes/lone.mdoc");
+}
+
+#[tokio::test]
+async fn new_node_file_rules_match_with_and_without_parent() {
+    let dir = TempDir::new().unwrap();
+    let (_root, app) = build_app(&dir);
+    let (_, roots) = get_json(&app, "/api/graph/roots").await;
+    let parent = roots
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["title"] == "Main Theorem")
+        .unwrap()["fnode"]
+        .as_str()
+        .unwrap();
+
+    for (title, file, expected) in [
+        ("Standalone Empty", "", None),
+        ("Standalone Dot", ".", None),
+        (
+            "Standalone Suffix",
+            "notes/standalone-suffix.mdoc",
+            Some("notes/standalone-suffix.mdoc"),
+        ),
+    ] {
+        let (status, node) = send_json(
+            &app,
+            "POST",
+            "/api/node/new",
+            serde_json::json!({ "title": title, "file": file }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "node={node}");
+        let rel_path = node["rel_path"].as_str().unwrap();
+        if let Some(expected) = expected {
+            assert_eq!(rel_path, expected);
+        } else {
+            assert!(!rel_path.contains('/'));
+            assert!(rel_path.ends_with(".mdoc"));
+        }
+    }
+
+    for (title, file, expected) in [
+        ("Linked Empty", "", None),
+        ("Linked Dot", ".", None),
+        (
+            "Linked Suffix",
+            "notes/linked-suffix.mdoc",
+            Some("notes/linked-suffix.mdoc"),
+        ),
+    ] {
+        let (status, result) = send_json(
+            &app,
+            "POST",
+            "/api/node/new",
+            serde_json::json!({
+                "title": title,
+                "file": file,
+                "parent_fnode": parent,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "result={result}");
+        let (_, matches) = get_json(
+            &app,
+            &format!("/api/search?q={}", title.replace(' ', "%20")),
+        )
+        .await;
+        let rel_path = matches[0]["rel_path"].as_str().unwrap();
+        if let Some(expected) = expected {
+            assert_eq!(rel_path, expected);
+        } else {
+            assert!(!rel_path.contains('/'));
+            assert!(rel_path.ends_with(".mdoc"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn new_node_rejects_absolute_file_with_and_without_parent() {
+    let dir = TempDir::new().unwrap();
+    let (root, app) = build_app(&dir);
+    let (_, roots) = get_json(&app, "/api/graph/roots").await;
+    let parent = roots
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["title"] == "Main Theorem")
+        .unwrap()["fnode"]
+        .as_str()
+        .unwrap();
+    let absolute = root.join("absolute-target");
+
+    for parent_fnode in [None, Some(parent)] {
+        let (status, _) = send_json(
+            &app,
+            "POST",
+            "/api/node/new",
+            serde_json::json!({
+                "title": "Absolute Target",
+                "file": absolute,
+                "parent_fnode": parent_fnode,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    assert!(!root.join("absolute-target.mdoc").exists());
 }
 
 // ── Force graph endpoint ──────────────────────────────────────────────────────

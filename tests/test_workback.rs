@@ -1,5 +1,7 @@
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -36,6 +38,12 @@ fn run_mdc(root: &Path, args: &[&str]) -> Output {
 
 fn output_text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
+}
+
+fn legacy_hash(content: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 // ── merge_work_files tests ───────────────────────────────────────────────────
@@ -805,6 +813,29 @@ fn work_propagates_hash_sidecar_write_failure() {
 }
 
 #[test]
+fn work_accepts_and_migrates_legacy_hash_sidecar() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let src = make_node(root, "Legacy Sidecar", "latex", "body\n");
+    src.save().unwrap();
+
+    let output = run_mdc(root, &["work", &src.fnode]);
+    assert!(output.status.success(), "{}", output_text(&output.stderr));
+    let work_path = root.join(".mdc/latex/MdcWork.tex");
+    let sidecar_path = root.join(".mdc/latex/.MdcWork.hash");
+    let work = fs::read_to_string(&work_path).unwrap();
+    fs::write(&sidecar_path, format!("@file={}\n", legacy_hash(&work))).unwrap();
+
+    let output = run_mdc(root, &["work", &src.fnode]);
+    assert!(output.status.success(), "{}", output_text(&output.stderr));
+    let sidecar: serde_json::Value =
+        serde_json::from_slice(&fs::read(sidecar_path).unwrap()).unwrap();
+    assert_eq!(sidecar["version"], 2);
+    assert_eq!(sidecar["algorithm"], "sha256");
+    assert_eq!(sidecar["file"].as_str().unwrap().len(), 64);
+}
+
+#[test]
 fn back_rejects_divergent_preamble_changes() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
@@ -911,4 +942,203 @@ fn work_rejects_source_content_that_looks_like_a_marker() {
     let output = run_mdc(root, &["work", &src.fnode]);
     assert!(!output.status.success());
     assert!(output_text(&output.stderr).contains("reserved work-file marker"));
+}
+
+#[test]
+fn work_rejects_amble_content_that_looks_like_a_marker() {
+    for kind in ["preamble", "postamble"] {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        let src = make_node(root, "Marker", "latex", "body\n");
+        src.save().unwrap();
+        fs::create_dir_all(root.join(".mdc/latex")).unwrap();
+        fs::write(
+            root.join(format!(".mdc/latex/{kind}.tex")),
+            "% mdc: custom\n",
+        )
+        .unwrap();
+
+        let output = run_mdc(root, &["work", &src.fnode]);
+        assert!(!output.status.success());
+        assert!(output_text(&output.stderr).contains("reserved work-file marker"));
+        assert!(!root.join(".mdc/latex/MdcWork.tex").exists());
+    }
+}
+
+#[test]
+fn back_rejects_content_that_cannot_be_generated_again() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let src = make_node(root, "Marker", "latex", "original body\n");
+    src.save().unwrap();
+    let output = run_mdc(root, &["work", &src.fnode]);
+    assert!(output.status.success(), "{}", output_text(&output.stderr));
+
+    let work_path = root.join(".mdc/latex/MdcWork.tex");
+    let edited = fs::read_to_string(&work_path)
+        .unwrap()
+        .replace("\\documentclass{article}", "% mdc: custom")
+        .replace("original body", "edited body\n% mdc: custom node");
+    fs::write(&work_path, edited).unwrap();
+
+    let output = run_mdc(root, &["back"]);
+    assert!(!output.status.success());
+    assert!(output_text(&output.stderr).contains("reserved work-file marker"));
+    assert!(!root.join(".mdc/latex/preamble.tex").exists());
+    assert_eq!(
+        MdocNode::load(root, &src.path).unwrap().blocks[0].content,
+        "original body\n"
+    );
+}
+
+#[test]
+fn back_combines_multiple_source_type_edits_to_one_node() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let mut src = make_node(root, "Multi", "latex", "latex original\n");
+    src.blocks.push(SrcBlock {
+        srctype: "python".to_string(),
+        content: "python_original = 1\n".to_string(),
+        metadata: Default::default(),
+    });
+    src.save().unwrap();
+    let output = run_mdc(root, &["work", &src.fnode]);
+    assert!(output.status.success(), "{}", output_text(&output.stderr));
+
+    let latex_path = root.join(".mdc/latex/MdcWork.tex");
+    let latex = fs::read_to_string(&latex_path)
+        .unwrap()
+        .replace("latex original", "latex edited");
+    fs::write(latex_path, latex).unwrap();
+    let python_path = root.join(".mdc/python/MdcWork.py");
+    let python = fs::read_to_string(&python_path)
+        .unwrap()
+        .replace("python_original = 1", "python_edited = 2");
+    fs::write(python_path, python).unwrap();
+
+    let output = run_mdc(root, &["back"]);
+    assert!(output.status.success(), "{}", output_text(&output.stderr));
+    let node = MdocNode::load(root, &src.path).unwrap();
+    assert_eq!(
+        node.blocks
+            .iter()
+            .find(|block| block.srctype == "latex")
+            .unwrap()
+            .content,
+        "latex edited\n"
+    );
+    assert_eq!(
+        node.blocks
+            .iter()
+            .find(|block| block.srctype == "python")
+            .unwrap()
+            .content,
+        "python_edited = 2\n"
+    );
+}
+
+#[test]
+fn back_validation_failure_leaves_every_source_type_unchanged() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let mut src = make_node(root, "Multi", "latex", "latex original\n");
+    src.blocks.push(SrcBlock {
+        srctype: "python".to_string(),
+        content: "python_original = 1\n".to_string(),
+        metadata: Default::default(),
+    });
+    src.save().unwrap();
+    let output = run_mdc(root, &["work", &src.fnode]);
+    assert!(output.status.success(), "{}", output_text(&output.stderr));
+
+    let latex_path = root.join(".mdc/latex/MdcWork.tex");
+    let latex = fs::read_to_string(&latex_path)
+        .unwrap()
+        .replace("latex original", "latex edited");
+    fs::write(&latex_path, latex).unwrap();
+    let latex_sidecar = root.join(".mdc/latex/.MdcWork.hash");
+    let sidecar_before = fs::read(&latex_sidecar).unwrap();
+
+    let python_path = root.join(".mdc/python/MdcWork.py");
+    let python = fs::read_to_string(&python_path)
+        .unwrap()
+        .replace("# mdc: title: Multi", "# mdc: title: Changed");
+    fs::write(python_path, python).unwrap();
+
+    let output = run_mdc(root, &["back"]);
+    assert!(!output.status.success());
+    assert!(output_text(&output.stderr).contains("title of"));
+    let node = MdocNode::load(root, &src.path).unwrap();
+    assert_eq!(
+        node.blocks
+            .iter()
+            .find(|block| block.srctype == "latex")
+            .unwrap()
+            .content,
+        "latex original\n"
+    );
+    assert_eq!(
+        node.blocks
+            .iter()
+            .find(|block| block.srctype == "python")
+            .unwrap()
+            .content,
+        "python_original = 1\n"
+    );
+    assert_eq!(fs::read(latex_sidecar).unwrap(), sidecar_before);
+}
+
+#[test]
+fn back_apply_failure_rolls_back_every_source_type() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let mut src = make_node(root, "Multi", "latex", "latex original\n");
+    src.blocks.push(SrcBlock {
+        srctype: "python".to_string(),
+        content: "python_original = 1\n".to_string(),
+        metadata: Default::default(),
+    });
+    src.save().unwrap();
+    let output = run_mdc(root, &["work", &src.fnode]);
+    assert!(output.status.success(), "{}", output_text(&output.stderr));
+
+    let latex_path = root.join(".mdc/latex/MdcWork.tex");
+    let latex = fs::read_to_string(&latex_path)
+        .unwrap()
+        .replace("latex original", "latex edited");
+    fs::write(&latex_path, latex).unwrap();
+    let latex_sidecar = root.join(".mdc/latex/.MdcWork.hash");
+    let sidecar_before = fs::read(&latex_sidecar).unwrap();
+
+    let python_path = root.join(".mdc/python/MdcWork.py");
+    let python = fs::read_to_string(&python_path)
+        .unwrap()
+        .replace("python_original = 1", "python_edited = 2");
+    fs::write(python_path, python).unwrap();
+    let python_sidecar = root.join(".mdc/python/.MdcWork.hash");
+    let mut permissions = fs::metadata(&python_sidecar).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&python_sidecar, permissions).unwrap();
+
+    let output = run_mdc(root, &["back"]);
+    assert!(!output.status.success());
+    assert!(output_text(&output.stderr).contains("read-only"));
+    let node = MdocNode::load(root, &src.path).unwrap();
+    assert_eq!(
+        node.blocks
+            .iter()
+            .find(|block| block.srctype == "latex")
+            .unwrap()
+            .content,
+        "latex original\n"
+    );
+    assert_eq!(
+        node.blocks
+            .iter()
+            .find(|block| block.srctype == "python")
+            .unwrap()
+            .content,
+        "python_original = 1\n"
+    );
+    assert_eq!(fs::read(latex_sidecar).unwrap(), sidecar_before);
 }

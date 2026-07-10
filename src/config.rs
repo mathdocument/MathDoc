@@ -234,21 +234,25 @@ fn write_amble(mdcroot: &Path, srctype: &str, kind: &str, content: &str) -> Resu
 
 /// Write default preamble/postamble files for all known srctypes.
 /// Called by `mdc init`. Only creates files that don't already exist.
-pub fn init_amble_files(mdcroot: &Path) -> Result<()> {
+pub fn init_amble_files(mdcroot: &Path) -> Result<bool> {
+    let mdc_dir = mdcroot.join(".mdc");
+    crate::safe_file::ensure_regular_directory(&mdc_dir)?;
+    let mut changed = false;
     for srctype in &["text", "latex", "python", "lean", "rocq"] {
         let pre = default_preamble(srctype);
         let post = default_postamble(srctype);
         let pre_path = amble_path(mdcroot, srctype, "preamble");
         let post_path = amble_path(mdcroot, srctype, "postamble");
         if !pre.is_empty() || !post.is_empty() {
-            std::fs::create_dir_all(pre_path.parent().unwrap())?;
+            changed |=
+                crate::safe_file::ensure_regular_directory_exists(pre_path.parent().unwrap())?;
         }
-        if !pre.is_empty() && !pre_path.exists() {
-            std::fs::write(&pre_path, pre)?;
+        if !pre.is_empty() {
+            changed |= crate::safe_file::atomic_create_if_missing(&pre_path, pre.as_bytes())?;
         }
-        if !post.is_empty() && !post_path.exists() {
-            std::fs::write(&post_path, post)?;
+        if !post.is_empty() {
+            changed |= crate::safe_file::atomic_create_if_missing(&post_path, post.as_bytes())?;
         }
     }
-    Ok(())
+    Ok(changed)
 }

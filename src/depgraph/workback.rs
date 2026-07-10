@@ -27,6 +27,20 @@ fn marker_line(srctype: &str, tag: &str) -> String {
     }
 }
 
+pub(crate) fn validate_work_section_content(
+    content: &str,
+    srctype: &str,
+    section: &str,
+) -> Result<()> {
+    if content
+        .lines()
+        .any(|line| parse_marker_tag(line, comment_prefix(srctype), srctype == "rocq").is_some())
+    {
+        anyhow::bail!("{section} contains a reserved work-file marker");
+    }
+    Ok(())
+}
+
 // ── merge_work_files ─────────────────────────────────────────────────────────
 
 /// Assembled work file with pre-parsed section content, avoiding a re-parse roundtrip.
@@ -126,6 +140,7 @@ pub fn merge_work_files(
         out.push_str(&marker_line(srctype, "preamble"));
         out.push('\n');
         let pre_trimmed = preamble.trim_end_matches('\n');
+        validate_work_section_content(pre_trimmed, srctype, "preamble")?;
         if !pre_trimmed.is_empty() {
             out.push_str(pre_trimmed);
             out.push('\n');
@@ -148,15 +163,11 @@ pub fn merge_work_files(
                 .map(|b| b.content.trim_end_matches('\n'))
                 .collect::<Vec<_>>()
                 .join("\n");
-            if content.lines().any(|line| {
-                parse_marker_tag(line, comment_prefix(srctype), srctype == "rocq").is_some()
-            }) {
-                anyhow::bail!(
-                    "source block '{}' in {} contains a reserved work-file marker",
-                    srctype,
-                    node.path.display()
-                );
-            }
+            validate_work_section_content(
+                &content,
+                srctype,
+                &format!("source block '{srctype}' in {}", node.path.display()),
+            )?;
             if !content.is_empty() {
                 out.push_str(&content);
                 out.push('\n');
@@ -183,6 +194,7 @@ pub fn merge_work_files(
         out.push_str(&marker_line(srctype, "postamble"));
         out.push('\n');
         let post_trimmed = postamble.trim_end_matches('\n');
+        validate_work_section_content(post_trimmed, srctype, "postamble")?;
         if !post_trimmed.is_empty() {
             out.push_str(post_trimmed);
             out.push('\n');

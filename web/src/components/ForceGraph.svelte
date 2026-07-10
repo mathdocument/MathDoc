@@ -16,12 +16,13 @@
   import { shortFnode } from "../lib/format";
 
   interface Props {
+    active: boolean;
     onSelect: (fnode: string | null) => void;
     selectedFnode: string | null;
     /** Increment to trigger a data refresh (after dep mutations). */
     revision?: number;
   }
-  let { onSelect, selectedFnode, revision = 0 }: Props = $props();
+  let { active, onSelect, selectedFnode, revision = 0 }: Props = $props();
 
   interface SimNode extends SimulationNodeDatum {
     id: string;
@@ -164,7 +165,8 @@
         sim.nodes(nodes);
         const linkForce = sim.force("link") as any;
         if (linkForce) linkForce.links(links);
-        sim.alpha(0.5).restart();
+        sim.alpha(0.5).stop();
+        startRaf();
       } else {
         buildSimulation();
       }
@@ -197,31 +199,40 @@
       .alpha(1)
       .alphaDecay(0.05)
       .velocityDecay(0.25)
-      .on("tick", () => requestRender());
+      .stop();
 
     for (let i = 0; i < 300; i++) sim.tick();
-    render();
+    requestRender();
   }
 
   // Render-on-demand flag. Set by requestRender(), consumed by the RAF loop.
   let needsRender = false;
   function requestRender() {
     needsRender = true;
+    startRaf();
   }
 
   function startRaf() {
-    if (rafId) return;
+    if (rafId || !running || !active) return;
     const loop = () => {
-      if (!running) { rafId = 0; return; }
-      const active = sim && sim.alpha() > sim.alphaMin();
-      if (active) sim!.tick();
-      if (active || needsRender) {
+      rafId = 0;
+      if (!running || !active) return;
+      const simulationActive = sim && sim.alpha() > sim.alphaMin();
+      if (simulationActive) sim!.tick();
+      if (simulationActive || needsRender) {
         render();
         needsRender = false;
       }
-      rafId = requestAnimationFrame(loop);
+      if ((sim && sim.alpha() > sim.alphaMin()) || needsRender) {
+        rafId = requestAnimationFrame(loop);
+      }
     };
     rafId = requestAnimationFrame(loop);
+  }
+
+  function stopRaf() {
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = 0;
   }
 
   // ── Rendering ───────────────────────────────────────────────────────────────
@@ -372,10 +383,13 @@
   let mouseStart: { x: number; y: number } | null = null;
   let panStart: { x: number; y: number; viewX: number; viewY: number } | null = null;
   let mouseMoved = false;
+  let activePointerId: number | null = null;
 
-  function onMouseDown(e: MouseEvent) {
+  function onPointerDown(e: PointerEvent) {
     const canvas = canvasEl;
-    if (!canvas) return;
+    if (!canvas || e.button !== 0) return;
+    activePointerId = e.pointerId;
+    canvas.setPointerCapture(e.pointerId);
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
@@ -388,7 +402,8 @@
       dragNode = node;
       node.fx = node.x;
       node.fy = node.y;
-      sim?.alphaTarget(0.3).restart();
+      sim?.alphaTarget(0.3);
+      if (sim && sim.alpha() < 0.3) sim.alpha(0.3);
       startRaf();
     } else {
       mouseMode = "pan";
@@ -397,9 +412,10 @@
     }
   }
 
-  function onMouseMove(e: MouseEvent) {
+  function onPointerMove(e: PointerEvent) {
     const canvas = canvasEl;
     if (!canvas) return;
+    if (mouseMode !== "idle" && e.pointerId !== activePointerId) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
@@ -409,7 +425,9 @@
       const { x: wx, y: wy } = screenToWorld(x, y);
       dragNode.fx = wx;
       dragNode.fy = wy;
-      sim?.alphaTarget(0.3).restart();
+      sim?.alphaTarget(0.3);
+      if (sim && sim.alpha() < 0.3) sim.alpha(0.3);
+      startRaf();
     } else if (mouseMode === "pan" && panStart) {
       mouseMoved = Math.hypot(x - panStart.x, y - panStart.y) > 3;
       viewX = panStart.viewX + (x - panStart.x);
@@ -424,22 +442,23 @@
     }
   }
 
-  function onMouseUp(e: MouseEvent) {
+  function finishPointer(e: PointerEvent | null, cancelled: boolean) {
     const canvas = canvasEl;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const x = e ? e.clientX - rect.left : 0;
+    const y = e ? e.clientY - rect.top : 0;
 
     if (mouseMode === "drag-node" && dragNode) {
       dragNode.fx = null;
       dragNode.fy = null;
       sim?.alphaTarget(0);
-      if (!mouseMoved) {
+      if (!cancelled && !mouseMoved) {
         onSelect(dragNode.id === selectedFnode ? null : dragNode.id);
       }
       dragNode = null;
-    } else if (mouseMode === "pan" && !mouseMoved) {
+      startRaf();
+    } else if (!cancelled && mouseMode === "pan" && !mouseMoved) {
       const node = findNodeAt(x, y);
       if (!node && selectedFnode) {
         onSelect(null);
@@ -450,6 +469,18 @@
     panStart = null;
     mouseMoved = false;
     canvas.style.cursor = "grab";
+    if (activePointerId !== null && canvas.hasPointerCapture(activePointerId)) {
+      canvas.releasePointerCapture(activePointerId);
+    }
+    activePointerId = null;
+  }
+
+  function onPointerUp(e: PointerEvent) {
+    if (e.pointerId === activePointerId) finishPointer(e, false);
+  }
+
+  function onPointerCancel(e: PointerEvent) {
+    if (e.pointerId === activePointerId) finishPointer(e, true);
   }
 
   function onWheel(e: WheelEvent) {
@@ -533,14 +564,15 @@
         needsFit = true;
       }
       resizeCanvas();
-      startRaf();
+      requestRender();
     })();
   });
 
   onDestroy(() => {
     graphRequest++;
     running = false;
-    if (rafId) cancelAnimationFrame(rafId);
+    finishPointer(null, true);
+    stopRaf();
     resizeObserver?.disconnect();
     canvasEl?.removeEventListener("wheel", onWheel);
     sim?.stop();
@@ -550,6 +582,17 @@
   $effect(() => {
     void selectedFnode;
     requestRender();
+  });
+
+  $effect(() => {
+    if (active) {
+      resizeCanvas();
+      requestRender();
+    } else {
+      finishPointer(null, true);
+      stopRaf();
+      sim?.stop();
+    }
   });
 
   // Reload graph data when revision changes (after dep mutations).
@@ -564,15 +607,18 @@
   });
 </script>
 
+<svelte:window onblur={() => finishPointer(null, true)} />
+
 <div class="force-container" bind:this={containerEl}>
   {#if loadError}
     <div class="error">{loadError}</div>
   {/if}
   <canvas
     bind:this={canvasEl}
-    onmousedown={onMouseDown}
-    onmousemove={onMouseMove}
-    onmouseup={onMouseUp}
+    onpointerdown={onPointerDown}
+    onpointermove={onPointerMove}
+    onpointerup={onPointerUp}
+    onpointercancel={onPointerCancel}
   ></canvas>
   <button class="ctrl-btn reset-btn" onclick={() => fitToNodes()} title="reset view">⤢</button>
 </div>
@@ -590,6 +636,7 @@
     width: 100%;
     height: 100%;
     cursor: grab;
+    touch-action: none;
   }
   .error {
     position: absolute;

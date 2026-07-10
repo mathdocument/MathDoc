@@ -155,9 +155,20 @@ fn open_db_once(path: &Path) -> Result<(Connection, bool)> {
     let flags = OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW;
     let mut conn = Connection::open_with_flags(path, flags)?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    checked_user_version(&conn)?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
     let needs_topo_backfill = apply_schema(&mut conn)?;
     Ok((conn, needs_topo_backfill))
+}
+
+fn checked_user_version(conn: &Connection) -> Result<i32> {
+    let user_version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if user_version > SCHEMA_VERSION {
+        bail!(
+            "index schema version {user_version} is newer than supported version {SCHEMA_VERSION}"
+        );
+    }
+    Ok(user_version)
 }
 
 fn is_database_busy(error: &anyhow::Error) -> bool {
@@ -179,9 +190,8 @@ fn is_database_busy(error: &anyhow::Error) -> bool {
 /// recovered on the next startup.
 fn apply_schema(conn: &mut Connection) -> Result<bool> {
     let tx = conn.transaction()?;
+    let user_version = checked_user_version(&tx)?;
     tx.execute_batch(CREATE_SQL)?;
-
-    let user_version: i32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
 
     if user_version < SCHEMA_VERSION {
         // Add mtime_ns to mdocs if missing (v4→v5 migration).
@@ -344,6 +354,48 @@ mod tests {
         let path = dir.path().join("index.db");
         open_db(&path).unwrap();
         open_db(&path).unwrap(); // second open should not fail
+    }
+
+    #[test]
+    fn future_schema_is_rejected_without_mutation() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("index.db");
+        let future_version = SCHEMA_VERSION + 1;
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TABLE future_data (value TEXT);
+             INSERT INTO future_data VALUES ('preserve me');
+             PRAGMA user_version = {future_version};"
+        ))
+        .unwrap();
+        drop(conn);
+        let before = std::fs::read(&path).unwrap();
+
+        let error = open_db(&path).unwrap_err();
+        assert!(error.to_string().contains("newer than supported"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(
+            checked_user_version(&conn).unwrap_err().to_string(),
+            error.to_string()
+        );
+        let journal_mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal_mode, "delete");
+        let value: String = conn
+            .query_row("SELECT value FROM future_data", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(value, "preserve me");
+        let managed_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'mdocs'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(managed_tables, 0);
     }
 
     #[test]

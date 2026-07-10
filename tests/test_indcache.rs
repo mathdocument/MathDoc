@@ -354,6 +354,59 @@ fn test_search_and_resolve_surface_duplicate_fnodes() {
 }
 
 #[test]
+fn test_search_treats_like_metacharacters_literally() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    for (path, fnode, title) in [
+        ("percent.mdoc", "percent-node", "Literal 100% Result"),
+        ("underscore.mdoc", "underscore-node", "Literal_under Score"),
+        ("slash.mdoc", "slash-node", "Literal\\Path"),
+        ("plain.mdoc", "plain-node", "Plain Result"),
+    ] {
+        write(
+            &root.join(path),
+            &format!("@fnode: {fnode}\n@title: {title}\n"),
+        );
+    }
+
+    let cache = IndCache::open(root.to_path_buf()).unwrap();
+
+    assert_eq!(cache.search("%").unwrap()[0].0, "percent-node");
+    assert_eq!(cache.search("%").unwrap().len(), 1);
+    assert_eq!(cache.search("_").unwrap()[0].0, "underscore-node");
+    assert_eq!(cache.search("_").unwrap().len(), 1);
+    assert_eq!(cache.search("\\").unwrap()[0].0, "slash-node");
+    assert_eq!(cache.search("\\").unwrap().len(), 1);
+}
+
+#[test]
+fn test_resolve_ref_supports_suffixless_paths() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    write(
+        &root.join("theorem.mdoc"),
+        "@fnode: root-theorem\n@title: Root Theorem\n",
+    );
+    write(
+        &root.join("notes/lemma.mdoc"),
+        "@fnode: nested-lemma\n@title: Nested Lemma\n",
+    );
+
+    let cache = IndCache::open(root.to_path_buf()).unwrap();
+
+    assert_eq!(
+        cache.resolve_ref("theorem", Some(root)).unwrap().0,
+        "root-theorem"
+    );
+    assert_eq!(
+        cache.resolve_ref("notes/lemma", Some(root)).unwrap().0,
+        "nested-lemma"
+    );
+}
+
+#[test]
 fn test_resolve_ref_deletes_crafted_cache_path_without_reading_outside() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path().join("workspace");

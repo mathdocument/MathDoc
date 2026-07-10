@@ -47,7 +47,7 @@ export async function settlePendingMutations(): Promise<boolean> {
 }
 
 export function hasUnsavedDrafts(): boolean {
-  return dirtyDrafts.size > 0;
+  return dirtyDrafts.size > 0 || pendingMutations.size > 0;
 }
 
 export function unsavedDraftRevision(): number {
@@ -56,6 +56,6 @@ export function unsavedDraftRevision(): number {
 
 export function confirmDiscardDrafts(): boolean {
   return !hasUnsavedDrafts() || window.confirm(
-    "You have unsaved block or title edits. Discard them?",
+    "You have unsaved edits or pending changes. Discard them?",
   );
 }

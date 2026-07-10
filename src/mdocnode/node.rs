@@ -224,6 +224,7 @@ impl MdocNode {
         let mut fnode = String::new();
         let mut title = String::new();
         let mut depens: Vec<String> = Vec::new();
+        let mut seen_dep_block = false;
         let mut blocks: Vec<SrcBlock> = Vec::new();
         let mut seen_srctypes: HashSet<String> = HashSet::new();
 
@@ -324,10 +325,11 @@ impl MdocNode {
                 continue;
             }
 
-            if line.starts_with("@dep:") {
-                if !depens.is_empty() {
+            if line == "@dep:" {
+                if seen_dep_block {
                     bail!("line {lineno}: Duplicate '@dep' in {}", path.display());
                 }
+                seen_dep_block = true;
                 status = Status::Dep;
                 continue;
             }
@@ -476,6 +478,12 @@ fn parse_src_header(
                 let key = key.trim();
                 validate_single_line("src metadata key", key)?;
                 validate_no_controls(&format!("src metadata value for '{key}'"), value)?;
+                if metadata.contains_key(key) {
+                    bail!(
+                        "line {lineno}: Duplicate src metadata key '{key}' in {}",
+                        path.display()
+                    );
+                }
                 metadata.insert(key.to_string(), value.to_string());
             }
             _ => {
@@ -672,6 +680,33 @@ mod tests {
             "@fnode: f\n@title: T\n\n@dep:\ndep1\ndep1\n@end\n",
         );
         assert!(MdocNode::load(dir.path(), &path).is_err());
+    }
+
+    #[test]
+    fn load_rejects_malformed_duplicate_directives() {
+        let dir = TempDir::new().unwrap();
+        for (name, body, expected) in [
+            (
+                "empty-duplicate-dep.mdoc",
+                "@dep:\n@end\n@dep:\n@end\n",
+                "Duplicate '@dep'",
+            ),
+            (
+                "trailing-dep.mdoc",
+                "@dep: trailing text\n@end\n",
+                "Unrecognized line",
+            ),
+            (
+                "duplicate-metadata.mdoc",
+                "@src: text mode=one mode=two\n@end\n",
+                "Duplicate src metadata key 'mode'",
+            ),
+        ] {
+            let content = format!("@fnode: parse-node\n@title: Parse Node\n\n{body}");
+            let path = write_mdoc(&dir, name, &content);
+            let error = MdocNode::load(dir.path(), &path).unwrap_err().to_string();
+            assert!(error.contains(expected), "unexpected error: {error}");
+        }
     }
 
     #[test]

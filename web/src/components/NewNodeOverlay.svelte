@@ -2,6 +2,13 @@
   import { onDestroy } from "svelte";
   import { api } from "../lib/api";
   import { errMsg } from "../lib/format";
+  import { modal } from "../lib/modal";
+  import {
+    confirmDiscardDrafts,
+    removeDraft,
+    setDraftDirty,
+    setMutationPending,
+  } from "../lib/unsaved";
 
   interface Props {
     onCreated: (fnode: string) => void;
@@ -17,11 +24,20 @@
   let titleInputEl = $state<HTMLInputElement | null>(null);
   let fileInputEl = $state<HTMLInputElement | null>(null);
   let alive = true;
+  const draftId = Symbol("new node draft");
+  const mutationId = Symbol("new node mutation");
 
-  onDestroy(() => { alive = false; });
+  onDestroy(() => {
+    alive = false;
+    removeDraft(draftId);
+  });
+
+  $effect(() => {
+    setDraftDirty(draftId, title.trim().length > 0 || file.trim().length > 0);
+  });
 
   function close() {
-    if (!saving) onClose();
+    if (!saving && confirmDiscardDrafts()) onClose();
   }
 
   $effect(() => {
@@ -66,17 +82,23 @@
       return;
     }
     saving = true;
+    let pending = true;
+    setMutationPending(mutationId, true);
     error = null;
     try {
       const params: { title: string; file?: string } = { title: title.trim() };
       if (file.trim().length > 0) params.file = file.trim();
       const node = await api.newNode(params);
+      setMutationPending(mutationId, false);
+      pending = false;
       if (!alive) return;
+      removeDraft(draftId);
       onCreated(node.fnode);
       onClose();
     } catch (e) {
       if (alive) error = errMsg(e);
     } finally {
+      if (pending) setMutationPending(mutationId, false);
       if (alive) saving = false;
     }
   }
@@ -87,7 +109,15 @@
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 <div class="backdrop" onclick={close} role="presentation">
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <div class="dialog" role="dialog" aria-label="new node" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+  <div
+    class="dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-label="new node"
+    tabindex="-1"
+    use:modal
+    onclick={(e) => e.stopPropagation()}
+  >
     <h2>new node</h2>
     <label class="field" class:active={step === "title"}>
       <span class="lbl">title</span>

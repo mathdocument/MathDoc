@@ -1,6 +1,18 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { navigate, appState, goBack, goForward, canGoBack, canGoForward, refreshFocused } from "./lib/state.svelte";
+  import {
+    navigate,
+    appState,
+    goBack,
+    goForward,
+    canGoBack,
+    canGoForward,
+    refreshFocused,
+    browserHistoryEntry,
+    commitFocusedHistory,
+    initialHistoryOptions,
+    type BrowserHistoryMode,
+  } from "./lib/state.svelte";
   import { api } from "./lib/api";
   import NodeColumn from "./components/NodeColumn.svelte";
   import EditorPane from "./components/EditorPane.svelte";
@@ -17,12 +29,17 @@
     unsavedDraftRevision,
   } from "./lib/unsaved";
 
-  let showSearch = $state(false);
-  let showAddDep = $state(false);
-  let showRmDep = $state(false);
-  let showNewNode = $state(false);
+  type Overlay =
+    | { kind: "none" }
+    | { kind: "search" }
+    | { kind: "add-dep"; target: string }
+    | { kind: "rm-dep"; target: string }
+    | { kind: "new-node"; target: string };
+
+  let overlay = $state<Overlay>({ kind: "none" });
   let initialLoad = $state(true);
   let initialError = $state<string | null>(null);
+  let refreshError = $state<string | null>(null);
 
   // Top-level view state: three-column layout vs. full-screen force graph.
   let view = $state<"columns" | "force">("columns");
@@ -47,8 +64,43 @@
       event.preventDefault();
       event.returnValue = "";
     };
+    let restoringHistory = false;
+    let popstateRequest = 0;
+    const onPopState = async (event: PopStateEvent) => {
+      const entry = browserHistoryEntry(event.state);
+      if (!entry) return;
+      if (restoringHistory) {
+        restoringHistory = false;
+        return;
+      }
+
+      const request = ++popstateRequest;
+      const previousIndex = appState.historyIdx;
+      const committed = view === "force"
+        ? await onForceSelect(entry.fnode, {
+            pushHistory: false,
+            historyIndex: entry.index,
+            browserHistory: "replace",
+            preserveOnFailure: true,
+          })
+        : await navigate(entry.fnode, {
+            pushHistory: false,
+            historyIndex: entry.index,
+            browserHistory: "replace",
+          });
+      if (request !== popstateRequest || committed) return;
+      const delta = previousIndex - entry.index;
+      if (delta !== 0) {
+        restoringHistory = true;
+        window.history.go(delta);
+      }
+    };
     window.addEventListener("beforeunload", onBeforeUnload);
-    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      window.removeEventListener("popstate", onPopState);
+    };
   });
 
   // Pick a default starting node on first mount: deepest root, else first.
@@ -68,21 +120,21 @@
         const ref = params.get("ref");
         if (ref) {
           const resolved = await api.resolve(ref);
-          await navigate(resolved.fnode);
+          await navigate(resolved.fnode, initialHistoryOptions(resolved.fnode));
           return;
         }
         const deepest = [...roots].sort((a, b) => b.topo_depth - a.topo_depth)[0]!;
-        await navigate(deepest.fnode);
+        await navigate(deepest.fnode, initialHistoryOptions(deepest.fnode));
       } catch (e) {
         initialError = e instanceof Error ? e.message : String(e);
       }
     })();
   });
 
-  async function refreshCurrent(skipUnsavedGuard = false) {
-    if (appState.load.kind !== "ready") return;
+  async function refreshCurrent(skipUnsavedGuard = false): Promise<boolean> {
+    if (appState.load.kind !== "ready") return true;
     const fnode = appState.load.node.fnode;
-    await navigate(fnode, {
+    return navigate(fnode, {
       pushHistory: false,
       skipTransition: true,
       skipUnsavedGuard,
@@ -93,9 +145,15 @@
     if (!confirmDiscardDrafts()) return;
     if (!await settlePendingMutations()) return;
     // Refresh both views so switching between them doesn't show stale data.
+    refreshError = null;
     graphRevision++;
-    void refreshForceNodeRaw(true);
-    void refreshCurrent(true);
+    const [forceOk, columnOk] = await Promise.all([
+      refreshForceNodeRaw(true),
+      refreshCurrent(true),
+    ]);
+    if (!forceOk || !columnOk) {
+      refreshError = "one or more refresh requests failed";
+    }
   }
 
   function refreshForceNode(node: NodeDetail) {
@@ -110,22 +168,26 @@
     refreshFocused(node);
   }
 
-  async function refreshForceNodeRaw(skipUnsavedGuard = false) {
-    if (!forceSelectedFnode) return;
-    if (!skipUnsavedGuard && !confirmDiscardDrafts()) return;
-    if (!await settlePendingMutations()) return;
-    if (!forceSelectedFnode) return;
+  async function refreshForceNodeRaw(skipUnsavedGuard = false): Promise<boolean> {
+    if (!forceSelectedFnode) return true;
+    if (!skipUnsavedGuard && !confirmDiscardDrafts()) return false;
+    if (!await settlePendingMutations()) return false;
+    if (!forceSelectedFnode) return true;
     const confirmedDraftRevision = unsavedDraftRevision();
     const targetFnode = forceSelectedFnode;
     const request = ++forceLoadRequest;
     try {
       const node = await api.node(targetFnode);
-      if (request !== forceLoadRequest || forceSelectedFnode !== targetFnode) return;
-      if (unsavedDraftRevision() !== confirmedDraftRevision) return;
+      if (request !== forceLoadRequest || forceSelectedFnode !== targetFnode) return false;
+      if (unsavedDraftRevision() !== confirmedDraftRevision) return false;
       forceEditorRevision++;
       forceNodeLoad = { kind: "ready", node };
-    } catch {
-      // ignore
+      return true;
+    } catch (e) {
+      if (request === forceLoadRequest && forceSelectedFnode === targetFnode) {
+        forceNodeLoad = { kind: "error", message: e instanceof Error ? e.message : String(e) };
+      }
+      return false;
     }
   }
 
@@ -155,6 +217,12 @@
       : (appState.load.kind === "ready" ? appState.load.node.depens : []),
   );
 
+  $effect(() => {
+    if ("target" in overlay && activeFnode !== overlay.target) {
+      overlay = { kind: "none" };
+    }
+  });
+
   function statusLine(): string {
     if (view === "force") {
       const s = forceNodeLoad;
@@ -172,30 +240,59 @@
     return "";
   }
 
-  async function onForceSelect(fnode: string | null, skipUnsavedGuard = false) {
-    if (!skipUnsavedGuard && !confirmDiscardDrafts()) return;
-    if (!await settlePendingMutations()) return;
+  async function onForceSelect(
+    fnode: string | null,
+    opts: {
+      skipUnsavedGuard?: boolean;
+      pushHistory?: boolean;
+      historyIndex?: number;
+      browserHistory?: BrowserHistoryMode;
+      preserveOnFailure?: boolean;
+    } = {},
+  ): Promise<boolean> {
+    if (!opts.skipUnsavedGuard && !confirmDiscardDrafts()) return false;
+    if (!await settlePendingMutations()) return false;
+    const previousFnode = forceSelectedFnode;
+    const previousLoad = forceNodeLoad;
     const request = ++forceLoadRequest;
     forceSelectedFnode = fnode;
     if (!fnode) {
       forceNodeLoad = { kind: "idle" };
-      return;
+      return true;
     }
     forceNodeLoad = { kind: "loading" };
     await tick();
     const confirmedDraftRevision = unsavedDraftRevision();
     try {
       const node = await api.node(fnode);
-      if (request !== forceLoadRequest || forceSelectedFnode !== fnode) return;
-      if (unsavedDraftRevision() !== confirmedDraftRevision) return;
+      if (request !== forceLoadRequest || forceSelectedFnode !== fnode) return false;
+      if (unsavedDraftRevision() !== confirmedDraftRevision) {
+        if (opts.preserveOnFailure) {
+          forceSelectedFnode = previousFnode;
+          forceNodeLoad = previousLoad;
+        }
+        return false;
+      }
       forceEditorRevision++;
       forceNodeLoad = { kind: "ready", node };
+      commitFocusedHistory(fnode, {
+        pushHistory: opts.pushHistory,
+        historyIndex: opts.historyIndex,
+        browserHistory: opts.browserHistory,
+      });
+      return true;
     } catch (e) {
-      if (request !== forceLoadRequest || forceSelectedFnode !== fnode) return;
-      forceNodeLoad = {
-        kind: "error",
-        message: e instanceof Error ? e.message : String(e),
-      };
+      if (request !== forceLoadRequest || forceSelectedFnode !== fnode) return false;
+      if (opts.preserveOnFailure) {
+        forceSelectedFnode = previousFnode;
+        forceNodeLoad = previousLoad;
+      } else {
+        forceNodeLoad = {
+          kind: "error",
+          message: e instanceof Error ? e.message : String(e),
+        };
+      }
+      return false;
     }
   }
 
@@ -209,7 +306,10 @@
       await tick();
       if (request !== viewRequest) return;
       if (currentFnode) {
-        await onForceSelect(currentFnode, true);
+        await onForceSelect(currentFnode, {
+          skipUnsavedGuard: true,
+          pushHistory: false,
+        });
       } else {
         forceSelectedFnode = null;
         forceLoadRequest++;
@@ -225,7 +325,11 @@
       forceNodeLoad = { kind: "idle" };
       await tick();
       if (target) {
-        await navigate(target, { skipTransition: true, skipUnsavedGuard: true });
+        await navigate(target, {
+          pushHistory: false,
+          skipTransition: true,
+          skipUnsavedGuard: true,
+        });
       }
       if (request !== viewRequest) return;
       view = "columns";
@@ -233,7 +337,7 @@
   }
 </script>
 
-<div class="app">
+<div class="app" inert={overlay.kind !== "none"}>
   <header class="toolbar">
     <span class="brand">mdc</span>
     <button
@@ -248,24 +352,24 @@
       disabled={!canGoForward()}
       title="forward"
     >›</button>
-    <button class="tool primary" onclick={() => (showSearch = true)} title="search">
+    <button class="tool primary" onclick={() => (overlay = { kind: "search" })} title="search">
       search
     </button>
     <button
       class="tool"
-      onclick={() => (showAddDep = true)}
+      onclick={() => { if (activeFnode) overlay = { kind: "add-dep", target: activeFnode }; }}
       disabled={!activeReady}
       title="add dependency"
     >+ dep</button>
     <button
       class="tool"
-      onclick={() => (showRmDep = true)}
+      onclick={() => { if (activeFnode) overlay = { kind: "rm-dep", target: activeFnode }; }}
       disabled={!activeReady || activeDepens.length === 0}
       title="remove dependency"
     >− dep</button>
     <button
       class="tool"
-      onclick={() => (showNewNode = true)}
+      onclick={() => { if (activeFnode) overlay = { kind: "new-node", target: activeFnode }; }}
       disabled={!activeReady}
       title="create node"
     >+node</button>
@@ -283,11 +387,29 @@
     <span class="spacer"></span>
     <span class="status">{statusLine()}</span>
   </header>
+  {#if appState.navigationError || refreshError}
+    <div class="app-error" role="alert">
+      <span>{appState.navigationError ?? refreshError}</span>
+      <button onclick={() => {
+        if (appState.failedNavigationFnode) {
+          const target = appState.failedNavigationFnode;
+          void navigate(target, { pushHistory: appState.load.kind !== "ready" });
+        } else {
+          void refreshView();
+        }
+      }}>retry</button>
+    </div>
+  {/if}
 
   <!-- Force graph view: always mounted, hidden via CSS when in columns mode. -->
   <main class="force-layout" class:hidden={view !== "force"}>
     <div class="force-canvas-wrap" class:full={!forceSelectedFnode}>
-        <ForceGraph onSelect={onForceSelect} selectedFnode={forceSelectedFnode} revision={graphRevision} />
+        <ForceGraph
+          active={view === "force"}
+          onSelect={onForceSelect}
+          selectedFnode={forceSelectedFnode}
+          revision={graphRevision}
+        />
     </div>
     {#if view === "force" && forceSelectedFnode}
       <div class="force-editor-wrap">
@@ -330,41 +452,45 @@
   {/if}
 </div>
 
-{#if showSearch}
+{#if overlay.kind === "search"}
   <SearchOverlay
     onPick={(fnode) => {
-      showSearch = false;
+      overlay = { kind: "none" };
       if (view === "force") {
         void onForceSelect(fnode);
       } else {
         void navigate(fnode, { direction: "neutral" });
       }
     }}
-    onClose={() => (showSearch = false)}
+    onClose={() => (overlay = { kind: "none" })}
   />
 {/if}
 
-{#if showAddDep && activeFnode}
-  <AddDepOverlay
-    fnode={activeFnode}
-    existingDepFnodes={activeDepens}
-    onAdded={() => afterDepMutation()}
-    onClose={() => (showAddDep = false)}
-  />
+{#if overlay.kind === "add-dep"}
+  {#key overlay.target}
+    <AddDepOverlay
+      targetFnode={overlay.target}
+      existingDepFnodes={activeDepens}
+      onAdded={() => afterDepMutation()}
+      onClose={() => (overlay = { kind: "none" })}
+    />
+  {/key}
 {/if}
 
-{#if showRmDep && activeFnode}
-  <RmDepOverlay
-    fnode={activeFnode}
-    onRemoved={() => afterDepMutation()}
-    onClose={() => (showRmDep = false)}
-  />
+{#if overlay.kind === "rm-dep"}
+  {#key overlay.target}
+    <RmDepOverlay
+      targetFnode={overlay.target}
+      onRemoved={() => afterDepMutation()}
+      onClose={() => (overlay = { kind: "none" })}
+    />
+  {/key}
 {/if}
 
-{#if showNewNode && activeReady}
+{#if overlay.kind === "new-node" && activeReady}
   <NewNodeOverlay
     onCreated={(fnode) => { graphRevision++; void navigate(fnode); }}
-    onClose={() => (showNewNode = false)}
+    onClose={() => (overlay = { kind: "none" })}
   />
 {/if}
 
@@ -453,6 +579,23 @@
     font-family: var(--mdc-mono);
     font-size: 0.78rem;
     color: var(--mdc-dim);
+  }
+  .app-error {
+    display: flex;
+    justify-content: center;
+    gap: 0.7rem;
+    padding: 0.35rem 0.6rem;
+    background: rgba(247, 118, 142, 0.14);
+    color: var(--mdc-error);
+    font-family: var(--mdc-mono);
+    font-size: 0.78rem;
+  }
+  .app-error button {
+    color: inherit;
+    background: transparent;
+    border: 1px solid currentColor;
+    border-radius: 3px;
+    cursor: pointer;
   }
   .layout {
     flex: 1;

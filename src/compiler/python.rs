@@ -21,8 +21,10 @@ impl SrcCompiler for CompilerPython {
             Err(e) => return CompilerRes::err_code(e.to_string(), 127),
         };
         let src = source_path(&req.mdcroot, "python");
-        let src_str = src.to_string_lossy();
-        match run_process(&[&python, &src_str], "python", timeout_sec, None) {
+        let work_dir = src
+            .parent()
+            .expect("compiler source has a parent directory");
+        match run_process(&python, [&src], "python", timeout_sec, Some(work_dir)) {
             Ok((rtcode, stdout, stderr)) => CompilerRes {
                 result: rtcode == 0,
                 stdout,

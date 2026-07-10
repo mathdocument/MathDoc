@@ -30,8 +30,8 @@ impl SrcCompiler for CompilerLatex {
         let pdf_path = tex_dir.join("MdcWork.pdf");
 
         match run_process(
-            &[
-                &latexmk,
+            &latexmk,
+            [
                 "-pdf",
                 "-xelatex",
                 "-interaction=nonstopmode",

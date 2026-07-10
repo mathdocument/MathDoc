@@ -740,19 +740,9 @@ pub async fn node_new(
                 &state.mdcroot.join("."),
                 title,
             );
-            let target_path = if file_path == "." {
-                state.mdcroot.join(format!("{}.mdoc", &new_node.fnode))
-            } else {
-                let p = std::path::Path::new(file_path);
-                let joined = state.mdcroot.join(p);
-                let stem = joined
-                    .file_name()
-                    .ok_or_else(|| anyhow::anyhow!("invalid file path"))?
-                    .to_string_lossy()
-                    .into_owned();
-                joined.with_file_name(format!("{stem}.mdoc"))
-            };
-            new_node.path = target_path;
+            new_node.path =
+                crate::depgraph::resolve_new_node_path(&state.mdcroot, file_path, &new_node.fnode)
+                    .map_err(ApiError::rejected)?;
             graph
                 .create_and_add_dependency(new_node)
                 .map_err(ApiError::rejected)?;

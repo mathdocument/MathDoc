@@ -403,10 +403,13 @@ impl IndCache {
         raw_ref: &str,
         cwd: &Path,
     ) -> Result<Option<(PathBuf, String)>> {
-        if !looks_like_path_ref(raw_ref) {
+        let mut raw_path = PathBuf::from(raw_ref);
+        if !looks_like_path_ref(raw_ref) && raw_path.extension().is_some() {
             return Ok(None);
         }
-        let raw_path = PathBuf::from(raw_ref);
+        if raw_path.extension().is_none() {
+            raw_path.set_extension("mdoc");
+        }
         let candidates: Vec<PathBuf> = if raw_path.is_absolute() {
             vec![raw_path]
         } else {

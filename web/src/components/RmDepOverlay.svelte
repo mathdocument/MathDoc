@@ -1,15 +1,18 @@
 <script lang="ts">
+  import { onDestroy, onMount } from "svelte";
   import { api } from "../lib/api";
   import { errMsg } from "../lib/format";
   import type { NodeInfo } from "../lib/types";
   import { shortFnode } from "../lib/format";
+  import { modal } from "../lib/modal";
+  import { setMutationPending } from "../lib/unsaved";
 
   interface Props {
-    fnode: string;
+    targetFnode: string;
     onRemoved: () => void;
     onClose: () => void;
   }
-  let { fnode, onRemoved, onClose }: Props = $props();
+  let { targetFnode, onRemoved, onClose }: Props = $props();
 
   let children = $state<NodeInfo[]>([]);
   let selected = $state<boolean[]>([]);
@@ -17,29 +20,43 @@
   let saving = $state(false);
   let loading = $state(true);
   let error: string | null = $state(null);
+  let loadRequest = 0;
+  let alive = true;
+  const mutationId = Symbol("remove dependency mutation");
 
-  // Fetch children on mount so the overlay works in any view.
-  $effect(() => {
-    void fnode;
+  onDestroy(() => {
+    alive = false;
+    loadRequest++;
+  });
+
+  onMount(() => {
+    const request = ++loadRequest;
     loading = true;
+    error = null;
     children = [];
     selected = [];
     cursor = 0;
-    api.children(fnode).then((items) => {
+    api.children(targetFnode).then((items) => {
+      if (!alive || request !== loadRequest) return;
       children = items;
       selected = items.map(() => false);
       cursor = 0;
       loading = false;
     }).catch((e) => {
+      if (!alive || request !== loadRequest) return;
       error = errMsg(e);
       loading = false;
     });
   });
 
+  function close() {
+    if (!saving) onClose();
+  }
+
   function onKey(e: KeyboardEvent) {
     if (e.key === "Escape") {
       e.preventDefault();
-      onClose();
+      close();
       return;
     }
     if (loading || saving) return;
@@ -63,19 +80,25 @@
       .filter((_, i) => selected[i])
       .map((c) => c.fnode);
     if (toRemove.length === 0 || saving) {
-      onClose();
+      close();
       return;
     }
     saving = true;
+    let pending = true;
+    setMutationPending(mutationId, true);
     error = null;
     try {
-      await api.rmDeps(fnode, toRemove);
+      await api.rmDeps(targetFnode, toRemove);
+      setMutationPending(mutationId, false);
+      pending = false;
+      if (!alive) return;
       onRemoved();
       onClose();
     } catch (e) {
-      error = errMsg(e);
+      if (alive) error = errMsg(e);
     } finally {
-      saving = false;
+      if (pending) setMutationPending(mutationId, false);
+      if (alive) saving = false;
     }
   }
 </script>
@@ -83,9 +106,17 @@
 <svelte:window onkeydown={onKey} />
 
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-<div class="backdrop" onclick={onClose} role="presentation">
+<div class="backdrop" onclick={close} role="presentation">
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <div class="dialog" role="dialog" aria-label="remove dependencies" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+  <div
+    class="dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-label="remove dependencies"
+    tabindex="-1"
+    use:modal
+    onclick={(e) => e.stopPropagation()}
+  >
     <h2>remove dependencies</h2>
     {#if loading}
       <div class="empty">loading…</div>

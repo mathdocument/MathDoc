@@ -30,6 +30,8 @@ export const appState = $state({
   editorRevision: 0,
   /** fnode of the previously focused node — highlighted in columns. */
   lastVisitedFnode: null as string | null,
+  navigationError: null as string | null,
+  failedNavigationFnode: null as string | null,
 });
 
 /** True if the current browser supports the View Transitions API. */
@@ -75,6 +77,87 @@ async function withViewTransition(
 
 let navigationRequest = 0;
 
+export type BrowserHistoryMode = "push" | "replace" | "none";
+
+export interface BrowserHistoryEntry {
+  mdcHistory: 1;
+  fnode: string;
+  index: number;
+  entries: string[];
+}
+
+export function browserHistoryEntry(value: unknown): BrowserHistoryEntry | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<BrowserHistoryEntry>;
+  if (
+    candidate.mdcHistory !== 1 ||
+    typeof candidate.fnode !== "string" ||
+    !Number.isInteger(candidate.index) ||
+    !Array.isArray(candidate.entries) ||
+    !candidate.entries.every((entry) => typeof entry === "string") ||
+    candidate.index! < 0 ||
+    candidate.index! >= candidate.entries.length ||
+    candidate.entries[candidate.index!] !== candidate.fnode
+  ) {
+    return null;
+  }
+  return candidate as BrowserHistoryEntry;
+}
+
+export function initialHistoryOptions(fnode: string): {
+  pushHistory: boolean;
+  historyIndex?: number;
+  browserHistory: BrowserHistoryMode;
+} {
+  const entry = browserHistoryEntry(window.history.state);
+  if (entry?.fnode === fnode) {
+    appState.history = [...entry.entries];
+    appState.historyIdx = entry.index;
+    return {
+      pushHistory: false,
+      historyIndex: entry.index,
+      browserHistory: "replace",
+    };
+  }
+  return { pushHistory: true, browserHistory: "replace" };
+}
+
+export function commitFocusedHistory(
+  fnode: string,
+  opts: {
+    pushHistory?: boolean;
+    historyIndex?: number;
+    browserHistory?: BrowserHistoryMode;
+  } = {},
+): void {
+  const push = opts.pushHistory ?? true;
+  if (push) {
+    appState.history = [
+      ...appState.history.slice(0, appState.historyIdx + 1),
+      fnode,
+    ];
+    appState.historyIdx = appState.history.length - 1;
+  } else if (opts.historyIndex !== undefined) {
+    appState.historyIdx = opts.historyIndex;
+  }
+
+  const mode = opts.browserHistory ?? (push ? "push" : "none");
+  if (mode === "none") return;
+  const url = new URL(window.location.href);
+  url.hash = new URLSearchParams({ ref: fnode }).toString();
+  const state: BrowserHistoryEntry = {
+    mdcHistory: 1,
+    fnode,
+    index: appState.historyIdx,
+    entries: [...appState.history],
+  };
+  if (mode === "push") {
+    window.history.pushState(state, "", url);
+  } else {
+    window.history.replaceState(state, "", url);
+  }
+}
+
 /** Navigate to a node by fnode. Updates the center, both columns, and history. */
 export async function navigate(
   fnode: string,
@@ -84,6 +167,7 @@ export async function navigate(
     skipTransition?: boolean;
     skipUnsavedGuard?: boolean;
     historyIndex?: number;
+    browserHistory?: BrowserHistoryMode;
   } = {},
 ): Promise<boolean> {
   if (!opts.skipUnsavedGuard && !confirmDiscardDrafts()) return false;
@@ -115,16 +199,14 @@ export async function navigate(
       appState.load = { kind: "ready", node };
       appState.referrers = { items: refs, selected: -1 };
       appState.children = { items: kids, selected: -1 };
-      if (push) {
-        appState.history = [
-          ...appState.history.slice(0, appState.historyIdx + 1),
-          fnode,
-        ];
-        appState.historyIdx = appState.history.length - 1;
-      } else if (opts.historyIndex !== undefined) {
-        appState.historyIdx = opts.historyIndex;
-      }
+      commitFocusedHistory(fnode, {
+        pushHistory: push,
+        historyIndex: opts.historyIndex,
+        browserHistory: opts.browserHistory,
+      });
       committed = true;
+      appState.navigationError = null;
+      appState.failedNavigationFnode = null;
     };
 
     if (skipTransition) {
@@ -135,12 +217,14 @@ export async function navigate(
     return committed;
   } catch (e) {
     if (request !== navigationRequest) return false;
+    appState.navigationError = e instanceof Error ? e.message : String(e);
+    appState.failedNavigationFnode = fnode;
     // Keep an existing editor mounted on navigation failure; replacing it with
     // an error page could discard drafts created while the request was pending.
     if (appState.load.kind === "ready") return false;
     appState.load = {
       kind: "error",
-      message: e instanceof Error ? e.message : String(e),
+      message: appState.navigationError,
     };
     return false;
   }
@@ -162,16 +246,12 @@ export function canGoForward(): boolean {
   return appState.historyIdx < appState.history.length - 1;
 }
 
-export async function goBack() {
+export function goBack() {
   if (!canGoBack()) return;
-  const historyIndex = appState.historyIdx - 1;
-  const target = appState.history[historyIndex]!;
-  await navigate(target, { pushHistory: false, historyIndex });
+  window.history.back();
 }
 
-export async function goForward() {
+export function goForward() {
   if (!canGoForward()) return;
-  const historyIndex = appState.historyIdx + 1;
-  const target = appState.history[historyIndex]!;
-  await navigate(target, { pushHistory: false, historyIndex });
+  window.history.forward();
 }

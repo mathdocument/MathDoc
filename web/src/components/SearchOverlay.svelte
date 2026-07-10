@@ -2,6 +2,7 @@
   import { api } from "../lib/api";
   import type { NodeInfo } from "../lib/types";
   import { shortFnode } from "../lib/format";
+  import { modal } from "../lib/modal";
 
   interface Props {
     onPick: (fnode: string) => void;
@@ -15,6 +16,23 @@
   let loading = $state(false);
   let inputEl = $state<HTMLInputElement | null>(null);
   let searchRequest = 0;
+
+  function firstSelectable(items: NodeInfo[]): number {
+    return items.findIndex((item) => !item.broken);
+  }
+
+  function moveSelection(direction: -1 | 1) {
+    for (
+      let index = selected + direction;
+      index >= 0 && index < results.length;
+      index += direction
+    ) {
+      if (!results[index]!.broken) {
+        selected = index;
+        return;
+      }
+    }
+  }
 
   $effect(() => {
     const q = query;
@@ -33,7 +51,7 @@
         const fresh = await api.search(q, 50);
         if (request !== searchRequest) return;
         results = fresh;
-        selected = 0;
+        selected = firstSelectable(fresh);
       } catch {
         if (request !== searchRequest) return;
         results = [];
@@ -53,7 +71,7 @@
 
   function submit() {
     const node = results[selected];
-    if (node) {
+    if (node && !node.broken) {
       onPick(node.fnode);
     }
   }
@@ -70,11 +88,11 @@
         break;
       case "ArrowDown":
         e.preventDefault();
-        if (selected + 1 < results.length) selected += 1;
+        moveSelection(1);
         break;
       case "ArrowUp":
         e.preventDefault();
-        selected = Math.max(0, selected - 1);
+        moveSelection(-1);
         break;
     }
   }
@@ -92,8 +110,10 @@
   <div
     class="dialog"
     role="dialog"
+    aria-modal="true"
     aria-label="search"
     tabindex="-1"
+    use:modal
     onclick={(e) => e.stopPropagation()}
   >
     <input

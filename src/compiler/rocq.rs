@@ -32,7 +32,8 @@ impl SrcCompiler for CompilerRocq {
         }
 
         match run_process(
-            &[&rocq, "compile", SOURCE_FILE],
+            &rocq,
+            ["compile", SOURCE_FILE],
             &format!("rocq compile {SOURCE_FILE}"),
             timeout_sec,
             Some(&ws_root),
@@ -52,8 +53,52 @@ impl SrcCompiler for CompilerRocq {
 fn ensure_workspace(root: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(root)?;
     let project_path = root.join("_CoqProject");
-    if !project_path.is_file() {
-        std::fs::write(&project_path, "")?;
+    let snapshot = crate::safe_file::FileSnapshot::capture(&project_path)?;
+    if matches!(snapshot, crate::safe_file::FileSnapshot::Missing) {
+        crate::safe_file::atomic_replace(&project_path, &snapshot, b"")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_dangling_coqproject_symlink_without_creating_target() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = workspace.path().join("rocq");
+        std::fs::create_dir(&root).unwrap();
+        let target = outside.path().join("created-outside");
+        symlink(&target, root.join("_CoqProject")).unwrap();
+
+        let error = ensure_workspace(&root).unwrap_err();
+        assert!(error.to_string().contains("symlink"));
+        assert!(!target.exists());
+        assert!(std::fs::symlink_metadata(root.join("_CoqProject"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_coqproject_symlink_to_existing_file() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(outside.path(), "outside").unwrap();
+        let root = workspace.path().join("rocq");
+        std::fs::create_dir(&root).unwrap();
+        symlink(outside.path(), root.join("_CoqProject")).unwrap();
+
+        let error = ensure_workspace(&root).unwrap_err();
+        assert!(error.to_string().contains("symlink"));
+        assert_eq!(std::fs::read_to_string(outside.path()).unwrap(), "outside");
+    }
 }
