@@ -193,6 +193,12 @@
     else void refreshCurrent();
   }
 
+  function afterNodeCreated(fnode: string) {
+    graphRevision++;
+    if (view === "force") void onForceSelect(fnode);
+    else void navigate(fnode);
+  }
+
   // The fnode that toolbar actions operate on, regardless of view.
   let activeFnode = $derived(
     view === "force"
@@ -485,7 +491,7 @@
 
 {#if overlay.kind === "new-node" && activeReady}
   <NewNodeOverlay
-    onCreated={(fnode) => { graphRevision++; void navigate(fnode); }}
+    onCreated={afterNodeCreated}
     onClose={() => (overlay = { kind: "none" })}
   />
 {/if}

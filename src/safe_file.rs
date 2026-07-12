@@ -19,7 +19,7 @@ impl FileConflict {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) enum FileSnapshot {
     Missing,
     File {
@@ -29,7 +29,7 @@ pub(crate) enum FileSnapshot {
     },
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct PreservedMetadata {
     permissions: std::fs::Permissions,
     #[cfg(unix)]
@@ -147,7 +147,7 @@ impl PreservedMetadata {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FileIdentity {
     #[cfg(unix)]
     device: u64,

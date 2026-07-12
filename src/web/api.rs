@@ -784,8 +784,7 @@ mod tests {
 
             // Deterministic failpoint: another writer commits after our parse but
             // before replacement.
-            let mut external =
-                MdocNode::load_bytes(&state.mdcroot, &path, snapshot.content().unwrap()).unwrap();
+            let mut external = MdocNode::load(&state.mdcroot, &path).unwrap();
             external.title = format!("External edit during {operation}");
             external.save().unwrap();
             let external_bytes = std::fs::read(&path).unwrap();

@@ -269,7 +269,63 @@ fn test_save_new_never_replaces_an_existing_file() {
 
 #[cfg(unix)]
 #[test]
-fn test_save_replaces_final_symlink_without_following_it() {
+fn test_save_rejects_symlinked_ancestor_outside_workspace() {
+    use std::os::unix::fs::symlink;
+
+    let workspace = tempfile::TempDir::new().unwrap();
+    let outside = tempfile::TempDir::new().unwrap();
+    let alias = workspace.path().join("alias");
+    symlink(outside.path(), &alias).unwrap();
+    let path = alias.join("escaped.mdoc");
+    let node = MdocNode::new_at_path(workspace.path(), &path, "Escaped");
+
+    node.save_new().unwrap_err();
+    assert!(!outside.path().join("escaped.mdoc").exists());
+}
+
+#[test]
+fn test_save_enforces_workspace_node_path_invariants() {
+    let workspace = tempfile::TempDir::new().unwrap();
+    fs::create_dir(workspace.path().join(".mdc")).unwrap();
+    let outside = tempfile::TempDir::new().unwrap();
+    let nested = workspace.path().join("nested");
+    fs::create_dir_all(nested.join(".mdc")).unwrap();
+
+    for path in [
+        outside.path().join("outside.mdoc"),
+        workspace.path().join(".mdc/control.mdoc"),
+        nested.join("nested.mdoc"),
+        workspace.path().join("wrong.txt"),
+    ] {
+        let node = MdocNode::new_at_path(workspace.path(), &path, "Invalid Path");
+        assert!(node.save_new().is_err(), "accepted {}", path.display());
+        assert!(!path.exists());
+    }
+}
+
+#[test]
+fn test_stale_save_preserves_newer_node_changes() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("conflict.mdoc");
+    let node = MdocNode::new_at_path(dir.path(), &path, "Original");
+    node.save().unwrap();
+
+    let mut first = MdocNode::load(dir.path(), &path).unwrap();
+    let mut stale = MdocNode::load(dir.path(), &path).unwrap();
+    first.title = "Newer title".to_string();
+    first.save().unwrap();
+    stale.add_dependency("stale-dependency");
+
+    let error = stale.save().unwrap_err().to_string();
+    assert!(error.contains("changed before it could be replaced"));
+    let saved = MdocNode::load(dir.path(), &path).unwrap();
+    assert_eq!(saved.title, "Newer title");
+    assert!(saved.depens.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_save_rejects_final_symlink_without_following_it() {
     use std::os::unix::fs::symlink;
 
     let dir = tempfile::TempDir::new().unwrap();
@@ -280,16 +336,12 @@ fn test_save_replaces_final_symlink_without_following_it() {
     symlink(&outside_path, &path).unwrap();
     let node = MdocNode::new_at_path(dir.path(), &path, "Safe Replacement");
 
-    node.save().unwrap();
+    assert!(node.save().is_err());
     assert_eq!(fs::read_to_string(&outside_path).unwrap(), "outside victim");
-    assert!(!fs::symlink_metadata(&path)
+    assert!(fs::symlink_metadata(&path)
         .unwrap()
         .file_type()
         .is_symlink());
-    assert_eq!(
-        MdocNode::load(dir.path(), &path).unwrap().title,
-        "Safe Replacement"
-    );
 }
 
 #[cfg(unix)]

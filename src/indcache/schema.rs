@@ -136,7 +136,7 @@ pub fn open_db(path: &Path) -> Result<(Connection, bool)> {
         Ok(meta) if !meta.is_file() => {
             bail!("index database is not a regular file: {}", path.display())
         }
-        Ok(_) => {}
+        Ok(meta) => reject_multiply_linked_file(&path, &meta)?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error).with_context(|| format!("inspecting {}", path.display())),
     }
@@ -149,6 +149,46 @@ pub fn open_db(path: &Path) -> Result<(Connection, bool)> {
             result => return result,
         }
     }
+}
+
+#[cfg(unix)]
+fn reject_multiply_linked_file(path: &Path, meta: &std::fs::Metadata) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    if meta.nlink() > 1 {
+        bail!(
+            "refusing to open multiply linked index database {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn reject_multiply_linked_file(path: &Path, meta: &std::fs::Metadata) -> Result<()> {
+    use std::os::windows::fs::MetadataExt;
+
+    let links = meta.number_of_links().ok_or_else(|| {
+        anyhow::anyhow!(
+            "could not determine link count for index database {}",
+            path.display()
+        )
+    })?;
+    if links > 1 {
+        bail!(
+            "refusing to open multiply linked index database {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn reject_multiply_linked_file(path: &Path, _meta: &std::fs::Metadata) -> Result<()> {
+    bail!(
+        "cannot safely validate index database link count on this platform: {}",
+        path.display()
+    )
 }
 
 fn open_db_once(path: &Path) -> Result<(Connection, bool)> {
@@ -354,6 +394,21 @@ mod tests {
         let path = dir.path().join("index.db");
         open_db(&path).unwrap();
         open_db(&path).unwrap(); // second open should not fail
+    }
+
+    #[test]
+    fn hard_linked_database_is_rejected_without_mutating_alias() {
+        let dir = TempDir::new().unwrap();
+        let external = dir.path().join("external.db");
+        let index = dir.path().join("index.db");
+        std::fs::write(&external, b"external database bytes").unwrap();
+        std::fs::hard_link(&external, &index).unwrap();
+        let before = std::fs::read(&external).unwrap();
+
+        let error = open_db(&index).unwrap_err();
+
+        assert!(error.to_string().contains("multiply linked"));
+        assert_eq!(std::fs::read(&external).unwrap(), before);
     }
 
     #[test]

@@ -43,14 +43,36 @@ struct WorkHashes {
     file: String,
     preamble: String,
     postamble: String,
-    nodes: HashMap<String, String>,
+    nodes: HashMap<String, WorkNodeBaseline>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum WorkNodeBaseline {
+    Current { digest: String, present: bool },
+    Legacy(String),
+}
+
+impl WorkNodeBaseline {
+    fn digest(&self) -> &str {
+        match self {
+            Self::Current { digest, .. } | Self::Legacy(digest) => digest,
+        }
+    }
+
+    fn present(&self) -> Option<bool> {
+        match self {
+            Self::Current { present, .. } => Some(*present),
+            Self::Legacy(_) => None,
+        }
+    }
 }
 
 impl WorkHashes {
     fn digest(&self, content: &str) -> Result<String> {
         match (self.version, self.algorithm.as_deref()) {
             (1, None) => Ok(legacy_content_hash(content)),
-            (2, Some("sha256")) => Ok(stable_content_digest(content)),
+            (2 | 3, Some("sha256")) => Ok(stable_content_digest(content)),
             _ => anyhow::bail!(
                 "unsupported work hash sidecar version {} algorithm {}",
                 self.version,
@@ -90,6 +112,7 @@ fn parse_hashes(snapshot: &FileSnapshot) -> Result<Option<WorkHashes>> {
         nodes: legacy
             .into_iter()
             .filter(|(key, _)| !matches!(key.as_str(), "@file" | "@preamble" | "@postamble"))
+            .map(|(fnode, digest)| (fnode, WorkNodeBaseline::Legacy(digest)))
             .collect(),
     }))
 }
@@ -207,10 +230,16 @@ pub(super) fn cmd_work(source: String, depth: i32, compile: bool) -> Result<i32>
 
         let mut node_hashes = HashMap::new();
         for (fnode, node_content) in &work_file.nodes {
-            node_hashes.insert(fnode.clone(), stable_content_digest(node_content));
+            node_hashes.insert(
+                fnode.clone(),
+                WorkNodeBaseline::Current {
+                    digest: stable_content_digest(node_content),
+                    present: work_file.node_presence[fnode],
+                },
+            );
         }
         let hashes = WorkHashes {
-            version: 2,
+            version: 3,
             algorithm: Some("sha256".to_string()),
             file: stable_content_digest(&work_file.content),
             preamble: stable_content_digest(work_file.preamble.as_deref().unwrap_or("")),
@@ -532,7 +561,6 @@ pub(super) fn cmd_back() -> Result<i32> {
         // Resolve and load every target before writing any part of this work file.
         for (fnode, extracted_title, content) in &extracted.nodes {
             let hash = stored.digest(content)?;
-            new_node_hashes.insert(fnode.clone(), stable_content_digest(content));
 
             match cache.resolve_ref(fnode, None) {
                 Ok((full_fnode, title, abs_path)) => {
@@ -575,23 +603,33 @@ pub(super) fn cmd_back() -> Result<i32> {
                         validation_failed = true;
                     }
 
-                    let Some(baseline_hash) = stored.nodes.get(fnode) else {
+                    let Some(baseline) = stored.nodes.get(fnode) else {
                         eprintln!("  {YLW}warning:{RST} fnode {fnode} has no stored baseline");
                         validation_failed = true;
                         continue;
                     };
-                    let current_content = node
-                        .blocks
-                        .iter()
-                        .filter(|b| b.srctype == srctype)
-                        .map(|b| b.content.trim_end_matches('\n'))
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    let current_hash = stored.digest(&current_content)?;
-                    let work_changed = baseline_hash != &hash;
-                    let source_changed = baseline_hash != &current_hash;
+                    let Some(baseline_present) = baseline.present() else {
+                        eprintln!(
+                            "  {YLW}warning:{RST} stored baseline for fnode {fnode} does not record block presence"
+                        );
+                        eprintln!(
+                            "  {YLW}aborted:{RST} regenerate the work file before syncing it."
+                        );
+                        validation_failed = true;
+                        continue;
+                    };
+                    let current_block = node.blocks.iter().find(|block| block.srctype == srctype);
+                    let current_present = current_block.is_some();
+                    let current_content = current_block
+                        .map(|block| block.content.trim_end_matches('\n'))
+                        .unwrap_or("");
+                    let current_hash = stored.digest(current_content)?;
+                    let work_changed = baseline.digest() != hash;
+                    let source_changed =
+                        baseline.digest() != current_hash || baseline_present != current_present;
+                    let work_differs_from_source = hash != current_hash || !current_present;
 
-                    if work_changed && source_changed && hash != current_hash {
+                    if work_changed && source_changed && work_differs_from_source {
                         let short = short_fnode(fnode);
                         eprintln!(
                             "  {YLW}warning:{RST} conflict in fnode {short}: both the work section and .mdoc source changed"
@@ -615,7 +653,14 @@ pub(super) fn cmd_back() -> Result<i32> {
                         validation_failed = true;
                     }
 
-                    let needs_sync = work_changed && hash != current_hash;
+                    let needs_sync = work_changed && work_differs_from_source;
+                    new_node_hashes.insert(
+                        fnode.clone(),
+                        WorkNodeBaseline::Current {
+                            digest: stable_content_digest(content),
+                            present: if needs_sync { true } else { current_present },
+                        },
+                    );
                     if needs_sync {
                         let new_content = if content.is_empty() {
                             String::new()
@@ -666,7 +711,7 @@ pub(super) fn cmd_back() -> Result<i32> {
         }
 
         let new_hashes = WorkHashes {
-            version: 2,
+            version: 3,
             algorithm: Some("sha256".to_string()),
             file: stable_content_digest(file_content),
             preamble: stable_content_digest(pre),

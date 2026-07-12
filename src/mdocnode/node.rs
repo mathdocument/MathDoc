@@ -1,7 +1,6 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -12,7 +11,7 @@ pub struct SrcBlock {
     pub metadata: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MdocNode {
     pub mdcroot: PathBuf,
     pub path: PathBuf,
@@ -20,6 +19,27 @@ pub struct MdocNode {
     pub title: String,
     pub depens: Vec<String>,
     pub blocks: Vec<SrcBlock>,
+    #[serde(skip, default)]
+    original: std::sync::Mutex<Option<crate::safe_file::FileSnapshot>>,
+}
+
+impl Clone for MdocNode {
+    fn clone(&self) -> Self {
+        let original = self
+            .original
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        Self {
+            mdcroot: self.mdcroot.clone(),
+            path: self.path.clone(),
+            fnode: self.fnode.clone(),
+            title: self.title.clone(),
+            depens: self.depens.clone(),
+            blocks: self.blocks.clone(),
+            original: std::sync::Mutex::new(original),
+        }
+    }
 }
 
 impl MdocNode {
@@ -32,6 +52,7 @@ impl MdocNode {
             title: title.to_string(),
             depens: Vec::new(),
             blocks: Vec::new(),
+            original: std::sync::Mutex::new(None),
         }
     }
 
@@ -73,58 +94,29 @@ impl MdocNode {
 
     fn save_inner(&self, create_new: bool) -> Result<()> {
         let payload = self.render_payload()?;
+        let path = crate::indcache::resolve_workspace_path(&self.mdcroot, &self.path)?;
 
-        if let Some(parent) = self.path.parent() {
+        if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating parent dirs for {}", self.path.display()))?;
+                .with_context(|| format!("creating parent dirs for {}", path.display()))?;
         }
+        // Revalidate after directory creation so replacement never uses the raw,
+        // potentially relative path supplied by a caller.
+        let path = crate::indcache::resolve_workspace_path(&self.mdcroot, &path)?;
 
-        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
-        let existing_permissions = std::fs::symlink_metadata(&self.path)
-            .ok()
-            .filter(|meta| meta.file_type().is_file())
-            .map(|meta| meta.permissions());
-        if existing_permissions
-            .as_ref()
-            .is_some_and(std::fs::Permissions::readonly)
-        {
-            bail!("refusing to replace read-only file {}", self.path.display());
-        }
-        let mut builder = tempfile::Builder::new();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            // Match ordinary file creation: requested 0666 is restricted by umask.
-            builder.permissions(std::fs::Permissions::from_mode(0o666));
-        }
-        let mut temp = builder
-            .tempfile_in(parent)
-            .with_context(|| format!("creating temporary file in {}", parent.display()))?;
-        if let Some(permissions) = existing_permissions {
-            temp.as_file_mut().set_permissions(permissions)?;
-        }
-        temp.write_all(payload.as_bytes())
-            .with_context(|| format!("writing temporary file for {}", self.path.display()))?;
-        temp.as_file_mut()
-            .sync_all()
-            .with_context(|| format!("syncing temporary file for {}", self.path.display()))?;
-
-        if create_new {
-            temp.persist_noclobber(&self.path)
-                .map_err(|e| e.error)
-                .with_context(|| format!("creating new mdoc {}", self.path.display()))?;
+        let mut original = self
+            .original
+            .lock()
+            .map_err(|_| anyhow::anyhow!("node save state lock is poisoned"))?;
+        let expected = if create_new {
+            crate::safe_file::FileSnapshot::Missing
         } else {
-            temp.persist(&self.path)
-                .map_err(|e| e.error)
-                .with_context(|| format!("replacing {}", self.path.display()))?;
-        }
-
-        #[cfg(unix)]
-        {
-            // The payload itself is durable. Directory sync is best-effort because
-            // some filesystems reject it after the rename has already committed.
-            let _ = std::fs::File::open(parent).and_then(|dir| dir.sync_all());
-        }
+            original
+                .clone()
+                .unwrap_or(crate::safe_file::FileSnapshot::Missing)
+        };
+        crate::safe_file::atomic_replace(&path, &expected, payload.as_bytes())?;
+        *original = Some(crate::safe_file::FileSnapshot::capture(&path)?);
         Ok(())
     }
 
@@ -210,9 +202,15 @@ impl MdocNode {
     }
 
     fn load_inner(mdcroot: &Path, path: &Path, include_blocks: bool) -> Result<Self> {
-        let content =
-            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        Self::parse_content(mdcroot, path, &content, include_blocks)
+        let snapshot = crate::safe_file::FileSnapshot::capture(path)?;
+        let content = snapshot
+            .content()
+            .ok_or_else(|| anyhow::anyhow!("node file does not exist: {}", path.display()))?;
+        let content = std::str::from_utf8(content)
+            .with_context(|| format!("reading {} as UTF-8", path.display()))?;
+        let mut node = Self::parse_content(mdcroot, path, content, include_blocks)?;
+        node.original = std::sync::Mutex::new(Some(snapshot));
+        Ok(node)
     }
 
     fn parse_content(
@@ -386,6 +384,7 @@ impl MdocNode {
             title,
             depens,
             blocks,
+            original: std::sync::Mutex::new(None),
         })
     }
 }

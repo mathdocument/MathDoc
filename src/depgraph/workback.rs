@@ -50,6 +50,7 @@ pub struct WorkFile {
     pub postamble: Option<String>,
     /// (fnode_prefix, block_content) pairs in file order.
     pub nodes: Vec<(String, String)>,
+    pub(crate) node_presence: HashMap<String, bool>,
     pub(crate) input_snapshots: Vec<(PathBuf, crate::safe_file::FileSnapshot)>,
 }
 
@@ -129,6 +130,7 @@ pub fn merge_work_files(
 
         let mut out = String::new();
         let mut wf_nodes: Vec<(String, String)> = Vec::new();
+        let mut node_presence = HashMap::new();
 
         // Preamble — always emitted so users can fill it in.
         let preamble_path = crate::config::amble_path(&graph.mdcroot, srctype, "preamble");
@@ -156,13 +158,10 @@ pub fn merge_work_files(
             out.push('\n');
 
             // Find the block content for this srctype in this node.
-            let content: String = node
-                .blocks
-                .iter()
-                .filter(|b| b.srctype == *srctype)
-                .map(|b| b.content.trim_end_matches('\n'))
-                .collect::<Vec<_>>()
-                .join("\n");
+            let block = node.blocks.iter().find(|block| block.srctype == *srctype);
+            let content = block
+                .map(|block| block.content.trim_end_matches('\n').to_string())
+                .unwrap_or_default();
             validate_work_section_content(
                 &content,
                 srctype,
@@ -174,6 +173,7 @@ pub fn merge_work_files(
             }
 
             wf_nodes.push((node.fnode.clone(), content));
+            node_presence.insert(node.fnode.clone(), block.is_some());
 
             out.push_str(&marker_line(srctype, "end"));
             if i < ordered.len() - 1 {
@@ -217,6 +217,7 @@ pub fn merge_work_files(
                     Some(post_trimmed.to_string())
                 },
                 nodes: wf_nodes,
+                node_presence,
                 input_snapshots: node_snapshots
                     .iter()
                     .cloned()

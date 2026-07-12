@@ -989,7 +989,7 @@ mod mutation_conflict_tests {
             }
 
             // Deterministic failpoint between snapshot/parse and replacement.
-            let mut external = graph.state.nodes_by_fnode[&source_fnode].clone();
+            let mut external = MdocNode::load(&graph.mdcroot, &desired.path).unwrap();
             external.title = "External edit".to_string();
             external.save().unwrap();
             let external_bytes = std::fs::read(&external.path).unwrap();

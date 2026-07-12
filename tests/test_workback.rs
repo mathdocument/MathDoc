@@ -710,6 +710,42 @@ fn back_rejects_divergent_work_and_source_changes() {
 }
 
 #[test]
+fn back_conflicts_when_an_empty_source_block_was_deleted() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let src = make_node(root, "Empty", "latex", "");
+    src.save().unwrap();
+
+    let output = run_mdc(root, &["work", &src.fnode]);
+    assert!(output.status.success(), "{}", output_text(&output.stderr));
+    let work_path = root.join(".mdc/latex/MdcWork.tex");
+    let sidecar_path = root.join(".mdc/latex/.MdcWork.hash");
+    let sidecar_before = fs::read(&sidecar_path).unwrap();
+
+    let mut changed_source = MdocNode::load(root, &src.path).unwrap();
+    changed_source
+        .blocks
+        .retain(|block| block.srctype != "latex");
+    changed_source.save().unwrap();
+
+    let edited_work = fs::read_to_string(&work_path).unwrap().replace(
+        "% mdc: title: Empty\n% mdc: end",
+        "% mdc: title: Empty\nwork body\n% mdc: end",
+    );
+    fs::write(&work_path, edited_work).unwrap();
+
+    let output = run_mdc(root, &["back"]);
+    assert!(!output.status.success());
+    assert!(output_text(&output.stderr).contains("conflict in fnode"));
+    let current_source = MdocNode::load(root, &src.path).unwrap();
+    assert!(current_source
+        .blocks
+        .iter()
+        .all(|block| block.srctype != "latex"));
+    assert_eq!(fs::read(&sidecar_path).unwrap(), sidecar_before);
+}
+
+#[test]
 fn back_title_error_writes_nothing_for_work_file() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
@@ -830,7 +866,7 @@ fn work_accepts_and_migrates_legacy_hash_sidecar() {
     assert!(output.status.success(), "{}", output_text(&output.stderr));
     let sidecar: serde_json::Value =
         serde_json::from_slice(&fs::read(sidecar_path).unwrap()).unwrap();
-    assert_eq!(sidecar["version"], 2);
+    assert_eq!(sidecar["version"], 3);
     assert_eq!(sidecar["algorithm"], "sha256");
     assert_eq!(sidecar["file"].as_str().unwrap().len(), 64);
 }
