@@ -3,8 +3,6 @@ mod queries;
 mod refresh;
 mod schema;
 
-pub(crate) use refresh::resolve_workspace_path;
-
 use anyhow::{bail, Result};
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -134,7 +132,7 @@ impl IndCache {
 
     /// Upsert a single file path with incremental topo and weak component updates.
     pub fn upsert_path(&mut self, file_path: &Path) -> Result<()> {
-        let file_path = resolve_workspace_path(&self.root, file_path)?;
+        let file_path = crate::workspace::resolve_mdoc_path(&self.root, file_path)?;
         let tx = self.conn.transaction()?;
         let rel_path = crate::workspace::to_rel_path(&self.root, &file_path);
 
@@ -422,7 +420,7 @@ impl IndCache {
         };
         for candidate in candidates {
             if std::fs::symlink_metadata(&candidate).is_ok() {
-                let resolved = resolve_workspace_path(&self.root, &candidate)?;
+                let resolved = crate::workspace::resolve_mdoc_path(&self.root, &candidate)?;
                 let meta = std::fs::symlink_metadata(&resolved)?;
                 if meta.file_type().is_symlink() || !meta.is_file() {
                     bail!("mdoc path is not a regular file: {}", candidate.display());

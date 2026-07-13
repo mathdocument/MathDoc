@@ -94,7 +94,7 @@ fn init_workspace(mdcroot: &Path) -> Result<bool> {
 pub(super) fn cmd_new(title: String, file: String) -> Result<i32> {
     let mdcroot = require_mdcroot()?;
     let cache = open_cache(mdcroot.clone())?;
-    let (graph, _) = DepGraph::create_root(mdcroot, &file, &title, None, Some(cache))?;
+    let graph = DepGraph::create_root(mdcroot, &file, &title, None, Some(cache))?;
     let item = {
         let mut g = graph;
         g.root_item()?

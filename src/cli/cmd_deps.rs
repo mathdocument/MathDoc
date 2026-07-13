@@ -128,7 +128,7 @@ pub(super) fn cmd_dep_add(
     let mdcroot = require_mdcroot()?;
     let mut cache = open_cache(mdcroot.clone())?;
     cache.discover_workspace_changes()?;
-    let (mut graph, _) = DepGraph::from_ref(cache, &source, Some(&cwd()))?;
+    let mut graph = DepGraph::from_ref(cache, &source, Some(&cwd()))?;
     let source_item = graph.root_item()?;
 
     if let Some(target_ref) = target.as_deref() {
@@ -170,7 +170,7 @@ pub(super) fn cmd_dep_add(
     if q.is_empty() {
         return Err(anyhow::anyhow!("query cannot be empty"));
     }
-    let all_rows = graph.cache.search(&q)?;
+    let all_rows = graph.cache_mut().search(&q)?;
     let existing_fnodes: HashSet<String> = {
         let direct = graph.direct_dependency_fnodes().unwrap_or_default();
         std::iter::once(source_item.fnode.clone())
@@ -203,7 +203,7 @@ pub(super) fn cmd_dep_add(
             .with_prompt("Title")
             .default(q.clone())
             .interact_text()?;
-        let mdcroot = graph.mdcroot.clone();
+        let mdcroot = graph.mdcroot().to_path_buf();
         let mut new_node = MdocNode::new_at_path(&mdcroot, &mdcroot, &title);
         let short = short_fnode(&new_node.fnode);
         let file_input: String = dialoguer::Input::new()
@@ -220,7 +220,7 @@ pub(super) fn cmd_dep_add(
         let node_path = new_node.path.clone();
         let added = graph.create_and_add_dependency(new_node)?;
         if added {
-            let rel = crate::workspace::to_rel_path(&graph.mdcroot, &node_path);
+            let rel = crate::workspace::to_rel_path(graph.mdcroot(), &node_path);
             println!(
                 "created and added  {}",
                 fmt_item(&new_fnode, &title, &rel, false)
@@ -309,8 +309,8 @@ fn resolve_direct_dependency_target(
         _ => {}
     }
 
-    let mdcroot = graph.mdcroot.clone();
-    let target_item = resolve_existing_target(&mut graph.cache, &mdcroot, target_ref)?;
+    let mdcroot = graph.mdcroot().to_path_buf();
+    let target_item = resolve_existing_target(graph.cache_mut(), &mdcroot, target_ref)?;
     let canonical_matches: Vec<&String> = direct_fnodes
         .iter()
         .filter(|fnode| fnode.eq_ignore_ascii_case(&target_item.fnode))
@@ -333,7 +333,7 @@ pub(super) fn cmd_dep_rm(source: String, target: Option<String>) -> Result<i32> 
     let mdcroot = require_mdcroot()?;
     let mut cache = open_cache(mdcroot)?;
     cache.discover_workspace_changes()?;
-    let (mut graph, _) = DepGraph::from_ref(cache, &source, Some(&cwd()))?;
+    let mut graph = DepGraph::from_ref(cache, &source, Some(&cwd()))?;
     let source_item = graph.root_item()?;
     let dep_items = graph.direct_dependency_items()?;
     let direct_fnodes = graph.direct_dependency_fnodes()?;

@@ -66,11 +66,11 @@ pub fn merge_work_files(
         return Ok(HashMap::new());
     }
 
-    let root_fnode = graph.state.root_fnode.clone();
+    let root_fnode = graph.root_fnode().to_string();
     let mut node_snapshots = Vec::new();
     for node in &nodes {
         let snapshot = crate::workspace::FileSnapshot::capture(&node.path)?;
-        let current = MdocNode::load(&graph.mdcroot, &node.path)?;
+        let current = MdocNode::load(graph.mdcroot(), &node.path)?;
         if current.fnode != node.fnode
             || current.title != node.title
             || current.depens != node.depens
@@ -133,7 +133,7 @@ pub fn merge_work_files(
         let mut node_presence = HashMap::new();
 
         // Preamble — always emitted so users can fill it in.
-        let preamble_path = crate::config::amble_path(&graph.mdcroot, srctype, "preamble");
+        let preamble_path = crate::config::amble_path(graph.mdcroot(), srctype, "preamble");
         let preamble_snapshot = crate::workspace::FileSnapshot::capture(&preamble_path)?;
         let preamble = match preamble_snapshot.content() {
             Some(content) => std::str::from_utf8(content)?.to_string(),
@@ -184,7 +184,7 @@ pub fn merge_work_files(
         }
 
         // Postamble — always emitted so users can fill it in.
-        let postamble_path = crate::config::amble_path(&graph.mdcroot, srctype, "postamble");
+        let postamble_path = crate::config::amble_path(graph.mdcroot(), srctype, "postamble");
         let postamble_snapshot = crate::workspace::FileSnapshot::capture(&postamble_path)?;
         let postamble = match postamble_snapshot.content() {
             Some(content) => std::str::from_utf8(content)?.to_string(),

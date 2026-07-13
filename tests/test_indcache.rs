@@ -217,7 +217,7 @@ fn test_incremental_refresh_hashes_atomic_same_metadata_replacement() {
 }
 
 #[test]
-fn test_legacy_schema_is_migrated() {
+fn test_legacy_schema_is_rebuilt() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     let mdc_dir = root.join(".mdc");
@@ -276,7 +276,11 @@ fn test_legacy_schema_is_migrated() {
     cache.upsert_path(&root.join("legacy-copy.mdoc")).unwrap();
 
     let rows = cache.exact_fnode_rows("legacy-node").unwrap();
-    assert_eq!(rows.len(), 2, "the migrated fnode must not remain unique");
+    assert_eq!(
+        rows.len(),
+        2,
+        "the rebuilt fnode index must allow duplicates"
+    );
     assert!(cache.path_has_blocking_issue("legacy.mdoc").unwrap());
     assert!(cache.path_has_blocking_issue("legacy-copy.mdoc").unwrap());
 
@@ -290,7 +294,7 @@ fn test_legacy_schema_is_migrated() {
         )
         .map(|n| n > 0)
         .unwrap_or(false);
-    assert!(has_mtime_ns, "mtime_ns column should exist after migration");
+    assert!(has_mtime_ns, "mtime_ns column should exist after rebuild");
     let primary_key: String = conn
         .query_row(
             "SELECT name FROM pragma_table_info('mdocs') WHERE pk = 1",
@@ -787,7 +791,7 @@ fn test_in_degree_decrements_on_dep_remove() {
     }
 }
 
-// ── topo_depth migration / crash-safe backfill ────────────────────────────────
+// ── topo_depth rebuild / crash-safe backfill ──────────────────────────────────
 
 #[test]
 fn test_incremental_topo_depth_converges_across_short_and_long_paths() {
@@ -873,8 +877,8 @@ fn test_incremental_component_union_updates_every_member_size() {
 }
 
 #[test]
-fn test_migration_backfills_topo_depth() {
-    // Simulate upgrading from a pre-v6 database that has edges but no topo_depth column.
+fn test_old_schema_rebuilds_topo_depth() {
+    // Simulate upgrading from an old derived index.
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     setup(root);
@@ -903,7 +907,7 @@ fn test_migration_backfills_topo_depth() {
         .unwrap();
     }
 
-    // Re-open: migration detects needs_topo_backfill and backfills real depths.
+    // Re-open: schema rebuild and workspace bootstrap restore real depths.
     let cache2 = IndCache::open(root.to_path_buf()).unwrap();
     let depths = cache2.all_topo_depths().unwrap();
     assert_eq!(
@@ -959,7 +963,7 @@ fn test_crash_safe_topo_backfill() {
 }
 
 #[test]
-fn test_v9_migration_recomputes_stale_topo_depths() {
+fn test_old_schema_rebuild_recomputes_stale_topo_depths() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     setup(root);
@@ -1093,7 +1097,7 @@ fn test_upsert_path_removes_stale_entry_after_parent_directory_deletion() {
 }
 
 #[test]
-fn test_schema_migration_backfills_in_degree() {
+fn test_old_schema_rebuilds_in_degree() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     setup(root);
@@ -1117,7 +1121,7 @@ fn test_schema_migration_backfills_in_degree() {
             .unwrap();
     }
 
-    // Re-open triggers migration → backfills in_degree
+    // Re-open rebuilds the index from source files, including in_degree.
     let mut cache2 = IndCache::open(root.to_path_buf()).unwrap();
     let roots = cache2.global_root_items().unwrap();
 

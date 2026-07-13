@@ -94,7 +94,7 @@ impl MdocNode {
 
     fn save_inner(&self, create_new: bool) -> Result<()> {
         let payload = self.render_payload()?;
-        let path = crate::indcache::resolve_workspace_path(&self.mdcroot, &self.path)?;
+        let path = crate::workspace::resolve_mdoc_path(&self.mdcroot, &self.path)?;
 
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -102,7 +102,7 @@ impl MdocNode {
         }
         // Revalidate after directory creation so replacement never uses the raw,
         // potentially relative path supplied by a caller.
-        let path = crate::indcache::resolve_workspace_path(&self.mdcroot, &path)?;
+        let path = crate::workspace::resolve_mdoc_path(&self.mdcroot, &path)?;
 
         let mut original = self
             .original

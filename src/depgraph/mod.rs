@@ -1,16 +1,14 @@
-mod query;
 mod state;
 pub mod workback;
 
 use anyhow::{anyhow, bail, Context, Result};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
-use crate::core::{find_cycle, short_fnode, topo_dependencies_first, DependencyItem, GraphIssue};
+use crate::core::{find_cycle, short_fnode, topo_dependencies_first, DependencyItem};
 use crate::indcache::IndCache;
-use crate::mdocnode::{read_mdoc_head, MdocNode};
-use crate::workspace::{iter_mdoc_files, to_rel_path};
-use query::dependency_items_from_graph;
+use crate::mdocnode::MdocNode;
+use crate::workspace::to_rel_path;
 use state::{make_invalid_issue, GraphState};
 
 // ── DepGraph ──────────────────────────────────────────────────────────────────
@@ -18,9 +16,9 @@ use state::{make_invalid_issue, GraphState};
 /// In-memory dependency graph for a workspace rooted at `mdcroot`.
 /// Wraps an `IndCache` for path resolution and bootstrapping.
 pub struct DepGraph {
-    pub mdcroot: PathBuf,
-    pub cache: IndCache,
-    pub state: GraphState,
+    mdcroot: PathBuf,
+    cache: IndCache,
+    state: GraphState,
 }
 
 impl DepGraph {
@@ -30,9 +28,8 @@ impl DepGraph {
     pub fn new(mdcroot: PathBuf, root_fnode: &str) -> Result<Self> {
         let mut cache = IndCache::open(mdcroot).context("opening workspace index")?;
         cache.bootstrap_if_needed()?;
-        let (graph, _) = DepGraph::from_ref(cache, root_fnode, None)
-            .context("loading graph root from workspace index")?;
-        Ok(graph)
+        DepGraph::from_ref(cache, root_fnode, None)
+            .context("loading graph root from workspace index")
     }
 
     /// Create a fresh `.mdoc` file and return a DepGraph rooted at it.
@@ -44,7 +41,7 @@ impl DepGraph {
         title: &str,
         fnode: Option<&str>,
         cache: Option<IndCache>,
-    ) -> Result<(Self, String)> {
+    ) -> Result<Self> {
         let root = crate::workspace::validate_mdcroot(&mdcroot)?;
         let _mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&root)?;
         let mut node = MdocNode::new_at_path(&root, &root, title);
@@ -66,40 +63,23 @@ impl DepGraph {
             );
         }
 
-        let node_path = node.path.clone();
-        let rel_path = to_rel_path(&root, &node.path);
         let mut graph = DepGraph {
             mdcroot: root,
             cache,
             state: GraphState::default(),
         };
         graph.set_root_node(node.clone())?;
-        node.save_new()?;
-        if let Err(index_error) = graph.cache.upsert_path(&node_path) {
-            let cleanup_error = std::fs::remove_file(&node_path).err();
-            let _ = graph.cache.upsert_path(&node_path);
-            return match cleanup_error {
-                Some(cleanup_error) => Err(anyhow!(
-                    "{index_error}; additionally failed to remove {}: {cleanup_error}",
-                    node_path.display()
-                )),
-                None => Err(index_error),
-            };
-        }
-        Ok((graph, rel_path))
+        create_indexed_node(&mut graph.cache, &node)?;
+        Ok(graph)
     }
 
     /// Load an existing `.mdoc` via `ref` (fnode, path, or fnode prefix) and build a DepGraph.
-    pub fn from_ref(cache: IndCache, ref_str: &str, cwd: Option<&Path>) -> Result<(Self, String)> {
+    pub fn from_ref(cache: IndCache, ref_str: &str, cwd: Option<&Path>) -> Result<Self> {
         let _mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&cache.root)?;
         Self::from_ref_locked(cache, ref_str, cwd)
     }
 
-    fn from_ref_locked(
-        mut cache: IndCache,
-        ref_str: &str,
-        cwd: Option<&Path>,
-    ) -> Result<(Self, String)> {
+    fn from_ref_locked(mut cache: IndCache, ref_str: &str, cwd: Option<&Path>) -> Result<Self> {
         let base_cwd = cwd
             .map(|c| c.to_path_buf())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| cache.root.clone()));
@@ -119,7 +99,6 @@ impl DepGraph {
             );
         }
 
-        let rel_path = to_rel_path(&cache.root, &src_path);
         let mdcroot = cache.root.clone();
         let mut graph = DepGraph {
             mdcroot,
@@ -127,7 +106,7 @@ impl DepGraph {
             state: GraphState::default(),
         };
         graph.set_root_node(node)?;
-        Ok((graph, rel_path))
+        Ok(graph)
     }
 
     // ── Root management ───────────────────────────────────────────────────────
@@ -136,7 +115,26 @@ impl DepGraph {
         &self.state.root_fnode
     }
 
-    pub fn set_root_node(&mut self, node: MdocNode) -> Result<()> {
+    pub(crate) fn mdcroot(&self) -> &Path {
+        &self.mdcroot
+    }
+
+    pub(crate) fn cache_mut(&mut self) -> &mut IndCache {
+        &mut self.cache
+    }
+
+    pub(crate) fn into_cache(self) -> IndCache {
+        self.cache
+    }
+
+    pub(crate) fn root_node(&self) -> &MdocNode {
+        self.state
+            .nodes_by_fnode
+            .get(self.root_fnode())
+            .expect("constructed graph keeps its root loaded")
+    }
+
+    fn set_root_node(&mut self, node: MdocNode) -> Result<()> {
         if node
             .mdcroot
             .canonicalize()
@@ -162,37 +160,15 @@ impl DepGraph {
         Ok(())
     }
 
-    pub fn set_root_fnode(&mut self, fnode: &str) -> Result<()> {
-        let value = fnode.trim();
-        if value.is_empty() {
-            bail!("root fnode cannot be empty");
-        }
-        if !self.state.root_fnode.is_empty() && self.state.root_fnode != value {
-            bail!(
-                "root fnode mismatch: {} != {}",
-                self.state.root_fnode,
-                value
-            );
-        }
-        self.state.root_fnode = value.to_string();
-        Ok(())
-    }
-
     /// Ensure the root node is loaded and return its path.
     pub fn root_path(&mut self) -> Result<PathBuf> {
-        let root = self.bind_root(None, None)?;
+        let root = self.state.root_fnode.clone();
         self.ensure_node_loaded(&root)?;
         Ok(self.state.nodes_by_fnode[&root].path.clone())
     }
 
-    pub fn root_has_blocks(&mut self) -> Result<bool> {
-        let root = self.bind_root(None, None)?;
-        self.ensure_node_loaded(&root)?;
-        Ok(!self.state.nodes_by_fnode[&root].blocks.is_empty())
-    }
-
     pub fn root_item(&mut self) -> Result<DependencyItem> {
-        let root = self.bind_root(None, None)?;
+        let root = self.state.root_fnode.clone();
         if let Some(issue) = self.state.broken_issues.get(&root) {
             return Ok(DependencyItem {
                 depth: 0,
@@ -220,13 +196,6 @@ impl DepGraph {
         Ok(self.cache.issue_for_fnode(fnode)?.is_some())
     }
 
-    pub fn issue_for_fnode(&self, fnode: &str) -> Result<Option<GraphIssue>> {
-        if self.has_local_state(fnode) {
-            return Ok(self.state.broken_issues.get(fnode).cloned());
-        }
-        self.cache.issue_for_fnode(fnode)
-    }
-
     pub fn ref_item_for_fnode(&self, fnode: &str, depth: u32) -> Result<DependencyItem> {
         if self.state.nodes_by_fnode.contains_key(fnode)
             || self.state.broken_issues.contains_key(fnode)
@@ -239,14 +208,14 @@ impl DepGraph {
     // ── Dependency queries ────────────────────────────────────────────────────
 
     pub fn direct_dependency_fnodes(&mut self) -> Result<Vec<String>> {
-        let root = self.bind_root(None, None)?;
+        let root = self.state.root_fnode.clone();
         self.ensure_node_loaded(&root)?;
         let depens = self.state.nodes_by_fnode[&root].depens.clone();
         Ok(dedupe_keep_order(&depens))
     }
 
     pub fn direct_dependency_items(&mut self) -> Result<Vec<DependencyItem>> {
-        let root = self.bind_root(None, None)?;
+        let root = self.state.root_fnode.clone();
         self.ensure_node_loaded(&root)?;
         let depens = dedupe_keep_order(&self.state.nodes_by_fnode[&root].depens.clone());
 
@@ -265,31 +234,9 @@ impl DepGraph {
         Ok(items)
     }
 
-    pub fn dependency_items(&mut self, depth: i32) -> Result<Vec<DependencyItem>> {
-        let root = self.dependency_context(depth, None, None)?;
-        let mdcroot = self.mdcroot.clone();
-        Ok(dependency_items_from_graph(
-            &self.state,
-            &root,
-            &mdcroot,
-            false,
-        ))
-    }
-
-    pub fn leaf_dependency_items(&mut self) -> Result<Vec<DependencyItem>> {
-        let root = self.dependency_context(-1, None, None)?;
-        let mdcroot = self.mdcroot.clone();
-        Ok(dependency_items_from_graph(
-            &self.state,
-            &root,
-            &mdcroot,
-            true,
-        ))
-    }
-
     /// Topologically-ordered nodes (dependencies first), ready for block evaluation.
     pub fn ordered_nodes(&mut self, depth: i32) -> Result<Vec<MdocNode>> {
-        let root = self.dependency_context(depth, None, None)?;
+        let root = self.dependency_context(depth)?;
         let topo = topo_dependencies_first(&self.state.dep_graph, &root);
         Ok(topo
             .into_iter()
@@ -305,7 +252,7 @@ impl DepGraph {
         &mut self,
         dep_fnodes: Vec<String>,
     ) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
-        let root = self.bind_root(None, None)?;
+        let root = self.state.root_fnode.clone();
         let (_mutation_lock, snapshot) = self.lock_and_snapshot_root(&root)?;
         self.add_direct_dependencies_locked(&root, dep_fnodes, &snapshot)
     }
@@ -321,7 +268,7 @@ impl DepGraph {
             bail!("dependency reference cannot be empty");
         }
 
-        let root = self.bind_root(None, None)?;
+        let root = self.state.root_fnode.clone();
         let (_mutation_lock, snapshot) = self.lock_and_snapshot_root(&root)?;
         self.cache.discover_workspace_changes()?;
         let (_, _, target_path) = self.cache.resolve_ref(target_ref, Some(&self.mdcroot))?;
@@ -410,7 +357,7 @@ impl DepGraph {
 
     /// Remove `dep_fnodes` from the root node's direct dependencies. Returns removed fnodes.
     pub fn remove_direct_dependencies(&mut self, dep_fnodes: Vec<String>) -> Result<Vec<String>> {
-        let root = self.bind_root(None, None)?;
+        let root = self.state.root_fnode.clone();
         let (_mutation_lock, snapshot) = self.lock_and_snapshot_root(&root)?;
 
         let mut updated = self.state.nodes_by_fnode[&root].clone();
@@ -440,7 +387,7 @@ impl DepGraph {
     ///  - `new_node.depens` contains a fnode that can reach root in the current
     ///    index (root → new_node → declared_dep → … → root).
     pub fn create_and_add_dependency(&mut self, mut new_node: MdocNode) -> Result<bool> {
-        let root = self.bind_root(None, None)?;
+        let root = self.state.root_fnode.clone();
         let (_mutation_lock, snapshot) = self.lock_and_snapshot_root(&root)?;
 
         // Reject duplicate fnode before touching disk.
@@ -483,18 +430,7 @@ impl DepGraph {
             }
         }
 
-        new_node.save_new()?;
-        if let Err(index_error) = self.cache.upsert_path(&new_node.path) {
-            let cleanup_error = std::fs::remove_file(&new_node.path).err();
-            let _ = self.cache.upsert_path(&new_node.path);
-            return match cleanup_error {
-                Some(cleanup_error) => Err(anyhow!(
-                    "{index_error}; additionally failed to remove {}: {cleanup_error}",
-                    new_node.path.display()
-                )),
-                None => Err(index_error),
-            };
-        }
+        create_indexed_node(&mut self.cache, &new_node)?;
         let fnode = new_node.fnode.clone();
         let new_path = new_node.path.clone();
         self.state.nodes_by_fnode.insert(fnode.clone(), new_node);
@@ -569,97 +505,8 @@ impl DepGraph {
         updated: MdocNode,
         snapshot: &crate::workspace::FileSnapshot,
     ) -> Result<()> {
-        let payload = updated.render_payload()?;
-        let applied =
-            crate::workspace::atomic_replace(&updated.path, snapshot, payload.as_bytes())?;
-        if let Err(index_error) = self.cache.upsert_path(&updated.path) {
-            let rollback = applied
-                .rollback()
-                .and_then(|_| self.cache.upsert_path(&updated.path));
-            return match rollback {
-                Ok(()) => Err(index_error),
-                Err(rollback_error) => Err(anyhow!(
-                    "{index_error}; additionally failed to restore {}: {rollback_error}",
-                    updated.path.display()
-                )),
-            };
-        }
+        replace_indexed_node(&mut self.cache, &updated, snapshot)?;
         self.state.nodes_by_fnode.insert(root.to_string(), updated);
-        Ok(())
-    }
-
-    // ── Full workspace scan ───────────────────────────────────────────────────
-
-    /// Scan all `.mdoc` files in the workspace, loading them into state.
-    pub fn scan_all(&mut self) -> Result<()> {
-        self.ensure_ready()?;
-        self.state.reset();
-
-        let files: Vec<PathBuf> = iter_mdoc_files(&self.mdcroot).collect::<Result<_>>()?;
-        let mut loaded: Vec<MdocNode> = Vec::new();
-
-        for file_path in files {
-            self.state.scanned_file_count += 1;
-            match MdocNode::load(&self.mdcroot, &file_path) {
-                Ok(node) => loaded.push(node),
-                Err(e) => {
-                    let head = read_mdoc_head(&file_path);
-                    let fnode = head
-                        .as_ref()
-                        .map(|(f, _)| f.as_str())
-                        .unwrap_or("<unknown>");
-                    let issue =
-                        make_invalid_issue(&self.mdcroot, &file_path, &e.to_string(), fnode);
-                    self.state.record_invalid(issue);
-                }
-            }
-        }
-
-        // Group by fnode, detect duplicates
-        let mut by_fnode: HashMap<String, Vec<MdocNode>> = HashMap::new();
-        for node in loaded {
-            by_fnode.entry(node.fnode.clone()).or_default().push(node);
-        }
-        let mut sorted_fnodes: Vec<String> = by_fnode.keys().cloned().collect();
-        sorted_fnodes.sort();
-
-        for fnode in sorted_fnodes {
-            let nodes = by_fnode.remove(&fnode).unwrap();
-            if nodes.len() == 1 {
-                self.state
-                    .nodes_by_fnode
-                    .insert(fnode, nodes.into_iter().next().unwrap());
-            } else {
-                let paths: Vec<PathBuf> = nodes.iter().map(|n| n.path.clone()).collect();
-                self.record_duplicate_fnode(&fnode, &paths)?;
-            }
-        }
-
-        // Build dep_graph from loaded nodes
-        let node_fnodes: Vec<String> = self.state.nodes_by_fnode.keys().cloned().collect();
-        for fnode in node_fnodes {
-            let depens = dedupe_keep_order(&self.state.nodes_by_fnode[&fnode].depens.clone());
-            self.state.dep_graph.insert(fnode.clone(), Vec::new());
-            for dep_fnode in &depens {
-                if !self.state.nodes_by_fnode.contains_key(dep_fnode)
-                    && !self.state.invalid_fnodes.contains(dep_fnode)
-                {
-                    if let Some(node) = self.load_node(dep_fnode, true, true)? {
-                        self.state.nodes_by_fnode.insert(dep_fnode.clone(), node);
-                    }
-                }
-                self.state
-                    .dep_graph
-                    .entry(fnode.clone())
-                    .or_default()
-                    .push(dep_fnode.clone());
-                self.state.dep_graph.entry(dep_fnode.clone()).or_default();
-            }
-        }
-        let loaded_fnodes: Vec<String> = self.state.nodes_by_fnode.keys().cloned().collect();
-        for fnode in loaded_fnodes {
-            self.state.dep_graph.entry(fnode).or_default();
-        }
         Ok(())
     }
 
@@ -835,33 +682,11 @@ impl DepGraph {
         Ok(())
     }
 
-    fn bind_root(
-        &mut self,
-        root_node: Option<MdocNode>,
-        root_fnode: Option<&str>,
-    ) -> Result<String> {
-        if let Some(node) = root_node {
-            self.set_root_node(node)?;
-        }
-        if let Some(fnode) = root_fnode {
-            self.set_root_fnode(fnode)?;
-        }
-        if self.state.root_fnode.is_empty() {
-            bail!("root fnode is required");
-        }
-        Ok(self.state.root_fnode.clone())
-    }
-
-    fn dependency_context(
-        &mut self,
-        depth: i32,
-        root_node: Option<MdocNode>,
-        root_fnode: Option<&str>,
-    ) -> Result<String> {
+    fn dependency_context(&mut self, depth: i32) -> Result<String> {
         if depth < -1 {
             bail!("depth must be -1 (infinite) or >= 0");
         }
-        let root = self.bind_root(root_node, root_fnode)?;
+        let root = self.state.root_fnode.clone();
         self.expand_from_root(&root.clone(), depth)
             .map_err(|e| anyhow::anyhow!("failed to build dependency graph: {e}"))?;
         if let Some(cycle) = find_cycle(&self.state.dep_graph, Some(&root)) {
@@ -897,6 +722,51 @@ impl DepGraph {
 
 // ── Free helpers ──────────────────────────────────────────────────────────────
 
+fn create_indexed_node(cache: &mut IndCache, node: &MdocNode) -> Result<()> {
+    node.save_new()?;
+    if let Err(index_error) = cache.upsert_path(&node.path) {
+        let cleanup_error = std::fs::remove_file(&node.path)
+            .err()
+            .map(anyhow::Error::from);
+        let restore_index_error = cache.upsert_path(&node.path).err();
+        let cleanup_error = cleanup_error.or(restore_index_error);
+        return match cleanup_error {
+            Some(cleanup_error) => Err(anyhow!(
+                "{index_error}; additionally failed to remove or reindex {}: {cleanup_error}",
+                node.path.display()
+            )),
+            None => Err(index_error),
+        };
+    }
+    Ok(())
+}
+
+/// Replace a node file and update its index entry as one recoverable operation.
+/// The caller must hold the workspace mutation lock.
+pub(crate) fn replace_indexed_node(
+    cache: &mut IndCache,
+    node: &MdocNode,
+    snapshot: &crate::workspace::FileSnapshot,
+) -> Result<()> {
+    let payload = node.render_payload()?;
+    let applied = crate::workspace::atomic_replace(&node.path, snapshot, payload.as_bytes())?;
+    if let Err(index_error) = cache.upsert_path(&node.path) {
+        if let Err(rollback_error) = applied.rollback() {
+            return Err(anyhow!(
+                "{index_error}; additionally failed to restore {}: {rollback_error}",
+                node.path.display()
+            ));
+        }
+        if let Err(restore_index_error) = cache.upsert_path(&node.path) {
+            return Err(anyhow!(
+                "{index_error}; file was restored but its index could not be restored: {restore_index_error}"
+            ));
+        }
+        return Err(index_error);
+    }
+    Ok(())
+}
+
 /// Deduplicate while preserving first-occurrence order.
 fn dedupe_keep_order(items: &[String]) -> Vec<String> {
     let mut seen = HashSet::new();
@@ -908,7 +778,7 @@ fn dedupe_keep_order(items: &[String]) -> Vec<String> {
 }
 
 fn validate_new_node_path(mdcroot: &Path, path: &Path) -> Result<PathBuf> {
-    let resolved = crate::indcache::resolve_workspace_path(mdcroot, path)?;
+    let resolved = crate::workspace::resolve_mdoc_path(mdcroot, path)?;
     if std::fs::symlink_metadata(&resolved).is_ok() {
         bail!("mdoc file already exists: {}", resolved.display());
     }

@@ -447,7 +447,7 @@ pub async fn node_put_block(
                 metadata: Default::default(),
             }),
         }
-        save_and_index(&state, &node, &abs_path, &snapshot)?;
+        save_and_index(&state, &node, &snapshot)?;
         Ok(committed_node_detail(&state, &node))
     })
 }
@@ -469,7 +469,7 @@ pub async fn node_delete_block(
         if node.blocks.len() == before {
             bail!("no '@src: {srctype}' block on this node");
         }
-        save_and_index(&state, &node, &abs_path, &snapshot)?;
+        save_and_index(&state, &node, &snapshot)?;
         Ok(committed_node_detail(&state, &node))
     })
 }
@@ -491,7 +491,7 @@ pub async fn node_put_title(
             bail!("fnode mismatch when updating title");
         }
         node.title = title.to_string();
-        save_and_index(&state, &node, &abs_path, &snapshot)?;
+        save_and_index(&state, &node, &snapshot)?;
         Ok(committed_node_detail(&state, &node))
     })
 }
@@ -544,15 +544,10 @@ fn committed_graph_detail(
     state: &AppState,
     mut graph: crate::depgraph::DepGraph,
 ) -> Json<NodeDetail> {
-    let root_fnode = graph.state.root_fnode.clone();
-    let node = graph
-        .state
-        .nodes_by_fnode
-        .get(&root_fnode)
-        .expect("committed graph root must remain loaded")
-        .clone();
-    let detail = node_detail_from_committed_cache(&mut graph.cache, &graph.mdcroot, &node);
-    *state.cache.lock().expect("cache mutex poisoned") = graph.cache;
+    let node = graph.root_node().clone();
+    let mdcroot = graph.mdcroot().to_path_buf();
+    let detail = node_detail_from_committed_cache(graph.cache_mut(), &mdcroot, &node);
+    *state.cache.lock().expect("cache mutex poisoned") = graph.into_cache();
     Json(detail)
 }
 
@@ -587,17 +582,6 @@ fn node_detail_from_committed_cache(
     }
 }
 
-/// Upsert the modified file's index entry and run incremental discovery so
-/// derived data (topo depth, weak components) is consistent for the next
-/// request.
-fn upsert_and_discover(state: &AppState, abs_path: &std::path::Path) -> ApiResult<()> {
-    with_cache(state, |c| {
-        c.upsert_path(abs_path)?;
-        c.discover_workspace_changes()?;
-        Ok(())
-    })
-}
-
 fn snapshot_node(
     state: &AppState,
     abs_path: &std::path::Path,
@@ -613,28 +597,10 @@ fn snapshot_node(
 fn save_and_index(
     state: &AppState,
     node: &MdocNode,
-    abs_path: &std::path::Path,
     snapshot: &crate::workspace::FileSnapshot,
 ) -> ApiResult<()> {
-    let payload = node.render_payload().map_err(ApiError::rejected)?;
-    let applied = crate::workspace::atomic_replace(abs_path, snapshot, payload.as_bytes())?;
-    if let Err(index_error) = upsert_and_discover(state, abs_path) {
-        let index_message = index_error.detail.to_string();
-        if let Err(rollback_error) = applied.rollback() {
-            return Err(ApiError::from(anyhow::anyhow!(
-                "{index_message}; additionally failed to restore {}: {rollback_error}",
-                abs_path.display()
-            )));
-        }
-        if let Err(restore_index_error) = upsert_and_discover(state, abs_path) {
-            return Err(ApiError::from(anyhow::anyhow!(
-                "{index_message}; file was restored but its index could not be restored: {}",
-                restore_index_error.detail
-            )));
-        }
-        return Err(index_error);
-    }
-    Ok(())
+    let mut cache = state.cache.lock().expect("cache mutex poisoned");
+    crate::depgraph::replace_indexed_node(&mut cache, node, snapshot).map_err(ApiError::rejected)
 }
 
 // ── Dependency mutation handlers ──────────────────────────────────────────────
@@ -733,7 +699,7 @@ pub async fn node_new(
             Ok(committed_graph_detail(&state, graph))
         } else {
             // Standalone new node, no parent.
-            let (graph, _) = crate::depgraph::DepGraph::create_root(
+            let graph = crate::depgraph::DepGraph::create_root(
                 state.mdcroot.clone(),
                 file_path,
                 title,
@@ -789,7 +755,7 @@ mod tests {
             external.save().unwrap();
             let external_bytes = std::fs::read(&path).unwrap();
 
-            let error = save_and_index(&state, &desired, &path, &snapshot).unwrap_err();
+            let error = save_and_index(&state, &desired, &snapshot).unwrap_err();
             assert_eq!(error.into_response().status(), StatusCode::CONFLICT);
             assert_eq!(std::fs::read(&path).unwrap(), external_bytes);
 

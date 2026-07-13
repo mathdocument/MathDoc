@@ -104,3 +104,86 @@ pub fn to_rel_path(root: &Path, path: &Path) -> String {
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| path.to_string_lossy().into_owned())
 }
+
+/// Resolve a `.mdoc` path without allowing it to escape the workspace, enter
+/// `.mdc`, traverse symlinks, or cross into a nested workspace.
+pub(crate) fn resolve_mdoc_path(root: &Path, file_path: &Path) -> Result<PathBuf> {
+    let root = root.canonicalize()?;
+    let candidate = if file_path.is_absolute() {
+        file_path.to_path_buf()
+    } else {
+        root.join(file_path)
+    };
+
+    if candidate.extension().and_then(|ext| ext.to_str()) != Some("mdoc") {
+        bail!("mdoc path must end in .mdoc: {}", file_path.display());
+    }
+    if let Ok(relative) = candidate.strip_prefix(&root) {
+        validate_workspace_relative_path(relative, file_path)?;
+        let mut current = root.clone();
+        for component in relative.components() {
+            current.push(component.as_os_str());
+            match std::fs::symlink_metadata(&current) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    bail!(
+                        "refusing mdoc path with symlink component {}",
+                        current.display()
+                    )
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    let resolved =
+        match candidate.canonicalize() {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let mut existing = candidate.as_path();
+                let mut suffix = Vec::new();
+                while !existing.exists() {
+                    suffix.push(existing.file_name().ok_or_else(|| {
+                        anyhow::anyhow!("invalid mdoc path {}", file_path.display())
+                    })?);
+                    existing = existing.parent().ok_or_else(|| {
+                        anyhow::anyhow!("invalid mdoc path {}", file_path.display())
+                    })?;
+                }
+                let mut resolved = existing.canonicalize()?;
+                for component in suffix.into_iter().rev() {
+                    resolved.push(component);
+                }
+                resolved
+            }
+            Err(error) => return Err(error.into()),
+        };
+    if !resolved.starts_with(&root) {
+        bail!("mdoc path is outside workspace: {}", file_path.display());
+    }
+    let relative = resolved
+        .strip_prefix(&root)
+        .expect("workspace containment checked above");
+    validate_workspace_relative_path(relative, file_path)?;
+
+    let parent = resolved.parent().unwrap_or(&resolved);
+    let parent = parent
+        .canonicalize()
+        .unwrap_or_else(|_| parent.to_path_buf());
+    if let Some(nested) = find_nested_mdcroot(&root, &parent) {
+        bail!("mdoc path is inside nested mdoc root: {}", nested.display());
+    }
+    Ok(resolved)
+}
+
+pub(crate) fn validate_workspace_relative_path(relative: &Path, original: &Path) -> Result<()> {
+    for (index, component) in relative.components().enumerate() {
+        let std::path::Component::Normal(name) = component else {
+            bail!("invalid mdoc path: {}", original.display());
+        };
+        if index == 0 && name == ".mdc" {
+            bail!("mdoc path cannot be inside .mdc: {}", original.display());
+        }
+    }
+    Ok(())
+}

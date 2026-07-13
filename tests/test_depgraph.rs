@@ -1,7 +1,6 @@
 use std::fs;
 use std::path::Path;
 
-use mathdoc::core::IssueKind;
 use mathdoc::depgraph::DepGraph;
 use mathdoc::indcache::IndCache;
 use mathdoc::mdocnode::{MdocNode, SrcBlock};
@@ -49,9 +48,8 @@ fn test_from_ref_loads_root_graph() {
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     cache.bootstrap_if_needed().unwrap();
 
-    let (graph, rel_path) = DepGraph::from_ref(cache, &src.fnode[..8], Some(root)).unwrap();
+    let graph = DepGraph::from_ref(cache, &src.fnode[..8], Some(root)).unwrap();
     assert_eq!(graph.root_fnode(), src.fnode);
-    assert!(rel_path.ends_with(".mdoc"));
 }
 
 #[test]
@@ -96,81 +94,6 @@ fn test_from_ref_detects_duplicate_via_filesystem_fallback() {
         err.to_string().contains("duplicate fnode 'shared-node'"),
         "expected duplicate error, got: {err}"
     );
-}
-
-// ── dependency_items ─────────────────────────────────────────────────────────
-
-#[test]
-fn test_dependency_items_expand_incrementally_from_root_node() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let root = dir.path();
-
-    let dep2 = make_node(root, "Dep2", "text", "dep2");
-    dep2.save().unwrap();
-
-    let mut dep1 = make_node(root, "Dep1", "text", "dep1");
-    dep1.add_dependency(&dep2.fnode);
-    dep1.save().unwrap();
-
-    let mut src = make_node(root, "Src", "text", "src");
-    src.add_dependency(&dep1.fnode);
-    src.save().unwrap();
-
-    let mut graph = DepGraph::new(root.to_path_buf(), &src.fnode).unwrap();
-
-    let depth_1 = graph.dependency_items(1).unwrap();
-    assert_eq!(depth_1.len(), 1);
-    assert_eq!(depth_1[0].fnode, dep1.fnode);
-    assert_eq!(depth_1[0].depth, 1);
-
-    let depth_inf = graph.dependency_items(-1).unwrap();
-    assert_eq!(depth_inf.len(), 2);
-    assert_eq!(depth_inf[0].fnode, dep1.fnode);
-    assert_eq!(depth_inf[1].fnode, dep2.fnode);
-    assert_eq!(depth_inf[1].depth, 2);
-}
-
-#[test]
-fn test_dependency_items_depth_zero_returns_empty() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let root = dir.path();
-    let dep = make_node(root, "Dep", "text", "dep");
-    dep.save().unwrap();
-    let mut src = make_node(root, "Src", "text", "src");
-    src.add_dependency(&dep.fnode);
-    src.save().unwrap();
-
-    let mut graph = DepGraph::new(root.to_path_buf(), &src.fnode).unwrap();
-    let items = graph.dependency_items(0).unwrap();
-    assert!(items.is_empty());
-}
-
-#[test]
-fn test_leaf_dependency_items_only_return_reachable_leaves() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let root = dir.path();
-
-    let leaf_direct = make_node(root, "Leaf Direct", "text", "leaf_direct");
-    leaf_direct.save().unwrap();
-    let leaf_shared = make_node(root, "Leaf Shared", "text", "leaf_shared");
-    leaf_shared.save().unwrap();
-
-    let mut mid = make_node(root, "Mid", "text", "mid");
-    mid.add_dependency(&leaf_shared.fnode);
-    mid.save().unwrap();
-
-    let mut src = make_node(root, "Src", "text", "src");
-    src.add_dependency(&mid.fnode);
-    src.add_dependency(&leaf_direct.fnode);
-    src.save().unwrap();
-
-    let mut graph = DepGraph::new(root.to_path_buf(), &src.fnode).unwrap();
-    let items = graph.leaf_dependency_items().unwrap();
-
-    let fnodes: Vec<&str> = items.iter().map(|i| i.fnode.as_str()).collect();
-    assert!(fnodes.contains(&leaf_direct.fnode.as_str()));
-    assert!(fnodes.contains(&leaf_shared.fnode.as_str()));
-    assert!(!fnodes.contains(&mid.fnode.as_str()));
 }
 
 // ── mutation ──────────────────────────────────────────────────────────────────
@@ -309,7 +232,8 @@ fn test_create_and_add_dependency_no_side_effects_on_cycle() {
     );
 
     // The new node must not appear in the index.
-    let search_results = graph.cache.search(&new_fnode[..8]).unwrap();
+    let cache = IndCache::open(root_dir.to_path_buf()).unwrap();
+    let search_results = cache.search(&new_fnode[..8]).unwrap();
     assert!(
         search_results.is_empty(),
         "new node must not be indexed after failure"
@@ -323,23 +247,8 @@ fn test_create_root_rejects_duplicate_fnode() {
     fs::create_dir_all(root.join(".mdc")).unwrap();
 
     // First create succeeds and establishes the fnode in the index.
-    let (graph, _) =
-        DepGraph::create_root(root.to_path_buf(), "first", "First", None, None).unwrap();
-    let existing_fnode = graph
-        .cache
-        .resolve_ref("first.mdoc", None)
-        .map(|(f, _, _)| f)
-        .unwrap_or_else(|_| {
-            // Fall back: read fnode from indexed nodes
-            graph
-                .cache
-                .search("First")
-                .unwrap()
-                .into_iter()
-                .next()
-                .unwrap()
-                .0
-        });
+    let graph = DepGraph::create_root(root.to_path_buf(), "first", "First", None, None).unwrap();
+    let existing_fnode = graph.root_fnode().to_string();
 
     // Second create with the same fnode must fail before writing anything.
     let second_path = root.join("second.mdoc");
@@ -409,9 +318,7 @@ fn test_create_and_add_dependency_rejects_duplicate_fnode() {
     let root_node = make_node(root_dir, "Root", "text", "root");
     root_node.save().unwrap();
 
-    // Index the root so the fnode is known.
     let mut graph = DepGraph::new(root_dir.to_path_buf(), &root_node.fnode).unwrap();
-    graph.cache.upsert_path(&root_node.path).unwrap();
 
     // Build a new node whose fnode is deliberately set to root's fnode.
     let mut dup_node = make_node(root_dir, "Dup", "text", "dup");
@@ -443,7 +350,6 @@ fn test_create_and_add_dependency_rejects_non_mdoc_extension() {
     let root_node = make_node(root_dir, "Root", "text", "root");
     root_node.save().unwrap();
     let mut graph = DepGraph::new(root_dir.to_path_buf(), &root_node.fnode).unwrap();
-    graph.cache.upsert_path(&root_node.path).unwrap();
 
     let mut new_node = make_node(root_dir, "Txt", "text", "txt");
     new_node.path = root_dir.join("note.txt");
@@ -472,7 +378,6 @@ fn test_create_and_add_dependency_rejects_existing_path() {
     let root_node = make_node(root_dir, "Root", "text", "root");
     root_node.save().unwrap();
     let mut graph = DepGraph::new(root_dir.to_path_buf(), &root_node.fnode).unwrap();
-    graph.cache.upsert_path(&root_node.path).unwrap();
 
     // Write an unrelated victim file at the path the new node would occupy.
     let mut new_node = make_node(root_dir, "New", "text", "new");
@@ -504,7 +409,6 @@ fn test_create_and_add_dependency_rejects_path_outside_workspace() {
     let root_node = make_node(root_dir, "Root", "text", "root");
     root_node.save().unwrap();
     let mut graph = DepGraph::new(root_dir.to_path_buf(), &root_node.fnode).unwrap();
-    graph.cache.upsert_path(&root_node.path).unwrap();
 
     let mut new_node = make_node(root_dir, "Outside", "text", "outside");
     // Point the path to a location outside the workspace.
@@ -533,7 +437,6 @@ fn test_create_and_add_dependency_rejects_path_in_nested_workspace() {
     let root_node = make_node(&root_dir, "Root", "text", "root");
     root_node.save().unwrap();
     let mut graph = DepGraph::new(root_dir.clone(), &root_node.fnode).unwrap();
-    graph.cache.upsert_path(&root_node.path).unwrap();
 
     let mut new_node = make_node(&root_dir, "Nested", "text", "nested");
     new_node.path = nested.join("nested.mdoc");
@@ -564,7 +467,6 @@ fn test_create_and_add_dependency_rejects_dotdot_escape() {
     let root_node = make_node(&root_dir, "Root", "text", "root");
     root_node.save().unwrap();
     let mut graph = DepGraph::new(root_dir.clone(), &root_node.fnode).unwrap();
-    graph.cache.upsert_path(&root_node.path).unwrap();
 
     // Construct a path that looks like it starts under root but uses .. to escape.
     // Use the unique temp dir name as the stem so parallel runs don't share a filename.
@@ -654,7 +556,6 @@ fn test_create_and_add_dependency_rejects_symlink_dotdot_escape() {
     let root_node = make_node(&root_dir, "Root", "text", "root");
     root_node.save().unwrap();
     let mut graph = DepGraph::new(root_dir.clone(), &root_node.fnode).unwrap();
-    graph.cache.upsert_path(&root_node.path).unwrap();
 
     // root/external_link/../<name>.mdoc: lexically looks like root/<name>.mdoc,
     // but POSIX resolves external_link → outside, so link/.. = outside/.., OUTSIDE.
@@ -748,43 +649,6 @@ fn test_create_root_dot_target_rejects_existing_file() {
     );
     // Victim must be untouched.
     assert_eq!(fs::read(&victim_path).unwrap(), b"victim content");
-}
-
-// ── scan_all ──────────────────────────────────────────────────────────────────
-
-#[test]
-fn test_scan_all_builds_global_graph() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let root = dir.path();
-
-    let leaf = make_node(root, "Leaf", "text", "leaf");
-    leaf.save().unwrap();
-    let mut src = make_node(root, "Src", "text", "src");
-    src.add_dependency(&leaf.fnode);
-    src.save().unwrap();
-    let other = make_node(root, "Other", "text", "other");
-    other.save().unwrap();
-
-    let mut graph = DepGraph::new(root.to_path_buf(), &src.fnode).unwrap();
-    graph.scan_all().unwrap();
-
-    let node_keys: std::collections::HashSet<&str> = graph
-        .state
-        .nodes_by_fnode
-        .keys()
-        .map(|s| s.as_str())
-        .collect();
-    assert!(node_keys.contains(src.fnode.as_str()));
-    assert!(node_keys.contains(leaf.fnode.as_str()));
-    assert!(node_keys.contains(other.fnode.as_str()));
-
-    assert_eq!(graph.state.dep_graph[&src.fnode], vec![leaf.fnode.clone()]);
-    assert_eq!(graph.state.dep_graph[&leaf.fnode], Vec::<String>::new());
-    assert_eq!(graph.state.dep_graph[&other.fnode], Vec::<String>::new());
-
-    let items = graph.dependency_items(-1).unwrap();
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0].fnode, leaf.fnode);
 }
 
 // ── global_root_items ─────────────────────────────────────────────────────────
@@ -881,65 +745,6 @@ fn test_graph_check_report_collects_missing_invalid_and_cycles() {
         report.cycles[0].iter().map(|s| s.as_str()).collect();
     assert!(cycle_fnodes.contains(a.fnode.as_str()));
     assert!(cycle_fnodes.contains(b.fnode.as_str()));
-}
-
-// ── invalid placeholder ───────────────────────────────────────────────────────
-
-#[test]
-fn test_dependency_items_show_invalid_placeholder() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let root = dir.path();
-
-    let dep = make_node(root, "Broken Dep", "text", "dep");
-    dep.save().unwrap();
-    make_invalid(&dep.path);
-
-    let mut src = make_node(root, "Src", "text", "src");
-    src.add_dependency(&dep.fnode);
-    src.save().unwrap();
-
-    let mut graph = DepGraph::new(root.to_path_buf(), &src.fnode).unwrap();
-    let items = graph.dependency_items(1).unwrap();
-
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0].fnode, dep.fnode);
-    assert_eq!(items[0].title, "<invalid>");
-    assert!(graph.state.invalid_fnodes.contains(&dep.fnode));
-
-    let issue = graph.issue_for_fnode(&dep.fnode).unwrap().unwrap();
-    assert_eq!(issue.kind, IssueKind::Invalid);
-}
-
-#[test]
-fn test_dependency_items_show_duplicate_fnode_placeholder() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let root = dir.path();
-    fs::create_dir_all(root.join(".mdc")).unwrap();
-    fs::write(root.join("dup-a.mdoc"), "@fnode: dup-node\n@title: Dup A\n").unwrap();
-    fs::write(root.join("dup-b.mdoc"), "@fnode: dup-node\n@title: Dup B\n").unwrap();
-
-    let mut src = make_node(root, "Src", "text", "src");
-    src.add_dependency("dup-node");
-    src.save().unwrap();
-
-    let mut graph = DepGraph::new(root.to_path_buf(), &src.fnode).unwrap();
-    let items = graph.dependency_items(1).unwrap();
-
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0].fnode, "dup-node");
-    assert_eq!(items[0].title, "<invalid>");
-
-    let issue = graph.issue_for_fnode("dup-node").unwrap().unwrap();
-    assert_eq!(issue.kind, IssueKind::Invalid);
-    assert!(
-        issue.error.contains("duplicate fnode 'dup-node'"),
-        "unexpected error: {}",
-        issue.error
-    );
-
-    let report = graph.cache.graph_check_report().unwrap();
-    assert!(report.invalid.iter().any(|issue| issue.fnode == "dup-node"));
-    assert!(!report.missing.iter().any(|issue| issue.fnode == "dup-node"));
 }
 
 #[test]

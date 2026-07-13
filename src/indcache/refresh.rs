@@ -93,11 +93,11 @@ pub fn refresh_reachable_from_path(
     let mut affected_fnodes: HashSet<String> = HashSet::new();
     let mut queue: std::collections::VecDeque<(std::path::PathBuf, u32)> =
         std::collections::VecDeque::new();
-    let canonical_root = resolve_workspace_path(root, root_path)?;
+    let canonical_root = crate::workspace::resolve_mdoc_path(root, root_path)?;
     queue.push_back((canonical_root, 0));
 
     while let Some((file_path, item_depth)) = queue.pop_front() {
-        let file_path = resolve_workspace_path(root, &file_path)?;
+        let file_path = crate::workspace::resolve_mdoc_path(root, &file_path)?;
         let rel_path = to_rel_path(root, &file_path);
         if !seen.insert(rel_path.clone()) {
             continue;
@@ -127,81 +127,12 @@ pub fn refresh_reachable_from_path(
     Ok(affected_fnodes)
 }
 
-pub(crate) fn resolve_workspace_path(root: &Path, file_path: &Path) -> Result<PathBuf> {
-    let root = root.canonicalize()?;
-    let candidate = if file_path.is_absolute() {
-        file_path.to_path_buf()
-    } else {
-        root.join(file_path)
-    };
-
-    if candidate.extension().and_then(|ext| ext.to_str()) != Some("mdoc") {
-        bail!("mdoc path must end in .mdoc: {}", file_path.display());
-    }
-    if let Ok(relative) = candidate.strip_prefix(&root) {
-        validate_relative_components(relative, file_path)?;
-        let mut current = root.clone();
-        for component in relative.components() {
-            current.push(component.as_os_str());
-            match std::fs::symlink_metadata(&current) {
-                Ok(meta) if meta.file_type().is_symlink() => {
-                    bail!(
-                        "refusing mdoc path with symlink component {}",
-                        current.display()
-                    )
-                }
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-                Err(error) => return Err(error.into()),
-            }
-        }
-    }
-    let resolved =
-        match candidate.canonicalize() {
-            Ok(path) => path,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let mut existing = candidate.as_path();
-                let mut suffix = Vec::new();
-                while !existing.exists() {
-                    suffix.push(existing.file_name().ok_or_else(|| {
-                        anyhow::anyhow!("invalid mdoc path {}", file_path.display())
-                    })?);
-                    existing = existing.parent().ok_or_else(|| {
-                        anyhow::anyhow!("invalid mdoc path {}", file_path.display())
-                    })?;
-                }
-                let mut resolved = existing.canonicalize()?;
-                for component in suffix.into_iter().rev() {
-                    resolved.push(component);
-                }
-                resolved
-            }
-            Err(error) => return Err(error.into()),
-        };
-    if !resolved.starts_with(&root) {
-        bail!("mdoc path is outside workspace: {}", file_path.display());
-    }
-    let relative = resolved
-        .strip_prefix(&root)
-        .expect("workspace containment checked above");
-    validate_relative_components(relative, file_path)?;
-
-    let parent = resolved.parent().unwrap_or(&resolved);
-    let parent = parent
-        .canonicalize()
-        .unwrap_or_else(|_| parent.to_path_buf());
-    if let Some(nested) = find_nested_mdcroot(&root, &parent) {
-        bail!("mdoc path is inside nested mdoc root: {}", nested.display());
-    }
-    Ok(resolved)
-}
-
 pub(crate) fn validate_cached_mdoc_path(root: &Path, rel_path: &str) -> Result<PathBuf> {
     let rel_path = Path::new(rel_path);
     if rel_path.is_absolute() {
         bail!("cached mdoc path must be relative: {}", rel_path.display());
     }
-    let resolved = resolve_workspace_path(root, rel_path)?;
+    let resolved = crate::workspace::resolve_mdoc_path(root, rel_path)?;
     let meta = std::fs::symlink_metadata(&resolved)?;
     if meta.file_type().is_symlink() || !meta.is_file() {
         bail!(
@@ -224,7 +155,7 @@ pub(crate) fn validate_cached_directory_path(root: &Path, rel_path: &str) -> Res
             relative.display()
         );
     }
-    validate_relative_components(relative, relative)?;
+    crate::workspace::validate_workspace_relative_path(relative, relative)?;
 
     let mut current = root.clone();
     for component in relative.components() {
@@ -256,21 +187,9 @@ pub(crate) fn validate_cached_directory_path(root: &Path, rel_path: &str) -> Res
     Ok(resolved)
 }
 
-fn validate_relative_components(relative: &Path, original: &Path) -> Result<()> {
-    for (index, component) in relative.components().enumerate() {
-        let std::path::Component::Normal(name) = component else {
-            bail!("invalid mdoc path: {}", original.display());
-        };
-        if index == 0 && name == ".mdc" {
-            bail!("mdoc path cannot be inside .mdc: {}", original.display());
-        }
-    }
-    Ok(())
-}
-
 /// Upsert a single .mdoc file: update metadata, parse, rebuild edges and issues.
 pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Result<()> {
-    let file_path = resolve_workspace_path(root, file_path)?;
+    let file_path = crate::workspace::resolve_mdoc_path(root, file_path)?;
     // Guard: file must not be inside a nested workspace
     let parent = file_path.parent().unwrap_or(&file_path);
     let root_resolved = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());

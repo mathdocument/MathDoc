@@ -172,11 +172,13 @@ pub(super) fn cmd_work(source: String, depth: i32, compile: bool) -> Result<i32>
     let mut cache = open_cache(mdcroot.clone())?;
 
     cache.discover_workspace_changes()?;
-    let (mut graph, _) = DepGraph::from_ref(cache, &source, Some(&cwd()))?;
+    let mut graph = DepGraph::from_ref(cache, &source, Some(&cwd()))?;
     let root_path = graph.root_path()?;
-    graph.cache.refresh_reachable_from_path(&root_path, depth)?;
+    graph
+        .cache_mut()
+        .refresh_reachable_from_path(&root_path, depth)?;
 
-    let config = Config::load(&graph.mdcroot)?;
+    let config = Config::load(graph.mdcroot())?;
     let files = workback::merge_work_files(&mut graph, depth, &config)?;
 
     if files.is_empty() {
