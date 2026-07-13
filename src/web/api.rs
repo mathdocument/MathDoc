@@ -5,7 +5,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::core::{GraphCheckReport, GraphRootItem};
+use crate::core::{GraphCheckReport, GraphRootItem, NodeSummary};
 use crate::indcache::IndCache;
 use crate::mdocnode::{MdocNode, SrcBlock};
 use crate::workspace::to_rel_path;
@@ -23,16 +23,6 @@ macro_rules! bail {
 }
 
 // ── DTOs ──────────────────────────────────────────────────────────────────────
-
-/// Minimal node summary used in lists (referrers, children, search results).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NodeInfo {
-    pub fnode: String,
-    pub title: String,
-    pub rel_path: String,
-    pub broken: bool,
-    pub depth: u32,
-}
 
 /// Full node detail returned by `GET /api/node/:fnode`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,7 +58,7 @@ pub struct ResolveResponse {
 /// Full workspace graph: nodes + edges, for the force-directed view.
 #[derive(Debug, Serialize)]
 pub struct GraphFull {
-    pub nodes: Vec<NodeInfo>,
+    pub nodes: Vec<NodeSummary>,
     pub edges: Vec<GraphEdge>,
 }
 
@@ -260,22 +250,6 @@ fn resolve(state: &AppState, raw: &str) -> ApiResult<(String, String, std::path:
         .map_err(ApiError::from_resolve)
 }
 
-/// Build a NodeInfo from (fnode, title, rel_path), fetching broken + depth.
-fn node_info(state: &AppState, fnode: &str, title: &str, rel_path: &str) -> ApiResult<NodeInfo> {
-    let (broken, depth) = with_cache(state, |c| {
-        let broken = c.has_issues(fnode)?;
-        let depth = c.all_topo_depths()?.get(fnode).copied().unwrap_or(0);
-        Ok::<_, anyhow::Error>((broken, depth))
-    })?;
-    Ok(NodeInfo {
-        fnode: fnode.to_string(),
-        title: title.to_string(),
-        rel_path: rel_path.to_string(),
-        broken,
-        depth,
-    })
-}
-
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 pub async fn graph_roots(State(state): State<AppState>) -> ApiResult<Json<Vec<GraphRootItem>>> {
@@ -298,17 +272,10 @@ pub async fn graph_check(State(state): State<AppState>) -> ApiResult<Json<GraphC
 pub async fn graph_full(State(state): State<AppState>) -> ApiResult<Json<GraphFull>> {
     let (nodes, edges) = with_cache(&state, |c| {
         c.discover_workspace_changes()?;
-        let nodes: Vec<NodeInfo> = c
+        let nodes: Vec<NodeSummary> = c
             .search_with_metadata("", usize::MAX)?
             .into_iter()
             .filter(|item| !item.broken)
-            .map(|item| NodeInfo {
-                fnode: item.fnode,
-                title: item.title,
-                rel_path: item.rel_path,
-                broken: false,
-                depth: item.depth,
-            })
             .collect();
         let edges_raw = c.all_valid_edges()?;
         // Filter edges to only those whose both endpoints are in the node set.
@@ -327,22 +294,11 @@ pub async fn graph_full(State(state): State<AppState>) -> ApiResult<Json<GraphFu
 pub async fn search(
     State(state): State<AppState>,
     Query(q): Query<SearchQuery>,
-) -> ApiResult<Json<Vec<NodeInfo>>> {
+) -> ApiResult<Json<Vec<NodeSummary>>> {
     let limit = q.n.min(MAX_SEARCH_RESULTS);
     let out = with_cache(&state, |c| {
         c.discover_workspace_changes()?;
-        let rows = c.search_with_metadata(&q.q, limit)?;
-        Ok::<_, anyhow::Error>(
-            rows.into_iter()
-                .map(|item| NodeInfo {
-                    fnode: item.fnode,
-                    title: item.title,
-                    rel_path: item.rel_path,
-                    broken: item.broken,
-                    depth: item.depth,
-                })
-                .collect(),
-        )
+        c.search_with_metadata(&q.q, limit)
     })?;
     Ok(Json(out))
 }
@@ -369,10 +325,9 @@ pub async fn node_detail(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
 ) -> ApiResult<Json<NodeDetail>> {
-    let (fnode, title, abs_path) = resolve(&state, &fnode)?;
-    let rel_path = to_rel_path(&state.mdcroot, &abs_path);
+    let (fnode, _, abs_path) = resolve(&state, &fnode)?;
     let node = MdocNode::load(&state.mdcroot, &abs_path)?;
-    let info = node_info(&state, &fnode, &title, &rel_path)?;
+    let info = with_cache(&state, |cache| cache.node_summary(&fnode))?;
     Ok(Json(NodeDetail {
         fnode: info.fnode,
         title: info.title,
@@ -387,37 +342,19 @@ pub async fn node_detail(
 pub async fn node_referrers(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
-) -> ApiResult<Json<Vec<NodeInfo>>> {
+) -> ApiResult<Json<Vec<NodeSummary>>> {
     // Resolve first so prefix refs work and the node is indexed.
     let (fnode, _, _) = resolve(&state, &fnode)?;
-    let rows = with_cache(&state, |c| c.direct_referrers_for_fnode(&fnode))?;
-    let mut out = Vec::with_capacity(rows.len());
-    for (rf, rt, rp) in rows {
-        out.push(node_info(&state, &rf, &rt, &rp)?);
-    }
+    let out = with_cache(&state, |c| c.direct_referrer_summaries(&fnode))?;
     Ok(Json(out))
 }
 
 pub async fn node_children(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
-) -> ApiResult<Json<Vec<NodeInfo>>> {
+) -> ApiResult<Json<Vec<NodeSummary>>> {
     let (fnode, _, _) = resolve(&state, &fnode)?;
-    let report = with_cache(&state, |c| c.dependency_report(&fnode, 1))?;
-    let mut out = Vec::new();
-    for item in report.items.into_iter().filter(|i| i.depth == 1) {
-        let broken = report.issues_by_fnode.contains_key(&item.fnode);
-        let depth = with_cache(&state, |c| {
-            Ok::<_, anyhow::Error>(c.all_topo_depths()?.get(&item.fnode).copied().unwrap_or(0))
-        })?;
-        out.push(NodeInfo {
-            fnode: item.fnode,
-            title: item.title,
-            rel_path: item.rel_path,
-            broken,
-            depth,
-        });
-    }
+    let out = with_cache(&state, |c| c.direct_dependency_summaries(&fnode))?;
     Ok(Json(out))
 }
 
@@ -556,12 +493,9 @@ fn node_detail_from_committed_cache(
     mdcroot: &std::path::Path,
     node: &MdocNode,
 ) -> NodeDetail {
-    let broken = cache.has_issues(&node.fnode).unwrap_or(true);
-    let depth = cache
-        .all_topo_depths()
-        .ok()
-        .and_then(|depths| depths.get(&node.fnode).copied())
-        .unwrap_or(0);
+    let summary = cache.node_summary(&node.fnode).ok();
+    let broken = summary.as_ref().map(|item| item.broken).unwrap_or(true);
+    let depth = summary.map(|item| item.depth).unwrap_or(0);
     let root = mdcroot
         .canonicalize()
         .unwrap_or_else(|_| mdcroot.to_path_buf());

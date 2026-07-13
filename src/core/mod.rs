@@ -7,7 +7,7 @@ pub use algorithms::{
 };
 pub use models::{
     DependencyItem, DependencyTraversalReport, GraphCheckReport, GraphIssue, GraphRootItem,
-    IssueKind,
+    IssueKind, NodeSummary,
 };
 
 /// Return at most eight Unicode scalar values from an fnode for display.

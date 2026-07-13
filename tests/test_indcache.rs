@@ -590,6 +590,13 @@ fn test_upsert_path_updates_cached_edges_and_missing_issues() {
         ["missing-target-001"]
     );
     assert!(cache.referrer_items("leaf-node", 1).unwrap().is_empty());
+    let missing = cache.node_summary("missing-target-001").unwrap();
+    assert!(missing.broken);
+    assert_eq!(missing.title, "<missing>");
+    assert_eq!(
+        cache.direct_dependency_summaries("src-node").unwrap(),
+        vec![missing]
+    );
 }
 
 #[test]
@@ -626,6 +633,19 @@ fn test_cached_graph_queries_cover_roots_refs_and_invalid() {
         refs.iter().map(|i| i.fnode.as_str()).collect::<Vec<_>>(),
         ["src-node"]
     );
+
+    let source = cache.node_summary("src-node").unwrap();
+    assert_eq!(source.depth, 1);
+    assert!(!source.broken);
+
+    let referrer_summaries = cache.direct_referrer_summaries("leaf-node").unwrap();
+    assert_eq!(referrer_summaries, vec![source]);
+
+    let dependency_summaries = cache.direct_dependency_summaries("src-node").unwrap();
+    assert_eq!(dependency_summaries.len(), 1);
+    assert_eq!(dependency_summaries[0].fnode, "leaf-node");
+    assert_eq!(dependency_summaries[0].depth, 0);
+    assert!(!dependency_summaries[0].broken);
 
     let report = cache.graph_check_report().unwrap();
     assert_eq!(report.nodes, 3);

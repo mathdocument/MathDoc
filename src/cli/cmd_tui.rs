@@ -15,7 +15,6 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Terminal,
 };
-use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -164,14 +163,7 @@ pub(super) fn cmd_graph_tui(source: Option<String>) -> Result<i32> {
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
-#[derive(Clone)]
-struct NodeInfo {
-    fnode: String,
-    title: String,
-    rel_path: String,
-    broken: bool,
-    depth: u32,
-}
+type NodeInfo = crate::core::NodeSummary;
 
 #[derive(Clone, PartialEq)]
 enum PreSel {
@@ -215,7 +207,6 @@ enum Overlay {
 struct TuiApp {
     mdcroot: PathBuf,
     cache: crate::indcache::IndCache,
-    topo_depths: HashMap<String, u32>,
 
     focused: NodeInfo,
     referrers: Vec<NodeInfo>,
@@ -239,11 +230,9 @@ struct TuiApp {
 
 impl TuiApp {
     fn new(cache: crate::indcache::IndCache, mdcroot: PathBuf, fnode: String) -> Result<Self> {
-        let topo_depths = cache.all_topo_depths()?;
         let mut app = TuiApp {
             mdcroot,
             cache,
-            topo_depths,
             focused: NodeInfo {
                 fnode: fnode.clone(),
                 title: String::new(),
@@ -269,60 +258,21 @@ impl TuiApp {
     }
 
     fn load_view(&mut self, fnode: &str) -> Result<()> {
-        let (f, t, p) = self
+        let f = self
             .cache
             .resolve_ref(fnode, None)
-            .unwrap_or_else(|_| (fnode.to_string(), "<unknown>".into(), PathBuf::new()));
-        let rel_path = crate::workspace::to_rel_path(&self.mdcroot, &p);
-        let broken = self.cache.has_issues(&f)?;
-        let depth = self.topo_depths.get(&f).copied().unwrap_or(0);
-        self.focused = NodeInfo {
-            fnode: f.clone(),
-            title: t,
-            rel_path,
-            broken,
-            depth,
-        };
+            .map(|(fnode, _, _)| fnode)
+            .unwrap_or_else(|_| fnode.to_string());
+        self.focused = self.cache.node_summary(&f)?;
 
         self.referrers = {
-            let mut v: Vec<NodeInfo> = self
-                .cache
-                .direct_referrers_for_fnode(&f)?
-                .into_iter()
-                .map(|(rf, rt, rp)| -> Result<NodeInfo> {
-                    let broken = self.cache.has_issues(&rf)?;
-                    let depth = self.topo_depths.get(&rf).copied().unwrap_or(0);
-                    Ok(NodeInfo {
-                        fnode: rf,
-                        title: rt,
-                        rel_path: rp,
-                        broken,
-                        depth,
-                    })
-                })
-                .collect::<Result<_>>()?;
+            let mut v = self.cache.direct_referrer_summaries(&f)?;
             v.sort_by_key(|n| std::cmp::Reverse(n.depth));
             v
         };
 
         self.children = {
-            let report = self.cache.dependency_report(&f, 1)?;
-            let mut v: Vec<NodeInfo> = report
-                .items
-                .into_iter()
-                .filter(|i| i.depth == 1)
-                .map(|i| {
-                    let broken = report.issues_by_fnode.contains_key(&i.fnode);
-                    let depth = self.topo_depths.get(&i.fnode).copied().unwrap_or(0);
-                    NodeInfo {
-                        broken,
-                        fnode: i.fnode,
-                        title: i.title,
-                        rel_path: i.rel_path,
-                        depth,
-                    }
-                })
-                .collect();
+            let mut v = self.cache.direct_dependency_summaries(&f)?;
             v.sort_by_key(|n| std::cmp::Reverse(n.depth));
             v
         };
@@ -399,10 +349,8 @@ impl TuiApp {
     fn refresh_after_op(&mut self) -> Result<()> {
         // The calling operation already called upsert_path on any modified file,
         // so the index and derived data are already up to date for that file.
-        // discover_workspace_changes picks up any concurrent external changes with
-        // incremental topo updates, without re-stating every indexed file.
+        // Pick up concurrent external changes before rebuilding the view.
         self.cache.discover_workspace_changes()?;
-        self.topo_depths = self.cache.all_topo_depths()?;
         let fnode = self.focused.fnode.clone();
         self.load_view(&fnode)
     }
@@ -491,7 +439,6 @@ impl TuiApp {
 
 fn refresh_after_edit(app: &mut TuiApp, path: &std::path::Path) -> Result<()> {
     app.cache.upsert_path(path)?;
-    app.topo_depths = app.cache.all_topo_depths()?;
     let fnode = app.focused.fnode.clone();
     app.load_view(&fnode)
 }
@@ -534,17 +481,7 @@ fn prepare_new_dependency_node(
 }
 
 fn search_fields(cache: &crate::indcache::IndCache, q: &str) -> Result<Vec<NodeInfo>> {
-    Ok(cache
-        .search_with_metadata(q, 20)?
-        .into_iter()
-        .map(|item| NodeInfo {
-            fnode: item.fnode,
-            title: item.title,
-            rel_path: item.rel_path,
-            broken: item.broken,
-            depth: item.depth,
-        })
-        .collect())
+    cache.search_with_metadata(q, 20)
 }
 
 /// Free function so it can be called while `app.overlay` is mutably borrowed.
@@ -563,13 +500,6 @@ fn adddep_search_fields(
         .into_iter()
         .filter(|item| !existing.contains(item.fnode.as_str()))
         .take(20)
-        .map(|item| NodeInfo {
-            fnode: item.fnode,
-            title: item.title,
-            rel_path: item.rel_path,
-            broken: item.broken,
-            depth: item.depth,
-        })
         .collect();
     // Only offer to create if the raw search had zero matches — not if
     // all matches were filtered out because they're already dependencies.

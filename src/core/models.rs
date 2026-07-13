@@ -3,6 +3,15 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeSummary {
+    pub fnode: String,
+    pub title: String,
+    pub rel_path: String,
+    pub broken: bool,
+    pub depth: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DependencyItem {
     pub depth: u32,
     pub fnode: String,

@@ -317,9 +317,12 @@ fn print_missing_with_referrers(issues: &[GraphIssue], cache: &IndCache) -> Resu
             "    {}",
             fmt_item(&issue.fnode, &issue.title, &issue.rel_path, true)
         );
-        let refs = cache.direct_referrers_for_fnode(&issue.fnode)?;
-        for (f, t, p) in &refs {
-            println!("      ← {}", fmt_item(f, t, p, false));
+        let refs = cache.direct_referrer_summaries(&issue.fnode)?;
+        for item in &refs {
+            println!(
+                "      ← {}",
+                fmt_item(&item.fnode, &item.title, &item.rel_path, item.broken)
+            );
         }
     }
     Ok(())

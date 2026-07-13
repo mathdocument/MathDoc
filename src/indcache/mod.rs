@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::core::{
     short_fnode, DependencyItem, DependencyTraversalReport, GraphCheckReport, GraphIssue,
-    GraphRootItem,
+    GraphRootItem, NodeSummary,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -23,15 +23,6 @@ pub enum ResolveRefError {
     Ambiguous { reference: String, matches: String },
     #[error("invalid mdoc file: {0}")]
     Invalid(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SearchMatch {
-    pub fnode: String,
-    pub title: String,
-    pub rel_path: String,
-    pub broken: bool,
-    pub depth: u32,
 }
 
 /// SQLite-backed index of a MathDoc workspace.
@@ -189,8 +180,12 @@ impl IndCache {
         queries::search(&self.conn, query)
     }
 
-    pub fn search_with_metadata(&self, query: &str, limit: usize) -> Result<Vec<SearchMatch>> {
+    pub fn search_with_metadata(&self, query: &str, limit: usize) -> Result<Vec<NodeSummary>> {
         queries::search_with_metadata(&self.conn, query, limit)
+    }
+
+    pub fn node_summary(&self, fnode: &str) -> Result<NodeSummary> {
+        queries::node_summary(&self.conn, fnode)
     }
 
     pub fn exact_fnode_rows(&self, fnode: &str) -> Result<Vec<(String, String, String)>> {
@@ -224,8 +219,12 @@ impl IndCache {
         queries::referrer_items(&self.conn, target_fnode, depth)
     }
 
-    pub fn direct_referrers_for_fnode(&self, fnode: &str) -> Result<Vec<(String, String, String)>> {
-        queries::direct_referrers_for_fnode(&self.conn, fnode)
+    pub fn direct_referrer_summaries(&self, fnode: &str) -> Result<Vec<NodeSummary>> {
+        queries::direct_referrer_summaries(&self.conn, fnode)
+    }
+
+    pub fn direct_dependency_summaries(&self, fnode: &str) -> Result<Vec<NodeSummary>> {
+        queries::direct_dependency_summaries(&self.conn, fnode)
     }
 
     pub fn all_topo_depths(&self) -> Result<HashMap<String, u32>> {

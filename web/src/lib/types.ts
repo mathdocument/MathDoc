@@ -1,4 +1,4 @@
-// Shared API types — mirror the Rust DTOs in src/web/api.rs.
+// Shared API types mirror the Rust API DTOs. NodeInfo matches core::NodeSummary.
 // Keep field names in sync when adding/removing endpoints.
 
 export interface NodeInfo {

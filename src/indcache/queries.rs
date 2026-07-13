@@ -4,10 +4,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 pub(crate) const CHUNK_SIZE: usize = 500;
 
-use super::SearchMatch;
 use crate::core::{
     component_has_cycle, representative_cycle, strongly_connected_components, DependencyItem,
-    DependencyTraversalReport, GraphCheckReport, GraphIssue, GraphRootItem, IssueKind,
+    DependencyTraversalReport, GraphCheckReport, GraphIssue, GraphRootItem, IssueKind, NodeSummary,
 };
 
 // ── Public query functions ──────────────────────────────────────────────────
@@ -153,14 +152,54 @@ pub fn is_reachable(conn: &Connection, from_fnode: &str, to_fnode: &str) -> Resu
     Ok(false)
 }
 
-/// Returns the direct referrers (depth-1) of `target_fnode` as (fnode, title, rel_path) tuples.
+pub fn node_summary(conn: &Connection, fnode: &str) -> Result<NodeSummary> {
+    let mut stmt = conn.prepare(
+        "SELECT m.fnode, m.title, m.path,
+                EXISTS(SELECT 1 FROM mdoc_issues i WHERE i.ref_fnode = m.fnode),
+                m.topo_depth
+         FROM mdocs m
+         WHERE m.fnode = ?
+         ORDER BY m.path",
+    )?;
+    let mut rows = stmt
+        .query_map([fnode], |row| {
+            Ok(NodeSummary {
+                fnode: row.get(0)?,
+                title: row.get(1)?,
+                rel_path: row.get(2)?,
+                broken: row.get(3)?,
+                depth: row.get(4)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if rows.len() == 1 {
+        return Ok(rows.pop().expect("one summary row"));
+    }
+    if let Some(issue) = issue_lookup_for_fnodes(conn, &[fnode])?.remove(fnode) {
+        return Ok(NodeSummary {
+            fnode: issue.fnode,
+            title: issue.title,
+            rel_path: issue.rel_path,
+            broken: true,
+            depth: 0,
+        });
+    }
+    if rows.is_empty() {
+        bail!("no mdoc matched reference: {fnode}");
+    }
+    bail!("duplicate fnode: {fnode}")
+}
+
+/// Direct referrers with all list metadata in one query.
 /// Referrers whose own file is invalid/duplicate are excluded.
-pub fn direct_referrers_for_fnode(
+pub fn direct_referrer_summaries(
     conn: &Connection,
     target_fnode: &str,
-) -> Result<Vec<(String, String, String)>> {
+) -> Result<Vec<NodeSummary>> {
     let mut stmt = conn.prepare(
-        "SELECT e.src_fnode, m.title, m.path
+        "SELECT e.src_fnode, m.title, m.path,
+                EXISTS(SELECT 1 FROM mdoc_issues own WHERE own.ref_fnode = e.src_fnode),
+                m.topo_depth
          FROM mdoc_edges e
          JOIN mdocs m ON m.fnode = e.src_fnode
          WHERE e.dst_fnode = ?
@@ -174,11 +213,13 @@ pub fn direct_referrers_for_fnode(
     )?;
     let rows = stmt
         .query_map([target_fnode], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
+            Ok(NodeSummary {
+                fnode: r.get(0)?,
+                title: r.get(1)?,
+                rel_path: r.get(2)?,
+                broken: r.get(3)?,
+                depth: r.get(4)?,
+            })
         })?
         .collect::<rusqlite::Result<_>>()?;
     Ok(rows)
@@ -200,6 +241,19 @@ pub fn leaf_dependency_report(
     root_fnode: &str,
 ) -> Result<DependencyTraversalReport> {
     dependency_report_inner(conn, root_fnode, -1, true)
+}
+
+pub fn direct_dependency_summaries(
+    conn: &Connection,
+    root_fnode: &str,
+) -> Result<Vec<NodeSummary>> {
+    let report = dependency_report(conn, root_fnode, 1)?;
+    let items: Vec<DependencyItem> = report
+        .items
+        .into_iter()
+        .filter(|item| item.depth == 1)
+        .collect();
+    summaries_for_items(conn, items, &report.issues_by_fnode)
 }
 
 pub fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>> {
@@ -916,6 +970,48 @@ fn dependency_item(
     }
 }
 
+fn summaries_for_items(
+    conn: &Connection,
+    items: Vec<DependencyItem>,
+    issues: &HashMap<String, GraphIssue>,
+) -> Result<Vec<NodeSummary>> {
+    let fnodes: Vec<&str> = items.iter().map(|item| item.fnode.as_str()).collect();
+    let depths = topo_depth_lookup_for_fnodes(conn, &fnodes)?;
+    Ok(items
+        .into_iter()
+        .map(|item| NodeSummary {
+            broken: issues.contains_key(&item.fnode),
+            depth: depths.get(&item.fnode).copied().unwrap_or(0),
+            fnode: item.fnode,
+            title: item.title,
+            rel_path: item.rel_path,
+        })
+        .collect())
+}
+
+fn topo_depth_lookup_for_fnodes(
+    conn: &Connection,
+    fnodes: &[&str],
+) -> Result<HashMap<String, u32>> {
+    let mut result = HashMap::new();
+    for chunk in fnodes.chunks(CHUNK_SIZE) {
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!("SELECT fnode, topo_depth FROM mdocs WHERE fnode IN ({placeholders})");
+        let params: Vec<&dyn rusqlite::types::ToSql> = chunk
+            .iter()
+            .map(|fnode| fnode as &dyn rusqlite::types::ToSql)
+            .collect();
+        let mut stmt = conn.prepare(&sql)?;
+        for row in stmt.query_map(params.as_slice(), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+        })? {
+            let (fnode, depth) = row?;
+            result.insert(fnode, depth);
+        }
+    }
+    Ok(result)
+}
+
 // ── Helper to resolve a path reference from the DB ──────────────────────────
 
 pub fn lookup_by_fnode(
@@ -997,7 +1093,7 @@ pub fn search_with_metadata(
     conn: &Connection,
     query: &str,
     limit: usize,
-) -> Result<Vec<SearchMatch>> {
+) -> Result<Vec<NodeSummary>> {
     let query_lc = query.to_lowercase();
     let escaped = escape_like_pattern(&query_lc);
     let like = format!("%{escaped}%");
@@ -1020,7 +1116,7 @@ pub fn search_with_metadata(
         .query_map(
             rusqlite::params![like, like, prefix_like, query_lc, query_lc, limit],
             |row| {
-                Ok(SearchMatch {
+                Ok(NodeSummary {
                     fnode: row.get(0)?,
                     title: row.get(1)?,
                     rel_path: row.get(2)?,
