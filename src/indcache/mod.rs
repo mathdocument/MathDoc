@@ -51,20 +51,7 @@ impl IndCache {
     pub(crate) fn open_under_mutation_lock(root: PathBuf) -> Result<Self> {
         let root = crate::workspace::validate_mdcroot(&root)?;
         let db_path = root.join(".mdc").join("index.db");
-        let (mut conn, needs_topo_backfill) = schema::open_db(&db_path)?;
-        if needs_topo_backfill {
-            // topo_depth values are all-zero (column newly added or prior crash).
-            // Backfill real depths and mark complete in the same transaction so a
-            // crash here leaves topo_depth_backfilled = 0 and triggers recovery on
-            // the next open.
-            let tx = conn.transaction()?;
-            refresh::backfill_all_topo_depths(&tx)?;
-            tx.execute(
-                "UPDATE mdoc_index_state SET topo_depth_backfilled = 1 WHERE id = 1",
-                [],
-            )?;
-            tx.commit()?;
-        }
+        let conn = schema::open_db(&db_path)?;
         let mut cache = IndCache { root, conn };
         cache.bootstrap_if_needed()?;
         Ok(cache)
@@ -78,7 +65,7 @@ impl IndCache {
     // ── Bootstrap / refresh ──────────────────────────────────────────────────
 
     /// Bootstrap the index on first use; no-op if already bootstrapped.
-    pub fn bootstrap_if_needed(&mut self) -> Result<()> {
+    fn bootstrap_if_needed(&mut self) -> Result<()> {
         if !queries::is_bootstrapped(&self.conn)? {
             let tx = self.conn.transaction()?;
             refresh::refresh_search_index(&tx, &self.root)?;
@@ -95,7 +82,7 @@ impl IndCache {
         Ok(())
     }
 
-    /// Incremental discovery using directory mtime tracking; marks bootstrapped.
+    /// Discover additions, deletions, and metadata changes; marks bootstrapped.
     pub fn discover_workspace_changes(&mut self) -> Result<()> {
         let tx = self.conn.transaction()?;
         let (changed_fnodes, has_deletion) =
@@ -109,19 +96,6 @@ impl IndCache {
                 refresh::refresh_topo_depth_upward_from(&tx, fnode)?;
             }
         }
-        tx.execute(
-            "UPDATE mdoc_index_state SET bootstrapped = 1 WHERE id = 1",
-            [],
-        )?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Incremental discovery + re-stat all indexed paths.
-    pub fn refresh_workspace_index(&mut self) -> Result<()> {
-        let tx = self.conn.transaction()?;
-        discovery::discover_workspace_changes(&tx, &self.root)?;
-        refresh::refresh_indexed_paths(&tx, &self.root)?;
         tx.execute(
             "UPDATE mdoc_index_state SET bootstrapped = 1 WHERE id = 1",
             [],

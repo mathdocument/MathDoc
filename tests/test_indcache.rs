@@ -119,6 +119,32 @@ fn test_refresh_all_detects_subnanosecond_mtime_change() {
     assert_eq!(cache.search("OLD0").unwrap().len(), 0);
 }
 
+#[cfg(unix)]
+#[test]
+fn test_discovery_finds_new_file_when_directory_mtime_is_restored() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    let original_mtime = fs::metadata(root).unwrap().modified().unwrap();
+
+    write(
+        &root.join("new.mdoc"),
+        "@fnode: new-node\n@title: New Node\n",
+    );
+    fs::File::open(root)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(original_mtime))
+        .unwrap();
+    assert_eq!(
+        fs::metadata(root).unwrap().modified().unwrap(),
+        original_mtime
+    );
+
+    cache.discover_workspace_changes().unwrap();
+    assert_eq!(cache.search("New Node").unwrap().len(), 1);
+}
+
 fn rewrite_preserving_mtime_and_size(path: &Path, content: &str, atomic: bool) {
     let original = fs::metadata(path).unwrap();
     let modified = original.modified().unwrap();
@@ -177,6 +203,13 @@ fn assert_preserved_metadata_change_detected(cache: &mut IndCache) {
     assert!(!cache.graph_check_report().unwrap().cycles.is_empty());
 }
 
+fn assert_preserved_metadata_change_deferred(cache: &IndCache) {
+    assert_eq!(cache.search("Title Old").unwrap().len(), 1);
+    assert!(cache.search("Title New").unwrap().is_empty());
+    assert_eq!(cache.exact_fnode_rows("root-old").unwrap().len(), 1);
+    assert!(cache.exact_fnode_rows("root-new").unwrap().is_empty());
+}
+
 #[test]
 fn test_refresh_all_reparses_same_mtime_same_size_content() {
     let (_dir, mut cache, source) = setup_preserved_metadata_change();
@@ -191,7 +224,7 @@ fn test_refresh_all_reparses_same_mtime_same_size_content() {
 }
 
 #[test]
-fn test_incremental_refresh_hashes_in_place_same_metadata_edit() {
+fn test_incremental_refresh_defers_in_place_same_metadata_edit() {
     let (_dir, mut cache, source) = setup_preserved_metadata_change();
     rewrite_preserving_mtime_and_size(
         &source,
@@ -200,11 +233,13 @@ fn test_incremental_refresh_hashes_in_place_same_metadata_edit() {
     );
 
     cache.discover_workspace_changes().unwrap();
+    assert_preserved_metadata_change_deferred(&cache);
+    cache.refresh_all().unwrap();
     assert_preserved_metadata_change_detected(&mut cache);
 }
 
 #[test]
-fn test_incremental_refresh_hashes_atomic_same_metadata_replacement() {
+fn test_incremental_refresh_defers_atomic_same_metadata_replacement() {
     let (_dir, mut cache, source) = setup_preserved_metadata_change();
     rewrite_preserving_mtime_and_size(
         &source,
@@ -213,6 +248,8 @@ fn test_incremental_refresh_hashes_atomic_same_metadata_replacement() {
     );
 
     cache.discover_workspace_changes().unwrap();
+    assert_preserved_metadata_change_deferred(&cache);
+    cache.refresh_all().unwrap();
     assert_preserved_metadata_change_detected(&mut cache);
 }
 
@@ -286,15 +323,18 @@ fn test_legacy_schema_is_rebuilt() {
 
     // Verify the current columns and constraints were installed.
     let conn = rusqlite::Connection::open(&db_path).unwrap();
-    let has_mtime_ns: bool = conn
+    let has_topo_depth: bool = conn
         .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('mdocs') WHERE name = 'mtime_ns'",
+            "SELECT COUNT(*) FROM pragma_table_info('mdocs') WHERE name = 'topo_depth'",
             [],
             |r| r.get::<_, i64>(0),
         )
         .map(|n| n > 0)
         .unwrap_or(false);
-    assert!(has_mtime_ns, "mtime_ns column should exist after rebuild");
+    assert!(
+        has_topo_depth,
+        "topo_depth column should exist after rebuild"
+    );
     let primary_key: String = conn
         .query_row(
             "SELECT name FROM pragma_table_info('mdocs') WHERE pk = 1",
@@ -427,8 +467,8 @@ fn test_resolve_ref_deletes_crafted_cache_path_without_reading_outside() {
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     conn.execute(
         "INSERT INTO mdocs
-         (path, fnode, title, title_lc, mtime_sec, mtime_ns, size, topo_depth)
-         VALUES ('../outside.mdoc', 'crafted-node', 'Crafted', 'crafted', 0, 0, 0, 0)",
+         (path, fnode, title, title_lc, topo_depth)
+         VALUES ('../outside.mdoc', 'crafted-node', 'Crafted', 'crafted', 0)",
         [],
     )
     .unwrap();
@@ -895,14 +935,12 @@ fn test_old_schema_rebuilds_topo_depth() {
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     cache.refresh_all().unwrap();
 
-    // Simulate a pre-v6 database: drop topo_depth column by downgrading user_version
-    // and zeroing out depths, plus clear the backfilled flag.
+    // Simulate an old index with stale derived depths.
     {
         let conn = rusqlite::Connection::open(cache.db_path()).unwrap();
         conn.execute_batch(
             "PRAGMA user_version = 5;
-             UPDATE mdocs SET topo_depth = 0;
-             UPDATE mdoc_index_state SET topo_depth_backfilled = 0 WHERE id = 1;",
+             UPDATE mdocs SET topo_depth = 0;",
         )
         .unwrap();
     }
@@ -923,9 +961,9 @@ fn test_old_schema_rebuilds_topo_depth() {
 }
 
 #[test]
-fn test_crash_safe_topo_backfill() {
-    // Simulate a crash window: schema is v10 (version already bumped), topo_depth
-    // column exists, but topo_depth_backfilled flag was never set to 1.
+fn test_interrupted_bootstrap_rebuilds_topo_depth() {
+    // A crash after schema creation leaves bootstrapped=0, so the next open
+    // rebuilds all derived data from source files.
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     setup(root);
@@ -942,23 +980,23 @@ fn test_crash_safe_topo_backfill() {
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     cache.refresh_all().unwrap();
 
-    // Simulate the crash window: zero out depths and reset the flag.
+    // Simulate the crash window: stale derived data with bootstrap incomplete.
     {
         let conn = rusqlite::Connection::open(cache.db_path()).unwrap();
         conn.execute_batch(
             "UPDATE mdocs SET topo_depth = 0;
-             UPDATE mdoc_index_state SET topo_depth_backfilled = 0 WHERE id = 1;",
+             UPDATE mdoc_index_state SET bootstrapped = 0 WHERE id = 1;",
         )
         .unwrap();
     }
 
-    // Re-open: sees topo_depth_backfilled = 0 even at the current schema, runs backfill.
+    // Re-open performs the normal full bootstrap.
     let cache2 = IndCache::open(root.to_path_buf()).unwrap();
     let depths = cache2.all_topo_depths().unwrap();
     assert_eq!(
         depths.get("parent-node").copied().unwrap_or(0),
         1,
-        "parent-node should have topo_depth = 1 after crash-safe recovery"
+        "parent-node should have topo_depth = 1 after bootstrap recovery"
     );
 }
 
@@ -981,11 +1019,6 @@ fn test_old_schema_rebuild_recomputes_stale_topo_depths() {
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     conn.execute("UPDATE mdocs SET topo_depth = 99", [])
         .unwrap();
-    conn.execute(
-        "UPDATE mdoc_index_state SET topo_depth_backfilled = 1 WHERE id = 1",
-        [],
-    )
-    .unwrap();
     conn.execute_batch("PRAGMA user_version = 9;").unwrap();
     drop(conn);
 

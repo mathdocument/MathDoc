@@ -26,8 +26,7 @@ impl DepGraph {
 
     /// Convenience constructor: open a cache and load root by fnode (for tests and CLI).
     pub fn new(mdcroot: PathBuf, root_fnode: &str) -> Result<Self> {
-        let mut cache = IndCache::open(mdcroot).context("opening workspace index")?;
-        cache.bootstrap_if_needed()?;
+        let cache = IndCache::open(mdcroot).context("opening workspace index")?;
         DepGraph::from_ref(cache, root_fnode, None)
             .context("loading graph root from workspace index")
     }
@@ -83,7 +82,6 @@ impl DepGraph {
         let base_cwd = cwd
             .map(|c| c.to_path_buf())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| cache.root.clone()));
-        cache.bootstrap_if_needed()?;
         let (_, _, src_path) = cache.resolve_ref(ref_str, Some(&base_cwd))?;
         // Ensure the resolved file is indexed before checking for duplicates.
         // Without this, a file resolved via filesystem fallback (not yet in the index)
@@ -512,19 +510,10 @@ impl DepGraph {
 
     // ── Private: loader helpers ───────────────────────────────────────────────
 
-    fn ensure_ready(&mut self) -> Result<()> {
-        let mdc = self.mdcroot.join(".mdc");
-        if !mdc.is_dir() {
-            bail!("invalid mdoc root (missing .mdc): {}", mdc.display());
-        }
-        self.cache.bootstrap_if_needed()
-    }
-
     fn ensure_node_loaded(&mut self, fnode: &str) -> Result<()> {
         if self.state.nodes_by_fnode.contains_key(fnode) {
             return Ok(());
         }
-        self.ensure_ready()?;
         match self.load_node(fnode, false, false)? {
             Some(node) => {
                 self.state.nodes_by_fnode.insert(fnode.to_string(), node);

@@ -49,7 +49,6 @@ fn build_app(dir: &TempDir) -> (PathBuf, axum::Router) {
     root_node.save().unwrap();
 
     let mut cache = IndCache::open(root.clone()).unwrap();
-    cache.bootstrap_if_needed().unwrap();
     cache.discover_workspace_changes().unwrap();
 
     let state = web::AppState::new(root.clone(), cache);

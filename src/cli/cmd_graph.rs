@@ -11,7 +11,7 @@ use super::{
 pub(super) fn cmd_graph_check() -> Result<i32> {
     let mdcroot = require_mdcroot()?;
     let mut cache = open_cache(mdcroot)?;
-    cache.refresh_workspace_index()?;
+    cache.refresh_all()?;
     let report = cache.graph_check_report()?;
     let ok = report.missing.is_empty() && report.invalid.is_empty() && report.cycles.is_empty();
 

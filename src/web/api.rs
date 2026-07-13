@@ -288,7 +288,7 @@ pub async fn graph_roots(State(state): State<AppState>) -> ApiResult<Json<Vec<Gr
 
 pub async fn graph_check(State(state): State<AppState>) -> ApiResult<Json<GraphCheckReport>> {
     let report = with_cache(&state, |c| {
-        c.refresh_workspace_index()?;
+        c.refresh_all()?;
         c.graph_check_report()
     })?;
     Ok(Json(report))

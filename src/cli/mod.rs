@@ -251,9 +251,7 @@ fn require_mdcroot() -> Result<PathBuf> {
 }
 
 fn open_cache(mdcroot: PathBuf) -> Result<IndCache> {
-    let mut cache = IndCache::open(mdcroot)?;
-    cache.bootstrap_if_needed()?;
-    Ok(cache)
+    IndCache::open(mdcroot)
 }
 
 fn cwd() -> PathBuf {

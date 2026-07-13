@@ -1,6 +1,5 @@
 use anyhow::{bail, Result};
 use rusqlite::Connection;
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -14,7 +13,7 @@ use crate::workspace::{find_nested_mdcroot, iter_mdoc_files, to_rel_path};
 
 // ── Public write functions ────────────────────────────────────────────────────
 
-/// Full workspace scan: reparse every file, delete stale paths, rebuild dir index.
+/// Full workspace scan: reparse every file and delete stale paths.
 pub fn refresh_search_index(conn: &Connection, root: &Path) -> Result<()> {
     let mut stmt = conn.prepare(
         "SELECT path FROM mdoc_files
@@ -41,40 +40,10 @@ pub fn refresh_search_index(conn: &Connection, root: &Path) -> Result<()> {
     }
 
     super::queries::refresh_all_derived_data(conn)?;
-    super::discovery::rebuild_directory_index(conn, root)?;
     conn.execute(
         "UPDATE mdoc_index_state SET bootstrapped = 1 WHERE id = 1",
         [],
     )?;
-    Ok(())
-}
-
-/// Re-check all already-indexed paths; delete those that have vanished, re-upsert changed ones.
-pub fn refresh_indexed_paths(conn: &Connection, root: &Path) -> Result<()> {
-    let mut stmt = conn.prepare("SELECT path, mtime_ns, size, digest FROM mdoc_files")?;
-    let rows: Vec<(String, i64, i64, Vec<u8>)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    for (rel_path, cached_ns, cached_sz, cached_digest) in rows {
-        let file_path = match validate_cached_mdoc_path(root, &rel_path) {
-            Ok(path) => path,
-            Err(_) => {
-                delete_indexed_path(conn, &rel_path)?;
-                continue;
-            }
-        };
-        match std::fs::metadata(&file_path) {
-            Ok(meta) => {
-                let (mtime_ns, size) = metadata_state(&meta);
-                let digest = file_digest(&file_path)?;
-                if (mtime_ns, size, &digest) != (cached_ns, cached_sz, &cached_digest) {
-                    upsert_mdoc_row(conn, root, &file_path)?;
-                }
-            }
-            Err(_) => delete_indexed_path(conn, &rel_path)?,
-        }
-    }
-    super::queries::refresh_all_derived_data(conn)?;
     Ok(())
 }
 
@@ -143,50 +112,6 @@ pub(crate) fn validate_cached_mdoc_path(root: &Path, rel_path: &str) -> Result<P
     Ok(resolved)
 }
 
-pub(crate) fn validate_cached_directory_path(root: &Path, rel_path: &str) -> Result<PathBuf> {
-    let root = root.canonicalize()?;
-    if rel_path.is_empty() {
-        return Ok(root);
-    }
-    let relative = Path::new(rel_path);
-    if relative.is_absolute() {
-        bail!(
-            "cached directory path must be relative: {}",
-            relative.display()
-        );
-    }
-    crate::workspace::validate_workspace_relative_path(relative, relative)?;
-
-    let mut current = root.clone();
-    for component in relative.components() {
-        current.push(component.as_os_str());
-        let meta = std::fs::symlink_metadata(&current)?;
-        if meta.file_type().is_symlink() {
-            bail!(
-                "refusing cached directory with symlink component {}",
-                current.display()
-            );
-        }
-    }
-    let resolved = current.canonicalize()?;
-    if !resolved.starts_with(&root) {
-        bail!(
-            "cached directory is outside workspace: {}",
-            relative.display()
-        );
-    }
-    if !std::fs::symlink_metadata(&resolved)?.is_dir() {
-        bail!("cached path is not a directory: {}", resolved.display());
-    }
-    if let Some(nested) = find_nested_mdcroot(&root, &resolved) {
-        bail!(
-            "cached directory is inside nested mdoc root: {}",
-            nested.display()
-        );
-    }
-    Ok(resolved)
-}
-
 /// Upsert a single .mdoc file: update metadata, parse, rebuild edges and issues.
 pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Result<()> {
     let file_path = crate::workspace::resolve_mdoc_path(root, file_path)?;
@@ -212,23 +137,14 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
     };
 
     let (mtime_ns, size) = metadata_state(&meta);
-    let digest = file_digest(&file_path)?;
-    let mtime_sec = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
 
     conn.execute(
-        "INSERT INTO mdoc_files (path, mtime_sec, mtime_ns, size, digest)
-         VALUES (?, ?, ?, ?, ?)
+        "INSERT INTO mdoc_files (path, mtime_ns, size)
+         VALUES (?, ?, ?)
          ON CONFLICT(path) DO UPDATE SET
-             mtime_sec = excluded.mtime_sec,
              mtime_ns = excluded.mtime_ns,
-             size = excluded.size,
-             digest = excluded.digest",
-        rusqlite::params![rel_path, mtime_sec, mtime_ns, size, digest],
+             size = excluded.size",
+        rusqlite::params![rel_path, mtime_ns, size],
     )?;
 
     // Quick head read (fallback for mdocs row if full parse fails)
@@ -260,15 +176,7 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
             // if the DB schema enforces fnode uniqueness.
             cleanup_stale_fnode_paths(conn, &root_resolved, &node.fnode, &rel_path)?;
 
-            upsert_search_row(
-                conn,
-                &rel_path,
-                &node.fnode,
-                &node.title,
-                mtime_sec,
-                mtime_ns,
-                size,
-            )?;
+            upsert_search_row(conn, &rel_path, &node.fnode, &node.title)?;
             for (order, dep_fnode) in node.depens.iter().enumerate() {
                 conn.execute(
                     "INSERT INTO mdoc_edges (src_path, src_fnode, dst_fnode, ord)
@@ -287,7 +195,7 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
             match &head {
                 Some((fnode, title)) => {
                     cleanup_stale_fnode_paths(conn, &root_resolved, fnode, &rel_path)?;
-                    upsert_search_row(conn, &rel_path, fnode, title, mtime_sec, mtime_ns, size)?;
+                    upsert_search_row(conn, &rel_path, fnode, title)?;
                 }
                 None => {
                     conn.execute("DELETE FROM mdocs WHERE path = ?", [&rel_path])?;
@@ -787,7 +695,7 @@ pub(crate) fn bump_graph_epoch(conn: &Connection) -> Result<()> {
 
 // ── Private helpers ───────────────────────────────────────────────────────────
 
-fn metadata_state(meta: &std::fs::Metadata) -> (i64, i64) {
+pub(crate) fn metadata_state(meta: &std::fs::Metadata) -> (i64, i64) {
     let mtime_ns = meta
         .modified()
         .ok()
@@ -798,39 +706,15 @@ fn metadata_state(meta: &std::fs::Metadata) -> (i64, i64) {
     (mtime_ns, size)
 }
 
-pub(crate) fn file_digest(path: &Path) -> Result<Vec<u8>> {
-    let content = std::fs::read(path)?;
-    Ok(Sha256::digest(content).to_vec())
-}
-
-fn upsert_search_row(
-    conn: &Connection,
-    rel_path: &str,
-    fnode: &str,
-    title: &str,
-    mtime_sec: i64,
-    mtime_ns: i64,
-    size: i64,
-) -> Result<()> {
+fn upsert_search_row(conn: &Connection, rel_path: &str, fnode: &str, title: &str) -> Result<()> {
     conn.execute(
-        "INSERT INTO mdocs (path, fnode, title, title_lc, mtime_sec, mtime_ns, size)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        "INSERT INTO mdocs (path, fnode, title, title_lc)
+         VALUES (?, ?, ?, ?)
          ON CONFLICT(path) DO UPDATE SET
              fnode = excluded.fnode,
              title = excluded.title,
-             title_lc = excluded.title_lc,
-             mtime_sec = excluded.mtime_sec,
-             mtime_ns = excluded.mtime_ns,
-             size = excluded.size",
-        rusqlite::params![
-            rel_path,
-            fnode,
-            title,
-            title.to_lowercase(),
-            mtime_sec,
-            mtime_ns,
-            size
-        ],
+             title_lc = excluded.title_lc",
+        rusqlite::params![rel_path, fnode, title, title.to_lowercase()],
     )?;
     Ok(())
 }

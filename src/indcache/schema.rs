@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 13;
+const SCHEMA_VERSION: i32 = 14;
 
 const CREATE_SQL: &str = "
 CREATE TABLE IF NOT EXISTS mdocs (
@@ -10,25 +10,15 @@ CREATE TABLE IF NOT EXISTS mdocs (
     fnode       TEXT    NOT NULL,
     title       TEXT    NOT NULL,
     title_lc    TEXT    NOT NULL,
-    mtime_sec   INTEGER NOT NULL,
-    mtime_ns    INTEGER NOT NULL,
-    size        INTEGER NOT NULL,
     topo_depth  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_mdocs_title_lc ON mdocs(title_lc);
 CREATE INDEX IF NOT EXISTS idx_mdocs_fnode    ON mdocs(fnode);
 
 CREATE TABLE IF NOT EXISTS mdoc_files (
-    path      TEXT PRIMARY KEY,
-    mtime_sec INTEGER NOT NULL,
-    mtime_ns  INTEGER NOT NULL,
-    size      INTEGER NOT NULL,
-    digest    BLOB    NOT NULL DEFAULT X''
-);
-
-CREATE TABLE IF NOT EXISTS mdoc_dirs (
-    path     TEXT PRIMARY KEY,
-    mtime_ns INTEGER NOT NULL
+    path     TEXT    PRIMARY KEY,
+    mtime_ns INTEGER NOT NULL,
+    size     INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS mdoc_edges (
@@ -52,11 +42,10 @@ CREATE INDEX IF NOT EXISTS idx_mdoc_issues_kind      ON mdoc_issues(kind);
 CREATE INDEX IF NOT EXISTS idx_mdoc_issues_ref_fnode ON mdoc_issues(ref_fnode);
 
 CREATE TABLE IF NOT EXISTS mdoc_index_state (
-    id                      INTEGER PRIMARY KEY CHECK (id = 1),
-    bootstrapped            INTEGER NOT NULL DEFAULT 0,
-    graph_epoch             INTEGER NOT NULL DEFAULT 0,
-    weak_component_dirty    INTEGER NOT NULL DEFAULT 1,
-    topo_depth_backfilled   INTEGER NOT NULL DEFAULT 0
+    id                   INTEGER PRIMARY KEY CHECK (id = 1),
+    bootstrapped         INTEGER NOT NULL DEFAULT 0,
+    graph_epoch          INTEGER NOT NULL DEFAULT 0,
+    weak_component_dirty INTEGER NOT NULL DEFAULT 1
 );
 INSERT OR IGNORE INTO mdoc_index_state (id, bootstrapped) VALUES (1, 0);
 
@@ -91,9 +80,7 @@ DROP TABLE IF EXISTS mdocs;
 ";
 
 /// Open the database at `path` with WAL mode and apply the schema.
-/// Returns `(connection, needs_topo_backfill)`.  When `needs_topo_backfill` is
-/// true the caller must refresh persisted topo depths before serving reads.
-pub fn open_db(path: &Path) -> Result<(Connection, bool)> {
+pub fn open_db(path: &Path) -> Result<Connection> {
     let file_name = path.file_name().ok_or_else(|| {
         anyhow::anyhow!("index database path has no file name: {}", path.display())
     })?;
@@ -141,14 +128,14 @@ fn reject_multiply_linked_file(path: &Path, meta: &std::fs::Metadata) -> Result<
     Ok(())
 }
 
-fn open_db_once(path: &Path) -> Result<(Connection, bool)> {
+fn open_db_once(path: &Path) -> Result<Connection> {
     let flags = OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW;
     let mut conn = Connection::open_with_flags(path, flags)?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     checked_user_version(&conn)?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
-    let needs_topo_backfill = apply_schema(&mut conn)?;
-    Ok((conn, needs_topo_backfill))
+    apply_schema(&mut conn)?;
+    Ok(conn)
 }
 
 fn checked_user_version(conn: &Connection) -> Result<i32> {
@@ -173,8 +160,8 @@ fn is_database_busy(error: &anyhow::Error) -> bool {
         })
 }
 
-/// Rebuild old derived indexes and return whether topo depths need backfilling.
-fn apply_schema(conn: &mut Connection) -> Result<bool> {
+/// Rebuild old derived indexes instead of migrating derived rows in place.
+fn apply_schema(conn: &mut Connection) -> Result<()> {
     let tx = conn.transaction()?;
     let user_version = checked_user_version(&tx)?;
 
@@ -186,19 +173,8 @@ fn apply_schema(conn: &mut Connection) -> Result<bool> {
         tx.execute_batch(CREATE_SQL)?;
     }
 
-    // Check the persistent flag on every open — independent of user_version so that
-    // a crash between the version bump and the backfill is recovered automatically.
-    let needs_topo_backfill: bool = tx
-        .query_row(
-            "SELECT topo_depth_backfilled FROM mdoc_index_state WHERE id = 1",
-            [],
-            |r| r.get::<_, i32>(0),
-        )
-        .map(|v| v == 0)
-        .unwrap_or(false);
-
     tx.commit()?;
-    Ok(needs_topo_backfill)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -209,10 +185,7 @@ mod tests {
     #[test]
     fn open_fresh_db() {
         let dir = TempDir::new().unwrap();
-        // Fresh DB: topo_depth_backfilled defaults to 0, so backfill is requested
-        // (no-op on empty DB, but the flag machinery should still trigger).
-        let (conn, needs_backfill) = open_db(&dir.path().join("index.db")).unwrap();
-        assert!(needs_backfill);
+        let conn = open_db(&dir.path().join("index.db")).unwrap();
         let n: i32 = conn
             .query_row("SELECT COUNT(*) FROM mdoc_index_state", [], |r| r.get(0))
             .unwrap();
@@ -292,7 +265,7 @@ mod tests {
     fn old_cache_is_rebuilt_with_current_schema() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("index.db");
-        let (conn, _) = open_db(&path).unwrap();
+        let conn = open_db(&path).unwrap();
         conn.execute_batch(
             "ALTER TABLE mdoc_files RENAME TO mdoc_files_new;
              CREATE TABLE mdoc_files (
@@ -307,23 +280,23 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let (conn, _) = open_db(&path).unwrap();
-        let has_digest: bool = conn
+        let conn = open_db(&path).unwrap();
+        let has_metadata: bool = conn
             .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('mdoc_files') WHERE name = 'digest'",
+                "SELECT COUNT(*) = 2 FROM pragma_table_info('mdoc_files')
+                 WHERE name IN ('mtime_ns', 'size')",
                 [],
-                |row| row.get::<_, i64>(0),
+                |row| row.get(0),
             )
-            .map(|count| count == 1)
             .unwrap();
-        assert!(has_digest);
+        assert!(has_metadata);
     }
 
     #[test]
     fn rebuilding_an_old_cache_is_idempotent() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("index.db");
-        let (mut conn, _) = open_db(&path).unwrap();
+        let mut conn = open_db(&path).unwrap();
         // Old derived rows are discarded rather than migrated in place.
         conn.execute_batch("PRAGMA user_version = 0;").unwrap();
         conn.execute_batch("INSERT INTO mdoc_edges (src_path, src_fnode, dst_fnode, ord) VALUES ('a.mdoc', 'fa', 'fb', 0)").unwrap();

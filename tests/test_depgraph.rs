@@ -45,8 +45,7 @@ fn test_from_ref_loads_root_graph() {
     let src = make_node(root, "Src", "text", "src");
     src.save().unwrap();
 
-    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
-    cache.bootstrap_if_needed().unwrap();
+    let cache = IndCache::open(root.to_path_buf()).unwrap();
 
     let graph = DepGraph::from_ref(cache, &src.fnode[..8], Some(root)).unwrap();
     assert_eq!(graph.root_fnode(), src.fnode);
@@ -60,8 +59,7 @@ fn test_from_ref_rejects_duplicate_root_fnode_even_by_path() {
     fs::write(root.join("dup-a.mdoc"), "@fnode: dup-node\n@title: Dup A\n").unwrap();
     fs::write(root.join("dup-b.mdoc"), "@fnode: dup-node\n@title: Dup B\n").unwrap();
 
-    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
-    cache.bootstrap_if_needed().unwrap();
+    let cache = IndCache::open(root.to_path_buf()).unwrap();
 
     let err = expect_err(DepGraph::from_ref(cache, "dup-a.mdoc", Some(root)));
     assert!(
@@ -81,13 +79,12 @@ fn test_from_ref_detects_duplicate_via_filesystem_fallback() {
 
     // Write and index only a.mdoc
     fs::write(root.join("a.mdoc"), "@fnode: shared-node\n@title: A\n").unwrap();
-    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
-    cache.bootstrap_if_needed().unwrap();
+    let _cache = IndCache::open(root.to_path_buf()).unwrap();
 
     // Write b.mdoc with the same fnode — not yet indexed
     fs::write(root.join("b.mdoc"), "@fnode: shared-node\n@title: B\n").unwrap();
 
-    // Open a fresh cache (no bootstrap) so b.mdoc is still absent from the index
+    // Opening a fresh cache discovers b.mdoc before reference resolution.
     let cache2 = IndCache::open(root.to_path_buf()).unwrap();
     let err = expect_err(DepGraph::from_ref(cache2, "b.mdoc", Some(root)));
     assert!(
@@ -674,7 +671,6 @@ fn test_global_root_items_include_unreferenced_valid_and_invalid_nodes() {
     make_invalid(&bad_root.path);
 
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
-    cache.bootstrap_if_needed().unwrap();
     let items = cache.global_root_items().unwrap();
 
     let by_fnode: std::collections::HashMap<&str, _> =
@@ -732,7 +728,6 @@ fn test_graph_check_report_collects_missing_invalid_and_cycles() {
     src.save().unwrap();
 
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
-    cache.bootstrap_if_needed().unwrap();
     let report = cache.graph_check_report().unwrap();
 
     assert_eq!(report.nodes, 4); // bad, a, b, src (missing not counted)
