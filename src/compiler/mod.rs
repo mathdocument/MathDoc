@@ -219,54 +219,12 @@ struct DrainResult {
 
 #[derive(Clone, Copy)]
 struct PipePoll {
-    #[cfg(unix)]
     fd: libc::c_int,
-    #[cfg(windows)]
-    handle: isize,
 }
 
-#[cfg(unix)]
 fn pipe_poll<T: std::os::fd::AsRawFd>(pipe: &T) -> PipePoll {
     PipePoll {
         fd: pipe.as_raw_fd(),
-    }
-}
-
-#[cfg(windows)]
-fn pipe_poll<T: std::os::windows::io::AsRawHandle>(pipe: &T) -> PipePoll {
-    PipePoll {
-        handle: pipe.as_raw_handle() as isize,
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-fn pipe_poll<T>(_pipe: &T) -> PipePoll {
-    PipePoll {}
-}
-
-#[cfg(windows)]
-fn windows_pipe_available(poll: PipePoll) -> std::io::Result<Option<usize>> {
-    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
-
-    let mut available = 0;
-    let succeeded = unsafe {
-        PeekNamedPipe(
-            poll.handle as windows_sys::Win32::Foundation::HANDLE,
-            std::ptr::null_mut(),
-            0,
-            std::ptr::null_mut(),
-            &mut available,
-            std::ptr::null_mut(),
-        )
-    };
-    if succeeded != 0 {
-        return Ok(Some(available as usize));
-    }
-    let error = std::io::Error::last_os_error();
-    if matches!(error.raw_os_error(), Some(109 | 232)) {
-        Ok(None)
-    } else {
-        Err(error)
     }
 }
 
@@ -295,17 +253,6 @@ impl PipeDrain {
                     if thread_stop.load(Ordering::Relaxed) {
                         break None;
                     }
-                    #[cfg(windows)]
-                    let read_limit = match windows_pipe_available(poll) {
-                        Ok(None) => break None,
-                        Ok(Some(0)) => {
-                            std::thread::sleep(Duration::from_millis(10));
-                            continue;
-                        }
-                        Ok(Some(available)) => available.min(chunk.len()),
-                        Err(error) => break Some(error.to_string()),
-                    };
-                    #[cfg(not(windows))]
                     let read_limit = chunk.len();
 
                     match pipe.read(&mut chunk[..read_limit]) {
@@ -313,21 +260,13 @@ impl PipeDrain {
                         Ok(read) => capture.push(&chunk[..read]),
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            #[cfg(unix)]
-                            {
-                                let mut descriptor = libc::pollfd {
-                                    fd: poll.fd,
-                                    events: libc::POLLIN,
-                                    revents: 0,
-                                };
-                                // SAFETY: descriptor contains the valid pipe fd owned by this thread.
-                                unsafe { libc::poll(&mut descriptor, 1, 100) };
-                            }
-                            #[cfg(not(unix))]
-                            {
-                                let _ = poll;
-                                std::thread::sleep(Duration::from_millis(10));
-                            }
+                            let mut descriptor = libc::pollfd {
+                                fd: poll.fd,
+                                events: libc::POLLIN,
+                                revents: 0,
+                            };
+                            // SAFETY: descriptor contains the valid pipe fd owned by this thread.
+                            unsafe { libc::poll(&mut descriptor, 1, 100) };
                         }
                         Err(e) => break Some(e.to_string()),
                     }
@@ -406,24 +345,6 @@ impl PipeDrain {
         if self.result.is_some() {
             return;
         }
-        #[cfg(windows)]
-        {
-            let panicked = self
-                .handle
-                .take()
-                .is_some_and(|handle| handle.join().is_err());
-            let mut result = self.receiver.try_recv().unwrap_or(DrainResult {
-                output: String::new(),
-                error: Some("output drain thread stopped unexpectedly".to_string()),
-            });
-            if panicked {
-                result.error = Some("output drain thread panicked".to_string());
-            }
-            self.result = Some(result);
-            return;
-        }
-        // Unknown non-Unix pipe APIs cannot always be interrupted from here.
-        #[cfg(not(windows))]
         self.handle.take();
         self.result = Some(DrainResult {
             output: format!(
@@ -472,7 +393,6 @@ fn output_diagnostics(stdout: &PipeDrain, stderr: &PipeDrain) -> String {
     diagnostics
 }
 
-#[cfg(unix)]
 fn output_diagnostics_strings(stdout: &str, stderr: &str) -> String {
     let mut diagnostics = String::new();
     if !stdout.is_empty() {
@@ -486,63 +406,12 @@ fn output_diagnostics_strings(stdout: &str, stderr: &str) -> String {
     diagnostics
 }
 
-struct DescendantGuard {
-    #[cfg(windows)]
-    job: std::os::windows::io::OwnedHandle,
-}
+struct DescendantGuard;
 
 impl DescendantGuard {
     fn attach(child: &std::process::Child) -> std::io::Result<Self> {
-        #[cfg(windows)]
-        {
-            use std::os::windows::io::{AsRawHandle, FromRawHandle};
-            use windows_sys::Win32::System::JobObjects::{
-                AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-                SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-            };
-
-            let raw_job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-            if raw_job.is_null() {
-                return Err(std::io::Error::last_os_error());
-            }
-            let job = unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw_job.cast()) };
-            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            let configured = unsafe {
-                SetInformationJobObject(
-                    job.as_raw_handle().cast(),
-                    JobObjectExtendedLimitInformation,
-                    (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-                    std::mem::size_of_val(&limits) as u32,
-                )
-            };
-            if configured == 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            let assigned = unsafe {
-                AssignProcessToJobObject(job.as_raw_handle().cast(), child.as_raw_handle().cast())
-            };
-            if assigned == 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            return Ok(Self { job });
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = child;
-            Ok(Self {})
-        }
-    }
-
-    #[cfg(windows)]
-    fn terminate(&self) {
-        use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
-
-        unsafe {
-            TerminateJobObject(self.job.as_raw_handle().cast(), 1);
-        }
+        let _ = child;
+        Ok(Self)
     }
 }
 
@@ -551,17 +420,12 @@ fn terminate_process(
     leader_reaped: bool,
     descendants: &mut DescendantGuard,
 ) {
-    #[cfg(unix)]
-    {
-        let _ = descendants;
-        let process_group = child.id() as libc::pid_t;
-        // The command is placed in a group whose id is its pid before exec.
-        unsafe {
-            libc::killpg(process_group, libc::SIGKILL);
-        }
+    let _ = descendants;
+    let process_group = child.id() as libc::pid_t;
+    // The command is placed in a group whose id is its pid before exec.
+    unsafe {
+        libc::killpg(process_group, libc::SIGKILL);
     }
-    #[cfg(windows)]
-    descendants.terminate();
 
     if !leader_reaped {
         // Also try the direct process in case group/job termination failed, then reap it.
@@ -1142,45 +1006,6 @@ mod tests {
             // SAFETY: the test owns this escaped helper pid.
             unsafe { libc::kill(pid, libc::SIGKILL) };
         }
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn test_timeout_kills_windows_descendants_and_joins_drains() {
-        let tmp = tempfile::tempdir().unwrap();
-        let survived = tmp.path().join("descendant-survived");
-        let child_script = tmp.path().join("child.cmd");
-        let parent_script = tmp.path().join("parent.cmd");
-        std::fs::write(
-            &child_script,
-            format!(
-                "@echo off\r\nping -n 4 127.0.0.1 >nul\r\necho survived>\"{}\"\r\n",
-                survived.display()
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            &parent_script,
-            format!(
-                "@echo off\r\nstart \"\" /b cmd.exe /d /c call \"{}\"\r\nping -n 30 127.0.0.1 >nul\r\n",
-                child_script.display()
-            ),
-        )
-        .unwrap();
-
-        let started = Instant::now();
-        let result = run_process(
-            "cmd.exe",
-            ["/d", "/c", "call", parent_script.to_str().unwrap()],
-            "Windows descendant helper",
-            1,
-            None,
-        );
-        assert!(result.unwrap_err().to_string().contains("timed out"));
-        assert!(started.elapsed() < Duration::from_secs(4));
-
-        std::thread::sleep(Duration::from_millis(3500));
-        assert!(!survived.exists(), "job descendant survived timeout");
     }
 
     #[cfg(unix)]

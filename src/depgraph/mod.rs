@@ -46,7 +46,7 @@ impl DepGraph {
         cache: Option<IndCache>,
     ) -> Result<(Self, String)> {
         let root = crate::workspace::validate_mdcroot(&mdcroot)?;
-        let _mutation_lock = crate::mutation_lock::WorkspaceMutationLock::acquire(&root)?;
+        let _mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&root)?;
         let mut node = MdocNode::new_at_path(&root, &root, title);
         if let Some(f) = fnode {
             node.fnode = f.to_string();
@@ -91,7 +91,7 @@ impl DepGraph {
 
     /// Load an existing `.mdoc` via `ref` (fnode, path, or fnode prefix) and build a DepGraph.
     pub fn from_ref(cache: IndCache, ref_str: &str, cwd: Option<&Path>) -> Result<(Self, String)> {
-        let _mutation_lock = crate::mutation_lock::WorkspaceMutationLock::acquire(&cache.root)?;
+        let _mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&cache.root)?;
         Self::from_ref_locked(cache, ref_str, cwd)
     }
 
@@ -352,7 +352,7 @@ impl DepGraph {
         &mut self,
         root: &str,
         dep_fnodes: Vec<String>,
-        snapshot: &crate::safe_file::FileSnapshot,
+        snapshot: &crate::workspace::FileSnapshot,
     ) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
         let existing: HashSet<String> = {
             let node = &self.state.nodes_by_fnode[root];
@@ -524,9 +524,9 @@ impl DepGraph {
     }
 
     #[cfg(test)]
-    fn snapshot_root_for_mutation(&mut self, root: &str) -> Result<crate::safe_file::FileSnapshot> {
+    fn snapshot_root_for_mutation(&mut self, root: &str) -> Result<crate::workspace::FileSnapshot> {
         let path = self.state.nodes_by_fnode[root].path.clone();
-        let snapshot = crate::safe_file::FileSnapshot::capture(&path)?;
+        let snapshot = crate::workspace::FileSnapshot::capture(&path)?;
         let content = snapshot
             .content()
             .ok_or_else(|| anyhow!("mdoc file disappeared: {}", path.display()))?;
@@ -542,16 +542,16 @@ impl DepGraph {
         &mut self,
         root: &str,
     ) -> Result<(
-        crate::mutation_lock::WorkspaceMutationLock,
-        crate::safe_file::FileSnapshot,
+        crate::workspace::WorkspaceMutationLock,
+        crate::workspace::FileSnapshot,
     )> {
-        let mutation_lock = crate::mutation_lock::WorkspaceMutationLock::acquire(&self.mdcroot)?;
+        let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&self.mdcroot)?;
         self.cache.refresh_all()?;
         let (resolved_fnode, _, path) = self.cache.resolve_ref(root, Some(&self.mdcroot))?;
         if resolved_fnode != root {
             bail!("fnode changed while preparing mutation: {root}");
         }
-        let snapshot = crate::safe_file::FileSnapshot::capture(&path)?;
+        let snapshot = crate::workspace::FileSnapshot::capture(&path)?;
         let content = snapshot
             .content()
             .ok_or_else(|| anyhow!("mdoc file disappeared: {}", path.display()))?;
@@ -567,11 +567,11 @@ impl DepGraph {
         &mut self,
         root: &str,
         updated: MdocNode,
-        snapshot: &crate::safe_file::FileSnapshot,
+        snapshot: &crate::workspace::FileSnapshot,
     ) -> Result<()> {
         let payload = updated.render_payload()?;
         let applied =
-            crate::safe_file::atomic_replace(&updated.path, snapshot, payload.as_bytes())?;
+            crate::workspace::atomic_replace(&updated.path, snapshot, payload.as_bytes())?;
         if let Err(index_error) = self.cache.upsert_path(&updated.path) {
             let rollback = applied
                 .rollback()
@@ -998,7 +998,7 @@ mod mutation_conflict_tests {
                 .save_root_update(&source_fnode, desired, &snapshot)
                 .unwrap_err();
             assert!(error
-                .downcast_ref::<crate::safe_file::FileConflict>()
+                .downcast_ref::<crate::workspace::FileConflict>()
                 .is_some());
             assert_eq!(std::fs::read(&external.path).unwrap(), external_bytes);
 

@@ -151,7 +151,6 @@ pub fn open_db(path: &Path) -> Result<(Connection, bool)> {
     }
 }
 
-#[cfg(unix)]
 fn reject_multiply_linked_file(path: &Path, meta: &std::fs::Metadata) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
 
@@ -162,33 +161,6 @@ fn reject_multiply_linked_file(path: &Path, meta: &std::fs::Metadata) -> Result<
         );
     }
     Ok(())
-}
-
-#[cfg(windows)]
-fn reject_multiply_linked_file(path: &Path, meta: &std::fs::Metadata) -> Result<()> {
-    use std::os::windows::fs::MetadataExt;
-
-    let links = meta.number_of_links().ok_or_else(|| {
-        anyhow::anyhow!(
-            "could not determine link count for index database {}",
-            path.display()
-        )
-    })?;
-    if links > 1 {
-        bail!(
-            "refusing to open multiply linked index database {}",
-            path.display()
-        );
-    }
-    Ok(())
-}
-
-#[cfg(not(any(unix, windows)))]
-fn reject_multiply_linked_file(path: &Path, _meta: &std::fs::Metadata) -> Result<()> {
-    bail!(
-        "cannot safely validate index database link count on this platform: {}",
-        path.display()
-    )
 }
 
 fn open_db_once(path: &Path) -> Result<(Connection, bool)> {

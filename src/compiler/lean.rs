@@ -83,7 +83,7 @@ fn ensure_workspace(
     }
 
     if has_lakefile(root) && validate_workspace(root, lake_path, timeout_sec).is_ok() {
-        crate::safe_file::atomic_create_if_missing(&root.join(SETUP_MARKER), SETUP_MARKER_CONTENT)?;
+        crate::workspace::atomic_create_if_missing(&root.join(SETUP_MARKER), SETUP_MARKER_CONTENT)?;
         return Ok(());
     }
 
@@ -109,7 +109,7 @@ fn ensure_workspace(
     install_setup_file(staging.path(), root, "lakefile.lean")?;
     install_setup_file(staging.path(), root, "lean-toolchain")?;
     validate_workspace(root, lake_path, timeout_sec)?;
-    crate::safe_file::atomic_create_if_missing(&root.join(SETUP_MARKER), SETUP_MARKER_CONTENT)?;
+    crate::workspace::atomic_create_if_missing(&root.join(SETUP_MARKER), SETUP_MARKER_CONTENT)?;
     Ok(())
 }
 
@@ -157,13 +157,13 @@ fn install_setup_file(staging: &Path, root: &Path, name: &str) -> Result<()> {
         return Ok(());
     };
     let target = root.join(name);
-    let snapshot = crate::safe_file::FileSnapshot::capture(&target)?;
+    let snapshot = crate::workspace::FileSnapshot::capture(&target)?;
     match snapshot.content() {
         None => {
-            crate::safe_file::atomic_replace(&target, &snapshot, &generated)?;
+            crate::workspace::atomic_replace(&target, &snapshot, &generated)?;
         }
         Some(existing) if existing != generated && generated.starts_with(existing) => {
-            crate::safe_file::atomic_replace(&target, &snapshot, &generated)?;
+            crate::workspace::atomic_replace(&target, &snapshot, &generated)?;
         }
         Some(_) => {}
     }

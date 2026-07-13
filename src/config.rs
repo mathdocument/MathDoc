@@ -213,7 +213,7 @@ fn write_amble(mdcroot: &Path, srctype: &str, kind: &str, content: &str) -> Resu
     let srctype = canonical_srctype(srctype);
     let mdc_dir = mdcroot.join(".mdc");
     match std::fs::symlink_metadata(&mdc_dir) {
-        Ok(_) => crate::safe_file::ensure_regular_directory(&mdc_dir)?,
+        Ok(_) => crate::workspace::ensure_regular_directory(&mdc_dir)?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             std::fs::create_dir(&mdc_dir)?
         }
@@ -221,13 +221,13 @@ fn write_amble(mdcroot: &Path, srctype: &str, kind: &str, content: &str) -> Resu
     }
     let dir = mdc_dir.join(srctype);
     match std::fs::symlink_metadata(&dir) {
-        Ok(_) => crate::safe_file::ensure_regular_directory(&dir)?,
+        Ok(_) => crate::workspace::ensure_regular_directory(&dir)?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir(&dir)?,
         Err(error) => return Err(error.into()),
     }
     let path = amble_path(mdcroot, srctype, kind);
-    let snapshot = crate::safe_file::FileSnapshot::capture(&path)?;
-    crate::safe_file::atomic_replace(&path, &snapshot, content.as_bytes())?;
+    let snapshot = crate::workspace::FileSnapshot::capture(&path)?;
+    crate::workspace::atomic_replace(&path, &snapshot, content.as_bytes())?;
     Ok(())
 }
 
@@ -235,7 +235,7 @@ fn write_amble(mdcroot: &Path, srctype: &str, kind: &str, content: &str) -> Resu
 /// Called by `mdc init`. Only creates files that don't already exist.
 pub fn init_amble_files(mdcroot: &Path) -> Result<bool> {
     let mdc_dir = mdcroot.join(".mdc");
-    crate::safe_file::ensure_regular_directory(&mdc_dir)?;
+    crate::workspace::ensure_regular_directory(&mdc_dir)?;
     let mut changed = false;
     for srctype in BUILTIN_SRCTYPES {
         let pre = default_preamble(srctype);
@@ -244,13 +244,13 @@ pub fn init_amble_files(mdcroot: &Path) -> Result<bool> {
         let post_path = amble_path(mdcroot, srctype, "postamble");
         if !pre.is_empty() || !post.is_empty() {
             changed |=
-                crate::safe_file::ensure_regular_directory_exists(pre_path.parent().unwrap())?;
+                crate::workspace::ensure_regular_directory_exists(pre_path.parent().unwrap())?;
         }
         if !pre.is_empty() {
-            changed |= crate::safe_file::atomic_create_if_missing(&pre_path, pre.as_bytes())?;
+            changed |= crate::workspace::atomic_create_if_missing(&pre_path, pre.as_bytes())?;
         }
         if !post.is_empty() {
-            changed |= crate::safe_file::atomic_create_if_missing(&post_path, post.as_bytes())?;
+            changed |= crate::workspace::atomic_create_if_missing(&post_path, post.as_bytes())?;
         }
     }
     Ok(changed)

@@ -53,9 +53,9 @@ impl SrcCompiler for CompilerRocq {
 fn ensure_workspace(root: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(root)?;
     let project_path = root.join("_CoqProject");
-    let snapshot = crate::safe_file::FileSnapshot::capture(&project_path)?;
-    if matches!(snapshot, crate::safe_file::FileSnapshot::Missing) {
-        crate::safe_file::atomic_replace(&project_path, &snapshot, b"")?;
+    let snapshot = crate::workspace::FileSnapshot::capture(&project_path)?;
+    if matches!(snapshot, crate::workspace::FileSnapshot::Missing) {
+        crate::workspace::atomic_replace(&project_path, &snapshot, b"")?;
     }
     Ok(())
 }

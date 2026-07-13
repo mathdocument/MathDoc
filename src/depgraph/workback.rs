@@ -51,7 +51,7 @@ pub struct WorkFile {
     /// (fnode_prefix, block_content) pairs in file order.
     pub nodes: Vec<(String, String)>,
     pub(crate) node_presence: HashMap<String, bool>,
-    pub(crate) input_snapshots: Vec<(PathBuf, crate::safe_file::FileSnapshot)>,
+    pub(crate) input_snapshots: Vec<(PathBuf, crate::workspace::FileSnapshot)>,
 }
 
 /// Generate work files for each srctype present in the dependency subgraph.
@@ -69,7 +69,7 @@ pub fn merge_work_files(
     let root_fnode = graph.state.root_fnode.clone();
     let mut node_snapshots = Vec::new();
     for node in &nodes {
-        let snapshot = crate::safe_file::FileSnapshot::capture(&node.path)?;
+        let snapshot = crate::workspace::FileSnapshot::capture(&node.path)?;
         let current = MdocNode::load(&graph.mdcroot, &node.path)?;
         if current.fnode != node.fnode
             || current.title != node.title
@@ -134,7 +134,7 @@ pub fn merge_work_files(
 
         // Preamble — always emitted so users can fill it in.
         let preamble_path = crate::config::amble_path(&graph.mdcroot, srctype, "preamble");
-        let preamble_snapshot = crate::safe_file::FileSnapshot::capture(&preamble_path)?;
+        let preamble_snapshot = crate::workspace::FileSnapshot::capture(&preamble_path)?;
         let preamble = match preamble_snapshot.content() {
             Some(content) => std::str::from_utf8(content)?.to_string(),
             None => crate::config::default_preamble(srctype).to_string(),
@@ -185,7 +185,7 @@ pub fn merge_work_files(
 
         // Postamble — always emitted so users can fill it in.
         let postamble_path = crate::config::amble_path(&graph.mdcroot, srctype, "postamble");
-        let postamble_snapshot = crate::safe_file::FileSnapshot::capture(&postamble_path)?;
+        let postamble_snapshot = crate::workspace::FileSnapshot::capture(&postamble_path)?;
         let postamble = match postamble_snapshot.content() {
             Some(content) => std::str::from_utf8(content)?.to_string(),
             None => crate::config::default_postamble(srctype).to_string(),

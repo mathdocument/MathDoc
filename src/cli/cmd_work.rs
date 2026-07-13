@@ -12,7 +12,7 @@ use crate::config::Config;
 use crate::core::escape_terminal;
 use crate::depgraph::workback;
 use crate::depgraph::DepGraph;
-use crate::safe_file::{atomic_replace, ensure_regular_directory, AppliedWrite, FileSnapshot};
+use crate::workspace::{atomic_replace, ensure_regular_directory, AppliedWrite, FileSnapshot};
 
 use super::{
     cwd, fmt_item, open_cache, require_mdcroot, short_fnode, BLD, DIM, GRN, RED, RST, YLW,

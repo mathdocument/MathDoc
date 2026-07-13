@@ -115,7 +115,7 @@ impl ApiError {
 
     fn rejected(detail: anyhow::Error) -> Self {
         if detail
-            .downcast_ref::<crate::safe_file::FileConflict>()
+            .downcast_ref::<crate::workspace::FileConflict>()
             .is_some()
             || detail.downcast_ref::<std::io::Error>().is_some()
             || detail.downcast_ref::<rusqlite::Error>().is_some()
@@ -156,7 +156,7 @@ impl ApiError {
 impl From<anyhow::Error> for ApiError {
     fn from(detail: anyhow::Error) -> Self {
         if detail
-            .downcast_ref::<crate::safe_file::FileConflict>()
+            .downcast_ref::<crate::workspace::FileConflict>()
             .is_some()
         {
             Self::new(
@@ -247,7 +247,7 @@ fn with_mutation<R>(state: &AppState, f: impl FnOnce() -> ApiResult<R>) -> ApiRe
 
 fn with_workspace_mutation<R>(state: &AppState, f: impl FnOnce() -> ApiResult<R>) -> ApiResult<R> {
     let _guard = state.mutation_lock.lock().expect("mutation mutex poisoned");
-    let _workspace_guard = crate::mutation_lock::WorkspaceMutationLock::acquire(&state.mdcroot)?;
+    let _workspace_guard = crate::workspace::WorkspaceMutationLock::acquire(&state.mdcroot)?;
     f()
 }
 
@@ -601,8 +601,8 @@ fn upsert_and_discover(state: &AppState, abs_path: &std::path::Path) -> ApiResul
 fn snapshot_node(
     state: &AppState,
     abs_path: &std::path::Path,
-) -> ApiResult<(crate::safe_file::FileSnapshot, MdocNode)> {
-    let snapshot = crate::safe_file::FileSnapshot::capture(abs_path)?;
+) -> ApiResult<(crate::workspace::FileSnapshot, MdocNode)> {
+    let snapshot = crate::workspace::FileSnapshot::capture(abs_path)?;
     let content = snapshot
         .content()
         .ok_or_else(|| anyhow::anyhow!("mdoc file disappeared: {}", abs_path.display()))?;
@@ -614,10 +614,10 @@ fn save_and_index(
     state: &AppState,
     node: &MdocNode,
     abs_path: &std::path::Path,
-    snapshot: &crate::safe_file::FileSnapshot,
+    snapshot: &crate::workspace::FileSnapshot,
 ) -> ApiResult<()> {
     let payload = node.render_payload().map_err(ApiError::rejected)?;
-    let applied = crate::safe_file::atomic_replace(abs_path, snapshot, payload.as_bytes())?;
+    let applied = crate::workspace::atomic_replace(abs_path, snapshot, payload.as_bytes())?;
     if let Err(index_error) = upsert_and_discover(state, abs_path) {
         let index_message = index_error.detail.to_string();
         if let Err(rollback_error) = applied.rollback() {

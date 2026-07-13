@@ -77,7 +77,7 @@ Important format details:
 | `src/web/` | `mdc serve` HTTP server (axum): JSON API over `IndCache`/`DepGraph` + SPA asset serving |
 | `src/core/` | Shared models and graph algorithms: topo order, cycle detection, SCC |
 | `src/config.rs` | `.mdc/config.toml`, srctype defaults, preamble/postamble files |
-| `src/workspace.rs` | Workspace discovery, `.mdoc` iteration, relative path helpers |
+| `src/workspace/` | Workspace discovery, path validation, mutation locking, and atomic file updates |
 | `editors/vscode/` | VS Code language extension for `.mdoc` files |
 | `web/` | Svelte 5 + Vite + TypeScript frontend; built output is embedded into the `mdc` binary via `rust-embed` |
 

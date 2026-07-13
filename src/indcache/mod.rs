@@ -46,7 +46,7 @@ impl IndCache {
     /// Open (or create) the index database for the workspace rooted at `root`.
     pub fn open(root: PathBuf) -> Result<Self> {
         let root = crate::workspace::validate_mdcroot(&root)?;
-        let _mutation_lock = crate::mutation_lock::WorkspaceMutationLock::acquire(&root)?;
+        let _mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&root)?;
         Self::open_under_mutation_lock(root)
     }
 

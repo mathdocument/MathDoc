@@ -2,7 +2,6 @@ use anyhow::{bail, Context, Result};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
 #[derive(Debug, thiserror::Error)]
@@ -32,9 +31,7 @@ pub(crate) enum FileSnapshot {
 #[derive(Clone, Debug)]
 pub(crate) struct PreservedMetadata {
     permissions: std::fs::Permissions,
-    #[cfg(unix)]
     uid: u32,
-    #[cfg(unix)]
     gid: u32,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     extended_attributes: Vec<(Vec<u8>, Vec<u8>)>,
@@ -42,7 +39,6 @@ pub(crate) struct PreservedMetadata {
 
 impl PreservedMetadata {
     fn capture(path: &Path, metadata: &std::fs::Metadata) -> Result<Self> {
-        #[cfg(unix)]
         if metadata.nlink() > 1 {
             bail!(
                 "refusing to replace hard-linked file {} ({} links)",
@@ -50,19 +46,6 @@ impl PreservedMetadata {
                 metadata.nlink()
             );
         }
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::MetadataExt;
-
-            if let Some(links) = metadata.number_of_links().filter(|links| *links > 1) {
-                bail!(
-                    "refusing to replace hard-linked file {} ({} links)",
-                    path.display(),
-                    links
-                );
-            }
-        }
-
         #[cfg(target_os = "macos")]
         {
             use std::os::macos::fs::MetadataExt;
@@ -89,9 +72,7 @@ impl PreservedMetadata {
 
         Ok(Self {
             permissions: metadata.permissions(),
-            #[cfg(unix)]
             uid: metadata.uid(),
-            #[cfg(unix)]
             gid: metadata.gid(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             extended_attributes,
@@ -100,16 +81,8 @@ impl PreservedMetadata {
 
     fn matches(&self, other: &Self) -> bool {
         same_permissions(&self.permissions, &other.permissions)
-            && {
-                #[cfg(unix)]
-                {
-                    self.uid == other.uid && self.gid == other.gid
-                }
-                #[cfg(not(unix))]
-                {
-                    true
-                }
-            }
+            && self.uid == other.uid
+            && self.gid == other.gid
             && {
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 {
@@ -123,7 +96,6 @@ impl PreservedMetadata {
     }
 
     fn apply(&self, file: &mut std::fs::File, path: &Path) -> Result<()> {
-        #[cfg(unix)]
         {
             use std::os::fd::AsRawFd;
 
@@ -149,44 +121,20 @@ impl PreservedMetadata {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FileIdentity {
-    #[cfg(unix)]
     device: u64,
-    #[cfg(unix)]
     inode: u64,
-    #[cfg(not(unix))]
-    modified: Option<std::time::SystemTime>,
-    #[cfg(not(unix))]
-    len: u64,
 }
 
 fn file_identity(meta: &std::fs::Metadata) -> FileIdentity {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        FileIdentity {
-            device: meta.dev(),
-            inode: meta.ino(),
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        FileIdentity {
-            modified: meta.modified().ok(),
-            len: meta.len(),
-        }
+    FileIdentity {
+        device: meta.dev(),
+        inode: meta.ino(),
     }
 }
 
 fn same_permissions(left: &std::fs::Permissions, right: &std::fs::Permissions) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        left.mode() == right.mode()
-    }
-    #[cfg(not(unix))]
-    {
-        left.readonly() == right.readonly()
-    }
+    use std::os::unix::fs::PermissionsExt;
+    left.mode() == right.mode()
 }
 
 impl FileSnapshot {
@@ -392,49 +340,10 @@ fn sync_parent(path: &Path) {
     }
 }
 
-#[cfg(not(windows))]
 fn persist_replacement(temp: tempfile::NamedTempFile, path: &Path) -> Result<()> {
     temp.persist(path)
         .map_err(|error| error.error)
         .with_context(|| format!("replacing {}", path.display()))?;
-    Ok(())
-}
-
-#[cfg(windows)]
-fn persist_replacement(temp: tempfile::NamedTempFile, path: &Path) -> Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn ReplaceFileW(
-            replaced: *const u16,
-            replacement: *const u16,
-            backup: *const u16,
-            flags: u32,
-            exclude: *mut std::ffi::c_void,
-            reserved: *mut std::ffi::c_void,
-        ) -> i32;
-    }
-
-    let (file, temp_path) = temp.keep().map_err(|error| error.error)?;
-    drop(file);
-    let replaced: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let replacement: Vec<u16> = temp_path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let succeeded = unsafe {
-        ReplaceFileW(
-            replaced.as_ptr(),
-            replacement.as_ptr(),
-            std::ptr::null(),
-            0,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        )
-    };
-    if succeeded == 0 {
-        let error = std::io::Error::last_os_error();
-        let _ = std::fs::remove_file(temp_path);
-        return Err(error).with_context(|| format!("replacing {}", path.display()));
-    }
     Ok(())
 }
 
@@ -640,7 +549,6 @@ unsafe fn remove_xattr(path: *const libc::c_char, name: *const libc::c_char) -> 
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn hard_linked_files_are_rejected() {
         let dir = tempfile::tempdir().unwrap();

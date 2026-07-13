@@ -20,7 +20,7 @@ pub struct MdocNode {
     pub depens: Vec<String>,
     pub blocks: Vec<SrcBlock>,
     #[serde(skip, default)]
-    original: std::sync::Mutex<Option<crate::safe_file::FileSnapshot>>,
+    original: std::sync::Mutex<Option<crate::workspace::FileSnapshot>>,
 }
 
 impl Clone for MdocNode {
@@ -109,14 +109,14 @@ impl MdocNode {
             .lock()
             .map_err(|_| anyhow::anyhow!("node save state lock is poisoned"))?;
         let expected = if create_new {
-            crate::safe_file::FileSnapshot::Missing
+            crate::workspace::FileSnapshot::Missing
         } else {
             original
                 .clone()
-                .unwrap_or(crate::safe_file::FileSnapshot::Missing)
+                .unwrap_or(crate::workspace::FileSnapshot::Missing)
         };
-        crate::safe_file::atomic_replace(&path, &expected, payload.as_bytes())?;
-        *original = Some(crate::safe_file::FileSnapshot::capture(&path)?);
+        crate::workspace::atomic_replace(&path, &expected, payload.as_bytes())?;
+        *original = Some(crate::workspace::FileSnapshot::capture(&path)?);
         Ok(())
     }
 
@@ -202,7 +202,7 @@ impl MdocNode {
     }
 
     fn load_inner(mdcroot: &Path, path: &Path, include_blocks: bool) -> Result<Self> {
-        let snapshot = crate::safe_file::FileSnapshot::capture(path)?;
+        let snapshot = crate::workspace::FileSnapshot::capture(path)?;
         let content = snapshot
             .content()
             .ok_or_else(|| anyhow::anyhow!("node file does not exist: {}", path.display()))?;

@@ -3,6 +3,15 @@ use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
 
+mod mutation_lock;
+mod safe_file;
+
+pub(crate) use mutation_lock::WorkspaceMutationLock;
+pub(crate) use safe_file::{
+    atomic_create_if_missing, atomic_replace, ensure_regular_directory,
+    ensure_regular_directory_exists, AppliedWrite, FileConflict, FileSnapshot,
+};
+
 /// Walk up from `start` looking for a `.mdc/` directory. Returns the workspace root if found.
 pub fn find_mdcroot(start: &Path) -> Option<PathBuf> {
     let mut current = start.canonicalize().ok()?;

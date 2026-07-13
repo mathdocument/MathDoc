@@ -80,8 +80,8 @@ pub(super) fn cmd_init() -> Result<i32> {
 
 fn init_workspace(mdcroot: &Path) -> Result<bool> {
     let mdc = mdcroot.join(".mdc");
-    let mut changed = crate::safe_file::ensure_regular_directory_exists(&mdc)?;
-    changed |= crate::safe_file::atomic_create_if_missing(
+    let mut changed = crate::workspace::ensure_regular_directory_exists(&mdc)?;
+    changed |= crate::workspace::atomic_create_if_missing(
         &mdc.join("config.toml"),
         generate_config_toml().as_bytes(),
     )?;

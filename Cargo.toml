@@ -44,13 +44,3 @@ dev-web = []
 [dev-dependencies]
 tower = { version = "0", features = ["util"] }
 axum = { version = "0.7", default-features = false, features = ["http1", "json", "tokio", "macros", "tower-log", "query"] }
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
-    "Win32_Foundation",
-    "Win32_Security",
-    "Win32_Storage_FileSystem",
-    "Win32_System_JobObjects",
-    "Win32_System_Pipes",
-    "Win32_System_Threading",
-] }
