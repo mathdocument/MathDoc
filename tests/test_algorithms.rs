@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use mathdoc::core::{
-    all_topo_depths, component_has_cycle, representative_cycle, strongly_connected_components,
+    all_topo_depths, representative_cycles, strongly_connected_components, weak_component_sizes,
 };
 
 fn graph(edges: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
@@ -28,31 +28,23 @@ fn scc_with_cycle() {
 }
 
 #[test]
-fn component_has_cycle_self_loop() {
+fn representative_cycles_include_self_loop() {
     let g = graph(&[("a", &["a"])]);
-    assert!(component_has_cycle(&g, &["a".to_string()]));
+    assert_eq!(representative_cycles(&g), vec![vec!["a", "a"]]);
 }
 
 #[test]
-fn component_has_cycle_multi() {
-    let g = graph(&[("a", &["b"]), ("b", &["a"])]);
-    assert!(component_has_cycle(&g, &["a".to_string(), "b".to_string()]));
-}
-
-#[test]
-fn representative_cycle_self_loop() {
-    let g = graph(&[("a", &["a"])]);
-    let cycle = representative_cycle(&g, &["a".to_string()]).unwrap();
-    assert_eq!(cycle, vec!["a", "a"]);
-}
-
-#[test]
-fn representative_cycle_multi() {
+fn representative_cycles_include_multi_node_cycle() {
     let g = graph(&[("a", &["b"]), ("b", &["c"]), ("c", &["a"])]);
-    let component = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-    let cycle = representative_cycle(&g, &component).unwrap();
+    let cycle = representative_cycles(&g).pop().unwrap();
     assert_eq!(cycle.first(), cycle.last());
     assert!(cycle.len() >= 2);
+}
+
+#[test]
+fn representative_cycles_exclude_acyclic_components() {
+    let g = graph(&[("a", &["b"]), ("b", &[])]);
+    assert!(representative_cycles(&g).is_empty());
 }
 
 #[test]
@@ -71,4 +63,41 @@ fn topo_depths_are_computed_without_database_state() {
     assert_eq!(depths["middle"], 1);
     assert_eq!(depths["branch"], 2);
     assert_eq!(depths["root"], 3);
+}
+
+#[test]
+fn weak_component_sizes_are_computed_without_database_state() {
+    let g = graph(&[
+        ("a", &["b", "outside"]),
+        ("b", &["c"]),
+        ("c", &[]),
+        ("isolated", &[]),
+        ("outside", &["other-outside"]),
+    ]);
+    let members = ["a", "b", "c", "isolated"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+    let sizes = weak_component_sizes(&g, &members);
+
+    assert_eq!(sizes["a"], 3);
+    assert_eq!(sizes["b"], 3);
+    assert_eq!(sizes["c"], 3);
+    assert_eq!(sizes["isolated"], 1);
+    assert!(!sizes.contains_key("outside"));
+}
+
+#[test]
+fn weak_component_sizes_treat_edges_as_undirected() {
+    let g = graph(&[("child", &[]), ("parent", &["child"])]);
+    let members = ["child", "parent"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+    let sizes = weak_component_sizes(&g, &members);
+
+    assert_eq!(sizes["child"], 2);
+    assert_eq!(sizes["parent"], 2);
 }

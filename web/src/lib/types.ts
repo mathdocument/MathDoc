@@ -11,8 +11,18 @@ export interface NodeInfo {
 
 export interface DependencyCandidates {
   nodes: NodeInfo[];
-  raw_had_matches: boolean;
+  empty: DependencyCandidatesEmpty | null;
 }
+
+export type DependencyCandidatesEmpty =
+  | { kind: "no_match" }
+  | {
+      kind: "excluded";
+      source: number;
+      existing_dependencies: number;
+      invalid_or_duplicate: number;
+    }
+  | { kind: "result_limit"; available: number };
 
 export interface SrcBlock {
   srctype: string;

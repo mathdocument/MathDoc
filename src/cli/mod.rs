@@ -87,7 +87,7 @@ enum Commands {
     New {
         #[arg(short, long, default_value = "Untitled")]
         title: String,
-        /// Relative output file path (without .mdoc suffix). Defaults to {fnode}.mdoc at root.
+        /// Workspace-relative output path, with or without .mdoc. Defaults to {fnode}.mdoc.
         #[arg(short, long, default_value = ".")]
         file: String,
     },
@@ -111,7 +111,7 @@ enum Commands {
         command: GraphCommands,
     },
 
-    /// Sync and compile one mdoc's mirrored source blocks.
+    /// Reconcile workspace mirrors, then compile one mdoc's available source types.
     Work { source: String },
 
     /// Reconcile mirrored source edits back into mdoc blocks.
@@ -144,7 +144,7 @@ enum GraphCommands {
     Roots,
     /// Open interactive TUI graph browser.
     Tui {
-        /// Start at this node (fnode prefix, path, or title). Defaults to deepest node.
+        /// Start at this node (fnode prefix, path, or title). Defaults to deepest root.
         source: Option<String>,
     },
 }

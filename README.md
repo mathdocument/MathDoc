@@ -1,6 +1,13 @@
 # MathDoc
 
-`mdc` is a math knowledge management CLI. It manages a workspace of `.mdoc` files — plain-text documents that declare dependencies and contain source blocks for native tools (LaTeX, Lean, Rocq, Python). A workspace is any directory containing a `.mdc/` subdirectory.
+`mdc` is a math knowledge management CLI. It manages a workspace of `.mdoc`
+files: plain-text documents that declare dependencies and contain source blocks
+for native tools (LaTeX, Lean, Rocq, Python).
+
+MathDoc currently supports Unix platforms only. A workspace root contains a real,
+non-symlink `.mdc/` directory; commands find it by walking upward. Workspace scans
+skip `.mdc/`, nested workspaces, symlinked directories, and symlinked `.mdoc`
+entries.
 
 ## Build
 
@@ -39,16 +46,28 @@ Informal explanation here.
 @end
 ```
 
-- `@fnode` — UUID, unique per file; the first 8 characters serve as a short display ID.
-- `@dep:` / `@end` — lists full fnode UUIDs of direct dependencies (one per line). Omitted when empty.
-- `@src: <srctype>` / `@end` — source block. Supported srctypes: `text`, `latex`, `python`, `lean`, `rocq`. At most one block per srctype per file.
+- `@fnode` is a stable workspace-unique token. `mdc new` generates a lowercase
+  UUID v4; the accepted grammar is lowercase ASCII letters and digits with
+  internal hyphens. Eight characters is only the short display convention.
+- `@dep:` / `@end` lists exact full fnodes of direct dependencies, one per line.
+  It is omitted when empty.
+- `@src: <srctype>` / `@end` contains a source block. Supported types are
+  `text`, `latex`, `python`, `lean`, and `rocq`, with at most one block per type.
+
+`.mdoc` files must be UTF-8. Structural directive names are exact lowercase
+tokens. Source type names are case-insensitive and are serialized canonically.
+Source headers may include shell-like quoted `key=value` metadata, for example
+`@src: lean module="Algebra.Main"`; metadata is preserved but currently ignored
+by compilers. Because trimmed `@end` terminates a block, source content cannot
+contain a line whose trimmed value is `@end`.
 
 ## References
 
 Most commands accept a `<ref>` argument that identifies a `.mdoc` file:
+
 - Path — absolute, relative to cwd, or relative to workspace root (with or without `.mdoc` suffix)
-- Full fnode UUID
-- Unique 8-character fnode prefix
+- Exact fnode
+- Any unique case-insensitive fnode prefix; there is no eight-character minimum
 
 ## Workspace layout
 
@@ -62,12 +81,13 @@ Most commands accept a `<ref>` argument that identifies a `.mdoc` file:
   latex/
     Lib/notes/theorem.tex # editable block mirror for notes/theorem.mdoc
     Lib.tex              # generated input for the selected mirror
-    Main.tex             # editable document template; created once
+    Main.tex             # editable template; created whenever absent
     Main.pdf             # latexmk output
   lean/
     Lib/notes/theorem.lean # editable Lean module for notes/theorem.mdoc
     Lib.lean             # generated single-import library root
     lakefile.toml        # standard Lake library and dependencies
+    lean-toolchain       # generated when absent, otherwise preserved
     .lake/build/         # reusable .olean artifacts
   python/
     Lib/notes/theorem.py
@@ -81,6 +101,13 @@ The `Lib/` directories form editable working trees for source blocks. `mdc sync`
 updates clean mirrors from `.mdoc`; `mdc back` writes mirror edits into `.mdoc`.
 `.mdc/source-blocks.json` records the last synchronized baseline so neither
 direction overwrites changes made on both sides.
+
+Managed writes use snapshot-checked, descriptor-relative per-file operations and
+a cooperative workspace lock. Replacing an existing file quarantines its old
+generation before installing the new one, so the pathname may be briefly absent.
+If a later batch operation fails, MathDoc attempts reverse-order rollback;
+rollback can also fail. Multi-file batches are not crash-atomic, and the lock
+cannot prevent arbitrary external editors from racing.
 
 ## Quick start
 
@@ -116,19 +143,25 @@ mdc new -t "Matrix Rank"
 mdc new -t "Matrix Rank" -f notes/matrix-rank
 ```
 - `-t, --title` — title (default: `Untitled`)
-- `-f, --file` — output path without `.mdoc` suffix; defaults to `<fnode>.mdoc` at workspace root
+- `-f, --file` — workspace-relative output path, with or without `.mdoc`; defaults
+  to `<fnode>.mdoc` at the workspace root. Absolute, escaping, `.mdc/`, symlinked,
+  nested-workspace, and existing targets are rejected.
 
 #### `mdc edit`
 
-Open a `.mdoc` file in `$EDITOR` and reindex it on exit:
+Open a `.mdoc` file in `$EDITOR`, or `vi` when `$EDITOR` is unset:
 ```bash
 mdc edit <ref>
 ```
 
+`$EDITOR` is interpreted as one executable, not as a shell command. The file is
+reindexed only after a successful editor exit.
+
 #### `mdc sync`
 
-Force-refresh the entire workspace index and export every `.mdoc` into five
-per-srctype files while preserving its relative directory structure:
+Force-refresh the entire workspace index and export every structurally parseable
+`.mdoc` into five per-srctype files while preserving its relative directory
+structure:
 ```bash
 mdc sync
 ```
@@ -140,8 +173,15 @@ keep editable mirrors separate from compiler artifacts. Missing blocks produce
 empty files. A clean mirror is updated when its mdoc block changes; a dirty
 mirror is preserved for `mdc back`. If both sides changed differently,
 the operation reports a conflict and preserves both. Outputs for deleted or
-renamed sources are removed only when they are still clean. Invalid `.mdoc` files
-are reported and retain their previous mirrors.
+renamed sources are removed only when they are still clean. Structurally
+parseable files with duplicate fnodes are still exported because duplication is
+an index/graph issue. Structurally unparseable files retain their previous
+mirrors; if any such document exists, orphan cleanup is deferred because an
+orphan may be its renamed predecessor.
+
+Conflicts are per source/type pair: both conflicting versions are preserved while
+unrelated clean changes may still be applied. `sync` exits `1` when dirty mirrors
+or conflicts remain.
 
 #### `mdc search`
 
@@ -173,6 +213,10 @@ stored dependency is always the target's full fnode. Adding an existing direct
 dependency is an idempotent success; self-dependencies, ambiguous references,
 missing targets, duplicate fnodes, and cycle-creating edges are rejected.
 
+If interactive search has no match, `mdc dep add` can create a new note and link
+it in one recoverable operation. Creation is not offered when matches exist but
+are excluded because they are the source, existing dependencies, or invalid.
+
 #### `mdc dep rm`
 
 Interactively remove direct dependencies:
@@ -196,7 +240,9 @@ Show forward dependencies of a mdoc:
 mdc dep show <source>
 mdc dep show <source> -d -1
 ```
-- `-d, --depth` — traversal depth (default: `1`; `-1` = unlimited)
+- `-d, --depth` — traversal depth (default: `1`; `0` traverses no nodes,
+  positive values limit hops, and `-1` is unlimited). Values below `-1` are
+  rejected. `dep show` exits `1` if the traversed subgraph contains a cycle.
 
 #### `mdc dep leaf`
 
@@ -205,6 +251,8 @@ Show all reachable leaf nodes (no further dependencies):
 mdc dep leaf <source>
 ```
 
+`dep leaf` exits `1` if the traversed subgraph contains a cycle.
+
 #### `mdc dep refs`
 
 Show reverse dependencies (who depends on this node):
@@ -212,7 +260,7 @@ Show reverse dependencies (who depends on this node):
 mdc dep refs <target>
 mdc dep refs <target> -d -1
 ```
-- `-d, --depth` — traversal depth (default: `1`)
+- `-d, --depth` — same depth rules as `dep show` (default: `1`)
 
 ---
 
@@ -224,14 +272,19 @@ Scan the workspace and report repository-wide issues:
 ```bash
 mdc graph check
 ```
-Reports node/edge counts, missing targets, invalid files, and dependency cycles.
+Reports discovered `.mdoc` count, valid-source edge count, missing targets,
+invalid files (including duplicate fnodes), and one representative cycle from
+each cyclic strongly connected component.
 
 #### `mdc graph roots`
 
-List all global root nodes (no incoming dependencies), sorted by topological height:
+List entries with no incoming valid edge, including recoverable broken entries:
 ```bash
 mdc graph roots
 ```
+
+Results are ordered by descending topological depth, then weak-component size,
+path, and fnode.
 
 #### `mdc graph tui`
 
@@ -240,7 +293,10 @@ Open the interactive dependency graph browser:
 mdc graph tui
 mdc graph tui <ref>
 ```
-Defaults to the node with the largest dependency subtree. `<ref>` starts at a specific node.
+Without a start reference, the TUI opens the first root in the ordering above,
+which is the deepest root rather than the largest subtree. The optional start
+value also accepts a unique case-insensitive exact title. The TUI supports graph
+navigation, search, source preview, editor launch, and dependency add/remove/create.
 
 ---
 
@@ -254,12 +310,18 @@ mdc serve
 mdc serve notes/theorem.mdoc
 mdc serve --bind 127.0.0.1:7878 --no-open
 ```
-- `source` (optional) — start at this node (fnode prefix, path, or title). Defaults to the deepest root.
+- `source` (optional) — start at a normal reference or unique case-insensitive
+  exact title. Defaults to the deepest root.
 - `--bind` — numeric loopback bind address (default `127.0.0.1:0` picks a free port).
 - `--no-open` — do not auto-open the browser.
 
-The UI and API are same-origin and local-only. Non-loopback binding is rejected
-because the API has no authentication layer.
+The SPA supports title and source-block editing, dependency changes, node
+creation, three-column navigation, and a force-directed graph view.
+
+Binding is restricted to numeric loopback addresses, requests require a
+loopback/localhost `Host` header, and no cross-origin API permission is added.
+There is still no authentication: any local client that can issue a valid HTTP
+request can mutate the workspace.
 
 ---
 
@@ -270,28 +332,39 @@ remains the structured storage format.
 
 #### `mdc work`
 
-Safely synchronize and compile the source mirrors belonging to one mdoc:
+Reconcile source mirrors and compile the selected mdoc's available source types:
 ```bash
 mdc work <source>
 ```
 
-`work` always compiles; there is no separate `--compile` mode or dependency
-depth. It does not merge mdoc dependency blocks. Language-level imports and
-includes in mirrored files determine compiler dependencies:
+`work` first runs workspace-wide mirror reconciliation. Sync may commit unrelated
+clean mirror and manifest changes even when another source/type pair conflicts.
+If any conflict remains, `work` skips all compilers and exits `1`; dirty-mirror
+warnings alone do not skip compilation. Otherwise it compiles each selected mdoc
+source type that has a block or a nonempty mirror. No targets is a successful
+no-op. There is no dependency depth: language imports and includes determine
+compiler dependencies.
 
-- Lean uses the standard `lake init Lib lib` layout. It writes one
+- Lean uses the standard `lake init Lib lib` layout. Missing `lakefile.toml` and
+  `lean-toolchain` files are copied from staged initialization; existing files
+  are preserved. `lakefile.lean` is unsupported. MathDoc writes one
   `import Lib.<selected-module>` line to `.mdc/lean/Lib.lean` and runs
   `lake build +Lib`. The conventional `lakefile.toml` owns dependencies; Lake
   builds the selected module's import closure and reuses `.lake/build` artifacts.
 - LaTeX writes the selected mirror as an `\input` in `.mdc/latex/Lib.tex`, then
-  runs `latexmk Main.tex` in `.mdc/latex/`. `Main.tex` is created once with a
-  minimal article template and remains user-editable; its body inputs `Lib.tex`.
+  runs `latexmk Main.tex` in `.mdc/latex/`. A minimal `Main.tex` is created
+  whenever absent and is otherwise untouched; MathDoc does not restore the
+  `Lib.tex` input if the user removes it.
 - Python executes the selected `Lib/` file directly. Rocq compiles it into the
-  parallel `.mdc/rocq/build/` tree so imports can reuse existing `.vo` files.
+  parallel `.mdc/rocq/build/` tree. Rocq compiles only the selected mirror, not
+  its import closure. Compared with the last successful inventory, an addition,
+  removal, rename, or content change among `Lib/**/*.v` files removes an existing
+  build tree before the next selected compile. Non-`.v` files and directory-only
+  changes are not part of that digest.
 - Text requires no compiler.
 
-If a selected mdoc contains several source-block types, each present block is
-compiled. Dirty mirror content is compiled without implicitly writing it back.
+If a selected mdoc has several target types, each is compiled in built-in type
+order. Dirty mirror content is compiled without implicitly writing it back.
 
 Lean dependencies are edited with normal Lake TOML syntax. The file must retain
 the standard `[[lean_lib]] name = "Lib"` declaration. For example:
@@ -300,8 +373,24 @@ the standard `[[lean_lib]] name = "Lib"` declaration. For example:
 [[require]]
 name = "mathlib"
 scope = "leanprover-community"
-rev = "v4.32.0"
+rev = "<tag-compatible-with-your-lean-toolchain>"
 ```
+
+Compiler prerequisites and result behavior:
+
+| Type | Required command | Behavior |
+| --- | --- | --- |
+| `text` | none | successful no-op |
+| `python` | `python3` or `python` | runs `-B` from the `Lib` tree |
+| `latex` | `latexmk`, `xelatex` | builds `Main.tex` with XeLaTeX |
+| `lean` | `lake` | validates `lakefile.toml`; initializes missing setup files, then builds `+Lib` |
+| `rocq` | `rocq` | compiles only the selected `.v` file |
+
+With one failed target, `work` propagates an exit code in `1..=255`; missing tools
+normally yield `127` and timeouts yield `124`. Multiple failures, or one result
+outside that range, yield `1`. If MathDoc catches SIGINT or SIGTERM during a
+compiler, it exits `130` or `143` and skips later source types. A compiler that
+independently dies by signal currently maps to `1`.
 
 #### `mdc back`
 
@@ -312,8 +401,11 @@ mdc back
 
 `back` is the directional counterpart of `sync`. A mirror edit is written only when
 the mdoc block still matches the stored baseline. An independently changed mdoc
-is preserved and reported. Deleting a mirror removes the corresponding block;
-the empty placeholder is then recreated to preserve the five-file layout.
+is preserved and reported, while unrelated clean imports may still commit.
+Deleting a mirror removes the corresponding block; the empty placeholder is then
+recreated to preserve the five-file layout. Imported content must be UTF-8, and
+nonempty content is normalized to end with a newline. `back` exits `1` when
+conflicts remain.
 
 ---
 
@@ -337,5 +429,8 @@ Built-in defaults:
 | `timeout_sec`       | —      | 30      | 30       | 300    | 300    |
 | `setup_timeout_sec` | —      | —       | —        | 1800   | —      |
 
-- **`timeout_sec`** — subprocess timeout for compilation.
-- **`setup_timeout_sec`** — timeout for one-time workspace initialisation (Lean: `lake init`).
+- Timeout values must be positive integers.
+- **`timeout_sec`** — timeout for the compilation subprocess.
+- **`setup_timeout_sec`** — when Lean setup files are missing, gives `lake init`
+  and `lake env lean --version` separate deadlines. Neither setup process runs
+  when both `lakefile.toml` and `lean-toolchain` already exist.

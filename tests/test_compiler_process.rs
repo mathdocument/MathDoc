@@ -14,7 +14,7 @@ fn ctrl_c_escalates_and_returns_signal_exit_code() {
     std::fs::create_dir(root.join(".mdc")).unwrap();
     let survived = root.join("compiler-survived");
     let ready = root.join("compiler-ready");
-    let mut node = MdocNode::new_at_path(root, &root.join("node.mdoc"), "Interrupt");
+    let mut node = MdocNode::new_at_path(&root.join("node.mdoc"), "Interrupt");
     node.blocks.push(SrcBlock {
         srctype: "python".to_string(),
         content: format!(
@@ -23,7 +23,7 @@ fn ctrl_c_escalates_and_returns_signal_exit_code() {
         ),
         metadata: Default::default(),
     });
-    node.save().unwrap();
+    std::fs::write(&node.path, node.render().unwrap()).unwrap();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_mdc"))
         .current_dir(root)
@@ -55,14 +55,14 @@ fn python_workspace() -> (tempfile::TempDir, String) {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     std::fs::create_dir(root.join(".mdc")).unwrap();
-    let mut node = MdocNode::new_at_path(root, &root.join("node.mdoc"), "Exit Status");
+    let mut node = MdocNode::new_at_path(&root.join("node.mdoc"), "Exit Status");
     node.blocks.push(SrcBlock {
         srctype: "python".to_string(),
         content: "print('compile')\n".to_string(),
         metadata: Default::default(),
     });
     let fnode = node.fnode.clone();
-    node.save().unwrap();
+    std::fs::write(&node.path, node.render().unwrap()).unwrap();
     (dir, fnode)
 }
 

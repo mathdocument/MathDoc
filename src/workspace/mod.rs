@@ -8,15 +8,23 @@ mod safe_file;
 
 pub(crate) use mutation_lock::WorkspaceMutationLock;
 pub(crate) use safe_file::{
-    atomic_create_if_missing, ensure_regular_directory, ensure_regular_directory_exists,
-    AppliedRename, AppliedWrite, FileConflict, FileSnapshot,
+    atomic_create_if_missing_beneath, ensure_regular_directory_tree, ensure_regular_file_beneath,
+    error_has_file_conflict, error_has_infrastructure_failure, regular_directory_exists_beneath,
+    remove_directory_tree_beneath, remove_empty_directory_beneath, AppliedRename, AppliedWrite,
+    FileSnapshot, PersistenceRecoveryError,
 };
+#[cfg(test)]
+pub(crate) use safe_file::{set_test_hook, FileConflict, TestHookPoint};
 
 /// Initialize the workspace control directory and its default configuration.
 pub fn initialize(root: &Path) -> Result<bool> {
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("canonicalizing workspace root {}", root.display()))?;
     let control_dir = root.join(".mdc");
-    let mut changed = ensure_regular_directory_exists(&control_dir)?;
-    changed |= atomic_create_if_missing(
+    let mut changed = ensure_regular_directory_tree(&root, &control_dir)?;
+    changed |= atomic_create_if_missing_beneath(
+        &root,
         &control_dir.join("config.toml"),
         crate::config::config_template().as_bytes(),
     )?;
@@ -129,6 +137,14 @@ pub(crate) fn resolve_mdoc_path(root: &Path, file_path: &Path) -> Result<PathBuf
     if candidate.extension().and_then(|ext| ext.to_str()) != Some("mdoc") {
         bail!("mdoc path must end in .mdoc: {}", file_path.display());
     }
+    match std::fs::symlink_metadata(&candidate) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            bail!("refusing symlinked mdoc path: {}", file_path.display())
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
     if let Ok(relative) = candidate.strip_prefix(&root) {
         validate_workspace_relative_path(relative, file_path)?;
         let mut current = root.clone();
@@ -231,4 +247,48 @@ fn validate_workspace_relative_path(relative: &Path, original: &Path) -> Result<
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_mdoc_path_rejects_a_final_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let target = workspace.path().join("target.mdoc");
+        let link = workspace.path().join("link.mdoc");
+        std::fs::write(&target, "@fnode: target\n@title: Target\n").unwrap();
+        symlink(&target, &link).unwrap();
+
+        assert!(resolve_mdoc_path(workspace.path(), &link).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn initialize_cannot_follow_replaced_control_directory() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let control = workspace.path().join(".mdc");
+        let displaced = workspace.path().join("displaced-mdc");
+        std::fs::create_dir(&control).unwrap();
+        let hook_control = control.clone();
+        let hook_displaced = displaced.clone();
+        let hook_outside = outside.path().to_path_buf();
+        set_test_hook(TestHookPoint::WriteBeforeDirectoryBinding, move || {
+            std::fs::rename(hook_control, hook_displaced).unwrap();
+            symlink(hook_outside, control).unwrap();
+        });
+
+        let error = initialize(workspace.path()).unwrap_err();
+
+        assert!(error_has_file_conflict(&error));
+        assert!(!outside.path().join("config.toml").exists());
+        assert!(!displaced.join("config.toml").exists());
+    }
 }

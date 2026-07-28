@@ -18,6 +18,7 @@ pub fn discover_workspace_changes(
     root: &Path,
 ) -> Result<(HashSet<String>, bool)> {
     let known = file_states(conn)?;
+    let indexed = indexed_paths(conn)?;
     let mut seen = HashSet::new();
     let mut changed_fnodes = HashSet::new();
 
@@ -41,8 +42,8 @@ pub fn discover_workspace_changes(
         changed_fnodes.extend(new_fnode);
     }
 
-    let mut stale_paths: Vec<String> = known
-        .keys()
+    let mut stale_paths: Vec<String> = indexed
+        .iter()
         .filter(|path| !seen.contains(*path))
         .cloned()
         .collect();
@@ -52,6 +53,19 @@ pub fn discover_workspace_changes(
     }
 
     Ok((changed_fnodes, !stale_paths.is_empty()))
+}
+
+fn indexed_paths(conn: &Connection) -> Result<HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT path FROM mdoc_files
+         UNION SELECT path FROM mdocs
+         UNION SELECT path FROM mdoc_issues
+         UNION SELECT src_path AS path FROM mdoc_edges",
+    )?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
 }
 
 fn file_states(conn: &Connection) -> Result<HashMap<String, FileState>> {

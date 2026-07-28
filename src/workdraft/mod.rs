@@ -6,10 +6,9 @@ use anyhow::{bail, Context, Result};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-use crate::compiler::{ROCQ_CLEAN_MARKER_CONTENT, ROCQ_CLEAN_MARKER_FILENAME};
-use crate::config::BUILTIN_SRCTYPES;
+use crate::config::builtin_srctypes;
 use crate::mdocnode::MdocNode;
-use crate::workspace::{ensure_regular_directory_exists, iter_mdoc_files, FileSnapshot};
+use crate::workspace::{iter_mdoc_files, FileSnapshot};
 
 use manifest::{
     decode_source_path, encode_source_path, parse_manifest, BlockBaseline, LoadedManifest,
@@ -17,8 +16,11 @@ use manifest::{
 };
 use mirror::{
     back_state, existing_output_path, output_path, prepare_output_path, validate_source_relative,
+    MirrorState,
 };
-use transaction::{apply_changes, PreparedRemoval, PreparedRename, PreparedWrite};
+use transaction::{
+    apply_changes, PreparedManifest, PreparedRemoval, PreparedRename, PreparedWrite,
+};
 
 pub(crate) struct Issue {
     pub path: PathBuf,
@@ -43,6 +45,37 @@ pub(crate) struct BackReport {
     pub warnings: Vec<Issue>,
 }
 
+enum Reconciliation<'a> {
+    Unchanged,
+    MdocChanged,
+    MirrorChanged(MirrorState<'a>),
+    Converged(MirrorState<'a>),
+    Conflict,
+}
+
+fn reconcile<'a>(
+    baseline: &BlockBaseline,
+    mdoc_content: &[u8],
+    mdoc_present: bool,
+    raw_content: Option<&'a [u8]>,
+) -> Reconciliation<'a> {
+    let mdoc_changed = !baseline.matches_state(mdoc_content, mdoc_present);
+    let raw_changed = !baseline.matches_raw(raw_content);
+    match (mdoc_changed, raw_changed) {
+        (false, false) => Reconciliation::Unchanged,
+        (true, false) => Reconciliation::MdocChanged,
+        (false, true) => Reconciliation::MirrorChanged(back_state(raw_content, baseline.present)),
+        (true, true) => {
+            let raw_state = back_state(raw_content, baseline.present);
+            if raw_state.content.as_ref() == mdoc_content && raw_state.present == mdoc_present {
+                Reconciliation::Converged(raw_state)
+            } else {
+                Reconciliation::Conflict
+            }
+        }
+    }
+}
+
 pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> Result<SyncReport> {
     let mdcroot = mutation_lock.root()?.to_path_buf();
     let manifest_path = mdcroot.join(".mdc").join(MANIFEST_NAME);
@@ -64,7 +97,6 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
     let mut warnings = Vec::new();
     let mut desired_outputs = HashMap::new();
     let mut valid_mdocs = 0;
-    let mut rocq_tree_changed_shape = false;
     let mut had_invalid_mdoc = false;
 
     for source_path in source_files {
@@ -77,7 +109,7 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
         current_source_ids.insert(source_id.clone());
         let snapshot = FileSnapshot::capture(&source_path)?;
         let node = match snapshot.content() {
-            Some(content) => MdocNode::load_bytes(&mdcroot, &source_path, content),
+            Some(content) => MdocNode::load_bytes(&source_path, content),
             None => Err(anyhow::anyhow!(
                 "mdoc file disappeared: {}",
                 source_path.display()
@@ -95,7 +127,7 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
         valid_mdocs += 1;
 
         let source_baseline = new_manifest.sources.entry(source_id).or_default();
-        for srctype in BUILTIN_SRCTYPES {
+        for srctype in builtin_srctypes() {
             let (mdoc_content, mdoc_present) = block_state(&node, srctype);
             let raw_path = prepare_output_path(&mdcroot, &relative, srctype)?;
             let raw_snapshot = FileSnapshot::capture(&raw_path)?;
@@ -105,11 +137,9 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
             let raw_content = raw_snapshot.content();
 
             if let Some(baseline) = source_baseline.blocks.get_mut(srctype) {
-                let mdoc_changed = !baseline.matches_state(mdoc_content, mdoc_present);
-                let raw_changed = !baseline.matches_raw(raw_content);
-                match (mdoc_changed, raw_changed) {
-                    (false, false) => {}
-                    (true, false) => {
+                match reconcile(baseline, mdoc_content, mdoc_present, raw_content) {
+                    Reconciliation::Unchanged => {}
+                    Reconciliation::MdocChanged => {
                         if raw_content != Some(mdoc_content) {
                             writes.push(PreparedWrite {
                                 path: raw_path,
@@ -119,33 +149,27 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                         }
                         baseline.update(mdoc_content, mdoc_present);
                     }
-                    (false, true) => dirty.push(issue(
+                    Reconciliation::MirrorChanged(_) => dirty.push(issue(
                         &relative,
                         Some(srctype),
                         "source mirror has uncommitted changes; run `mdc back`",
                     )),
-                    (true, true) => {
-                        let raw_state = back_state(raw_content, baseline.present);
-                        if raw_state.content.as_ref() == mdoc_content
-                            && raw_state.present == mdoc_present
-                        {
-                            if raw_content != Some(raw_state.content.as_ref()) {
-                                let normalized_content = raw_state.content.into_owned();
-                                writes.push(PreparedWrite {
-                                    path: raw_path,
-                                    snapshot: raw_snapshot,
-                                    content: normalized_content,
-                                });
-                            }
-                            baseline.update(mdoc_content, mdoc_present);
-                        } else {
-                            conflicts.push(issue(
-                                &relative,
-                                Some(srctype),
-                                "mdoc block and source mirror both changed",
-                            ));
+                    Reconciliation::Converged(raw_state) => {
+                        if raw_content != Some(raw_state.content.as_ref()) {
+                            let normalized_content = raw_state.content.into_owned();
+                            writes.push(PreparedWrite {
+                                path: raw_path,
+                                snapshot: raw_snapshot,
+                                content: normalized_content,
+                            });
                         }
+                        baseline.update(mdoc_content, mdoc_present);
                     }
+                    Reconciliation::Conflict => conflicts.push(issue(
+                        &relative,
+                        Some(srctype),
+                        "mdoc block and source mirror both changed",
+                    )),
                 }
             } else {
                 if raw_content.is_none() {
@@ -185,10 +209,7 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
             new_manifest.sources.insert(source_id, source_baseline);
             continue;
         }
-        if source_baseline.blocks.contains_key("rocq") {
-            rocq_tree_changed_shape = true;
-        }
-        for srctype in BUILTIN_SRCTYPES {
+        for srctype in builtin_srctypes() {
             let Some(baseline) = source_baseline.blocks.get(srctype) else {
                 continue;
             };
@@ -241,7 +262,7 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
             continue;
         }
         let source = decode_source_path(source_id)?;
-        for srctype in BUILTIN_SRCTYPES {
+        for srctype in builtin_srctypes() {
             let Some((path, _)) = existing_output_path(&mdcroot, &source, srctype)? else {
                 continue;
             };
@@ -259,24 +280,13 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
 
     let source_write_count = writes.len();
     let removed = removals.len();
-    if rocq_tree_changed_shape {
-        let rocq_dir = mdcroot.join(".mdc").join("rocq");
-        ensure_regular_directory_exists(&rocq_dir)?;
-        let marker = rocq_dir.join(ROCQ_CLEAN_MARKER_FILENAME);
-        let snapshot = FileSnapshot::capture(&marker)?;
-        if snapshot.content() != Some(ROCQ_CLEAN_MARKER_CONTENT) {
-            writes.push(PreparedWrite {
-                path: marker,
-                snapshot,
-                content: ROCQ_CLEAN_MARKER_CONTENT.to_vec(),
-            });
-        }
-    }
-
     apply_changes(
-        &manifest_path,
-        &manifest_snapshot,
-        &new_manifest,
+        &mdcroot,
+        PreparedManifest {
+            path: &manifest_path,
+            snapshot: &manifest_snapshot,
+            content: &new_manifest,
+        },
         &inputs,
         writes,
         removals,
@@ -325,7 +335,6 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
             continue;
         }
         let mut node = match MdocNode::load_bytes(
-            &mdcroot,
             &source_path,
             source_snapshot
                 .content()
@@ -366,12 +375,9 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                 .unwrap_or_else(|| output_path(&mdcroot, &relative, srctype));
             let raw_snapshot = FileSnapshot::capture(&raw_path)?;
             let raw_content = raw_snapshot.content();
-            let mdoc_changed = !baseline.matches_state(mdoc_content, mdoc_present);
-            let raw_changed = !baseline.matches_raw(raw_content);
-
-            let raw_state = match (mdoc_changed, raw_changed) {
-                (false, false) => continue,
-                (true, false) => {
+            let raw_state = match reconcile(baseline, mdoc_content, mdoc_present, raw_content) {
+                Reconciliation::Unchanged => continue,
+                Reconciliation::MdocChanged => {
                     conflicts.push(issue(
                         &relative,
                         Some(srctype),
@@ -379,21 +385,16 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                     ));
                     continue;
                 }
-                (false, true) => back_state(raw_content, baseline.present),
-                (true, true) => {
-                    let raw_state = back_state(raw_content, baseline.present);
-                    if raw_state.content.as_ref() == mdoc_content
-                        && raw_state.present == mdoc_present
-                    {
-                        raw_state
-                    } else {
-                        conflicts.push(issue(
-                            &relative,
-                            Some(srctype),
-                            "mdoc block and source mirror both changed",
-                        ));
-                        continue;
-                    }
+                Reconciliation::MirrorChanged(raw_state) | Reconciliation::Converged(raw_state) => {
+                    raw_state
+                }
+                Reconciliation::Conflict => {
+                    conflicts.push(issue(
+                        &relative,
+                        Some(srctype),
+                        "mdoc block and source mirror both changed",
+                    ));
+                    continue;
                 }
             };
 
@@ -434,7 +435,7 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
             node_writes.push(PreparedWrite {
                 path: source_path,
                 snapshot: source_snapshot,
-                content: node.render_payload()?.into_bytes(),
+                content: node.render()?.into_bytes(),
             });
         } else {
             inputs.push((source_path, source_snapshot));
@@ -444,9 +445,12 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
     let updated_mdocs = node_writes.len();
     node_writes.append(&mut raw_writes);
     apply_changes(
-        &manifest_path,
-        &manifest_snapshot,
-        &manifest,
+        &mdcroot,
+        PreparedManifest {
+            path: &manifest_path,
+            snapshot: &manifest_snapshot,
+            content: &manifest,
+        },
         &inputs,
         node_writes,
         Vec::new(),
@@ -465,9 +469,9 @@ pub(crate) fn targets(mdcroot: &Path, source_path: &Path) -> Result<Vec<(String,
         .strip_prefix(mdcroot)
         .with_context(|| format!("relativizing {}", source_path.display()))?;
     validate_source_relative(source)?;
-    let node = MdocNode::load(mdcroot, source_path)?;
+    let node = MdocNode::load(source_path)?;
     let mut targets = Vec::new();
-    for srctype in BUILTIN_SRCTYPES {
+    for srctype in builtin_srctypes() {
         let path = output_path(mdcroot, source, srctype);
         let snapshot = FileSnapshot::capture(&path)?;
         let block_present = node.source_block(srctype).is_some();

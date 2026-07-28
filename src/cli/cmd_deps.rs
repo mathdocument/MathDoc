@@ -1,6 +1,8 @@
 use anyhow::{bail, Result};
 
-use crate::core::{short_fnode, DependencyItem, DependencyTraversalReport, IssueKind};
+use crate::core::{
+    short_fnode, DependencyCandidatesEmpty, DependencyItem, DependencyTraversalReport, IssueKind,
+};
 use crate::depgraph::DepGraph;
 use crate::indcache::IndCache;
 
@@ -75,6 +77,49 @@ pub(super) fn cmd_dep_leaf(source: String) -> Result<i32> {
 
 // ── cmd: dep add ──────────────────────────────────────────────────────────────
 
+fn excluded_candidates_message(
+    query: &str,
+    source: usize,
+    existing_dependencies: usize,
+    invalid_or_duplicate: usize,
+) -> String {
+    if source == 0 && invalid_or_duplicate == 0 {
+        return format!("All matches for '{query}' are already dependencies of this node.");
+    }
+    if existing_dependencies == 0 && invalid_or_duplicate == 0 {
+        return format!("All matches for '{query}' refer to the source node itself.");
+    }
+    if source == 0 && existing_dependencies == 0 {
+        return format!(
+            "All matches for '{query}' are invalid or duplicate nodes ({invalid_or_duplicate} excluded)."
+        );
+    }
+    format!(
+        "All matches for '{query}' were excluded: {source} source, \
+         {existing_dependencies} existing dependencies, \
+         {invalid_or_duplicate} invalid or duplicate."
+    )
+}
+
+fn empty_candidates_message(query: &str, empty: &DependencyCandidatesEmpty) -> Option<String> {
+    match empty {
+        DependencyCandidatesEmpty::NoMatch => None,
+        DependencyCandidatesEmpty::Excluded {
+            source,
+            existing_dependencies,
+            invalid_or_duplicate,
+        } => Some(excluded_candidates_message(
+            query,
+            *source,
+            *existing_dependencies,
+            *invalid_or_duplicate,
+        )),
+        DependencyCandidatesEmpty::ResultLimit { available } => Some(format!(
+            "Found {available} available match(es) for '{query}', but --max-results is zero."
+        )),
+    }
+}
+
 pub(super) fn cmd_dep_add(
     source: String,
     query: Option<String>,
@@ -138,8 +183,11 @@ pub(super) fn cmd_dep_add(
     let candidates = candidate_report.nodes;
 
     if candidates.is_empty() {
-        if candidate_report.raw_had_matches {
-            println!("All matches for '{q}' are already dependencies of this node.");
+        let empty = candidate_report
+            .empty
+            .expect("an empty candidate list has a semantic result");
+        if let Some(message) = empty_candidates_message(&q, &empty) {
+            println!("{message}");
             return Ok(0);
         }
         println!("No results for '{q}'.");
@@ -351,4 +399,49 @@ fn select_multi(prompt: &str, items: &[(&str, &str, &str, bool)]) -> Result<Opti
         .with_prompt(prompt)
         .items(&labels)
         .interact_opt()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_match_is_the_only_empty_candidate_state_that_offers_creation() {
+        assert_eq!(
+            empty_candidates_message("Missing", &DependencyCandidatesEmpty::NoMatch),
+            None
+        );
+        assert!(empty_candidates_message(
+            "Existing",
+            &DependencyCandidatesEmpty::Excluded {
+                source: 0,
+                existing_dependencies: 1,
+                invalid_or_duplicate: 0,
+            }
+        )
+        .is_some());
+        assert!(empty_candidates_message(
+            "Invalid",
+            &DependencyCandidatesEmpty::Excluded {
+                source: 0,
+                existing_dependencies: 0,
+                invalid_or_duplicate: 1,
+            }
+        )
+        .is_some());
+        assert!(empty_candidates_message(
+            "Mixed",
+            &DependencyCandidatesEmpty::Excluded {
+                source: 1,
+                existing_dependencies: 2,
+                invalid_or_duplicate: 3,
+            }
+        )
+        .is_some());
+        assert!(empty_candidates_message(
+            "Limited",
+            &DependencyCandidatesEmpty::ResultLimit { available: 1 }
+        )
+        .is_some());
+    }
 }

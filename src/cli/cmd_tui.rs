@@ -19,6 +19,7 @@ use std::io;
 use uuid::Uuid;
 
 use super::{fmt_item, require_mdcroot, resolve_start_ref, BLD, CYN, GRN, RED, RST};
+use crate::core::short_fnode;
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -89,27 +90,35 @@ impl<C: TerminalControl> TerminalGuard<C> {
     fn restore(&mut self) -> io::Result<()> {
         let mut first_error = None;
         if self.cursor_hidden {
-            if let Err(error) = self.control.show_cursor() {
-                first_error = Some(error);
+            match self.control.show_cursor() {
+                Ok(()) => self.cursor_hidden = false,
+                Err(error) => first_error = Some(error),
             }
-            self.cursor_hidden = false;
         }
         if self.alternate_screen {
-            if let Err(error) = self.control.leave_alternate_screen() {
-                first_error.get_or_insert(error);
+            match self.control.leave_alternate_screen() {
+                Ok(()) => self.alternate_screen = false,
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
             }
-            self.alternate_screen = false;
         }
         if self.raw {
-            if let Err(error) = self.control.disable_raw() {
-                first_error.get_or_insert(error);
+            match self.control.disable_raw() {
+                Ok(()) => self.raw = false,
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
             }
-            self.raw = false;
         }
         match first_error {
             Some(error) => Err(error),
             None => Ok(()),
         }
+    }
+
+    fn suspend(&mut self) -> io::Result<()> {
+        self.restore()
     }
 }
 
@@ -141,7 +150,7 @@ pub(super) fn cmd_graph_tui(source: Option<String>) -> Result<i32> {
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_app(&mut terminal, &mut app);
+    let result = run_app(&mut terminal, &mut app, &mut guard);
     drop(terminal);
     let restore_result = guard.restore();
     result?;
@@ -159,6 +168,17 @@ pub(super) fn cmd_graph_tui(source: Option<String>) -> Result<i32> {
 // ── Data types ────────────────────────────────────────────────────────────────
 
 type NodeInfo = crate::core::NodeSummary;
+
+#[derive(Clone, PartialEq)]
+enum CandidateChoice {
+    Existing(NodeInfo),
+    Create(String),
+}
+
+struct CandidateSearch {
+    choices: Vec<CandidateChoice>,
+    empty_message: Option<String>,
+}
 
 #[derive(Clone, PartialEq)]
 enum PreSel {
@@ -184,7 +204,8 @@ enum Overlay {
     ActionMenu,
     AddDep {
         input: String,
-        results: Vec<NodeInfo>,
+        results: Vec<CandidateChoice>,
+        empty_message: Option<String>,
         sel: usize,
     },
     RmDep {
@@ -279,7 +300,7 @@ impl TuiApp {
         self.preview_lines = if !self.focused.rel_path.is_empty() {
             let root = self.cache.root();
             let abs = root.join(&self.focused.rel_path);
-            match crate::mdocnode::MdocNode::load(root, &abs) {
+            match crate::mdocnode::MdocNode::load(&abs) {
                 Ok(node) => {
                     let mut lines: Vec<String> = Vec::new();
                     for (i, block) in node.blocks.iter().enumerate() {
@@ -461,10 +482,38 @@ fn record_edit_result(app: &mut TuiApp, rel_path: &str, result: Result<()>) {
     }
 }
 
-const NEW_NODE_SENTINEL: &str = "\x00new";
+fn excluded_candidate_message(
+    source: usize,
+    existing_dependencies: usize,
+    invalid_or_duplicate: usize,
+) -> String {
+    if source == 0 && invalid_or_duplicate == 0 {
+        return "all matches are already dependencies".to_string();
+    }
+    if existing_dependencies == 0 && invalid_or_duplicate == 0 {
+        return "all matches refer to this node".to_string();
+    }
+    if source == 0 && existing_dependencies == 0 {
+        return format!("all matches are invalid or duplicate ({invalid_or_duplicate} excluded)");
+    }
+    format!(
+        "matches excluded: {source} source, {existing_dependencies} existing, \
+         {invalid_or_duplicate} invalid/duplicate"
+    )
+}
 
-fn search_fields(cache: &crate::indcache::IndCache, q: &str) -> Result<Vec<NodeInfo>> {
-    cache.search(q, 20)
+fn candidate_empty_message(empty: &crate::core::DependencyCandidatesEmpty) -> String {
+    match empty {
+        crate::core::DependencyCandidatesEmpty::NoMatch => "no results".to_string(),
+        crate::core::DependencyCandidatesEmpty::Excluded {
+            source,
+            existing_dependencies,
+            invalid_or_duplicate,
+        } => excluded_candidate_message(*source, *existing_dependencies, *invalid_or_duplicate),
+        crate::core::DependencyCandidatesEmpty::ResultLimit { available } => {
+            format!("{available} match(es) available, but the result limit is zero")
+        }
+    }
 }
 
 /// Free function so it can be called while `app.overlay` is mutably borrowed.
@@ -472,26 +521,34 @@ fn adddep_search_fields(
     cache: &crate::indcache::IndCache,
     focused_fnode: &str,
     q: &str,
-) -> Result<Vec<NodeInfo>> {
+) -> Result<CandidateSearch> {
     let candidate_report = cache.dependency_candidates(focused_fnode, q, 20)?;
-    let mut results = candidate_report.nodes;
-    // Only offer to create if the raw search had zero matches — not if
-    // all matches were filtered out because they're already dependencies.
-    if results.is_empty() && !q.is_empty() && !candidate_report.raw_had_matches {
-        results.push(NodeInfo {
-            fnode: NEW_NODE_SENTINEL.to_string(),
-            title: format!("✦ Create new: {q}"),
-            rel_path: String::new(),
-            broken: false,
-            depth: 0,
-        });
-    }
-    Ok(results)
+    let mut choices = candidate_report
+        .nodes
+        .into_iter()
+        .map(CandidateChoice::Existing)
+        .collect::<Vec<_>>();
+    let empty_message = match candidate_report.empty {
+        Some(crate::core::DependencyCandidatesEmpty::NoMatch) if !q.is_empty() => {
+            choices.push(CandidateChoice::Create(q.to_string()));
+            None
+        }
+        Some(empty) => Some(candidate_empty_message(&empty)),
+        None => None,
+    };
+    Ok(CandidateSearch {
+        choices,
+        empty_message,
+    })
 }
 
 // ── Event loop ────────────────────────────────────────────────────────────────
 
-fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiApp) -> Result<()> {
+fn run_app(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut TuiApp,
+    guard: &mut TerminalGuard<CrosstermControl>,
+) -> Result<()> {
     loop {
         terminal.draw(|f| render(f, app))?;
 
@@ -541,13 +598,13 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                 KeyCode::Backspace => {
                     input.pop();
                     let q = input.clone();
-                    *results = search_fields(&app.cache, &q)?;
+                    *results = app.cache.search(&q, 20)?;
                     *sel = 0;
                 }
                 KeyCode::Char(c) => {
                     input.push(c);
                     let q = input.clone();
-                    *results = search_fields(&app.cache, &q)?;
+                    *results = app.cache.search(&q, 20)?;
                     *sel = 0;
                 }
                 _ => {}
@@ -560,6 +617,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                     app.overlay = Overlay::AddDep {
                         input: String::new(),
                         results: vec![],
+                        empty_message: None,
                         sel: 0,
                     };
                 }
@@ -581,11 +639,9 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                             terminal::Clear(terminal::ClearType::All),
                             cursor::MoveTo(0, 0),
                         )?;
-                        disable_raw_mode()?;
-                        execute!(io::stdout(), LeaveAlternateScreen, cursor::Show)?;
+                        guard.suspend()?;
                         let edit_result = super::cmd_core::launch_editor(&abs_path);
-                        execute!(io::stdout(), EnterAlternateScreen, cursor::Hide)?;
-                        enable_raw_mode()?;
+                        guard.enter()?;
                         terminal.clear()?;
                         let edit_result =
                             edit_result.and_then(|_| refresh_after_edit(app, &abs_path));
@@ -600,44 +656,40 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
             Overlay::AddDep {
                 input,
                 results,
+                empty_message,
                 sel,
             } => match key.code {
                 KeyCode::Esc => app.overlay = Overlay::ActionMenu,
                 KeyCode::Enter => {
-                    let (add_dep, next_overlay) = if let Overlay::AddDep {
-                        results,
-                        sel,
-                        input,
-                        ..
-                    } = &app.overlay
-                    {
-                        if let Some(node) = results.get(*sel) {
-                            let q = input.clone();
-                            if node.fnode == NEW_NODE_SENTINEL {
-                                (
-                                    None,
-                                    Overlay::CreateDep {
-                                        step: CreateStep::Title,
-                                        title: q,
-                                        file: String::new(),
-                                        fnode: Uuid::new_v4().to_string(),
-                                    },
-                                )
+                    let (add_dep, next_overlay) =
+                        if let Overlay::AddDep { results, sel, .. } = &app.overlay {
+                            if let Some(choice) = results.get(*sel) {
+                                match choice {
+                                    CandidateChoice::Create(title) => (
+                                        None,
+                                        Overlay::CreateDep {
+                                            step: CreateStep::Title,
+                                            title: title.clone(),
+                                            file: String::new(),
+                                            fnode: Uuid::new_v4().to_string(),
+                                        },
+                                    ),
+                                    CandidateChoice::Existing(node) => {
+                                        let dep = (
+                                            node.fnode.clone(),
+                                            node.title.clone(),
+                                            node.rel_path.clone(),
+                                            node.broken,
+                                        );
+                                        (Some(dep), Overlay::None)
+                                    }
+                                }
                             } else {
-                                let dep = (
-                                    node.fnode.clone(),
-                                    node.title.clone(),
-                                    node.rel_path.clone(),
-                                    node.broken,
-                                );
-                                (Some(dep), Overlay::None)
+                                (None, Overlay::None)
                             }
                         } else {
                             (None, Overlay::None)
-                        }
-                    } else {
-                        (None, Overlay::None)
-                    };
+                        };
                     app.overlay = next_overlay;
                     if let Some((fnode, title, rel, broken)) = add_dep {
                         match app.do_add_dep(fnode, title, rel, broken) {
@@ -663,13 +715,17 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                 KeyCode::Backspace => {
                     input.pop();
                     let q = input.clone();
-                    *results = adddep_search_fields(&app.cache, &app.focused.fnode, &q)?;
+                    let search = adddep_search_fields(&app.cache, &app.focused.fnode, &q)?;
+                    *results = search.choices;
+                    *empty_message = search.empty_message;
                     *sel = 0;
                 }
                 KeyCode::Char(c) => {
                     input.push(c);
                     let q = input.clone();
-                    *results = adddep_search_fields(&app.cache, &app.focused.fnode, &q)?;
+                    let search = adddep_search_fields(&app.cache, &app.focused.fnode, &q)?;
+                    *results = search.choices;
+                    *empty_message = search.empty_message;
                     *sel = 0;
                 }
                 _ => {}
@@ -724,10 +780,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                     } else {
                         String::new()
                     };
-                    let results = adddep_search_fields(&app.cache, &app.focused.fnode, &q)?;
+                    let search = adddep_search_fields(&app.cache, &app.focused.fnode, &q)?;
                     app.overlay = Overlay::AddDep {
                         input: q,
-                        results,
+                        results: search.choices,
+                        empty_message: search.empty_message,
                         sel: 0,
                     };
                 }
@@ -1008,7 +1065,7 @@ fn render_overlay(f: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
                 .title(Span::styled(" search ", Style::default().fg(Color::Yellow)));
             let inner = block.inner(r);
             f.render_widget(block, r);
-            render_list_with_input(
+            render_node_list_with_input(
                 f,
                 inner,
                 &format!("/{input}█"),
@@ -1079,6 +1136,7 @@ fn render_overlay(f: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
         Overlay::AddDep {
             input,
             results,
+            empty_message,
             sel,
         } => {
             let h = (results.len().saturating_add(4)).clamp(6, 16) as u16;
@@ -1093,7 +1151,14 @@ fn render_overlay(f: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
                 ));
             let inner = block.inner(r);
             f.render_widget(block, r);
-            render_list_with_input(f, inner, &format!("/{input}█"), results, *sel, Color::Cyan);
+            render_candidate_list_with_input(
+                f,
+                inner,
+                &format!("/{input}█"),
+                results,
+                empty_message.as_deref(),
+                *sel,
+            );
         }
         Overlay::CreateDep {
             step,
@@ -1200,7 +1265,7 @@ fn render_overlay(f: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
                 .map(|(i, node)| {
                     let checked = if selected[i] { "✓" } else { " " };
                     let is_cur = i == *cursor;
-                    let sf = short_fnode_display(&node.fnode);
+                    let sf = short_fnode(&node.fnode);
                     let label = format!("[{checked}] [{}] {sf}  {}", node.depth, &node.title);
                     let style = if is_cur {
                         Style::default()
@@ -1224,7 +1289,7 @@ fn render_overlay(f: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
 }
 
 /// Render a search-style list with an input prompt line.
-fn render_list_with_input(
+fn render_node_list_with_input(
     f: &mut ratatui::Frame,
     area: Rect,
     prompt: &str,
@@ -1239,12 +1304,8 @@ fn render_list_with_input(
     ))];
     for (i, node) in results.iter().take(max_results).enumerate() {
         let is_sel = i == sel;
-        let sf = short_fnode_display(&node.fnode);
-        let label = if node.fnode == NEW_NODE_SENTINEL {
-            node.title.clone()
-        } else {
-            format!("[{}] {sf}  {}", node.depth, node.title)
-        };
+        let sf = short_fnode(&node.fnode);
+        let label = format!("[{}] {sf}  {}", node.depth, node.title);
         let style = if is_sel {
             Style::default()
                 .fg(Color::White)
@@ -1258,6 +1319,51 @@ fn render_list_with_input(
     if results.is_empty() {
         lines.push(Line::from(Span::styled(
             "  (no results)",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        "↑↓:select  Enter:confirm  Esc:back",
+        Style::default().fg(Color::DarkGray),
+    )));
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+fn render_candidate_list_with_input(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    prompt: &str,
+    results: &[CandidateChoice],
+    empty_message: Option<&str>,
+    sel: usize,
+) {
+    let max_results = area.height.saturating_sub(2) as usize;
+    let mut lines = vec![Line::from(Span::styled(
+        prompt,
+        Style::default().fg(Color::Cyan),
+    ))];
+    for (i, choice) in results.iter().take(max_results).enumerate() {
+        let is_sel = i == sel;
+        let label = match choice {
+            CandidateChoice::Existing(node) => {
+                let sf = short_fnode(&node.fnode);
+                format!("[{}] {sf}  {}", node.depth, node.title)
+            }
+            CandidateChoice::Create(title) => format!("✦ Create new: {title}"),
+        };
+        let style = if is_sel {
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        let prefix = if is_sel { "▶ " } else { "  " };
+        lines.push(Line::from(Span::styled(format!("{prefix}{label}"), style)));
+    }
+    if results.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("  ({})", empty_message.unwrap_or("no results")),
             Style::default().fg(Color::DarkGray),
         )));
     }
@@ -1373,7 +1479,7 @@ fn render_card(f: &mut ratatui::Frame, area: Rect, node: &NodeInfo, selected: bo
     };
 
     let inner_w = (CARD_WIDTH as usize).saturating_sub(2);
-    let sf = short_fnode_display(&node.fnode);
+    let sf = short_fnode(&node.fnode);
     let depth_fnode = format!("[{}] {}", node.depth, sf);
 
     let (fnode_style, title_style) = if selected {
@@ -1513,12 +1619,12 @@ fn render_status(f: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
         PreSel::Referrer(i) => app
             .referrers
             .get(*i)
-            .map(|n| format!("ref [{}] {}", n.depth, short_fnode_display(&n.fnode)))
+            .map(|n| format!("ref [{}] {}", n.depth, short_fnode(&n.fnode)))
             .unwrap_or_else(|| "referrer".to_string()),
         PreSel::Child(i) => app
             .children
             .get(*i)
-            .map(|n| format!("dep [{}] {}", n.depth, short_fnode_display(&n.fnode)))
+            .map(|n| format!("dep [{}] {}", n.depth, short_fnode(&n.fnode)))
             .unwrap_or_else(|| "child".to_string()),
     };
     let hint = format!(
@@ -1533,10 +1639,6 @@ fn render_status(f: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
 }
 
 // ── Display helpers ───────────────────────────────────────────────────────────
-
-fn short_fnode_display(fnode: &str) -> &str {
-    crate::core::short_fnode(fnode)
-}
 
 fn truncate_str(s: &str, max_chars: usize) -> String {
     let chars: Vec<char> = s.chars().collect();
@@ -1666,13 +1768,45 @@ mod tests {
     }
 
     #[test]
+    fn terminal_guard_retries_failed_cleanup_on_drop() {
+        for (failure, expected) in [
+            ("show", vec!["show", "leave", "disable", "show"]),
+            ("leave", vec!["show", "leave", "disable", "leave"]),
+            ("disable", vec!["show", "leave", "disable", "disable"]),
+        ] {
+            let (mut guard, calls) = fake_guard(Some(failure));
+            guard.enter().unwrap();
+            calls.borrow_mut().clear();
+            assert!(guard.suspend().is_err());
+            drop(guard);
+            assert_eq!(*calls.borrow(), expected, "cleanup failure at {failure}");
+        }
+    }
+
+    #[test]
+    fn terminal_guard_tracks_suspend_and_resume() {
+        let (mut guard, calls) = fake_guard(None);
+        guard.enter().unwrap();
+        guard.suspend().unwrap();
+        guard.enter().unwrap();
+        guard.restore().unwrap();
+        assert_eq!(
+            *calls.borrow(),
+            vec![
+                "enable", "enter", "hide", "show", "leave", "disable", "enable", "enter", "hide",
+                "show", "leave", "disable"
+            ]
+        );
+    }
+
+    #[test]
     fn default_dependency_path_uses_the_node_fnode() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join(".mdc")).unwrap();
         let source_path = dir.path().join("source.mdoc");
-        let source = crate::mdocnode::MdocNode::new_at_path(dir.path(), &source_path, "Source");
+        let source = crate::mdocnode::MdocNode::new_at_path(&source_path, "Source");
         let source_fnode = source.fnode.clone();
-        source.save_new().unwrap();
+        std::fs::write(&source_path, source.render().unwrap()).unwrap();
         let mut cache = crate::indcache::IndCache::open(dir.path().to_path_buf()).unwrap();
         let graph = crate::depgraph::DepGraph::from_ref(&mut cache, &source_fnode, None).unwrap();
         let fnode = "new-node-0001";
@@ -1703,9 +1837,96 @@ mod tests {
         let mut cache = crate::indcache::IndCache::open(dir.path().to_path_buf()).unwrap();
         cache.refresh_all().unwrap();
 
-        let results = search_fields(&cache, "Invalid").unwrap();
+        let results = cache.search("Invalid", 20).unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].broken);
+    }
+
+    #[test]
+    fn dependency_choices_use_typed_creation_and_semantic_empty_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        std::fs::write(
+            root.join("source.mdoc"),
+            "@fnode: source-node\n@title: Mix Source\n\n@dep:\nexisting-node\n@end\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("existing.mdoc"),
+            "@fnode: existing-node\n@title: Mix Existing\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("invalid.mdoc"),
+            "@fnode: invalid-node\n@title: Mix Invalid\n@unknown: value\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("duplicate-a.mdoc"),
+            "@fnode: duplicate-node\n@title: Mix Duplicate A\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("duplicate-b.mdoc"),
+            "@fnode: duplicate-node\n@title: Mix Duplicate B\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("available.mdoc"),
+            "@fnode: available-node\n@title: Available Choice\n",
+        )
+        .unwrap();
+        let mut cache = crate::indcache::IndCache::open(root.to_path_buf()).unwrap();
+        cache.refresh_all().unwrap();
+
+        let absent = adddep_search_fields(&cache, "source-node", "Absent Choice").unwrap();
+        assert!(absent.empty_message.is_none());
+        assert!(matches!(
+            absent.choices.as_slice(),
+            [CandidateChoice::Create(title)] if title == "Absent Choice"
+        ));
+
+        let source = adddep_search_fields(&cache, "source-node", "Mix Source").unwrap();
+        assert!(source.choices.is_empty());
+        assert_eq!(
+            source.empty_message.as_deref(),
+            Some("all matches refer to this node")
+        );
+
+        let existing = adddep_search_fields(&cache, "source-node", "Mix Existing").unwrap();
+        assert!(existing.choices.is_empty());
+        assert_eq!(
+            existing.empty_message.as_deref(),
+            Some("all matches are already dependencies")
+        );
+
+        let invalid = adddep_search_fields(&cache, "source-node", "Mix Invalid").unwrap();
+        assert!(invalid.choices.is_empty());
+        assert_eq!(
+            invalid.empty_message.as_deref(),
+            Some("all matches are invalid or duplicate (1 excluded)")
+        );
+
+        let mixed = adddep_search_fields(&cache, "source-node", "Mix").unwrap();
+        assert!(mixed.choices.is_empty());
+        assert_eq!(
+            mixed.empty_message.as_deref(),
+            Some("matches excluded: 1 source, 1 existing, 3 invalid/duplicate")
+        );
+
+        let available = adddep_search_fields(&cache, "source-node", "Available Choice").unwrap();
+        assert!(available.empty_message.is_none());
+        assert!(matches!(
+            available.choices.as_slice(),
+            [CandidateChoice::Existing(node)] if node.fnode == "available-node"
+        ));
+        assert_eq!(
+            candidate_empty_message(&crate::core::DependencyCandidatesEmpty::ResultLimit {
+                available: 2,
+            }),
+            "2 match(es) available, but the result limit is zero"
+        );
     }
 
     #[test]
@@ -1730,9 +1951,9 @@ mod tests {
         let root = dir.path();
         std::fs::create_dir(root.join(".mdc")).unwrap();
         let path = root.join("node.mdoc");
-        let node = crate::mdocnode::MdocNode::new_at_path(root, &path, "Editor");
+        let node = crate::mdocnode::MdocNode::new_at_path(&path, "Editor");
         let fnode = node.fnode.clone();
-        node.save().unwrap();
+        std::fs::write(&path, node.render().unwrap()).unwrap();
         let mut cache = crate::indcache::IndCache::open(root.to_path_buf()).unwrap();
         cache.refresh_all().unwrap();
         let app = TuiApp::new(cache, fnode).unwrap();

@@ -1,6 +1,6 @@
 use super::{
-    cfg_positive_int, lib_source, process_error_result, require_tool, run_process, CompilerReq,
-    CompilerRes, SrcCompiler,
+    process_error_result, require_tool, run_process, CompilerReq, CompilerRes, CompilerWorkspace,
+    SrcCompiler,
 };
 
 pub(super) struct CompilerPython;
@@ -11,16 +11,16 @@ impl SrcCompiler for CompilerPython {
     }
 
     fn compile(&self, req: &CompilerReq) -> CompilerRes {
-        let timeout_sec =
-            match cfg_positive_int(&req.compcfg, "timeout_sec", "src.python.timeout_sec") {
-                Ok(v) => v,
-                Err(e) => return CompilerRes::err(e.to_string()),
-            };
+        let timeout_sec = req.timeout_sec();
         let python = match require_tool("python3").or_else(|_| require_tool("python")) {
             Ok(p) => p,
             Err(e) => return CompilerRes::err_code(e.to_string(), 127),
         };
-        let (lib_root, relative) = match lib_source(req, "python") {
+        let workspace = match CompilerWorkspace::open(req, "python") {
+            Ok(workspace) => workspace,
+            Err(error) => return CompilerRes::err(error.to_string()),
+        };
+        let (lib_root, relative) = match workspace.lib_source(req) {
             Ok(source) => source,
             Err(error) => return CompilerRes::err(error.to_string()),
         };
@@ -32,7 +32,6 @@ impl SrcCompiler for CompilerPython {
             Some(&lib_root),
         ) {
             Ok((rtcode, stdout, stderr)) => CompilerRes {
-                result: rtcode == 0,
                 stdout,
                 stderr,
                 rtcode,

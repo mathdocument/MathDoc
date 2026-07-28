@@ -17,7 +17,7 @@ fn expect_err<T>(result: anyhow::Result<T>) -> anyhow::Error {
 /// Create a node file in `root` with one block. Returns the unsaved MdocNode.
 fn make_node(root: &Path, title: &str, srctype: &str, content: &str) -> MdocNode {
     fs::create_dir_all(root.join(".mdc")).unwrap();
-    let mut node = MdocNode::new_at_path(root, root, title); // temp path
+    let mut node = MdocNode::new_at_path(root, title); // temp path
     node.path = root.join(format!("{}.mdoc", &node.fnode[..8]));
     node.blocks.push(SrcBlock {
         srctype: srctype.to_string(),
@@ -25,6 +25,13 @@ fn make_node(root: &Path, title: &str, srctype: &str, content: &str) -> MdocNode
         metadata: Default::default(),
     });
     node
+}
+
+fn write_node(node: &MdocNode) {
+    if let Some(parent) = node.path.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
+    fs::write(&node.path, node.render().unwrap()).unwrap();
 }
 
 fn make_invalid(path: &Path) {
@@ -43,12 +50,12 @@ fn test_from_ref_loads_root_graph() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     let src = make_node(root, "Src", "text", "src");
-    src.save().unwrap();
+    write_node(&src);
 
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
 
     let graph = DepGraph::from_ref(&mut cache, &src.fnode[..8], Some(root)).unwrap();
-    assert_eq!(graph.root_fnode(), src.fnode);
+    assert_eq!(graph.root_item().unwrap().fnode, src.fnode);
 }
 
 #[test]
@@ -101,11 +108,11 @@ fn test_direct_dependency_mutation_uses_graph_api() {
     let root = dir.path();
 
     let src = make_node(root, "Src", "text", "src");
-    src.save().unwrap();
+    write_node(&src);
     let dep1 = make_node(root, "Dep1", "text", "dep1");
-    dep1.save().unwrap();
+    write_node(&dep1);
     let dep2 = make_node(root, "Dep2", "text", "dep2");
-    dep2.save().unwrap();
+    write_node(&dep2);
 
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     let mut graph = DepGraph::from_ref(&mut cache, &src.fnode, None).unwrap();
@@ -122,7 +129,12 @@ fn test_direct_dependency_mutation_uses_graph_api() {
     assert!(skipped_existing.is_empty());
     assert_eq!(skipped_self, vec![src.fnode.clone()]);
     assert_eq!(
-        graph.direct_dependency_fnodes().unwrap(),
+        graph
+            .direct_dependency_items()
+            .unwrap()
+            .into_iter()
+            .map(|item| item.fnode)
+            .collect::<Vec<_>>(),
         vec![dep1.fnode.clone(), dep2.fnode.clone()]
     );
 
@@ -143,12 +155,17 @@ fn test_direct_dependency_mutation_uses_graph_api() {
         .unwrap();
     assert_eq!(removed, vec![dep1.fnode.clone()]);
     assert_eq!(
-        graph.direct_dependency_fnodes().unwrap(),
+        graph
+            .direct_dependency_items()
+            .unwrap()
+            .into_iter()
+            .map(|item| item.fnode)
+            .collect::<Vec<_>>(),
         vec![dep2.fnode.clone()]
     );
 
     // Verify file was updated
-    let reloaded = MdocNode::load(root, &src.path).unwrap();
+    let reloaded = MdocNode::load(&src.path).unwrap();
     assert_eq!(reloaded.depens, vec![dep2.fnode.clone()]);
 }
 
@@ -158,16 +175,16 @@ fn direct_dependency_items_refresh_external_breakage() {
     let root = dir.path();
 
     let missing = make_node(root, "Missing", "text", "missing");
-    missing.save().unwrap();
+    write_node(&missing);
     let invalid = make_node(root, "Invalid", "text", "invalid");
-    invalid.save().unwrap();
+    write_node(&invalid);
     let mut src = make_node(root, "Src", "text", "src");
     src.add_dependency(&missing.fnode);
     src.add_dependency(&invalid.fnode);
-    src.save().unwrap();
+    write_node(&src);
 
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
-    let db_path = cache.db_path();
+    let db_path = cache.root().join(".mdc/index.db");
     let mut graph = DepGraph::from_ref(&mut cache, &src.fnode, None).unwrap();
     fs::remove_file(&missing.path).unwrap();
     make_invalid(&invalid.path);
@@ -192,9 +209,9 @@ fn test_add_direct_dependencies_rejects_cycle() {
     let root = dir.path();
 
     let src = make_node(root, "Src", "text", "src");
-    src.save().unwrap();
+    write_node(&src);
     let dep = make_node(root, "Dep", "text", "dep");
-    dep.save().unwrap();
+    write_node(&dep);
 
     // src → dep
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
@@ -216,7 +233,7 @@ fn test_add_direct_dependencies_rejects_cycle() {
     );
 
     // dep's file should NOT have been modified
-    let reloaded = MdocNode::load(root, &dep.path).unwrap();
+    let reloaded = MdocNode::load(&dep.path).unwrap();
     assert!(reloaded.depens.is_empty());
 }
 
@@ -225,14 +242,13 @@ fn test_failed_dependency_save_does_not_mutate_graph_state() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     let src = make_node(root, "Src", "text", "src");
-    src.save().unwrap();
+    write_node(&src);
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     let mut graph = DepGraph::from_ref(&mut cache, &src.fnode, None).unwrap();
 
     let result = graph.add_direct_dependencies(vec!["@end".to_string()]);
     assert!(result.is_err());
-    assert!(graph.direct_dependency_fnodes().unwrap().is_empty());
-    assert!(MdocNode::load(root, &src.path).unwrap().depens.is_empty());
+    assert!(MdocNode::load(&src.path).unwrap().depens.is_empty());
 }
 
 #[test]
@@ -240,11 +256,11 @@ fn batch_add_revalidates_every_exact_target_before_writing() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     let src = make_node(root, "Src", "text", "src");
-    src.save().unwrap();
+    write_node(&src);
     let valid = make_node(root, "Valid", "text", "valid");
-    valid.save().unwrap();
+    write_node(&valid);
     let deleted = make_node(root, "Deleted", "text", "deleted");
-    deleted.save().unwrap();
+    write_node(&deleted);
     fs::write(
         root.join("invalid-target.mdoc"),
         "@fnode: invalid-target\n@title: Invalid\n@title: Again\n",
@@ -281,8 +297,7 @@ fn batch_add_revalidates_every_exact_target_before_writing() {
                 || error.to_string().contains("duplicate fnode"),
             "unexpected error for {rejected}: {error}"
         );
-        assert!(graph.direct_dependency_fnodes().unwrap().is_empty());
-        assert!(MdocNode::load(root, &src.path).unwrap().depens.is_empty());
+        assert!(MdocNode::load(&src.path).unwrap().depens.is_empty());
     }
 }
 
@@ -291,7 +306,7 @@ fn prepared_dependency_paths_preserve_mdoc_suffix_and_dot_default() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     let src = make_node(root, "Src", "text", "src");
-    src.save().unwrap();
+    write_node(&src);
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     let mut graph = DepGraph::from_ref(&mut cache, &src.fnode, None).unwrap();
 
@@ -324,7 +339,7 @@ fn test_create_and_add_dependency_no_side_effects_on_cycle() {
     let root_dir = dir.path();
 
     let root_node = make_node(root_dir, "Root", "text", "root");
-    root_node.save().unwrap();
+    write_node(&root_node);
 
     // Build a new node whose @dep already points back at root — this would form
     // the cycle root → new_node → root the moment we add root → new_node.
@@ -360,6 +375,40 @@ fn test_create_and_add_dependency_no_side_effects_on_cycle() {
 }
 
 #[test]
+fn create_and_add_dependency_rolls_back_file_and_index_when_linking_fails() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let root_node = make_node(root, "Root", "text", "root");
+    write_node(&root_node);
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    let connection = rusqlite::Connection::open(cache.root().join(".mdc/index.db")).unwrap();
+    let mut graph = DepGraph::from_ref(&mut cache, &root_node.fnode, None).unwrap();
+    connection
+        .execute_batch(&format!(
+            "CREATE TRIGGER reject_root_link
+             BEFORE UPDATE ON mdocs
+             WHEN NEW.fnode = '{}'
+             BEGIN
+                 SELECT RAISE(ABORT, 'injected link failure');
+             END;",
+            root_node.fnode
+        ))
+        .unwrap();
+    drop(connection);
+    let new_node = make_node(root, "Created", "text", "created");
+    let new_path = new_node.path.clone();
+    let new_fnode = new_node.fnode.clone();
+
+    let error = graph.create_and_add_dependency(new_node).unwrap_err();
+
+    assert!(error.to_string().contains("injected link failure"));
+    assert!(!new_path.exists());
+    drop(graph);
+    assert!(cache.search(&new_fnode, usize::MAX).unwrap().is_empty());
+}
+
+#[test]
 fn test_create_root_rejects_duplicate_fnode() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
@@ -368,7 +417,7 @@ fn test_create_root_rejects_duplicate_fnode() {
     // First create succeeds and establishes the fnode in the index.
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     let graph = DepGraph::create_root(&mut cache, "first", "First", None).unwrap();
-    let existing_fnode = graph.root_fnode().to_string();
+    let existing_fnode = graph.root_item().unwrap().fnode;
     drop(graph);
 
     // Second create with the same fnode must fail before writing anything.
@@ -397,7 +446,7 @@ fn test_create_root_rejects_duplicate_fnode_unindexed() {
 
     // Write an existing mdoc file to disk WITHOUT indexing it.
     let existing = make_node(root, "Existing", "text", "");
-    existing.save().unwrap();
+    write_node(&existing);
     let existing_fnode = existing.fnode.clone();
 
     // Attempt to create a new root with the same fnode — bootstrap must surface
@@ -426,7 +475,7 @@ fn test_create_and_add_dependency_rejects_duplicate_fnode() {
     let root_dir = dir.path();
 
     let root_node = make_node(root_dir, "Root", "text", "root");
-    root_node.save().unwrap();
+    write_node(&root_node);
 
     let mut cache = IndCache::open(root_dir.to_path_buf()).unwrap();
     let mut graph = DepGraph::from_ref(&mut cache, &root_node.fnode, None).unwrap();
@@ -459,7 +508,7 @@ fn test_create_and_add_dependency_rejects_non_mdoc_extension() {
     let root_dir = dir.path();
 
     let root_node = make_node(root_dir, "Root", "text", "root");
-    root_node.save().unwrap();
+    write_node(&root_node);
     let mut cache = IndCache::open(root_dir.to_path_buf()).unwrap();
     let mut graph = DepGraph::from_ref(&mut cache, &root_node.fnode, None).unwrap();
 
@@ -488,7 +537,7 @@ fn test_create_and_add_dependency_rejects_existing_path() {
     let root_dir = dir.path();
 
     let root_node = make_node(root_dir, "Root", "text", "root");
-    root_node.save().unwrap();
+    write_node(&root_node);
     let mut cache = IndCache::open(root_dir.to_path_buf()).unwrap();
     let mut graph = DepGraph::from_ref(&mut cache, &root_node.fnode, None).unwrap();
 
@@ -520,7 +569,7 @@ fn test_create_and_add_dependency_rejects_path_outside_workspace() {
     let outside_dir = tempfile::TempDir::new().unwrap();
 
     let root_node = make_node(root_dir, "Root", "text", "root");
-    root_node.save().unwrap();
+    write_node(&root_node);
     let mut cache = IndCache::open(root_dir.to_path_buf()).unwrap();
     let mut graph = DepGraph::from_ref(&mut cache, &root_node.fnode, None).unwrap();
 
@@ -549,7 +598,7 @@ fn test_create_and_add_dependency_rejects_path_in_nested_workspace() {
     fs::create_dir_all(nested.join(".mdc")).unwrap();
 
     let root_node = make_node(&root_dir, "Root", "text", "root");
-    root_node.save().unwrap();
+    write_node(&root_node);
     let mut cache = IndCache::open(root_dir.clone()).unwrap();
     let mut graph = DepGraph::from_ref(&mut cache, &root_node.fnode, None).unwrap();
 
@@ -580,7 +629,7 @@ fn test_create_and_add_dependency_rejects_dotdot_escape() {
     let root_dir = dir.path().canonicalize().unwrap();
 
     let root_node = make_node(&root_dir, "Root", "text", "root");
-    root_node.save().unwrap();
+    write_node(&root_node);
     let mut cache = IndCache::open(root_dir.clone()).unwrap();
     let mut graph = DepGraph::from_ref(&mut cache, &root_node.fnode, None).unwrap();
 
@@ -673,7 +722,7 @@ fn test_create_and_add_dependency_rejects_symlink_dotdot_escape() {
     symlink(&outside_canonical, &link_path).unwrap();
 
     let root_node = make_node(&root_dir, "Root", "text", "root");
-    root_node.save().unwrap();
+    write_node(&root_node);
     let mut cache = IndCache::open(root_dir.clone()).unwrap();
     let mut graph = DepGraph::from_ref(&mut cache, &root_node.fnode, None).unwrap();
 
@@ -783,17 +832,17 @@ fn test_global_root_items_include_unreferenced_valid_and_invalid_nodes() {
     fs::create_dir_all(root.join(".mdc")).unwrap();
 
     let leaf = make_node(root, "Leaf", "text", "leaf");
-    leaf.save().unwrap();
+    write_node(&leaf);
 
     let mut root_valid = make_node(root, "Root Valid", "text", "root_valid");
     root_valid.add_dependency(&leaf.fnode);
-    root_valid.save().unwrap();
+    write_node(&root_valid);
 
     let other_root = make_node(root, "Other Root", "text", "other_root");
-    other_root.save().unwrap();
+    write_node(&other_root);
 
     let bad_root = make_node(root, "Broken Root", "text", "bad_root");
-    bad_root.save().unwrap();
+    write_node(&bad_root);
     make_invalid(&bad_root.path);
 
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
@@ -836,22 +885,22 @@ fn test_graph_check_report_collects_missing_invalid_and_cycles() {
     fs::create_dir_all(root.join(".mdc")).unwrap();
 
     let bad = make_node(root, "Broken Node", "text", "bad");
-    bad.save().unwrap();
+    write_node(&bad);
     make_invalid(&bad.path);
 
     let mut a = make_node(root, "Cycle A", "text", "a");
-    a.save().unwrap();
+    write_node(&a);
     let mut b = make_node(root, "Cycle B", "text", "b");
-    b.save().unwrap();
+    write_node(&b);
     a.add_dependency(&b.fnode);
-    a.save().unwrap();
+    write_node(&a);
     b.add_dependency(&a.fnode);
-    b.save().unwrap();
+    write_node(&b);
 
     let mut src = make_node(root, "Source", "text", "src");
     src.add_dependency("missing-target-001");
     src.add_dependency(&bad.fnode);
-    src.save().unwrap();
+    write_node(&src);
 
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     let report = cache.graph_check_report().unwrap();
@@ -1013,7 +1062,7 @@ fn interprocess_additions_to_one_source_preserve_both_edges() {
     );
     assert_eq!(results, ["ok", "ok"]);
 
-    let source = MdocNode::load(root, &root.join("source.mdoc")).unwrap();
+    let source = MdocNode::load(&root.join("source.mdoc")).unwrap();
     let deps: std::collections::HashSet<_> = source.depens.into_iter().collect();
     assert_eq!(
         deps,

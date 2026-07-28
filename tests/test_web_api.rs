@@ -22,9 +22,16 @@ fn init_workspace(dir: &TempDir) -> PathBuf {
 }
 
 fn make_node(root: &Path, title: &str) -> MdocNode {
-    let mut node = MdocNode::new_at_path(root, root, title);
+    let mut node = MdocNode::new_at_path(root, title);
     node.path = root.join(format!("{}.mdoc", &node.fnode[..8]));
     node
+}
+
+fn write_node(node: &MdocNode) {
+    if let Some(parent) = node.path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(&node.path, node.render().unwrap()).unwrap();
 }
 
 fn make_node_with_block(root: &Path, title: &str, srctype: &str, content: &str) -> MdocNode {
@@ -40,9 +47,9 @@ fn make_node_with_block(root: &Path, title: &str, srctype: &str, content: &str) 
 fn rewrite_preserving_mtime_and_size(path: &Path, mut rewrite: impl FnMut(&mut MdocNode)) {
     let original = std::fs::metadata(path).unwrap();
     let modified = original.modified().unwrap();
-    let mut node = MdocNode::load(path.parent().unwrap(), path).unwrap();
+    let mut node = MdocNode::load(path).unwrap();
     rewrite(&mut node);
-    node.save().unwrap();
+    write_node(&node);
     std::fs::File::options()
         .write(true)
         .open(path)
@@ -63,8 +70,8 @@ fn build_app(dir: &TempDir) -> (PathBuf, axum::Router) {
     let dep = make_node_with_block(&root, "Background Lemma", "latex", "x = 1");
     let root_node = make_node_with_block(&root, "Main Theorem", "latex", "y = 2");
     root_node.path.file_name().unwrap();
-    dep.save().unwrap();
-    root_node.save().unwrap();
+    write_node(&dep);
+    write_node(&root_node);
 
     let mut cache = IndCache::open(root.clone()).unwrap();
     cache.discover_workspace_changes().unwrap();
@@ -394,9 +401,9 @@ async fn search_caps_requested_rows() {
     let (root, app) = build_app(&dir);
     for index in 0..250 {
         let path = root.join(format!("bulk-{index}.mdoc"));
-        let mut node = MdocNode::new_at_path(&root, &path, &format!("Bulk {index}"));
+        let mut node = MdocNode::new_at_path(&path, &format!("Bulk {index}"));
         node.fnode = format!("bulk-{index}");
-        node.save_new().unwrap();
+        write_node(&node);
     }
 
     let (status, value) = get_json(&app, "/api/search?q=Bulk&n=1000000").await;
@@ -428,7 +435,7 @@ async fn dependency_candidates_are_filtered_for_the_source_node() {
         .unwrap();
     let other = make_node(&root, "Other Lemma");
     let other_fnode = other.fnode.clone();
-    other.save_new().unwrap();
+    write_node(&other);
 
     let (status, _) = send_json(
         &app,
@@ -445,7 +452,8 @@ async fn dependency_candidates_are_filtered_for_the_source_node() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(candidates["raw_had_matches"], true);
+    assert_eq!(candidates["empty"], serde_json::Value::Null);
+    assert!(candidates.get("raw_had_matches").is_none());
     assert_eq!(candidates["nodes"].as_array().unwrap().len(), 1);
     assert_eq!(candidates["nodes"][0]["fnode"], other_fnode);
 
@@ -454,16 +462,124 @@ async fn dependency_candidates_are_filtered_for_the_source_node() {
         &format!("/api/node/{main_fnode}/dep/candidates?q=Background"),
     )
     .await;
-    assert_eq!(excluded["raw_had_matches"], true);
     assert!(excluded["nodes"].as_array().unwrap().is_empty());
+    assert_eq!(
+        excluded["empty"],
+        serde_json::json!({
+            "kind": "excluded",
+            "source": 0,
+            "existing_dependencies": 1,
+            "invalid_or_duplicate": 0,
+        })
+    );
 
     let (_, absent) = get_json(
         &app,
         &format!("/api/node/{main_fnode}/dep/candidates?q=NoSuchTitle"),
     )
     .await;
-    assert_eq!(absent["raw_had_matches"], false);
     assert!(absent["nodes"].as_array().unwrap().is_empty());
+    assert_eq!(absent["empty"], serde_json::json!({ "kind": "no_match" }));
+
+    let (_, source) = get_json(
+        &app,
+        &format!("/api/node/{main_fnode}/dep/candidates?q=Main%20Theorem"),
+    )
+    .await;
+    assert_eq!(
+        source["empty"],
+        serde_json::json!({
+            "kind": "excluded",
+            "source": 1,
+            "existing_dependencies": 0,
+            "invalid_or_duplicate": 0,
+        })
+    );
+
+    std::fs::write(
+        root.join("mixed-invalid.mdoc"),
+        "@fnode: mixed-invalid\n@title: Mixed Candidate Invalid\n@unknown: value\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("mixed-duplicate-a.mdoc"),
+        "@fnode: mixed-duplicate\n@title: Mixed Candidate Duplicate A\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("mixed-duplicate-b.mdoc"),
+        "@fnode: mixed-duplicate\n@title: Mixed Candidate Duplicate B\n",
+    )
+    .unwrap();
+    for (fnode, title) in [
+        (main_fnode, "Mixed Candidate Source"),
+        (background_fnode, "Mixed Candidate Existing"),
+    ] {
+        let (status, value) = send_json(
+            &app,
+            "PUT",
+            &format!("/api/node/{fnode}/title"),
+            serde_json::json!({ "title": title }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "value={value}");
+    }
+
+    let (_, invalid) = get_json(
+        &app,
+        &format!("/api/node/{main_fnode}/dep/candidates?q=Candidate%20Invalid"),
+    )
+    .await;
+    assert_eq!(
+        invalid["empty"],
+        serde_json::json!({
+            "kind": "excluded",
+            "source": 0,
+            "existing_dependencies": 0,
+            "invalid_or_duplicate": 1,
+        })
+    );
+
+    let (_, duplicate) = get_json(
+        &app,
+        &format!("/api/node/{main_fnode}/dep/candidates?q=Candidate%20Duplicate"),
+    )
+    .await;
+    assert_eq!(
+        duplicate["empty"],
+        serde_json::json!({
+            "kind": "excluded",
+            "source": 0,
+            "existing_dependencies": 0,
+            "invalid_or_duplicate": 2,
+        })
+    );
+
+    let (_, mixed) = get_json(
+        &app,
+        &format!("/api/node/{main_fnode}/dep/candidates?q=Mixed%20Candidate"),
+    )
+    .await;
+    assert!(mixed["nodes"].as_array().unwrap().is_empty());
+    assert_eq!(
+        mixed["empty"],
+        serde_json::json!({
+            "kind": "excluded",
+            "source": 1,
+            "existing_dependencies": 1,
+            "invalid_or_duplicate": 3,
+        })
+    );
+
+    let (_, limited) = get_json(
+        &app,
+        &format!("/api/node/{main_fnode}/dep/candidates?q=Other%20Lemma&n=0"),
+    )
+    .await;
+    assert_eq!(
+        limited["empty"],
+        serde_json::json!({ "kind": "result_limit", "available": 1 })
+    );
 }
 
 #[tokio::test]
@@ -598,7 +714,7 @@ async fn node_detail_and_view_refresh_same_fnode_file_generation() {
     let main_path = root.join(main["rel_path"].as_str().unwrap());
     let replacement = make_node(&root, "Replacement Lemma");
     let replacement_fnode = replacement.fnode.clone();
-    replacement.save_new().unwrap();
+    write_node(&replacement);
 
     let (status, _) = send_json(
         &app,
@@ -713,11 +829,11 @@ async fn put_block_preserves_existing_metadata() {
         .unwrap();
     let fnode = main["fnode"].as_str().unwrap();
     let path = root.join(main["rel_path"].as_str().unwrap());
-    let mut node = MdocNode::load(&root, &path).unwrap();
+    let mut node = MdocNode::load(&path).unwrap();
     node.blocks[0]
         .metadata
         .insert("preamble".to_string(), "article".to_string());
-    node.save().unwrap();
+    write_node(&node);
 
     let (status, value) = send_json(
         &app,
@@ -728,7 +844,7 @@ async fn put_block_preserves_existing_metadata() {
     .await;
     assert_eq!(status, StatusCode::OK, "value={value}");
 
-    let saved = MdocNode::load(&root, &path).unwrap();
+    let saved = MdocNode::load(&path).unwrap();
     assert_eq!(
         saved.source_block("latex").unwrap().content,
         "updated latex\n"
@@ -840,7 +956,7 @@ async fn title_write_restores_file_when_index_update_fails() {
         .to_string();
     let (_, detail) = get_json(&app, &format!("/api/node/{fnode}")).await;
     let path = root.join(detail["rel_path"].as_str().unwrap());
-    let original_title = MdocNode::load(&root, &path).unwrap().title;
+    let original_title = MdocNode::load(&path).unwrap().title;
 
     let conn = rusqlite::Connection::open(root.join(".mdc/index.db")).unwrap();
     conn.execute("DROP TABLE mdoc_files", []).unwrap();
@@ -855,7 +971,7 @@ async fn title_write_restores_file_when_index_update_fails() {
     .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(value["error"], "internal server error");
-    assert_eq!(MdocNode::load(&root, &path).unwrap().title, original_title);
+    assert_eq!(MdocNode::load(&path).unwrap().title, original_title);
 }
 
 #[tokio::test]
@@ -1184,9 +1300,9 @@ async fn remove_dep_allows_existing_dangling_target() {
         .unwrap();
     let main_fnode = main["fnode"].as_str().unwrap();
     let main_path = root.join(main["rel_path"].as_str().unwrap());
-    let mut node = MdocNode::load(&root, &main_path).unwrap();
+    let mut node = MdocNode::load(&main_path).unwrap();
     node.add_dependency("dangling-target");
-    node.save().unwrap();
+    write_node(&node);
 
     let (status, value) = send_json(
         &app,

@@ -55,7 +55,7 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
         let req = CompilerReq {
             mdcroot: mdcroot.clone(),
             source: path.clone(),
-            compcfg: config.src_config(srctype).to_compiler_cfg(),
+            config: config.src_config(srctype),
             progress: Some(Box::new(compile_progress)),
         };
         let result = match registry.resolve(srctype) {
@@ -63,7 +63,7 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
             None => CompilerRes::err(format!("unknown srctype: {srctype}")),
         };
         print_compile_result(&result);
-        if !result.result {
+        if !result.is_success() {
             failure_codes.push(result.rtcode);
         }
         if result.interrupted {
@@ -109,7 +109,7 @@ fn print_compile_result(result: &CompilerRes) {
             eprintln!("  {RED}{}{RST}", escape_terminal(line));
         }
     }
-    if result.result {
+    if result.is_success() {
         println!("{GRN}✓{RST} (exit {})", result.rtcode);
     } else {
         println!("{RED}✗{RST} (exit {})", result.rtcode);

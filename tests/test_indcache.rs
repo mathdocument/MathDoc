@@ -3,6 +3,7 @@ use std::path::Path;
 
 use rusqlite::OptionalExtension;
 
+use mathdoc::core::DependencyCandidatesEmpty;
 use mathdoc::indcache::IndCache;
 
 fn setup(root: &Path) {
@@ -14,6 +15,23 @@ fn write(path: &Path, content: &str) {
         fs::create_dir_all(parent).unwrap();
     }
     fs::write(path, content).unwrap();
+}
+
+fn index_path(cache: &IndCache) -> std::path::PathBuf {
+    cache.root().join(".mdc/index.db")
+}
+
+fn indexed_fnode_count(cache: &IndCache, fnode: &str) -> usize {
+    cache
+        .search(fnode, usize::MAX)
+        .unwrap()
+        .into_iter()
+        .filter(|node| node.fnode == fnode)
+        .count()
+}
+
+fn topo_depth(cache: &IndCache, fnode: &str) -> u32 {
+    cache.node_summary(fnode).unwrap().depth
 }
 
 #[cfg(unix)]
@@ -89,14 +107,14 @@ fn test_refresh_all_preserves_index_when_subtree_is_unreadable() {
     );
 
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
-    assert_eq!(cache.exact_fnode_rows("locked-node").unwrap().len(), 1);
+    assert_eq!(indexed_fnode_count(&cache, "locked-node"), 1);
 
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
     let result = cache.refresh_all();
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
 
     assert!(result.is_err());
-    assert_eq!(cache.exact_fnode_rows("locked-node").unwrap().len(), 1);
+    assert_eq!(indexed_fnode_count(&cache, "locked-node"), 1);
 }
 
 #[test]
@@ -136,10 +154,10 @@ fn malformed_block_fallback_ignores_embedded_fake_headers() {
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     cache.refresh_all().unwrap();
 
-    assert_eq!(cache.exact_fnode_rows("real-node").unwrap().len(), 1);
+    assert_eq!(indexed_fnode_count(&cache, "real-node"), 1);
     assert!(cache.path_has_blocking_issue("malformed-src.mdoc").unwrap());
-    assert!(cache.exact_fnode_rows("fake-src").unwrap().is_empty());
-    assert!(cache.exact_fnode_rows("fake-dep").unwrap().is_empty());
+    assert_eq!(indexed_fnode_count(&cache, "fake-src"), 0);
+    assert_eq!(indexed_fnode_count(&cache, "fake-dep"), 0);
     assert!(cache.search("Fake Src", usize::MAX).unwrap().is_empty());
     assert!(cache.search("Fake Dep", usize::MAX).unwrap().is_empty());
 
@@ -229,8 +247,8 @@ fn setup_preserved_metadata_change() -> (tempfile::TempDir, IndCache, std::path:
 fn assert_preserved_metadata_change_detected(cache: &mut IndCache) {
     assert!(cache.search("Title Old", usize::MAX).unwrap().is_empty());
     assert_eq!(cache.search("Title New", usize::MAX).unwrap().len(), 1);
-    assert!(cache.exact_fnode_rows("root-old").unwrap().is_empty());
-    assert_eq!(cache.exact_fnode_rows("root-new").unwrap().len(), 1);
+    assert_eq!(indexed_fnode_count(cache, "root-old"), 0);
+    assert_eq!(indexed_fnode_count(cache, "root-new"), 1);
     let edges: std::collections::HashSet<_> =
         cache.all_valid_edges().unwrap().into_iter().collect();
     assert!(edges.contains(&("root-new".to_string(), "dep-new".to_string())));
@@ -241,8 +259,8 @@ fn assert_preserved_metadata_change_detected(cache: &mut IndCache) {
 fn assert_preserved_metadata_change_deferred(cache: &IndCache) {
     assert_eq!(cache.search("Title Old", usize::MAX).unwrap().len(), 1);
     assert!(cache.search("Title New", usize::MAX).unwrap().is_empty());
-    assert_eq!(cache.exact_fnode_rows("root-old").unwrap().len(), 1);
-    assert!(cache.exact_fnode_rows("root-new").unwrap().is_empty());
+    assert_eq!(indexed_fnode_count(cache, "root-old"), 1);
+    assert_eq!(indexed_fnode_count(cache, "root-new"), 0);
 }
 
 #[test]
@@ -347,9 +365,8 @@ fn test_legacy_schema_is_rebuilt() {
     );
     cache.upsert_path(&root.join("legacy-copy.mdoc")).unwrap();
 
-    let rows = cache.exact_fnode_rows("legacy-node").unwrap();
     assert_eq!(
-        rows.len(),
+        indexed_fnode_count(&cache, "legacy-node"),
         2,
         "the rebuilt fnode index must allow duplicates"
     );
@@ -428,7 +445,7 @@ fn test_search_and_resolve_surface_duplicate_fnodes() {
         "expected ambiguous error, got: {err}"
     );
 
-    let dup_paths = cache.duplicate_fnode_paths("dup-node").unwrap();
+    let dup_paths = cache.reconcile_fnode_paths("dup-node").unwrap();
     assert_eq!(dup_paths.len(), 2);
 }
 
@@ -511,18 +528,18 @@ fn search_returns_ranked_summaries_and_all_nodes_are_unbounded() {
 }
 
 #[test]
-fn dependency_candidates_filter_before_limit_and_report_raw_matches() {
+fn dependency_candidates_filter_before_limit_and_classify_empty_results() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     setup(root);
 
     let mut dependency_body =
-        String::from("@fnode: source-node\n@title: Candidate Source\n\n@dep:\n");
+        String::from("@fnode: source-node\n@title: Candidate Excluded Source\n\n@dep:\n");
     for index in 0..25 {
         let fnode = format!("excluded-{index:02}");
         write(
             &root.join(format!("excluded-{index:02}.mdoc")),
-            &format!("@fnode: {fnode}\n@title: Candidate {index:02}\n"),
+            &format!("@fnode: {fnode}\n@title: Candidate Excluded {index:02}\n"),
         );
         dependency_body.push_str(&fnode);
         dependency_body.push('\n');
@@ -532,15 +549,15 @@ fn dependency_candidates_filter_before_limit_and_report_raw_matches() {
 
     write(
         &root.join("invalid.mdoc"),
-        "@fnode: invalid-node\n@title: Candidate 25\n@title: Duplicate Title\n",
+        "@fnode: invalid-node\n@title: Candidate Excluded Invalid\n@title: Duplicate Title\n",
     );
     write(
         &root.join("duplicate-a.mdoc"),
-        "@fnode: duplicate-node\n@title: Candidate 26\n",
+        "@fnode: duplicate-node\n@title: Candidate Excluded Duplicate A\n",
     );
     write(
         &root.join("duplicate-b.mdoc"),
-        "@fnode: duplicate-node\n@title: Candidate 27\n",
+        "@fnode: duplicate-node\n@title: Candidate Excluded Duplicate B\n",
     );
     write(
         &root.join("valid.mdoc"),
@@ -553,22 +570,90 @@ fn dependency_candidates_filter_before_limit_and_report_raw_matches() {
     let report = cache
         .dependency_candidates("source-node", "Candidate", 1)
         .unwrap();
-    assert!(report.raw_had_matches);
+    assert_eq!(report.empty, None);
     assert_eq!(report.nodes.len(), 1);
     assert_eq!(report.nodes[0].fnode, "valid-node");
     assert!(!report.nodes[0].broken);
 
-    let excluded = cache
-        .dependency_candidates("source-node", "Candidate 00", 1)
+    let source = cache
+        .dependency_candidates("source-node", "Excluded Source", 1)
         .unwrap();
-    assert!(excluded.raw_had_matches);
-    assert!(excluded.nodes.is_empty());
+    assert!(source.nodes.is_empty());
+    assert_eq!(
+        source.empty,
+        Some(DependencyCandidatesEmpty::Excluded {
+            source: 1,
+            existing_dependencies: 0,
+            invalid_or_duplicate: 0,
+        })
+    );
+
+    let existing = cache
+        .dependency_candidates("source-node", "Excluded 00", 1)
+        .unwrap();
+    assert!(existing.nodes.is_empty());
+    assert_eq!(
+        existing.empty,
+        Some(DependencyCandidatesEmpty::Excluded {
+            source: 0,
+            existing_dependencies: 1,
+            invalid_or_duplicate: 0,
+        })
+    );
+
+    let invalid = cache
+        .dependency_candidates("source-node", "Excluded Invalid", 1)
+        .unwrap();
+    assert!(invalid.nodes.is_empty());
+    assert_eq!(
+        invalid.empty,
+        Some(DependencyCandidatesEmpty::Excluded {
+            source: 0,
+            existing_dependencies: 0,
+            invalid_or_duplicate: 1,
+        })
+    );
+
+    let duplicate = cache
+        .dependency_candidates("source-node", "Excluded Duplicate", 1)
+        .unwrap();
+    assert!(duplicate.nodes.is_empty());
+    assert_eq!(
+        duplicate.empty,
+        Some(DependencyCandidatesEmpty::Excluded {
+            source: 0,
+            existing_dependencies: 0,
+            invalid_or_duplicate: 2,
+        })
+    );
+
+    let mixed = cache
+        .dependency_candidates("source-node", "Candidate Excluded", 1)
+        .unwrap();
+    assert!(mixed.nodes.is_empty());
+    assert_eq!(
+        mixed.empty,
+        Some(DependencyCandidatesEmpty::Excluded {
+            source: 1,
+            existing_dependencies: 25,
+            invalid_or_duplicate: 3,
+        })
+    );
 
     let absent = cache
         .dependency_candidates("source-node", "No Such Candidate", 1)
         .unwrap();
-    assert!(!absent.raw_had_matches);
     assert!(absent.nodes.is_empty());
+    assert_eq!(absent.empty, Some(DependencyCandidatesEmpty::NoMatch));
+
+    let limited = cache
+        .dependency_candidates("source-node", "Candidate Valid", 0)
+        .unwrap();
+    assert!(limited.nodes.is_empty());
+    assert_eq!(
+        limited.empty,
+        Some(DependencyCandidatesEmpty::ResultLimit { available: 1 })
+    );
 }
 
 #[test]
@@ -586,7 +671,7 @@ fn single_reference_lookups_ignore_unrelated_corrupt_rows() {
     );
 
     let cache = IndCache::open(root.to_path_buf()).unwrap();
-    let conn = rusqlite::Connection::open(cache.db_path()).unwrap();
+    let conn = rusqlite::Connection::open(index_path(&cache)).unwrap();
     conn.execute_batch(
         "INSERT INTO mdocs (path, fnode, title, title_lc, topo_depth)
              VALUES ('corrupt.mdoc', 'corrupt-node', X'00', 'corrupt', 0);
@@ -634,7 +719,7 @@ fn test_resolve_ref_supports_suffixless_paths() {
 }
 
 #[test]
-fn test_resolve_ref_deletes_crafted_cache_path_without_reading_outside() {
+fn test_resolve_ref_ignores_crafted_cache_path_without_reading_outside() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path().join("workspace");
     fs::create_dir(&root).unwrap();
@@ -644,7 +729,7 @@ fn test_resolve_ref_deletes_crafted_cache_path_without_reading_outside() {
 
     let mut cache = IndCache::open(root.clone()).unwrap();
     cache.refresh_all().unwrap();
-    let db_path = cache.db_path();
+    let db_path = index_path(&cache);
     drop(cache);
 
     let conn = rusqlite::Connection::open(&db_path).unwrap();
@@ -657,9 +742,11 @@ fn test_resolve_ref_deletes_crafted_cache_path_without_reading_outside() {
     .unwrap();
     drop(conn);
 
-    let cache = IndCache::open(root).unwrap();
+    let mut cache = IndCache::open(root).unwrap();
     assert!(cache.resolve_ref("crafted-node", None).is_err());
-    assert!(cache.exact_fnode_rows("crafted-node").unwrap().is_empty());
+    assert_eq!(indexed_fnode_count(&cache, "crafted-node"), 1);
+    cache.discover_workspace_changes().unwrap();
+    assert_eq!(indexed_fnode_count(&cache, "crafted-node"), 0);
     assert_eq!(
         fs::read_to_string(outside).unwrap(),
         "@fnode: outside-node\n@title: Outside\n"
@@ -668,7 +755,7 @@ fn test_resolve_ref_deletes_crafted_cache_path_without_reading_outside() {
 
 #[cfg(unix)]
 #[test]
-fn test_duplicate_lookup_deletes_cached_parent_symlink_without_reading_target() {
+fn test_fnode_reconciliation_prunes_cached_parent_symlink_without_reading_target() {
     use std::os::unix::fs::symlink;
 
     let dir = tempfile::TempDir::new().unwrap();
@@ -692,12 +779,12 @@ fn test_duplicate_lookup_deletes_cached_parent_symlink_without_reading_target() 
     write(&target, "@fnode: cached-node\n@title: External Target\n");
     symlink(external.path(), &notes).unwrap();
 
-    let cache = IndCache::open(root).unwrap();
+    let mut cache = IndCache::open(root).unwrap();
     assert!(cache
-        .duplicate_fnode_paths("cached-node")
+        .reconcile_fnode_paths("cached-node")
         .unwrap()
         .is_empty());
-    assert!(cache.exact_fnode_rows("cached-node").unwrap().is_empty());
+    assert_eq!(indexed_fnode_count(&cache, "cached-node"), 0);
     assert_eq!(
         fs::read_to_string(target).unwrap(),
         "@fnode: cached-node\n@title: External Target\n"
@@ -723,6 +810,7 @@ fn test_upsert_path_updates_cached_edges_and_missing_issues() {
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     cache.refresh_all().unwrap();
 
+    assert!(cache.referrer_items("leaf-node", 0).unwrap().is_empty());
     let referrers = cache.referrer_items("leaf-node", 1).unwrap();
     assert_eq!(
         referrers
@@ -757,6 +845,45 @@ fn test_upsert_path_updates_cached_edges_and_missing_issues() {
         cache.direct_dependency_summaries("src-node").unwrap(),
         vec![missing]
     );
+}
+
+#[test]
+fn unchanged_fnode_upsert_refreshes_duplicate_issues_once() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    let first = root.join("dup-a.mdoc");
+    write(&first, "@fnode: duplicate-node\n@title: Duplicate A\n");
+    write(
+        &root.join("dup-b.mdoc"),
+        "@fnode: duplicate-node\n@title: Duplicate B\n",
+    );
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    let conn = rusqlite::Connection::open(index_path(&cache)).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE duplicate_issue_refresh_log (path TEXT NOT NULL);
+         CREATE TRIGGER log_duplicate_issue_refresh
+         AFTER INSERT ON mdoc_issues
+         WHEN NEW.kind = 'duplicate'
+         BEGIN
+             INSERT INTO duplicate_issue_refresh_log (path) VALUES (NEW.path);
+         END;",
+    )
+    .unwrap();
+    drop(conn);
+
+    cache.upsert_path(&first).unwrap();
+
+    let refreshes: i64 = rusqlite::Connection::open(index_path(&cache))
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM duplicate_issue_refresh_log",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(refreshes, 2, "each duplicate path should be inserted once");
 }
 
 #[test]
@@ -902,7 +1029,7 @@ fn test_in_place_fnode_rename_refreshes_old_referrers() {
 
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     cache.refresh_all().unwrap();
-    assert_eq!(cache.all_topo_depths().unwrap()["root-node"], 2);
+    assert_eq!(topo_depth(&cache, "root-node"), 2);
 
     write(
         &dep_path,
@@ -911,7 +1038,7 @@ fn test_in_place_fnode_rename_refreshes_old_referrers() {
     cache.discover_workspace_changes().unwrap();
 
     // The old dependency token is now missing and therefore contributes one level.
-    assert_eq!(cache.all_topo_depths().unwrap()["root-node"], 1);
+    assert_eq!(topo_depth(&cache, "root-node"), 1);
 }
 
 // ── in_degree tracking ────────────────────────────────────────────────────────
@@ -935,7 +1062,7 @@ fn test_in_degree_increments_on_dep_add() {
     cache.refresh_all().unwrap();
 
     {
-        let conn = rusqlite::Connection::open(cache.db_path()).unwrap();
+        let conn = rusqlite::Connection::open(index_path(&cache)).unwrap();
         let row: Option<i64> = conn
             .query_row(
                 "SELECT in_degree FROM mdoc_in_degree WHERE fnode = ?",
@@ -954,7 +1081,7 @@ fn test_in_degree_increments_on_dep_add() {
     cache.refresh_all().unwrap();
 
     {
-        let conn = rusqlite::Connection::open(cache.db_path()).unwrap();
+        let conn = rusqlite::Connection::open(index_path(&cache)).unwrap();
         let row: Option<i64> = conn
             .query_row(
                 "SELECT in_degree FROM mdoc_in_degree WHERE fnode = ?",
@@ -986,7 +1113,7 @@ fn test_in_degree_decrements_on_dep_remove() {
     cache.refresh_all().unwrap();
 
     {
-        let conn = rusqlite::Connection::open(cache.db_path()).unwrap();
+        let conn = rusqlite::Connection::open(index_path(&cache)).unwrap();
         let in_degree: i64 = conn
             .query_row(
                 "SELECT in_degree FROM mdoc_in_degree WHERE fnode = ?",
@@ -1004,7 +1131,7 @@ fn test_in_degree_decrements_on_dep_remove() {
     cache.refresh_all().unwrap();
 
     {
-        let conn = rusqlite::Connection::open(cache.db_path()).unwrap();
+        let conn = rusqlite::Connection::open(index_path(&cache)).unwrap();
         let row: Option<i64> = conn
             .query_row(
                 "SELECT in_degree FROM mdoc_in_degree WHERE fnode = ?",
@@ -1046,10 +1173,9 @@ fn test_incremental_topo_depth_converges_across_short_and_long_paths() {
     );
     cache.upsert_path(&d_path.canonicalize().unwrap()).unwrap();
 
-    let depths = cache.all_topo_depths().unwrap();
-    assert_eq!(depths.get("d-node"), Some(&1));
-    assert_eq!(depths.get("b-node"), Some(&2));
-    assert_eq!(depths.get("a-node"), Some(&3));
+    assert_eq!(topo_depth(&cache, "d-node"), 1);
+    assert_eq!(topo_depth(&cache, "b-node"), 2);
+    assert_eq!(topo_depth(&cache, "a-node"), 3);
 }
 
 #[test]
@@ -1084,7 +1210,7 @@ fn test_lazy_component_rebuild_updates_every_member_size() {
         .contains(&("a-node".to_string(), "c-node".to_string())));
     cache.global_root_items().unwrap();
 
-    let conn = rusqlite::Connection::open(cache.db_path()).unwrap();
+    let conn = rusqlite::Connection::open(index_path(&cache)).unwrap();
     let rows: Vec<(String, u32)> = conn
         .prepare(
             "SELECT fnode, component_size
@@ -1134,7 +1260,7 @@ fn test_old_schema_rebuilds_topo_depth() {
 
     // Simulate an old index with stale derived depths.
     {
-        let conn = rusqlite::Connection::open(cache.db_path()).unwrap();
+        let conn = rusqlite::Connection::open(index_path(&cache)).unwrap();
         conn.execute_batch(
             "PRAGMA user_version = 5;
              UPDATE mdocs SET topo_depth = 0;",
@@ -1144,14 +1270,13 @@ fn test_old_schema_rebuilds_topo_depth() {
 
     // Re-open: schema rebuild and workspace bootstrap restore real depths.
     let cache2 = IndCache::open(root.to_path_buf()).unwrap();
-    let depths = cache2.all_topo_depths().unwrap();
     assert_eq!(
-        depths.get("parent-node").copied().unwrap_or(0),
+        topo_depth(&cache2, "parent-node"),
         1,
         "parent-node should have topo_depth = 1 after backfill"
     );
     assert_eq!(
-        depths.get("child-node").copied().unwrap_or(999),
+        topo_depth(&cache2, "child-node"),
         0,
         "child-node (leaf) should have topo_depth = 0"
     );
@@ -1179,7 +1304,7 @@ fn test_interrupted_bootstrap_rebuilds_topo_depth() {
 
     // Simulate the crash window: stale derived data with bootstrap incomplete.
     {
-        let conn = rusqlite::Connection::open(cache.db_path()).unwrap();
+        let conn = rusqlite::Connection::open(index_path(&cache)).unwrap();
         conn.execute_batch(
             "UPDATE mdocs SET topo_depth = 0;
              UPDATE mdoc_index_state SET bootstrapped = 0 WHERE id = 1;",
@@ -1189,9 +1314,8 @@ fn test_interrupted_bootstrap_rebuilds_topo_depth() {
 
     // Re-open performs the normal full bootstrap.
     let cache2 = IndCache::open(root.to_path_buf()).unwrap();
-    let depths = cache2.all_topo_depths().unwrap();
     assert_eq!(
-        depths.get("parent-node").copied().unwrap_or(0),
+        topo_depth(&cache2, "parent-node"),
         1,
         "parent-node should have topo_depth = 1 after bootstrap recovery"
     );
@@ -1210,7 +1334,7 @@ fn test_old_schema_rebuild_recomputes_stale_topo_depths() {
 
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     cache.refresh_all().unwrap();
-    let db_path = cache.db_path();
+    let db_path = index_path(&cache);
     drop(cache);
 
     let conn = rusqlite::Connection::open(&db_path).unwrap();
@@ -1220,9 +1344,8 @@ fn test_old_schema_rebuild_recomputes_stale_topo_depths() {
     drop(conn);
 
     let cache = IndCache::open(root.to_path_buf()).unwrap();
-    let depths = cache.all_topo_depths().unwrap();
-    assert_eq!(depths["leaf-node"], 0);
-    assert_eq!(depths["root-node"], 1);
+    assert_eq!(topo_depth(&cache, "leaf-node"), 0);
+    assert_eq!(topo_depth(&cache, "root-node"), 1);
 }
 
 #[cfg(unix)]
@@ -1241,7 +1364,7 @@ fn test_upsert_path_rejects_final_symlink() {
 
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     assert!(cache.upsert_path(&link).is_err());
-    assert!(cache.exact_fnode_rows("outside-node").unwrap().is_empty());
+    assert_eq!(indexed_fnode_count(&cache, "outside-node"), 0);
 }
 
 #[cfg(unix)]
@@ -1297,14 +1420,14 @@ fn test_reachable_refresh_propagates_old_fnode_after_rename() {
 
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     cache.refresh_all().unwrap();
-    assert_eq!(cache.all_topo_depths().unwrap()["root-node"], 2);
+    assert_eq!(topo_depth(&cache, "root-node"), 2);
 
     write(
         &dep_path,
         "@fnode: new-dep\n@title: Dep\n\n@dep:\nleaf-node\n@end\n",
     );
     cache.refresh_reachable_from_path(&dep_path, -1).unwrap();
-    assert_eq!(cache.all_topo_depths().unwrap()["root-node"], 1);
+    assert_eq!(topo_depth(&cache, "root-node"), 1);
 }
 
 #[test]
@@ -1319,11 +1442,11 @@ fn test_upsert_path_removes_stale_entry_after_parent_directory_deletion() {
 
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     cache.upsert_path(&path).unwrap();
-    assert_eq!(cache.exact_fnode_rows("removed-node").unwrap().len(), 1);
+    assert_eq!(indexed_fnode_count(&cache, "removed-node"), 1);
 
     fs::remove_dir_all(&nested).unwrap();
     cache.upsert_path(&path).unwrap();
-    assert!(cache.exact_fnode_rows("removed-node").unwrap().is_empty());
+    assert_eq!(indexed_fnode_count(&cache, "removed-node"), 0);
 }
 
 #[test]
@@ -1346,7 +1469,7 @@ fn test_old_schema_rebuilds_in_degree() {
 
     // Simulate v4 cache: clear in_degree and downgrade user_version
     {
-        let conn = rusqlite::Connection::open(cache.db_path()).unwrap();
+        let conn = rusqlite::Connection::open(index_path(&cache)).unwrap();
         conn.execute_batch("PRAGMA user_version = 4; DELETE FROM mdoc_in_degree;")
             .unwrap();
     }
@@ -1466,12 +1589,12 @@ fn blocking_claimant_transition_refreshes_graph_caches_and_invalid_deletion_epoc
     );
     assert!(refreshed_roots.iter().all(|item| item.fnode != "leaf-node"));
     assert_eq!(
-        cache.exact_fnode_rows("shared-node").unwrap().len(),
+        indexed_fnode_count(&cache, "shared-node"),
         1,
         "the malformed claimant must have no mdocs identity"
     );
 
-    let epoch_before_delete: i64 = rusqlite::Connection::open(cache.db_path())
+    let epoch_before_delete: i64 = rusqlite::Connection::open(index_path(&cache))
         .unwrap()
         .query_row(
             "SELECT graph_epoch FROM mdoc_index_state WHERE id = 1",
@@ -1482,7 +1605,7 @@ fn blocking_claimant_transition_refreshes_graph_caches_and_invalid_deletion_epoc
     fs::remove_file(&claimant_b).unwrap();
     cache.discover_workspace_changes().unwrap();
 
-    let conn = rusqlite::Connection::open(cache.db_path()).unwrap();
+    let conn = rusqlite::Connection::open(index_path(&cache)).unwrap();
     let (epoch_after_delete, component_dirty): (i64, bool) = conn
         .query_row(
             "SELECT graph_epoch, weak_component_dirty FROM mdoc_index_state WHERE id = 1",

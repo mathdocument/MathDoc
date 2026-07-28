@@ -25,10 +25,15 @@ pub(super) struct PreparedRename {
     pub(super) snapshot: FileSnapshot,
 }
 
+pub(super) struct PreparedManifest<'a> {
+    pub(super) path: &'a Path,
+    pub(super) snapshot: &'a FileSnapshot,
+    pub(super) content: &'a SourceBlockManifest,
+}
+
 pub(super) fn apply_changes(
-    manifest_path: &Path,
-    manifest_snapshot: &FileSnapshot,
-    manifest: &SourceBlockManifest,
+    allowed_root: &Path,
+    manifest: PreparedManifest<'_>,
     inputs: &[(PathBuf, FileSnapshot)],
     writes: Vec<PreparedWrite>,
     removals: Vec<PreparedRemoval>,
@@ -46,26 +51,33 @@ pub(super) fn apply_changes(
     for rename in &renames {
         ensure_unchanged(&rename.from, &rename.snapshot)?;
     }
-    ensure_unchanged(manifest_path, manifest_snapshot)?;
+    ensure_unchanged(manifest.path, manifest.snapshot)?;
 
-    let mut manifest_content = serde_json::to_vec_pretty(manifest)?;
+    let mut manifest_content = serde_json::to_vec_pretty(manifest.content)?;
     manifest_content.push(b'\n');
-    let manifest_changed = manifest_snapshot.content() != Some(manifest_content.as_slice());
+    let manifest_changed = manifest.snapshot.content() != Some(manifest_content.as_slice());
     let write_paths: HashSet<&Path> = writes.iter().map(|write| write.path.as_path()).collect();
     let mut applied = Vec::new();
     let result = (|| -> Result<()> {
         for rename in &renames {
-            applied.push(AppliedChange::Rename(
-                rename.snapshot.case_rename(&rename.from, &rename.to)?,
-            ));
+            applied.push(AppliedChange::Rename(rename.snapshot.case_rename_beneath(
+                allowed_root,
+                &rename.from,
+                &rename.to,
+            )?));
         }
         for write in &writes {
-            applied.push(AppliedChange::Write(
-                write.snapshot.replace(&write.path, &write.content)?,
-            ));
+            applied.push(AppliedChange::Write(write.snapshot.replace_beneath(
+                allowed_root,
+                &write.path,
+                &write.content,
+            )?));
         }
         for removal in &removals {
-            if let Some(write) = removal.snapshot.remove(&removal.path)? {
+            if let Some(write) = removal
+                .snapshot
+                .remove_beneath(allowed_root, &removal.path)?
+            {
                 applied.push(AppliedChange::Write(write));
             }
         }
@@ -81,9 +93,11 @@ pub(super) fn apply_changes(
             }
         }
         if manifest_changed {
-            applied.push(AppliedChange::Write(
-                manifest_snapshot.replace(manifest_path, &manifest_content)?,
-            ));
+            applied.push(AppliedChange::Write(manifest.snapshot.replace_beneath(
+                allowed_root,
+                manifest.path,
+                &manifest_content,
+            )?));
         }
         Ok(())
     })();
@@ -96,7 +110,7 @@ pub(super) fn apply_changes(
         return Err(error);
     }
     for removal in removals {
-        remove_empty_parents(&removal.path, &removal.type_root);
+        remove_empty_parents(allowed_root, &removal.path, &removal.type_root);
     }
     Ok(())
 }
@@ -140,7 +154,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
-        let manifest_path = dir.path().join("source-blocks.json");
+        let root = dir.path().canonicalize().unwrap();
+        let manifest_path = root.join("source-blocks.json");
         let original_manifest = b"{\"version\":2,\"sources\":{}}\n";
         std::fs::write(&manifest_path, original_manifest).unwrap();
         let manifest_snapshot = FileSnapshot::capture(&manifest_path).unwrap();
@@ -148,19 +163,22 @@ mod tests {
             .unwrap()
             .manifest;
 
-        let first_path = dir.path().join("first.lean");
+        let first_path = root.join("first.lean");
         std::fs::write(&first_path, b"first before\n").unwrap();
         let first_snapshot = FileSnapshot::capture(&first_path).unwrap();
 
-        let failing_path = dir.path().join("readonly.lean");
+        let failing_path = root.join("readonly.lean");
         std::fs::write(&failing_path, b"readonly before\n").unwrap();
         std::fs::set_permissions(&failing_path, std::fs::Permissions::from_mode(0o444)).unwrap();
         let failing_snapshot = FileSnapshot::capture(&failing_path).unwrap();
 
         let error = apply_changes(
-            &manifest_path,
-            &manifest_snapshot,
-            &manifest,
+            &root,
+            PreparedManifest {
+                path: &manifest_path,
+                snapshot: &manifest_snapshot,
+                content: &manifest,
+            },
             &[],
             vec![
                 PreparedWrite {
@@ -183,5 +201,178 @@ mod tests {
         assert_eq!(std::fs::read(&first_path).unwrap(), b"first before\n");
         assert_eq!(std::fs::read(&failing_path).unwrap(), b"readonly before\n");
         assert_eq!(std::fs::read(&manifest_path).unwrap(), original_manifest);
+    }
+
+    #[test]
+    fn ancestor_swap_cannot_redirect_prepared_write() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let manifest_path = root.join("source-blocks.json");
+        std::fs::write(&manifest_path, b"{\"version\":2,\"sources\":{}}\n").unwrap();
+        let manifest_snapshot = FileSnapshot::capture(&manifest_path).unwrap();
+        let manifest = super::super::manifest::parse_manifest(&manifest_snapshot, &manifest_path)
+            .unwrap()
+            .manifest;
+        let ancestor = root.join("generated");
+        std::fs::create_dir(&ancestor).unwrap();
+        let path = ancestor.join("node.lean");
+        let displaced = root.join("displaced");
+        let hook_ancestor = ancestor.clone();
+        let hook_outside = outside.path().to_path_buf();
+        let hook_displaced = displaced.clone();
+        crate::workspace::set_test_hook(
+            crate::workspace::TestHookPoint::WriteBeforeDirectoryBinding,
+            move || {
+                std::fs::rename(hook_ancestor, hook_displaced).unwrap();
+                symlink(hook_outside, ancestor).unwrap();
+            },
+        );
+
+        let error = apply_changes(
+            &root,
+            PreparedManifest {
+                path: &manifest_path,
+                snapshot: &manifest_snapshot,
+                content: &manifest,
+            },
+            &[],
+            vec![PreparedWrite {
+                path,
+                snapshot: FileSnapshot::Missing,
+                content: b"generated\n".to_vec(),
+            }],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(crate::workspace::error_has_file_conflict(&error));
+        assert!(!outside.path().join("node.lean").exists());
+        assert!(!displaced.join("node.lean").exists());
+    }
+
+    #[test]
+    fn ancestor_swap_cannot_redirect_prepared_removal() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let manifest_path = root.join("source-blocks.json");
+        std::fs::write(&manifest_path, b"{\"version\":2,\"sources\":{}}\n").unwrap();
+        let manifest_snapshot = FileSnapshot::capture(&manifest_path).unwrap();
+        let manifest = super::super::manifest::parse_manifest(&manifest_snapshot, &manifest_path)
+            .unwrap()
+            .manifest;
+        let ancestor = root.join("generated");
+        std::fs::create_dir(&ancestor).unwrap();
+        let path = ancestor.join("node.lean");
+        std::fs::write(&path, b"inside\n").unwrap();
+        std::fs::write(outside.path().join("node.lean"), b"outside\n").unwrap();
+        let snapshot = FileSnapshot::capture(&path).unwrap();
+        let displaced = root.join("displaced");
+        let hook_ancestor = ancestor.clone();
+        let hook_outside = outside.path().to_path_buf();
+        let hook_displaced = displaced.clone();
+        crate::workspace::set_test_hook(
+            crate::workspace::TestHookPoint::RemoveBeforeDirectoryBinding,
+            move || {
+                std::fs::rename(hook_ancestor, hook_displaced).unwrap();
+                symlink(hook_outside, ancestor).unwrap();
+            },
+        );
+
+        let error = apply_changes(
+            &root,
+            PreparedManifest {
+                path: &manifest_path,
+                snapshot: &manifest_snapshot,
+                content: &manifest,
+            },
+            &[],
+            Vec::new(),
+            vec![PreparedRemoval {
+                path,
+                type_root: root.join("generated"),
+                snapshot,
+            }],
+            Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(crate::workspace::error_has_file_conflict(&error));
+        assert_eq!(
+            std::fs::read(outside.path().join("node.lean")).unwrap(),
+            b"outside\n"
+        );
+        assert_eq!(
+            std::fs::read(displaced.join("node.lean")).unwrap(),
+            b"inside\n"
+        );
+    }
+
+    #[test]
+    fn ancestor_swap_cannot_redirect_prepared_case_rename() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let manifest_path = root.join("source-blocks.json");
+        std::fs::write(&manifest_path, b"{\"version\":2,\"sources\":{}}\n").unwrap();
+        let manifest_snapshot = FileSnapshot::capture(&manifest_path).unwrap();
+        let manifest = super::super::manifest::parse_manifest(&manifest_snapshot, &manifest_path)
+            .unwrap()
+            .manifest;
+        let ancestor = root.join("generated");
+        std::fs::create_dir(&ancestor).unwrap();
+        let from = ancestor.join("Node.lean");
+        let to = ancestor.join("node.lean");
+        std::fs::write(&from, b"inside\n").unwrap();
+        std::fs::write(outside.path().join("Node.lean"), b"outside\n").unwrap();
+        let snapshot = FileSnapshot::capture(&from).unwrap();
+        let displaced = root.join("displaced");
+        let hook_ancestor = ancestor.clone();
+        let hook_outside = outside.path().to_path_buf();
+        let hook_displaced = displaced.clone();
+        crate::workspace::set_test_hook(
+            crate::workspace::TestHookPoint::CaseRenameBeforeDirectoryBinding,
+            move || {
+                std::fs::rename(hook_ancestor, hook_displaced).unwrap();
+                symlink(hook_outside, ancestor).unwrap();
+            },
+        );
+
+        let error = apply_changes(
+            &root,
+            PreparedManifest {
+                path: &manifest_path,
+                snapshot: &manifest_snapshot,
+                content: &manifest,
+            },
+            &[],
+            Vec::new(),
+            Vec::new(),
+            vec![PreparedRename { from, to, snapshot }],
+        )
+        .unwrap_err();
+
+        assert!(crate::workspace::error_has_file_conflict(&error));
+        assert_eq!(
+            std::fs::read(outside.path().join("Node.lean")).unwrap(),
+            b"outside\n"
+        );
+        let outside_names = std::fs::read_dir(outside.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(outside_names, vec![std::ffi::OsString::from("Node.lean")]);
+        assert_eq!(
+            std::fs::read(displaced.join("Node.lean")).unwrap(),
+            b"inside\n"
+        );
     }
 }

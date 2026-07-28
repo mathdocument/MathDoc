@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
-use crate::config::BUILTIN_SRCTYPES;
+use crate::config::builtin_srctypes;
 use crate::workspace::FileSnapshot;
 
 use super::mirror::validate_source_relative;
@@ -139,7 +139,7 @@ fn empty_manifest() -> SourceBlockManifest {
 fn validate_manifest(manifest: &SourceBlockManifest, path: &Path) -> Result<()> {
     for source in manifest.sources.values() {
         for (srctype, baseline) in &source.blocks {
-            if !BUILTIN_SRCTYPES.contains(&srctype.as_str()) {
+            if !builtin_srctypes().any(|known| known == srctype) {
                 bail!(
                     "invalid source type {srctype:?} in source block manifest {}",
                     path.display()

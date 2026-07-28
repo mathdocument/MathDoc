@@ -1,4 +1,5 @@
+mod codec;
 mod node;
 
-pub(crate) use node::MdocIdentity;
-pub use node::{MdocHead, MdocNode, SrcBlock};
+pub(crate) use node::{MdocHead, MdocIdentity};
+pub use node::{MdocNode, SrcBlock};

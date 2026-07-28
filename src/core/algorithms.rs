@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Compute every node's height from a pre-loaded dependency graph: leaves are 0,
 /// and every acyclic parent is one greater than its deepest dependency.
@@ -56,6 +56,62 @@ pub fn all_topo_depths(graph: &HashMap<String, Vec<String>>) -> HashMap<String, 
         .into_iter()
         .map(|(fnode, depth)| (fnode.to_string(), depth))
         .collect()
+}
+
+/// Compute each selected node's weakly connected-component size.
+///
+/// Edges are treated as undirected, and graph nodes outside `members` are ignored.
+pub fn weak_component_sizes(
+    graph: &HashMap<String, Vec<String>>,
+    members: &HashSet<String>,
+) -> HashMap<String, u32> {
+    let mut adjacency: HashMap<&str, HashSet<&str>> = members
+        .iter()
+        .map(|member| (member.as_str(), HashSet::new()))
+        .collect();
+    for (source, targets) in graph {
+        if !members.contains(source) {
+            continue;
+        }
+        for target in targets {
+            if !members.contains(target) {
+                continue;
+            }
+            adjacency
+                .entry(source.as_str())
+                .or_default()
+                .insert(target.as_str());
+            adjacency
+                .entry(target.as_str())
+                .or_default()
+                .insert(source.as_str());
+        }
+    }
+
+    let mut sizes = HashMap::new();
+    let mut seen = HashSet::new();
+    for start in members {
+        if seen.contains(start.as_str()) {
+            continue;
+        }
+        let mut component = Vec::new();
+        let mut queue = VecDeque::from([start.as_str()]);
+        while let Some(node) = queue.pop_front() {
+            if !seen.insert(node) {
+                continue;
+            }
+            component.push(node);
+            for neighbor in adjacency.get(node).into_iter().flatten() {
+                if !seen.contains(neighbor) {
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+
+        let size = component.len() as u32;
+        sizes.extend(component.into_iter().map(|node| (node.to_string(), size)));
+    }
+    sizes
 }
 
 /// Compute all strongly connected components using Kosaraju's algorithm.
@@ -126,23 +182,19 @@ pub fn strongly_connected_components(dep_graph: &HashMap<String, Vec<String>>) -
     components
 }
 
-/// Check whether a component contains a cycle.
-pub fn component_has_cycle(dep_graph: &HashMap<String, Vec<String>>, component: &[String]) -> bool {
-    if component.len() > 1 {
-        return true;
-    }
-    match component.first() {
-        None => false,
-        Some(fnode) => dep_graph
-            .get(fnode)
-            .map(|deps| deps.contains(fnode))
-            .unwrap_or(false),
-    }
+/// Return one representative cycle from each cyclic strongly connected component.
+pub fn representative_cycles(dep_graph: &HashMap<String, Vec<String>>) -> Vec<Vec<String>> {
+    let mut cycles: Vec<Vec<String>> = strongly_connected_components(dep_graph)
+        .into_iter()
+        .filter_map(|component| representative_cycle(dep_graph, &component))
+        .collect();
+    cycles.sort();
+    cycles
 }
 
 /// Find a representative cycle within a strongly connected component.
 /// Returns the cycle as a list of fnodes (first == last), or None if no cycle.
-pub fn representative_cycle(
+fn representative_cycle(
     dep_graph: &HashMap<String, Vec<String>>,
     component: &[String],
 ) -> Option<Vec<String>> {

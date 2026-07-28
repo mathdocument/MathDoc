@@ -2,7 +2,7 @@
   import { onDestroy } from "svelte";
   import { api } from "../lib/api";
   import { errMsg } from "../lib/format";
-  import type { NodeInfo } from "../lib/types";
+  import type { DependencyCandidatesEmpty, NodeInfo } from "../lib/types";
   import { shortFnode } from "../lib/format";
   import { modal } from "../lib/modal";
   import {
@@ -49,11 +49,7 @@
       }
     }
   }
-  // Whether the raw search (before filtering existing deps) returned any
-  // results. Used to distinguish "no matches at all" (can create new) from
-  // "all matches are already deps" (should not create a duplicate).
-  let rawHadMatches = $state(false);
-  let searchSucceeded = $state(false);
+  let candidateEmpty = $state<DependencyCandidatesEmpty | null>(null);
 
   onDestroy(() => {
     alive = false;
@@ -73,8 +69,7 @@
     const request = ++searchRequest;
     if (q.length === 0) {
       results = [];
-      rawHadMatches = false;
-      searchSucceeded = false;
+      candidateEmpty = null;
       selected = 0;
       loading = false;
       error = null;
@@ -82,23 +77,20 @@
     }
     loading = true;
     results = [];
-    rawHadMatches = false;
-    searchSucceeded = false;
+    candidateEmpty = null;
     selected = 0;
     error = null;
     const handle = setTimeout(async () => {
       try {
         const candidates = await api.dependencyCandidates(targetFnode, q, 50);
         if (request !== searchRequest) return;
-        rawHadMatches = candidates.raw_had_matches;
+        candidateEmpty = candidates.empty;
         results = candidates.nodes;
-        searchSucceeded = true;
         selected = firstSelectable(results);
       } catch (e) {
         if (request !== searchRequest) return;
         results = [];
-        rawHadMatches = false;
-        searchSucceeded = false;
+        candidateEmpty = null;
         error = errMsg(e);
       } finally {
         if (request === searchRequest) loading = false;
@@ -114,15 +106,34 @@
     inputEl?.focus();
   });
 
-  // When results are empty, show a "create new" option — but only if the
-  // raw search had zero matches (not if all matches were already deps).
   let canCreate = $derived(
     query.trim().length > 0 &&
       results.length === 0 &&
       !loading &&
-      !rawHadMatches &&
-      searchSucceeded,
+      candidateEmpty?.kind === "no_match",
   );
+
+  function excludedMessage(empty: Extract<DependencyCandidatesEmpty, { kind: "excluded" }>) {
+    if (empty.source === 0 && empty.invalid_or_duplicate === 0) {
+      return "all matches are already dependencies";
+    }
+    if (empty.existing_dependencies === 0 && empty.invalid_or_duplicate === 0) {
+      return "all matches refer to this node";
+    }
+    if (empty.source === 0 && empty.existing_dependencies === 0) {
+      return `all matches are invalid or duplicate (${empty.invalid_or_duplicate} excluded)`;
+    }
+    return `matches excluded: ${empty.source} source, ${empty.existing_dependencies} existing, ${empty.invalid_or_duplicate} invalid/duplicate`;
+  }
+
+  let emptyMessage = $derived.by(() => {
+    if (candidateEmpty?.kind === "excluded") return excludedMessage(candidateEmpty);
+    if (candidateEmpty?.kind === "result_limit") {
+      return `${candidateEmpty.available} match(es) available, but the result limit is zero`;
+    }
+    if (candidateEmpty?.kind === "no_match") return "no results";
+    return null;
+  });
 
   function close() {
     if (saving || !confirmDiscardDrafts()) return;
@@ -152,11 +163,12 @@
   }
 
   function startCreate() {
+    if (!canCreate) return;
     createMode = true;
   }
 
   async function createAndAdd() {
-    if (saving || !query.trim()) return;
+    if (saving || !canCreate) return;
     saving = true;
     let pending = true;
     setMutationPending(mutationId, true);
@@ -247,7 +259,11 @@
             autocomplete="off"
             spellcheck="false"
           />
-          <button class="create-confirm" onclick={() => void createAndAdd()} disabled={saving}>
+          <button
+            class="create-confirm"
+            onclick={() => void createAndAdd()}
+            disabled={saving || !canCreate}
+          >
             create &amp; add
           </button>
         </li>
@@ -277,10 +293,8 @@
                 <span class="title create-label">✦ Create new: {query}</span>
               </button>
             </li>
-          {:else if rawHadMatches}
-            <li class="empty">all matches are already dependencies</li>
-          {:else if query && !loading}
-            <li class="empty">no results</li>
+          {:else if emptyMessage}
+            <li class="empty">{emptyMessage}</li>
           {/if}
         {/each}
       {/if}

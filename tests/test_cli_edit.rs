@@ -8,8 +8,8 @@ fn edit_propagates_nonzero_editor_status() {
     let root = dir.path();
     std::fs::create_dir(root.join(".mdc")).unwrap();
     let path = root.join("node.mdoc");
-    let node = MdocNode::new_at_path(root, &path, "Editor Failure");
-    node.save().unwrap();
+    let node = MdocNode::new_at_path(&path, "Editor Failure");
+    std::fs::write(&path, node.render().unwrap()).unwrap();
 
     let editor = which::which("false").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_mdc"))

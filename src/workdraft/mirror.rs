@@ -4,7 +4,7 @@ use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
 use crate::config::srctype_ext;
-use crate::workspace::{ensure_regular_directory, ensure_regular_directory_exists};
+use crate::workspace::{ensure_regular_directory_tree, regular_directory_exists_beneath};
 
 pub(super) struct MirrorState<'a> {
     pub(super) content: Cow<'a, [u8]>,
@@ -61,21 +61,16 @@ pub(super) fn output_path(mdcroot: &Path, source: &Path, srctype: &str) -> PathB
 
 pub(super) fn prepare_output_path(mdcroot: &Path, source: &Path, srctype: &str) -> Result<PathBuf> {
     let relative = output_relative(source, srctype);
-    let mut parent = mdcroot.join(".mdc");
-    ensure_regular_directory(&parent)?;
-    parent.push(srctype);
-    ensure_regular_directory_exists(&parent)?;
-    parent.push("Lib");
-    ensure_regular_directory_exists(&parent)?;
+    let mut parent = mdcroot.join(".mdc").join(srctype).join("Lib");
     if let Some(relative_parent) = relative.parent() {
         for component in relative_parent.components() {
             let Component::Normal(name) = component else {
                 bail!("invalid source block output path");
             };
             parent.push(name);
-            ensure_regular_directory_exists(&parent)?;
         }
     }
+    ensure_regular_directory_tree(mdcroot, &parent)?;
     let file_name = relative
         .file_name()
         .ok_or_else(|| anyhow::anyhow!("invalid source block output path"))?;
@@ -89,14 +84,16 @@ pub(super) fn existing_output_path(
 ) -> Result<Option<(PathBuf, PathBuf)>> {
     let relative = output_relative(source, srctype);
     let mut parent = mdcroot.join(".mdc");
-    ensure_regular_directory(&parent)?;
+    if !regular_directory_exists_beneath(mdcroot, &parent)? {
+        return Ok(None);
+    }
     parent.push(srctype);
-    if !existing_regular_directory(&parent)? {
+    if !regular_directory_exists_beneath(mdcroot, &parent)? {
         return Ok(None);
     }
     parent.push("Lib");
     let type_root = parent.clone();
-    if !existing_regular_directory(&parent)? {
+    if !regular_directory_exists_beneath(mdcroot, &parent)? {
         return Ok(None);
     }
     if let Some(relative_parent) = relative.parent() {
@@ -105,7 +102,7 @@ pub(super) fn existing_output_path(
                 bail!("invalid source block output path");
             };
             parent.push(name);
-            if !existing_regular_directory(&parent)? {
+            if !regular_directory_exists_beneath(mdcroot, &parent)? {
                 return Ok(None);
             }
         }
@@ -116,22 +113,14 @@ pub(super) fn existing_output_path(
     Ok(Some((parent.join(file_name), type_root)))
 }
 
-pub(super) fn remove_empty_parents(path: &Path, type_root: &Path) {
+pub(super) fn remove_empty_parents(allowed_root: &Path, path: &Path, type_root: &Path) {
     let Some(mut parent) = path.parent() else {
         return;
     };
     while parent != type_root && parent.starts_with(type_root) {
-        match std::fs::remove_dir(parent) {
-            Ok(()) => {}
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
-                ) =>
-            {
-                break;
-            }
-            Err(_) => break,
+        match crate::workspace::remove_empty_directory_beneath(allowed_root, parent) {
+            Ok(true) => {}
+            Ok(false) | Err(_) => break,
         }
         let Some(next) = parent.parent() else {
             break;
@@ -142,15 +131,4 @@ pub(super) fn remove_empty_parents(path: &Path, type_root: &Path) {
 
 fn output_relative(source: &Path, srctype: &str) -> PathBuf {
     source.with_extension(srctype_ext(srctype))
-}
-
-fn existing_regular_directory(path: &Path) -> Result<bool> {
-    match std::fs::symlink_metadata(path) {
-        Ok(_) => {
-            ensure_regular_directory(path)?;
-            Ok(true)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error.into()),
-    }
 }

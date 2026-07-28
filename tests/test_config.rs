@@ -8,7 +8,7 @@ use mathdoc::config::Config;
 fn config_template_lists_builtin_defaults() {
     let template = mathdoc::config::config_template();
 
-    for srctype in mathdoc::config::BUILTIN_SRCTYPES {
+    for srctype in mathdoc::config::builtin_srctypes() {
         assert!(template.contains(&format!("# [src.{srctype}]")));
     }
     assert!(template.contains("# timeout_sec = 30"));
@@ -30,7 +30,7 @@ fn load_config_with_srctype() {
     fs::create_dir(&mdc).unwrap();
     fs::write(mdc.join("config.toml"), "[src.latex]\ntimeout_sec = 60\n").unwrap();
     let cfg = Config::load(dir.path()).unwrap();
-    assert_eq!(cfg.src.get("latex").unwrap().timeout_sec, Some(60));
+    assert_eq!(cfg.src.get("latex").unwrap().timeout_sec(), Some(60));
 }
 
 #[test]
@@ -80,33 +80,65 @@ fn src_config_returns_defaults_for_known_srctypes() {
     let cfg = Config::default();
 
     let text = cfg.src_config("text");
-    assert_eq!(text.timeout_sec, None);
+    assert_eq!(text.timeout_sec(), None);
 
     let latex = cfg.src_config("latex");
-    assert_eq!(latex.timeout_sec, Some(30));
+    assert_eq!(latex.timeout_sec(), Some(30));
 
     let python = cfg.src_config("python");
-    assert_eq!(python.timeout_sec, Some(30));
+    assert_eq!(python.timeout_sec(), Some(30));
 
     let lean = cfg.src_config("lean");
-    assert_eq!(lean.timeout_sec, Some(300));
-    assert_eq!(lean.setup_timeout_sec, Some(1800));
+    assert_eq!(lean.timeout_sec(), Some(300));
+    assert_eq!(lean.setup_timeout_sec(), Some(1800));
 
     let rocq = cfg.src_config("rocq");
-    assert_eq!(rocq.timeout_sec, Some(300));
-    assert_eq!(rocq.setup_timeout_sec, None);
+    assert_eq!(rocq.timeout_sec(), Some(300));
+    assert_eq!(rocq.setup_timeout_sec(), None);
 }
 
 #[test]
 fn src_config_user_overrides_default() {
-    let cfg: Config = toml::from_str("[src.latex]\ntimeout_sec = 120\n").unwrap();
+    let dir = TempDir::new().unwrap();
+    let mdc = dir.path().join(".mdc");
+    fs::create_dir(&mdc).unwrap();
+    fs::write(mdc.join("config.toml"), "[src.latex]\ntimeout_sec = 120\n").unwrap();
+    let cfg = Config::load(dir.path()).unwrap();
     let sc = cfg.src_config("latex");
-    assert_eq!(sc.timeout_sec, Some(120));
+    assert_eq!(sc.timeout_sec(), Some(120));
 }
 
 #[test]
 fn src_config_unknown_srctype_has_no_defaults() {
     let cfg = Config::default();
     let sc = cfg.src_config("unknown");
-    assert!(sc.timeout_sec.is_none());
+    assert!(sc.timeout_sec().is_none());
+}
+
+#[test]
+fn load_config_rejects_non_positive_timeout_with_source_key() {
+    let dir = TempDir::new().unwrap();
+    let mdc = dir.path().join(".mdc");
+    fs::create_dir(&mdc).unwrap();
+    fs::write(mdc.join("config.toml"), "[src.python]\ntimeout_sec = 0\n").unwrap();
+
+    let error = Config::load(dir.path()).unwrap_err().to_string();
+    assert!(error.contains("[src.python]"), "{error}");
+    assert!(error.contains("positive integer"), "{error}");
+}
+
+#[test]
+fn load_config_rejects_non_positive_setup_timeout_with_source_key() {
+    let dir = TempDir::new().unwrap();
+    let mdc = dir.path().join(".mdc");
+    fs::create_dir(&mdc).unwrap();
+    fs::write(
+        mdc.join("config.toml"),
+        "[src.lean]\nsetup_timeout_sec = -1\n",
+    )
+    .unwrap();
+
+    let error = Config::load(dir.path()).unwrap_err().to_string();
+    assert!(error.contains("[src.lean]"), "{error}");
+    assert!(error.contains("positive integer"), "{error}");
 }

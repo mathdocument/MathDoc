@@ -128,11 +128,8 @@ impl ApiError {
     }
 
     fn rejected(detail: anyhow::Error) -> Self {
-        if detail
-            .downcast_ref::<crate::workspace::FileConflict>()
-            .is_some()
-            || detail.downcast_ref::<std::io::Error>().is_some()
-            || detail.downcast_ref::<rusqlite::Error>().is_some()
+        if crate::workspace::error_has_file_conflict(&detail)
+            || crate::workspace::error_has_infrastructure_failure(&detail)
         {
             Self::from(detail)
         } else {
@@ -169,10 +166,9 @@ impl ApiError {
 
 impl From<anyhow::Error> for ApiError {
     fn from(detail: anyhow::Error) -> Self {
-        if detail
-            .downcast_ref::<crate::workspace::FileConflict>()
-            .is_some()
-        {
+        if crate::workspace::error_has_infrastructure_failure(&detail) {
+            Self::new(ApiErrorKind::Internal, "internal server error", detail)
+        } else if crate::workspace::error_has_file_conflict(&detail) {
             Self::new(
                 ApiErrorKind::Conflict,
                 "resource changed; refresh and retry",
@@ -399,7 +395,7 @@ fn load_node_generation(
     fnode: &str,
     abs_path: &std::path::Path,
 ) -> ApiResult<(crate::workspace::FileSnapshot, MdocNode)> {
-    let (snapshot, node) = snapshot_node(cache.root(), abs_path)?;
+    let (snapshot, node) = snapshot_node(abs_path)?;
     if node.fnode != fnode {
         return Err(ApiError::generation_conflict(fnode, &node.fnode));
     }
@@ -462,7 +458,7 @@ pub async fn node_put_block(
     Json(body): Json<BlockBody>,
 ) -> ApiResult<Json<NodeDetail>> {
     let srctype = validate_srctype(&srctype)?;
-    let content = normalize_block_content(&body.content);
+    let content = body.content;
     mutate_node(&state, &fnode, move |node| {
         node.upsert_source_block(srctype, content)?;
         Ok(())
@@ -518,17 +514,6 @@ fn validate_srctype(srctype: &str) -> ApiResult<&'static str> {
     crate::config::builtin_srctype(srctype).map_err(|error| ApiError::validation(error.to_string()))
 }
 
-/// Normalise block content so save→load→save is stable.
-/// MdocNode::save() writes block content via `content.lines()` which drops a
-/// trailing newline, so the canonical stored form has no trailing newline.
-fn normalize_block_content(raw: &str) -> String {
-    let mut s = raw.to_string();
-    while s.ends_with('\n') {
-        s.pop();
-    }
-    s
-}
-
 fn mutate_node(
     state: &AppState,
     raw_ref: &str,
@@ -537,7 +522,7 @@ fn mutate_node(
     with_workspace_mutation(state, |cache, mutation_lock| {
         let (fnode, _, abs_path) =
             resolve_with_cache(cache, raw_ref).map_err(ApiError::from_resolve)?;
-        let (snapshot, mut node) = snapshot_node(cache.root(), &abs_path)?;
+        let (snapshot, mut node) = snapshot_node(&abs_path)?;
         if node.fnode != fnode {
             bail!("fnode mismatch when updating node");
         }
@@ -557,12 +542,6 @@ fn node_detail_from_committed_cache(cache: &mut IndCache, node: &MdocNode) -> No
     let summary = cache.node_summary(&node.fnode).ok();
     let broken = summary.as_ref().map(|item| item.broken).unwrap_or(true);
     let depth = summary.map(|item| item.depth).unwrap_or(0);
-    let mut blocks = node.blocks.clone();
-    for block in &mut blocks {
-        if !block.content.is_empty() && !block.content.ends_with('\n') {
-            block.content.push('\n');
-        }
-    }
     NodeDetail {
         fnode: node.fnode.clone(),
         title: node.title.clone(),
@@ -570,19 +549,18 @@ fn node_detail_from_committed_cache(cache: &mut IndCache, node: &MdocNode) -> No
         broken,
         depth,
         depens: node.depens.clone(),
-        blocks,
+        blocks: node.blocks.clone(),
     }
 }
 
 fn snapshot_node(
-    root: &std::path::Path,
     abs_path: &std::path::Path,
 ) -> ApiResult<(crate::workspace::FileSnapshot, MdocNode)> {
     let snapshot = crate::workspace::FileSnapshot::capture(abs_path)?;
     let content = snapshot
         .content()
         .ok_or_else(|| anyhow::anyhow!("mdoc file disappeared: {}", abs_path.display()))?;
-    let node = MdocNode::load_bytes(root, abs_path, content)?;
+    let node = MdocNode::load_bytes(abs_path, content)?;
     Ok((snapshot, node))
 }
 
@@ -726,11 +704,11 @@ mod tests {
         let root = dir.path().to_path_buf();
         std::fs::create_dir(root.join(".mdc")).unwrap();
         let path = root.join("node.mdoc");
-        let mut node = MdocNode::new_at_path(&root, &path, "Original");
+        let mut node = MdocNode::new_at_path(&path, "Original");
         node.upsert_source_block("latex", "original block".to_string())
             .unwrap();
         let fnode = node.fnode.clone();
-        node.save_new().unwrap();
+        std::fs::write(&path, node.render().unwrap()).unwrap();
 
         let mut cache = IndCache::open(root.clone()).unwrap();
         cache.refresh_all().unwrap();
@@ -743,9 +721,8 @@ mod tests {
         for operation in ["title", "block", "delete"] {
             let (_dir, state, path, fnode) = setup_state();
             let mut cache = state.cache.lock().unwrap();
-            let root = cache.root().to_path_buf();
             let mutation_lock = cache.acquire_mutation_lock().unwrap();
-            let (snapshot, mut desired) = snapshot_node(&root, &path).unwrap();
+            let (snapshot, mut desired) = snapshot_node(&path).unwrap();
             match operation {
                 "title" => desired.title = "Requested title".to_string(),
                 "block" => desired.blocks[0].content = "requested block".to_string(),
@@ -755,9 +732,9 @@ mod tests {
 
             // Deterministic failpoint: another writer commits after our parse but
             // before replacement.
-            let mut external = MdocNode::load(&root, &path).unwrap();
+            let mut external = MdocNode::load(&path).unwrap();
             external.title = format!("External edit during {operation}");
-            external.save().unwrap();
+            std::fs::write(&path, external.render().unwrap()).unwrap();
             let external_bytes = std::fs::read(&path).unwrap();
 
             let error =
@@ -765,9 +742,8 @@ mod tests {
             assert_eq!(error.into_response().status(), StatusCode::CONFLICT);
             assert_eq!(std::fs::read(&path).unwrap(), external_bytes);
 
-            let rows = cache.exact_fnode_rows(&fnode).unwrap();
-            assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].1, "Original");
+            let summary = cache.node_summary(&fnode).unwrap();
+            assert_eq!(summary.title, "Original");
         }
     }
 
@@ -779,6 +755,66 @@ mod tests {
 
         let error = load_node_generation(&mut cache, &fnode, &path).unwrap_err();
         assert_eq!(error.into_response().status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn structured_recovery_errors_keep_http_classification() {
+        let path = std::path::Path::new("node.mdoc");
+        let conflict = crate::workspace::PersistenceRecoveryError::new(
+            "index failed and rollback conflicted".to_string(),
+            anyhow::anyhow!("index failed"),
+            Some(crate::workspace::FileConflict::new(path).into()),
+            None,
+        );
+        assert_eq!(
+            ApiError::rejected(conflict.into()).into_response().status(),
+            StatusCode::CONFLICT
+        );
+
+        let repair_failure = crate::workspace::PersistenceRecoveryError::new(
+            "validation failed and index repair failed".to_string(),
+            anyhow::anyhow!("validation failed"),
+            None,
+            Some(rusqlite::Error::InvalidQuery.into()),
+        );
+        assert_eq!(
+            ApiError::rejected(repair_failure.into())
+                .into_response()
+                .status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+
+        let conflict_and_repair_failure = crate::workspace::PersistenceRecoveryError::new(
+            "rollback conflicted and index repair failed".to_string(),
+            anyhow::anyhow!("index update failed"),
+            Some(crate::workspace::FileConflict::new(path).into()),
+            Some(rusqlite::Error::InvalidQuery.into()),
+        );
+        assert_eq!(
+            ApiError::rejected(conflict_and_repair_failure.into())
+                .into_response()
+                .status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+
+        let rollback_io = crate::workspace::PersistenceRecoveryError::new(
+            "validation failed and rollback I/O failed".to_string(),
+            anyhow::anyhow!("validation failed"),
+            Some(std::io::Error::other("rollback failed").into()),
+            None,
+        );
+        assert_eq!(
+            ApiError::rejected(rollback_io.into())
+                .into_response()
+                .status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            ApiError::rejected(anyhow::anyhow!("invalid dependency"))
+                .into_response()
+                .status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
     }
 
     #[test]
@@ -828,9 +864,9 @@ mod tests {
         let mut cache = state.cache.lock().unwrap();
         let root = cache.root().to_path_buf();
         let target_path = root.join("target.mdoc");
-        let target = MdocNode::new_at_path(&root, &target_path, "Target");
+        let target = MdocNode::new_at_path(&target_path, "Target");
         let target_fnode = target.fnode.clone();
-        target.save_new().unwrap();
+        std::fs::write(&target_path, target.render().unwrap()).unwrap();
 
         let mut graph = crate::depgraph::DepGraph::from_ref(&mut cache, &fnode, None).unwrap();
         graph
@@ -841,10 +877,7 @@ mod tests {
         let detail = committed_node_detail(&mut cache, &node).0;
 
         assert_eq!(detail.depens, vec![target_fnode.clone()]);
-        assert_eq!(
-            MdocNode::load(&root, &path).unwrap().depens,
-            vec![target_fnode]
-        );
-        assert_eq!(cache.db_path(), root.join(".mdc/index.db"));
+        assert_eq!(MdocNode::load(&path).unwrap().depens, vec![target_fnode]);
+        assert_eq!(cache.root(), root);
     }
 }

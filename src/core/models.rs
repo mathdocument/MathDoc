@@ -14,7 +14,23 @@ pub struct NodeSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DependencyCandidates {
     pub nodes: Vec<NodeSummary>,
-    pub raw_had_matches: bool,
+    /// `None` when `nodes` is non-empty; otherwise explains why no node was returned.
+    pub empty: Option<DependencyCandidatesEmpty>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DependencyCandidatesEmpty {
+    NoMatch,
+    /// Disjoint counts using source, existing dependency, then health precedence.
+    Excluded {
+        source: usize,
+        existing_dependencies: usize,
+        invalid_or_duplicate: usize,
+    },
+    ResultLimit {
+        available: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

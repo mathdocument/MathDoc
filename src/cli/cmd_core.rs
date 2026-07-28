@@ -74,7 +74,7 @@ pub(super) fn cmd_sync() -> Result<i32> {
     println!("synced  {BLD}{total}{RST} mdocs");
     println!(
         "exported {BLD}{}{RST} source files from {} valid mdocs ({} updated, {} removed)",
-        draft.valid_mdocs * crate::config::BUILTIN_SRCTYPES.len(),
+        draft.valid_mdocs * crate::config::builtin_srctypes().len(),
         draft.valid_mdocs,
         draft.updated,
         draft.removed

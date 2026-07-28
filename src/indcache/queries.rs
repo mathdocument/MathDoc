@@ -5,9 +5,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 pub(crate) const CHUNK_SIZE: usize = 500;
 
 use crate::core::{
-    all_topo_depths as compute_topo_depths, component_has_cycle, representative_cycle,
-    strongly_connected_components, DependencyCandidates, DependencyItem, DependencyTraversalReport,
-    GraphCheckReport, GraphIssue, GraphRootItem, IssueKind, NodeSummary,
+    representative_cycles, DependencyCandidates, DependencyCandidatesEmpty, DependencyItem,
+    DependencyTraversalReport, GraphCheckReport, GraphIssue, GraphRootItem, IssueKind, NodeSummary,
 };
 
 // ── Public query functions ──────────────────────────────────────────────────
@@ -43,6 +42,9 @@ pub fn referrer_items(
     if depth < -1 {
         bail!("depth must be -1 (infinite) or >= 0");
     }
+    if depth == 0 {
+        return Ok(Vec::new());
+    }
     let reverse = reverse_graph(conn)?;
     let nodes = node_lookup(conn)?;
     let issues = issue_lookup(conn)?;
@@ -70,23 +72,6 @@ pub fn referrer_items(
         }
     }
     Ok(items)
-}
-
-/// Compute topo depths from scratch via graph traversal. Used by backfill operations.
-pub(super) fn compute_all_topo_depths_from_edges(
-    conn: &Connection,
-) -> Result<HashMap<String, u32>> {
-    let graph = dep_graph_snapshot(conn, None, None)?;
-    Ok(compute_topo_depths(&graph))
-}
-
-/// Returns the topo depth of every node in the workspace, reading from the persisted DB column.
-pub fn all_topo_depths(conn: &Connection) -> Result<HashMap<String, u32>> {
-    let mut stmt = conn.prepare("SELECT fnode, topo_depth FROM mdocs")?;
-    let rows = stmt
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    Ok(rows)
 }
 
 /// BFS reachability check on `mdoc_edges`. Returns true if `to_fnode` is reachable from
@@ -119,24 +104,15 @@ pub fn is_reachable(conn: &Connection, from_fnode: &str, to_fnode: &str) -> Resu
 }
 
 pub fn node_summary(conn: &Connection, fnode: &str) -> Result<NodeSummary> {
-    let mut stmt = conn.prepare(
-        "SELECT m.fnode, m.title, m.path,
-                EXISTS(SELECT 1 FROM mdoc_issues i WHERE i.ref_fnode = m.fnode),
-                m.topo_depth
+    let sql = format!(
+        "SELECT {NODE_SUMMARY_COLUMNS_SQL}
          FROM mdocs m
          WHERE m.fnode = ?
-         ORDER BY m.path",
-    )?;
+         ORDER BY m.path"
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt
-        .query_map([fnode], |row| {
-            Ok(NodeSummary {
-                fnode: row.get(0)?,
-                title: row.get(1)?,
-                rel_path: row.get(2)?,
-                broken: row.get(3)?,
-                depth: row.get(4)?,
-            })
-        })?
+        .query_map([fnode], node_summary_from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     if rows.len() == 1 {
         return Ok(rows.pop().expect("one summary row"));
@@ -162,26 +138,17 @@ pub fn direct_referrer_summaries(
     conn: &Connection,
     target_fnode: &str,
 ) -> Result<Vec<NodeSummary>> {
-    let mut stmt = conn.prepare(
-        "SELECT e.src_fnode, m.title, m.path,
-                EXISTS(SELECT 1 FROM mdoc_issues own WHERE own.ref_fnode = e.src_fnode),
-                m.topo_depth
+    let sql = format!(
+        "SELECT {NODE_SUMMARY_COLUMNS_SQL}
          FROM mdoc_valid_edges e
          JOIN mdocs m ON m.fnode = e.src_fnode
          WHERE e.dst_fnode = ?
          GROUP BY e.src_fnode
-         ORDER BY m.path",
-    )?;
+         ORDER BY m.path"
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
-        .query_map([target_fnode], |r| {
-            Ok(NodeSummary {
-                fnode: r.get(0)?,
-                title: r.get(1)?,
-                rel_path: r.get(2)?,
-                broken: r.get(3)?,
-                depth: r.get(4)?,
-            })
-        })?
+        .query_map([target_fnode], node_summary_from_row)?
         .collect::<rusqlite::Result<_>>()?;
     Ok(rows)
 }
@@ -218,16 +185,6 @@ pub fn direct_dependency_summaries(
 }
 
 pub fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>> {
-    // Recompute weak components if dirty (requires a full graph load).
-    let dirty: i32 = conn.query_row(
-        "SELECT weak_component_dirty FROM mdoc_index_state WHERE id = 1",
-        [],
-        |r| r.get(0),
-    )?;
-    if dirty != 0 {
-        recompute_weak_components_full(conn)?;
-    }
-
     // Valid root nodes: join with component table and read persisted topo_depth — no graph load.
     let valid_roots: Vec<(String, String, String, u32, u32)> = {
         let mut stmt = conn.prepare(
@@ -312,31 +269,7 @@ pub fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>> {
     Ok(items)
 }
 
-pub fn graph_check_report(conn: &Connection) -> Result<GraphCheckReport> {
-    let current_epoch: i32 = conn.query_row(
-        "SELECT graph_epoch FROM mdoc_index_state WHERE id = 1",
-        [],
-        |r| r.get(0),
-    )?;
-
-    let cached = conn
-        .query_row(
-            "SELECT graph_epoch, cycles_json FROM mdoc_scc_result WHERE id = 1",
-            [],
-            |r| Ok((r.get::<_, i32>(0)?, r.get::<_, String>(1)?)),
-        )
-        .optional()?;
-
-    let cycles: Vec<Vec<String>> = if let Some((epoch, json)) = cached {
-        if epoch == current_epoch {
-            serde_json::from_str(&json)?
-        } else {
-            compute_and_cache_cycles(conn, current_epoch)?
-        }
-    } else {
-        compute_and_cache_cycles(conn, current_epoch)?
-    };
-
+pub fn graph_check_report(conn: &Connection, cycles: Vec<Vec<String>>) -> Result<GraphCheckReport> {
     let nodes: i64 = conn.query_row("SELECT COUNT(*) FROM mdoc_files", [], |r| r.get(0))?;
     let edges: i64 = conn.query_row("SELECT COUNT(*) FROM mdoc_valid_edges", [], |r| r.get(0))?;
 
@@ -350,142 +283,6 @@ pub fn graph_check_report(conn: &Connection) -> Result<GraphCheckReport> {
 }
 
 // ── Private helpers ─────────────────────────────────────────────────────────
-
-fn compute_and_cache_cycles(conn: &Connection, current_epoch: i32) -> Result<Vec<Vec<String>>> {
-    let graph = dep_graph_snapshot(conn, None, None)?;
-    let mut cycles: Vec<Vec<String>> = strongly_connected_components(&graph)
-        .into_iter()
-        .filter(|c| component_has_cycle(&graph, c))
-        .filter_map(|c| representative_cycle(&graph, &c))
-        .collect();
-    cycles.sort();
-    let json = serde_json::to_string(&cycles)?;
-    conn.execute(
-        "INSERT INTO mdoc_scc_result (id, graph_epoch, cycles_json)
-         VALUES (1, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-             graph_epoch = excluded.graph_epoch,
-             cycles_json = excluded.cycles_json",
-        rusqlite::params![current_epoch, json],
-    )?;
-    Ok(cycles)
-}
-
-fn recompute_weak_components_from_graph(
-    conn: &Connection,
-    graph: &HashMap<String, Vec<String>>,
-    valid_nodes: &[(String, String, String)],
-    inv_issues: &[GraphIssue],
-) -> Result<()> {
-    // Members: valid nodes + non-placeholder invalid fnodes
-    let members: HashSet<&str> = valid_nodes
-        .iter()
-        .map(|(f, _, _)| f.as_str())
-        .chain(
-            inv_issues
-                .iter()
-                .filter(|i| !(i.fnode.starts_with('<') && i.fnode.ends_with('>')))
-                .map(|i| i.fnode.as_str()),
-        )
-        .collect();
-
-    // Build undirected adjacency from the directed graph
-    let mut adj: HashMap<&str, HashSet<&str>> = HashMap::new();
-    for (src, deps) in graph {
-        if !members.contains(src.as_str()) {
-            continue;
-        }
-        adj.entry(src.as_str()).or_default();
-        for dst in deps {
-            if !members.contains(dst.as_str()) {
-                continue;
-            }
-            adj.entry(dst.as_str()).or_default().insert(src.as_str());
-            adj.entry(src.as_str()).or_default().insert(dst.as_str());
-        }
-    }
-
-    // BFS to find connected components. Every member stores the component size.
-    let mut rows: Vec<(String, u32)> = Vec::new();
-    let mut seen: HashSet<&str> = HashSet::new();
-    let mut sorted_starts: Vec<&&str> = adj.keys().collect();
-    sorted_starts.sort();
-    for &start in sorted_starts {
-        if seen.contains(start) {
-            continue;
-        }
-        let mut component: Vec<&str> = Vec::new();
-        let mut queue: VecDeque<&str> = VecDeque::from([start]);
-        while let Some(node) = queue.pop_front() {
-            if !seen.insert(node) {
-                continue;
-            }
-            component.push(node);
-            for &neighbor in adj.get(node).into_iter().flatten() {
-                if !seen.contains(neighbor) {
-                    queue.push_back(neighbor);
-                }
-            }
-        }
-        let size = component.len() as u32;
-        for node in component {
-            rows.push((node.to_string(), size));
-        }
-    }
-
-    conn.execute("DELETE FROM mdoc_weak_component", [])?;
-    for chunk in rows.chunks(CHUNK_SIZE) {
-        let placeholders = chunk.iter().map(|_| "(?,?)").collect::<Vec<_>>().join(",");
-        let sql = format!(
-            "INSERT INTO mdoc_weak_component (fnode, component_size) VALUES {placeholders}"
-        );
-        let params: Vec<&dyn rusqlite::types::ToSql> = chunk
-            .iter()
-            .flat_map(|(fnode, size)| {
-                [
-                    fnode as &dyn rusqlite::types::ToSql,
-                    size as &dyn rusqlite::types::ToSql,
-                ]
-            })
-            .collect();
-        conn.execute(&sql, params.as_slice())?;
-    }
-    conn.execute(
-        "UPDATE mdoc_index_state SET weak_component_dirty = 0 WHERE id = 1",
-        [],
-    )?;
-    Ok(())
-}
-
-/// Full weak-component recompute from scratch, including dirty-flag reset.
-pub(super) fn recompute_weak_components_full(conn: &Connection) -> Result<()> {
-    let valid_nodes = valid_node_rows(conn)?;
-    let invalid_issues = invalid_issue_rows(conn)?;
-    let graph = dep_graph_snapshot(conn, Some(&valid_nodes), Some(&invalid_issues))?;
-    recompute_weak_components_from_graph(conn, &graph, &valid_nodes, &invalid_issues)
-}
-
-/// Recompute both `topo_depth` (mdocs) and weak components (mdoc_weak_component) from a
-/// single graph load. Use this after bulk write operations instead of two separate passes.
-pub(super) fn refresh_all_derived_data(conn: &Connection) -> Result<()> {
-    let valid_nodes = valid_node_rows(conn)?;
-    let invalid_issues = invalid_issue_rows(conn)?;
-    let graph = dep_graph_snapshot(conn, Some(&valid_nodes), Some(&invalid_issues))?;
-
-    // Topo depths — one combined Kahn pass, then bulk UPDATE.
-    let depths = compute_topo_depths(&graph);
-    for chunk in depths.iter().collect::<Vec<_>>().chunks(CHUNK_SIZE) {
-        for (fnode, depth) in chunk {
-            conn.execute(
-                "UPDATE mdocs SET topo_depth = ? WHERE fnode = ?",
-                rusqlite::params![depth, fnode],
-            )?;
-        }
-    }
-
-    // Weak components — clears and rebuilds mdoc_weak_component, resets dirty=0.
-    recompute_weak_components_from_graph(conn, &graph, &valid_nodes, &invalid_issues)
-}
 
 fn dependency_report_inner(
     conn: &Connection,
@@ -553,12 +350,7 @@ fn dependency_report_inner(
         }
     }
 
-    let mut cycles: Vec<Vec<String>> = strongly_connected_components(&report_graph)
-        .into_iter()
-        .filter(|c| component_has_cycle(&report_graph, c))
-        .filter_map(|c| representative_cycle(&report_graph, &c))
-        .collect();
-    cycles.sort();
+    let cycles = representative_cycles(&report_graph);
 
     let issues_in_graph: HashMap<String, GraphIssue> = issues
         .into_iter()
@@ -574,7 +366,7 @@ fn dependency_report_inner(
 
 // ── Low-level data accessors ─────────────────────────────────────────────────
 
-fn valid_node_rows(conn: &Connection) -> Result<Vec<(String, String, String)>> {
+pub(super) fn valid_node_rows(conn: &Connection) -> Result<Vec<(String, String, String)>> {
     let mut stmt = conn.prepare(
         "SELECT mdocs.fnode, mdocs.title, mdocs.path
          FROM mdocs
@@ -609,7 +401,7 @@ fn issue_lookup(conn: &Connection) -> Result<HashMap<String, GraphIssue>> {
     Ok(map)
 }
 
-fn invalid_issue_rows(conn: &Connection) -> Result<Vec<GraphIssue>> {
+pub(super) fn invalid_issue_rows(conn: &Connection) -> Result<Vec<GraphIssue>> {
     let mut stmt = conn.prepare(
         "SELECT path, ref_fnode, error FROM mdoc_issues
          WHERE kind IN ('invalid', 'duplicate')
@@ -657,7 +449,7 @@ fn missing_issue_rows(conn: &Connection) -> Result<Vec<GraphIssue>> {
     Ok(deduped)
 }
 
-fn dep_graph_snapshot(
+pub(super) fn dep_graph_snapshot(
     conn: &Connection,
     valid_nodes: Option<&[(String, String, String)]>,
     inv_issues: Option<&[GraphIssue]>,
@@ -1059,17 +851,6 @@ pub fn dependency_candidates(
     limit: usize,
 ) -> Result<DependencyCandidates> {
     let (query_lc, like_pattern, prefix_pattern) = search_patterns(query);
-    let raw_sql = format!(
-        "SELECT EXISTS(
-             SELECT 1 FROM mdocs m WHERE {SEARCH_MATCH_SQL}
-         )"
-    );
-    let raw_had_matches = conn.query_row(
-        &raw_sql,
-        rusqlite::params![like_pattern, like_pattern],
-        |row| row.get(0),
-    )?;
-
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
     let sql = format!(
         "SELECT {NODE_SUMMARY_COLUMNS_SQL}
@@ -1088,7 +869,7 @@ pub fn dependency_candidates(
          LIMIT ?"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let nodes = stmt
+    let nodes: Vec<NodeSummary> = stmt
         .query_map(
             rusqlite::params![
                 like_pattern,
@@ -1103,13 +884,87 @@ pub fn dependency_candidates(
             node_summary_from_row,
         )?
         .collect::<rusqlite::Result<_>>()?;
-    Ok(DependencyCandidates {
-        nodes,
-        raw_had_matches,
-    })
+    let empty = if nodes.is_empty() {
+        Some(dependency_candidates_empty(
+            conn,
+            source_fnode,
+            &like_pattern,
+        )?)
+    } else {
+        None
+    };
+    Ok(DependencyCandidates { nodes, empty })
 }
 
-pub fn exact_fnode_rows(conn: &Connection, fnode: &str) -> Result<Vec<(String, String, String)>> {
+fn dependency_candidates_empty(
+    conn: &Connection,
+    source_fnode: &str,
+    like_pattern: &str,
+) -> Result<DependencyCandidatesEmpty> {
+    let sql = format!(
+        "WITH matching(reason) AS (
+             SELECT CASE
+                 WHEN m.fnode = ? THEN 'source'
+                 WHEN EXISTS (
+                     SELECT 1 FROM mdoc_valid_edges e
+                     WHERE e.src_fnode = ? AND e.dst_fnode = m.fnode
+                 ) THEN 'existing'
+                 WHEN EXISTS (
+                     SELECT 1 FROM mdoc_issues i
+                     WHERE i.path = m.path AND i.kind IN ('invalid', 'duplicate')
+                 ) THEN 'invalid'
+                 ELSE 'available'
+             END
+             FROM mdocs m
+             WHERE {SEARCH_MATCH_SQL}
+         )
+         SELECT COUNT(*),
+                COALESCE(SUM(CASE WHEN reason = 'source' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN reason = 'existing' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN reason = 'invalid' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN reason = 'available' THEN 1 ELSE 0 END), 0)
+         FROM matching"
+    );
+    let (total, source, existing_dependencies, invalid_or_duplicate, available): (
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+    ) = conn.query_row(
+        &sql,
+        rusqlite::params![source_fnode, source_fnode, like_pattern, like_pattern],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        },
+    )?;
+    let as_usize = |count| usize::try_from(count).unwrap_or(usize::MAX);
+
+    if total == 0 {
+        Ok(DependencyCandidatesEmpty::NoMatch)
+    } else if available > 0 {
+        Ok(DependencyCandidatesEmpty::ResultLimit {
+            available: as_usize(available),
+        })
+    } else {
+        Ok(DependencyCandidatesEmpty::Excluded {
+            source: as_usize(source),
+            existing_dependencies: as_usize(existing_dependencies),
+            invalid_or_duplicate: as_usize(invalid_or_duplicate),
+        })
+    }
+}
+
+pub(super) fn exact_fnode_rows(
+    conn: &Connection,
+    fnode: &str,
+) -> Result<Vec<(String, String, String)>> {
     let fnode_lc = fnode.to_lowercase();
     let mut stmt =
         conn.prepare("SELECT fnode, title, path FROM mdocs WHERE lower(fnode) = ? ORDER BY path")?;
@@ -1245,23 +1100,5 @@ mod tests {
         assert!(resolve_ref_by_path(&conn, "missing.mdoc").is_err());
         assert!(fnode_for_path(&conn, "missing.mdoc").is_err());
         assert!(path_has_blocking_issue(&conn, "missing.mdoc").is_err());
-    }
-
-    #[test]
-    fn graph_cache_query_propagates_invalid_column_types() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let conn = crate::indcache::schema::open_db(&dir.path().join("index.db")).unwrap();
-        conn.execute(
-            "INSERT INTO mdoc_scc_result (id, graph_epoch, cycles_json)
-             VALUES (1, 'corrupt', '[]')",
-            [],
-        )
-        .unwrap();
-
-        let error = graph_check_report(&conn).unwrap_err();
-        assert!(matches!(
-            error.downcast_ref::<rusqlite::Error>(),
-            Some(rusqlite::Error::InvalidColumnType(..))
-        ));
     }
 }

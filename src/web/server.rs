@@ -47,7 +47,7 @@ pub async fn serve(
     eprintln!("mdc serve  →  {browser_url}");
     eprintln!("  workspace: {}", mdcroot.display());
     #[cfg(feature = "dev-web")]
-    eprintln!("  (dev-web: serving from web/ — run `npm run dev` for HMR)");
+    eprintln!("  (dev-web: serving from web/dist; run `npm run dev` for HMR)");
     eprintln!("  Ctrl-C to stop");
 
     if open_browser {

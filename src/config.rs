@@ -1,10 +1,69 @@
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroU64;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{de::Error as _, Deserialize, Deserializer};
 
-pub const BUILTIN_SRCTYPES: [&str; 5] = ["text", "latex", "python", "lean", "rocq"];
+#[derive(Clone, Copy)]
+struct BuiltinSrctype {
+    name: &'static str,
+    extension: &'static str,
+    defaults: SrcConfig,
+}
+
+const BUILTIN_SRCTYPES: [BuiltinSrctype; 5] = [
+    BuiltinSrctype {
+        name: "text",
+        extension: "txt",
+        defaults: SrcConfig {
+            timeout_sec: None,
+            setup_timeout_sec: None,
+        },
+    },
+    BuiltinSrctype {
+        name: "latex",
+        extension: "tex",
+        defaults: SrcConfig {
+            timeout_sec: NonZeroU64::new(30),
+            setup_timeout_sec: None,
+        },
+    },
+    BuiltinSrctype {
+        name: "python",
+        extension: "py",
+        defaults: SrcConfig {
+            timeout_sec: NonZeroU64::new(30),
+            setup_timeout_sec: None,
+        },
+    },
+    BuiltinSrctype {
+        name: "lean",
+        extension: "lean",
+        defaults: SrcConfig {
+            timeout_sec: NonZeroU64::new(300),
+            setup_timeout_sec: NonZeroU64::new(1800),
+        },
+    },
+    BuiltinSrctype {
+        name: "rocq",
+        extension: "v",
+        defaults: SrcConfig {
+            timeout_sec: NonZeroU64::new(300),
+            setup_timeout_sec: None,
+        },
+    },
+];
+
+fn builtin_descriptor(srctype: &str) -> Option<&'static BuiltinSrctype> {
+    BUILTIN_SRCTYPES
+        .iter()
+        .find(|known| known.name.eq_ignore_ascii_case(srctype))
+}
+
+pub fn builtin_srctypes() -> impl ExactSizeIterator<Item = &'static str> {
+    BUILTIN_SRCTYPES.iter().map(|known| known.name)
+}
 
 pub fn config_template() -> String {
     let mut out = String::from(
@@ -12,7 +71,7 @@ pub fn config_template() -> String {
          # Uncomment and edit sections below to override built-in defaults.\n",
     );
 
-    for srctype in BUILTIN_SRCTYPES {
+    for srctype in builtin_srctypes() {
         let config = default_for_srctype(srctype);
         out.push('\n');
         out.push_str(&format!("# [src.{srctype}]\n"));
@@ -28,61 +87,69 @@ pub fn config_template() -> String {
 }
 
 pub fn builtin_srctype(srctype: &str) -> Result<&'static str> {
-    BUILTIN_SRCTYPES
-        .iter()
-        .copied()
-        .find(|known| known.eq_ignore_ascii_case(srctype))
+    builtin_descriptor(srctype)
+        .map(|known| known.name)
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "unsupported srctype '{srctype}'; expected one of: {}",
-                BUILTIN_SRCTYPES.join(", ")
+                builtin_srctypes().collect::<Vec<_>>().join(", ")
             )
         })
 }
 
 pub fn canonical_srctype(srctype: &str) -> &str {
-    BUILTIN_SRCTYPES
-        .iter()
-        .copied()
-        .find(|known| known.eq_ignore_ascii_case(srctype))
+    builtin_descriptor(srctype)
+        .map(|known| known.name)
         .unwrap_or(srctype)
-}
-
-pub fn validate_srctype_name(srctype: &str) -> Result<()> {
-    builtin_srctype(srctype)?;
-    Ok(())
 }
 
 /// Per-srctype compiler configuration. All fields are optional at the TOML level;
 /// `Config::src_config()` always returns a fully-merged value with built-in defaults applied.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct SrcConfig {
-    pub timeout_sec: Option<u32>,
-    pub setup_timeout_sec: Option<u32>,
+    #[serde(default, deserialize_with = "deserialize_positive_seconds")]
+    timeout_sec: Option<NonZeroU64>,
+    #[serde(default, deserialize_with = "deserialize_positive_seconds")]
+    setup_timeout_sec: Option<NonZeroU64>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Default)]
 pub struct Config {
     pub src: HashMap<String, SrcConfig>,
 }
 
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ConfigFile {
+    src: HashMap<String, toml::Value>,
+}
+
 impl SrcConfig {
-    /// Convert to the `HashMap<String, toml::Value>` expected by `CompilerReq.compcfg`.
-    pub fn to_compiler_cfg(&self) -> HashMap<String, toml::Value> {
-        let mut m = HashMap::new();
-        if let Some(v) = self.timeout_sec {
-            m.insert("timeout_sec".to_string(), toml::Value::Integer(v as i64));
-        }
-        if let Some(v) = self.setup_timeout_sec {
-            m.insert(
-                "setup_timeout_sec".to_string(),
-                toml::Value::Integer(v as i64),
-            );
-        }
-        m
+    pub fn timeout_sec(self) -> Option<u64> {
+        self.timeout_sec.map(NonZeroU64::get)
     }
+
+    pub fn setup_timeout_sec(self) -> Option<u64> {
+        self.setup_timeout_sec.map(NonZeroU64::get)
+    }
+}
+
+fn deserialize_positive_seconds<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<NonZeroU64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<i64>::deserialize(deserializer)?;
+    value
+        .map(|value| {
+            u64::try_from(value)
+                .ok()
+                .and_then(NonZeroU64::new)
+                .ok_or_else(|| D::Error::custom("must be a positive integer"))
+        })
+        .transpose()
 }
 
 impl Config {
@@ -96,15 +163,22 @@ impl Config {
         if text.trim().is_empty() {
             return Ok(Config::default());
         }
-        let parsed: Config = toml::from_str(&text)
-            .with_context(|| format!("invalid TOML in {}", config_path.display()))?;
+        let parsed: ConfigFile = toml::from_str(&text).map_err(|error| {
+            anyhow::anyhow!("invalid TOML in {}: {error}", config_path.display())
+        })?;
         let mut src = HashMap::new();
         let mut seen = HashSet::new();
-        for (srctype, config) in parsed.src {
+        for (srctype, value) in parsed.src {
             let canonical = builtin_srctype(&srctype)?;
             if !seen.insert(srctype.to_ascii_lowercase()) {
                 anyhow::bail!("duplicate srctype configuration '{srctype}' ignoring case");
             }
+            let config = value.try_into::<SrcConfig>().map_err(|error| {
+                anyhow::anyhow!(
+                    "invalid compiler configuration [src.{srctype}] in {}: {error}",
+                    config_path.display()
+                )
+            })?;
             src.insert(canonical.to_string(), config);
         }
         Ok(Config { src })
@@ -125,36 +199,14 @@ impl Config {
 
 /// Built-in defaults for the compilers shipped with MathDoc.
 pub fn default_for_srctype(srctype: &str) -> SrcConfig {
-    match canonical_srctype(srctype) {
-        "text" => SrcConfig::default(),
-        "latex" => SrcConfig {
-            timeout_sec: Some(30),
-            ..Default::default()
-        },
-        "python" => SrcConfig {
-            timeout_sec: Some(30),
-            ..Default::default()
-        },
-        "lean" => SrcConfig {
-            timeout_sec: Some(300),
-            setup_timeout_sec: Some(1800),
-        },
-        "rocq" => SrcConfig {
-            timeout_sec: Some(300),
-            ..Default::default()
-        },
-        _ => SrcConfig::default(),
-    }
+    builtin_descriptor(srctype)
+        .map(|known| known.defaults)
+        .unwrap_or_default()
 }
 
 /// Srctype → file extension.
 pub fn srctype_ext(srctype: &str) -> &str {
-    match canonical_srctype(srctype) {
-        "text" => "txt",
-        "latex" => "tex",
-        "python" => "py",
-        "lean" => "lean",
-        "rocq" => "v",
-        _ => srctype,
-    }
+    builtin_descriptor(srctype)
+        .map(|known| known.extension)
+        .unwrap_or(srctype)
 }

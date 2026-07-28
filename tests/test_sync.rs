@@ -13,7 +13,7 @@ fn run_mdc(root: &Path, args: &[&str]) -> Output {
 
 fn make_node(root: &Path, relative: &str) -> MdocNode {
     let path = root.join(relative);
-    let mut node = MdocNode::new_at_path(root, &path, "Source Mirror");
+    let mut node = MdocNode::new_at_path(&path, "Source Mirror");
     node.blocks.push(SrcBlock {
         srctype: "lean".to_string(),
         content: "#check Nat\n".to_string(),
@@ -30,13 +30,20 @@ fn make_node(root: &Path, relative: &str) -> MdocNode {
     node
 }
 
+fn write_node(node: &MdocNode) {
+    if let Some(parent) = node.path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(&node.path, node.render().unwrap()).unwrap();
+}
+
 #[test]
 fn sync_exports_five_files_and_back_imports_mirror_edits() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     std::fs::create_dir(root.join(".mdc")).unwrap();
     let node = make_node(root, "data/A.mdoc");
-    node.save_new().unwrap();
+    write_node(&node);
 
     let output = run_mdc(root, &["sync"]);
     assert!(
@@ -75,7 +82,7 @@ fn sync_exports_five_files_and_back_imports_mirror_edits() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let saved = MdocNode::load(root, &node.path).unwrap();
+    let saved = MdocNode::load(&node.path).unwrap();
     assert_eq!(
         saved
             .blocks
@@ -105,12 +112,12 @@ fn sync_and_back_preserve_present_empty_and_absent_blocks() {
     std::fs::create_dir(root.join(".mdc")).unwrap();
     let mut node = make_node(root, "data/A.mdoc");
     node.upsert_source_block("text", String::new()).unwrap();
-    node.save_new().unwrap();
+    write_node(&node);
 
     assert!(run_mdc(root, &["sync"]).status.success());
     let output = run_mdc(root, &["back"]);
     assert!(output.status.success());
-    let saved = MdocNode::load(root, &node.path).unwrap();
+    let saved = MdocNode::load(&node.path).unwrap();
     assert!(saved.source_block("text").is_some());
     assert!(saved.source_block("python").is_none());
 
@@ -119,7 +126,7 @@ fn sync_and_back_preserve_present_empty_and_absent_blocks() {
     changed
         .upsert_source_block("python", String::new())
         .unwrap();
-    changed.save().unwrap();
+    write_node(&changed);
 
     let output = run_mdc(root, &["sync"]);
     assert!(
@@ -138,7 +145,7 @@ fn sync_and_back_preserve_present_empty_and_absent_blocks() {
     );
 
     assert!(run_mdc(root, &["back"]).status.success());
-    let saved = MdocNode::load(root, &node.path).unwrap();
+    let saved = MdocNode::load(&node.path).unwrap();
     assert!(saved.source_block("text").is_none());
     assert!(saved.source_block("python").is_some());
 }
@@ -149,7 +156,7 @@ fn sync_removes_outputs_for_renamed_sources() {
     let root = dir.path();
     std::fs::create_dir(root.join(".mdc")).unwrap();
     let node = make_node(root, "data/A.mdoc");
-    node.save_new().unwrap();
+    write_node(&node);
     assert!(run_mdc(root, &["sync"]).status.success());
     let unrelated = root.join(".mdc/lean/Lib/data/unrelated.lean");
     std::fs::write(&unrelated, "not generated\n").unwrap();
@@ -190,7 +197,7 @@ fn sync_warns_for_invalid_mdocs_and_preserves_previous_outputs() {
     std::fs::create_dir(root.join(".mdc")).unwrap();
     let node = make_node(root, "data/A.mdoc");
     let source_path = node.path.clone();
-    node.save_new().unwrap();
+    write_node(&node);
     assert!(run_mdc(root, &["sync"]).status.success());
     let generated_path = root.join(".mdc/lean/Lib/data/A.lean");
     let generated_before = std::fs::read(&generated_path).unwrap();
@@ -209,7 +216,7 @@ fn sync_preserves_old_mirrors_when_a_renamed_source_is_invalid() {
     let root = dir.path();
     std::fs::create_dir(root.join(".mdc")).unwrap();
     let node = make_node(root, "data/A.mdoc");
-    node.save_new().unwrap();
+    write_node(&node);
     assert!(run_mdc(root, &["sync"]).status.success());
 
     std::fs::create_dir(root.join("renamed")).unwrap();
@@ -268,19 +275,19 @@ fn sync_and_back_preserve_both_sides_on_conflict() {
     let root = dir.path();
     std::fs::create_dir(root.join(".mdc")).unwrap();
     let node = make_node(root, "data/A.mdoc");
-    node.save_new().unwrap();
+    write_node(&node);
     assert!(run_mdc(root, &["sync"]).status.success());
 
     let mirror_path = root.join(".mdc/lean/Lib/data/A.lean");
     std::fs::write(&mirror_path, "mirror edit\n").unwrap();
-    let mut changed = MdocNode::load(root, &node.path).unwrap();
+    let mut changed = MdocNode::load(&node.path).unwrap();
     changed
         .blocks
         .iter_mut()
         .find(|block| block.srctype == "lean")
         .unwrap()
         .content = "mdoc edit\n".to_string();
-    changed.save().unwrap();
+    write_node(&changed);
 
     assert!(!run_mdc(root, &["sync"]).status.success());
     assert!(!run_mdc(root, &["back"]).status.success());
@@ -289,7 +296,7 @@ fn sync_and_back_preserve_both_sides_on_conflict() {
         "mirror edit\n"
     );
     assert_eq!(
-        MdocNode::load(root, &node.path)
+        MdocNode::load(&node.path)
             .unwrap()
             .blocks
             .iter()
@@ -306,25 +313,25 @@ fn back_imports_clean_blocks_while_preserving_other_conflicts() {
     let root = dir.path();
     std::fs::create_dir(root.join(".mdc")).unwrap();
     let node = make_node(root, "data/A.mdoc");
-    node.save_new().unwrap();
+    write_node(&node);
     assert!(run_mdc(root, &["sync"]).status.success());
 
     let lean_mirror = root.join(".mdc/lean/Lib/data/A.lean");
     std::fs::write(&lean_mirror, "accepted mirror edit\n").unwrap();
     let latex_mirror = root.join(".mdc/latex/Lib/data/A.tex");
     std::fs::write(&latex_mirror, "conflicting mirror edit\n").unwrap();
-    let mut changed = MdocNode::load(root, &node.path).unwrap();
+    let mut changed = MdocNode::load(&node.path).unwrap();
     changed
         .blocks
         .iter_mut()
         .find(|block| block.srctype == "latex")
         .unwrap()
         .content = "conflicting mdoc edit\n".to_string();
-    changed.save().unwrap();
+    write_node(&changed);
 
     let output = run_mdc(root, &["back"]);
     assert!(!output.status.success());
-    let saved = MdocNode::load(root, &node.path).unwrap();
+    let saved = MdocNode::load(&node.path).unwrap();
     assert_eq!(
         saved
             .blocks
@@ -364,7 +371,7 @@ fn back_creates_and_deletes_blocks_from_mirrors() {
     let root = dir.path();
     std::fs::create_dir(root.join(".mdc")).unwrap();
     let node = make_node(root, "data/A.mdoc");
-    node.save_new().unwrap();
+    write_node(&node);
     assert!(run_mdc(root, &["sync"]).status.success());
 
     let python = root.join(".mdc/python/Lib/data/A.py");
@@ -378,7 +385,7 @@ fn back_creates_and_deletes_blocks_from_mirrors() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let saved = MdocNode::load(root, &node.path).unwrap();
+    let saved = MdocNode::load(&node.path).unwrap();
     assert_eq!(
         saved
             .blocks
@@ -401,7 +408,7 @@ fn sync_lib_directory_does_not_overwrite_compiler_files() {
     let compiler_path = root.join(".mdc/lean/lakefile.lean");
     std::fs::write(&compiler_path, "compiler file\n").unwrap();
     let node = make_node(root, "lakefile.mdoc");
-    node.save_new().unwrap();
+    write_node(&node);
 
     let output = run_mdc(root, &["sync"]);
 
@@ -422,7 +429,7 @@ fn sync_handles_case_only_source_renames_without_deleting_the_mirror() {
     let root = dir.path();
     std::fs::create_dir(root.join(".mdc")).unwrap();
     let node = make_node(root, "data/A.mdoc");
-    node.save_new().unwrap();
+    write_node(&node);
     assert!(run_mdc(root, &["sync"]).status.success());
 
     std::fs::rename(root.join("data/A.mdoc"), root.join("data/a.mdoc")).unwrap();

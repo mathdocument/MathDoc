@@ -1,6 +1,6 @@
 use super::{
-    cfg_positive_int, lib_source, process_error_result, require_tool, run_process, CompilerReq,
-    CompilerRes, SrcCompiler,
+    process_error_result, require_tool, run_process, CompilerReq, CompilerRes, CompilerWorkspace,
+    SrcCompiler,
 };
 use anyhow::{bail, Result};
 use std::path::Path;
@@ -18,11 +18,7 @@ impl SrcCompiler for CompilerLatex {
     }
 
     fn compile(&self, req: &CompilerReq) -> CompilerRes {
-        let timeout_sec =
-            match cfg_positive_int(&req.compcfg, "timeout_sec", "src.latex.timeout_sec") {
-                Ok(v) => v,
-                Err(e) => return CompilerRes::err(e.to_string()),
-            };
+        let timeout_sec = req.timeout_sec();
 
         let latexmk = match require_tool("latexmk") {
             Ok(p) => p,
@@ -32,14 +28,18 @@ impl SrcCompiler for CompilerLatex {
             return CompilerRes::err_code(e.to_string(), 127);
         }
 
-        let (lib_root, relative) = match lib_source(req, "latex") {
+        let workspace = match CompilerWorkspace::open(req, "latex") {
+            Ok(workspace) => workspace,
+            Err(error) => return CompilerRes::err(error.to_string()),
+        };
+        let (_, relative) = match workspace.lib_source(req) {
             Ok(source) => source,
             Err(error) => return CompilerRes::err(error.to_string()),
         };
-        let workspace_root = lib_root.parent().expect("Lib has a workspace parent");
-        if let Err(error) = ensure_workspace(workspace_root, &relative) {
+        if let Err(error) = ensure_workspace(&workspace, &relative) {
             return CompilerRes::err(error.to_string());
         }
+        let workspace_root = workspace.root();
         let pdf_path = workspace_root.join("Main.pdf");
         let args = [
             "-pdf",
@@ -53,7 +53,6 @@ impl SrcCompiler for CompilerLatex {
             Ok((rtcode, stdout, stderr)) => {
                 if rtcode != 0 {
                     return CompilerRes {
-                        result: false,
                         stdout: String::new(),
                         stderr: summarize_latex_error(&stdout, &stderr),
                         rtcode,
@@ -77,11 +76,11 @@ impl SrcCompiler for CompilerLatex {
     }
 }
 
-fn ensure_workspace(root: &Path, relative: &Path) -> Result<()> {
-    let main_path = root.join(MAIN_FILE);
-    let main_snapshot = crate::workspace::FileSnapshot::capture(&main_path)?;
+fn ensure_workspace(workspace: &CompilerWorkspace, relative: &Path) -> Result<()> {
+    let main_path = workspace.root().join(MAIN_FILE);
+    let main_snapshot = workspace.snapshot(&main_path)?;
     if main_snapshot.content().is_none() {
-        main_snapshot.replace(&main_path, DEFAULT_MAIN.as_bytes())?;
+        workspace.replace_generated(&main_path, &main_snapshot, DEFAULT_MAIN.as_bytes())?;
     }
 
     let input = relative
@@ -91,10 +90,10 @@ fn ensure_workspace(root: &Path, relative: &Path) -> Result<()> {
         bail!("LaTeX source path cannot be represented safely in Lib.tex: {input:?}");
     }
     let driver = format!("\\input{{\"Lib/{input}\"}}\n");
-    let driver_path = root.join(DRIVER_FILE);
-    let driver_snapshot = crate::workspace::FileSnapshot::capture(&driver_path)?;
+    let driver_path = workspace.root().join(DRIVER_FILE);
+    let driver_snapshot = workspace.snapshot(&driver_path)?;
     if driver_snapshot.content() != Some(driver.as_bytes()) {
-        driver_snapshot.replace(&driver_path, driver.as_bytes())?;
+        workspace.replace_generated(&driver_path, &driver_snapshot, driver.as_bytes())?;
     }
     Ok(())
 }
@@ -116,20 +115,33 @@ fn summarize_latex_error(stdout: &str, stderr: &str) -> String {
 mod tests {
     use super::*;
 
+    fn test_workspace(directory: &tempfile::TempDir) -> CompilerWorkspace {
+        let mdcroot = directory.path().canonicalize().unwrap();
+        let root = mdcroot.join(".mdc/latex");
+        std::fs::create_dir_all(&root).unwrap();
+        CompilerWorkspace {
+            mdcroot,
+            root,
+            srctype: "latex".to_string(),
+        }
+    }
+
     #[test]
     fn workspace_preserves_main_and_updates_driver() {
         let dir = tempfile::tempdir().unwrap();
+        let workspace = test_workspace(&dir);
+        let root = workspace.root();
         let custom_main = "\\documentclass{book}\n";
-        std::fs::write(dir.path().join(MAIN_FILE), custom_main).unwrap();
+        std::fs::write(root.join(MAIN_FILE), custom_main).unwrap();
 
-        ensure_workspace(dir.path(), Path::new("notes/theorem.tex")).unwrap();
+        ensure_workspace(&workspace, Path::new("notes/theorem.tex")).unwrap();
 
         assert_eq!(
-            std::fs::read_to_string(dir.path().join(MAIN_FILE)).unwrap(),
+            std::fs::read_to_string(root.join(MAIN_FILE)).unwrap(),
             custom_main
         );
         assert_eq!(
-            std::fs::read_to_string(dir.path().join(DRIVER_FILE)).unwrap(),
+            std::fs::read_to_string(root.join(DRIVER_FILE)).unwrap(),
             "\\input{\"Lib/notes/theorem.tex\"}\n"
         );
     }
@@ -137,12 +149,40 @@ mod tests {
     #[test]
     fn workspace_creates_default_main_once() {
         let dir = tempfile::tempdir().unwrap();
+        let workspace = test_workspace(&dir);
 
-        ensure_workspace(dir.path(), Path::new("node.tex")).unwrap();
+        ensure_workspace(&workspace, Path::new("node.tex")).unwrap();
 
         assert_eq!(
-            std::fs::read_to_string(dir.path().join(MAIN_FILE)).unwrap(),
+            std::fs::read_to_string(workspace.root().join(MAIN_FILE)).unwrap(),
             DEFAULT_MAIN
         );
+    }
+
+    #[test]
+    fn generated_write_cannot_follow_replaced_workspace_root() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let workspace = test_workspace(&dir);
+        let root = workspace.root().to_path_buf();
+        let displaced = workspace.mdcroot.join(".mdc/displaced-latex");
+        let hook_root = root.clone();
+        let hook_outside = outside.path().to_path_buf();
+        let hook_displaced = displaced.clone();
+        crate::workspace::set_test_hook(
+            crate::workspace::TestHookPoint::WriteBeforeDirectoryBinding,
+            move || {
+                std::fs::rename(hook_root, hook_displaced).unwrap();
+                symlink(hook_outside, &root).unwrap();
+            },
+        );
+
+        let error = ensure_workspace(&workspace, Path::new("node.tex")).unwrap_err();
+
+        assert!(crate::workspace::error_has_file_conflict(&error));
+        assert!(!outside.path().join(MAIN_FILE).exists());
+        assert!(!displaced.join(MAIN_FILE).exists());
     }
 }

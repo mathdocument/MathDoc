@@ -1,9 +1,10 @@
+mod derived;
 mod discovery;
 mod queries;
 mod refresh;
 mod schema;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -73,11 +74,6 @@ impl IndCache {
         mutation_lock.validate_identity(&self.root, self.control_identity)
     }
 
-    /// Absolute path to the SQLite database file.
-    pub fn db_path(&self) -> PathBuf {
-        self.root.join(".mdc").join("index.db")
-    }
-
     // ── Bootstrap / refresh ──────────────────────────────────────────────────
 
     /// Bootstrap the index on first use; no-op if already bootstrapped.
@@ -105,11 +101,11 @@ impl IndCache {
             discovery::discover_workspace_changes(&tx, &self.root)?;
         if has_deletion {
             // Deletions can decrease ancestor depths; full backfill is needed.
-            refresh::backfill_all_topo_depths(&tx)?;
+            derived::backfill_all_topo_depths(&tx)?;
         } else {
             // Additions/updates: incremental upward BFS per changed fnode.
             for fnode in &changed_fnodes {
-                refresh::refresh_topo_depth_upward_from(&tx, fnode)?;
+                derived::refresh_topo_depth_upward_from(&tx, fnode)?;
             }
         }
         tx.execute(
@@ -137,11 +133,11 @@ impl IndCache {
         // A rename affects both ancestors of the old token and the new node.
         match (old_fnode.as_deref(), new_fnode.as_deref()) {
             (Some(old), Some(new)) if old != new => {
-                refresh::refresh_topo_depth_upward_from(&tx, old)?;
-                refresh::refresh_topo_depth_upward_from(&tx, new)?;
+                derived::refresh_topo_depth_upward_from(&tx, old)?;
+                derived::refresh_topo_depth_upward_from(&tx, new)?;
             }
-            (_, Some(new)) => refresh::refresh_topo_depth_upward_from(&tx, new)?,
-            (_, None) => refresh::backfill_all_topo_depths(&tx)?,
+            (_, Some(new)) => derived::refresh_topo_depth_upward_from(&tx, new)?,
+            (_, None) => derived::backfill_all_topo_depths(&tx)?,
         }
 
         tx.commit()?;
@@ -153,33 +149,22 @@ impl IndCache {
         &mut self,
         mutation_lock: &crate::workspace::WorkspaceMutationLock,
         node: &MdocNode,
-    ) -> Result<()> {
+    ) -> Result<crate::workspace::AppliedWrite> {
         self.validate_mutation_lock(mutation_lock)?;
         let path = self.validate_node_path(node)?;
-        let payload = node.render_payload()?;
+        let payload = node.render()?;
 
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
+            crate::workspace::ensure_regular_directory_tree(&self.root, parent)
                 .with_context(|| format!("creating parent dirs for {}", path.display()))?;
         }
         self.validate_mutation_lock(mutation_lock)?;
         let path = self.validate_node_path(node)?;
-        let applied = crate::workspace::FileSnapshot::Missing.replace(&path, payload.as_bytes())?;
-        if let Err(index_error) = self.upsert_path(&path) {
-            if let Err(rollback_error) = applied.rollback() {
-                return Err(anyhow!(
-                    "{index_error}; additionally failed to remove {}: {rollback_error}",
-                    path.display()
-                ));
-            }
-            if let Err(restore_index_error) = self.upsert_path(&path) {
-                return Err(anyhow!(
-                    "{index_error}; file was removed but its index could not be restored: {restore_index_error}"
-                ));
-            }
-            return Err(index_error);
-        }
-        Ok(())
+        self.write_and_index_node(
+            &path,
+            payload.as_bytes(),
+            &crate::workspace::FileSnapshot::Missing,
+        )
     }
 
     /// Replace a node and update its index entry as one recoverable operation.
@@ -191,35 +176,37 @@ impl IndCache {
     ) -> Result<()> {
         self.validate_mutation_lock(mutation_lock)?;
         let path = self.validate_node_path(node)?;
-        let payload = node.render_payload()?;
-        let applied = snapshot.replace(&path, payload.as_bytes())?;
-        if let Err(index_error) = self.upsert_path(&path) {
-            if let Err(rollback_error) = applied.rollback() {
-                return Err(anyhow!(
-                    "{index_error}; additionally failed to restore {}: {rollback_error}",
-                    path.display()
-                ));
-            }
-            if let Err(restore_index_error) = self.upsert_path(&path) {
-                return Err(anyhow!(
-                    "{index_error}; file was restored but its index could not be restored: {restore_index_error}"
-                ));
-            }
-            return Err(index_error);
-        }
+        let payload = node.render()?;
+        self.write_and_index_node(&path, payload.as_bytes(), snapshot)?;
         Ok(())
     }
 
     fn validate_node_path(&self, node: &MdocNode) -> Result<PathBuf> {
-        let node_root = crate::workspace::validate_mdcroot(&node.mdcroot)?;
-        if node_root != self.root {
-            bail!(
-                "node workspace root {} does not match cache root {}",
-                node_root.display(),
-                self.root.display()
-            );
-        }
         crate::workspace::resolve_mdoc_path(&self.root, &node.path)
+    }
+
+    fn write_and_index_node(
+        &mut self,
+        path: &Path,
+        payload: &[u8],
+        snapshot: &crate::workspace::FileSnapshot,
+    ) -> Result<crate::workspace::AppliedWrite> {
+        let created = matches!(snapshot, crate::workspace::FileSnapshot::Missing);
+        let applied = snapshot.replace_beneath(&self.root, path, payload)?;
+        let Err(index_error) = self.upsert_path(path) else {
+            return Ok(applied);
+        };
+
+        let rollback_result = applied.rollback();
+        let restore_index_result = self.upsert_path(path);
+        let rollback_action = if created { "remove" } else { "restore" };
+        Err(crate::workspace::PersistenceRecoveryError::from_attempts(
+            index_error,
+            rollback_result,
+            restore_index_result,
+            &format!("{rollback_action} {}", path.display()),
+            &format!("repair the index for {}", path.display()),
+        ))
     }
 
     /// Upsert all dependencies reachable from `root_path` up to `depth` hops (-1 = infinite).
@@ -230,7 +217,7 @@ impl IndCache {
         // Incremental topo update for each upserted fnode. Weak components are
         // rebuilt lazily from the dirty flag when roots are queried.
         for fnode in &upserted_fnodes {
-            refresh::refresh_topo_depth_upward_from(&tx, fnode)?;
+            derived::refresh_topo_depth_upward_from(&tx, fnode)?;
         }
         tx.commit()?;
         Ok(())
@@ -267,18 +254,28 @@ impl IndCache {
         queries::node_summary(&self.conn, fnode)
     }
 
-    pub fn exact_fnode_rows(&self, fnode: &str) -> Result<Vec<(String, String, String)>> {
+    #[cfg(test)]
+    fn exact_fnode_rows(&self, fnode: &str) -> Result<Vec<(String, String, String)>> {
         queries::exact_fnode_rows(&self.conn, fnode)
     }
 
-    pub fn duplicate_fnode_paths(&self, fnode: &str) -> Result<Vec<PathBuf>> {
-        let rows = self.exact_fnode_rows(fnode)?;
+    pub fn reconcile_fnode_paths(&mut self, fnode: &str) -> Result<Vec<PathBuf>> {
+        let tx = self.conn.transaction()?;
+        let rows = queries::exact_fnode_rows(&tx, fnode)?;
         let mut paths = Vec::new();
+        let mut stale = false;
         for (_, _, rel_path) in rows {
-            if let Some(path) = self.valid_cached_path(&rel_path)? {
+            if let Ok(path) = refresh::validate_cached_mdoc_path(&self.root, &rel_path) {
                 paths.push(path);
+            } else {
+                refresh::delete_indexed_path(&tx, &rel_path)?;
+                stale = true;
             }
         }
+        if stale {
+            derived::refresh_topo_depth_upward_from(&tx, fnode)?;
+        }
+        tx.commit()?;
         Ok(paths)
     }
 
@@ -315,10 +312,6 @@ impl IndCache {
         queries::direct_dependency_summaries(&self.conn, fnode)
     }
 
-    pub fn all_topo_depths(&self) -> Result<HashMap<String, u32>> {
-        queries::all_topo_depths(&self.conn)
-    }
-
     /// All dependency edges whose source document has no blocking issue.
     pub fn all_valid_edges(&self) -> Result<Vec<(String, String)>> {
         queries::all_valid_edges(&self.conn)
@@ -344,6 +337,7 @@ impl IndCache {
 
     pub fn global_root_items(&mut self) -> Result<Vec<GraphRootItem>> {
         let tx = self.conn.transaction()?;
+        derived::ensure_weak_components(&tx)?;
         let result = queries::global_root_items(&tx)?;
         tx.commit()?;
         Ok(result)
@@ -351,7 +345,8 @@ impl IndCache {
 
     pub fn graph_check_report(&mut self) -> Result<GraphCheckReport> {
         let tx = self.conn.transaction()?;
-        let result = queries::graph_check_report(&tx)?;
+        let cycles = derived::ensure_scc_cache(&tx)?;
+        let result = queries::graph_check_report(&tx, cycles)?;
         tx.commit()?;
         Ok(result)
     }
@@ -401,7 +396,7 @@ impl IndCache {
             .ok_or_else(|| ResolveRefError::NotFound(raw_ref.to_string()))?;
         let mut rows = Vec::new();
         for (fnode, title, rel_path) in untrusted_rows {
-            if let Some(path) = self.valid_cached_path(&rel_path)? {
+            if let Some(path) = self.valid_cached_path(&rel_path) {
                 rows.push((fnode, title, rel_path, path));
             }
         }
@@ -454,7 +449,7 @@ impl IndCache {
 
         let mut rows = Vec::new();
         for (fnode, title, rel_path) in queries::exact_title_rows(&self.conn, raw_ref)? {
-            if let Some(path) = self.valid_cached_path(&rel_path)? {
+            if let Some(path) = self.valid_cached_path(&rel_path) {
                 rows.push((fnode, title, rel_path, path));
             }
         }
@@ -488,14 +483,8 @@ impl IndCache {
 
     // ── Private helpers ──────────────────────────────────────────────────────
 
-    fn valid_cached_path(&self, rel_path: &str) -> Result<Option<PathBuf>> {
-        match refresh::validate_cached_mdoc_path(&self.root, rel_path) {
-            Ok(path) => Ok(Some(path)),
-            Err(_) => {
-                refresh::delete_indexed_path(&self.conn, rel_path)?;
-                Ok(None)
-            }
-        }
+    fn valid_cached_path(&self, rel_path: &str) -> Option<PathBuf> {
+        refresh::validate_cached_mdoc_path(&self.root, rel_path).ok()
     }
 
     /// If `raw_ref` looks like a path, try to resolve it to an existing file.
@@ -525,7 +514,11 @@ impl IndCache {
                     if meta.file_type().is_symlink() || !meta.is_file() {
                         bail!("mdoc path is not a regular file: {}", candidate.display());
                     }
-                    let rel_path = self.workspace_rel_path(&resolved)?;
+                    let rel_path = resolved
+                        .strip_prefix(&self.root)
+                        .expect("resolved mdoc path belongs to the cache root")
+                        .to_string_lossy()
+                        .into_owned();
                     return Ok(Some((resolved, rel_path)));
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -539,19 +532,6 @@ impl IndCache {
             return Err(ResolveRefError::NotFound(raw_ref.to_string()).into());
         }
         Ok(None)
-    }
-
-    fn workspace_rel_path(&self, candidate: &Path) -> Result<String> {
-        let parent = candidate.parent().unwrap_or(candidate);
-        if let Some(nested) = crate::workspace::find_nested_mdcroot(&self.root, parent) {
-            bail!("mdoc path is inside nested mdoc root: {}", nested.display());
-        }
-        candidate
-            .strip_prefix(&self.root)
-            .map(|p| p.to_string_lossy().into_owned())
-            .map_err(|_| {
-                anyhow::anyhow!("mdoc path must be under mdoc root: {}", self.root.display())
-            })
     }
 }
 
@@ -576,6 +556,10 @@ mod mutation_boundary_tests {
         dir
     }
 
+    fn write_node(node: &MdocNode) {
+        std::fs::write(&node.path, node.render().unwrap()).unwrap();
+    }
+
     #[test]
     fn create_rejects_a_mutation_lock_from_another_cache() {
         let first = workspace();
@@ -584,7 +568,7 @@ mod mutation_boundary_tests {
         let other_cache = IndCache::open(second.path().to_path_buf()).unwrap();
         let other_lock = other_cache.acquire_mutation_lock().unwrap();
         let path = first.path().join("node.mdoc");
-        let node = MdocNode::new_at_path(first.path(), &path, "Node");
+        let node = MdocNode::new_at_path(&path, "Node");
 
         let error = cache.create_node(&other_lock, &node).unwrap_err();
 
@@ -599,11 +583,11 @@ mod mutation_boundary_tests {
         let mut cache = IndCache::open(first.path().to_path_buf()).unwrap();
         let mutation_lock = cache.acquire_mutation_lock().unwrap();
         let path = second.path().join("node.mdoc");
-        let node = MdocNode::new_at_path(second.path(), &path, "Node");
+        let node = MdocNode::new_at_path(&path, "Node");
 
         let error = cache.create_node(&mutation_lock, &node).unwrap_err();
 
-        assert!(error.to_string().contains("does not match cache root"));
+        assert!(error.to_string().contains("outside workspace"));
         assert!(!path.exists());
     }
 
@@ -613,7 +597,7 @@ mod mutation_boundary_tests {
         let mut cache = IndCache::open(workspace.path().to_path_buf()).unwrap();
         let mutation_lock = cache.acquire_mutation_lock().unwrap();
         let path = workspace.path().join("notes/nested/node.mdoc");
-        let mut node = MdocNode::new_at_path(workspace.path(), &path, "Node");
+        let mut node = MdocNode::new_at_path(&path, "Node");
         node.fnode = "created-node".to_string();
 
         cache.create_node(&mutation_lock, &node).unwrap();
@@ -639,7 +623,7 @@ mod mutation_boundary_tests {
             .unwrap();
         let mutation_lock = cache.acquire_mutation_lock().unwrap();
         let path = workspace.path().join("created.mdoc");
-        let mut node = MdocNode::new_at_path(workspace.path(), &path, "Node");
+        let mut node = MdocNode::new_at_path(&path, "Node");
         node.fnode = "created-node".to_string();
 
         let error = cache.create_node(&mutation_lock, &node).unwrap_err();
@@ -650,13 +634,55 @@ mod mutation_boundary_tests {
     }
 
     #[test]
+    fn create_recovery_preserves_typed_rollback_conflict() {
+        let workspace = workspace();
+        let mut cache = IndCache::open(workspace.path().to_path_buf()).unwrap();
+        cache
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER reject_created_node
+                 BEFORE INSERT ON mdocs
+                 WHEN NEW.fnode = 'created-node'
+                 BEGIN
+                     SELECT RAISE(ABORT, 'injected index failure');
+                 END;",
+            )
+            .unwrap();
+        let mutation_lock = cache.acquire_mutation_lock().unwrap();
+        let path = workspace.path().join("created.mdoc");
+        let mut node = MdocNode::new_at_path(&path, "Node");
+        node.fnode = "created-node".to_string();
+        let edited_path = path.clone();
+        crate::workspace::set_test_hook(
+            crate::workspace::TestHookPoint::RollbackAfterInitialVerification,
+            move || {
+                std::fs::write(
+                    edited_path,
+                    "@fnode: external-node\n@title: External edit\n",
+                )
+                .unwrap();
+            },
+        );
+
+        let error = cache.create_node(&mutation_lock, &node).unwrap_err();
+
+        assert!(crate::workspace::error_has_file_conflict(&error));
+        assert!(crate::workspace::error_has_infrastructure_failure(&error));
+        assert_eq!(MdocNode::load(&path).unwrap().title, "External edit");
+        assert_eq!(
+            cache.node_summary("external-node").unwrap().title,
+            "External edit"
+        );
+    }
+
+    #[test]
     fn replace_rejects_an_outside_path_before_writing() {
         let workspace = workspace();
         let outside = tempfile::TempDir::new().unwrap();
         let mut cache = IndCache::open(workspace.path().to_path_buf()).unwrap();
         let mutation_lock = cache.acquire_mutation_lock().unwrap();
         let path = outside.path().join("node.mdoc");
-        let node = MdocNode::new_at_path(workspace.path(), &path, "Node");
+        let node = MdocNode::new_at_path(&path, "Node");
 
         let error = cache
             .replace_node(
@@ -668,6 +694,170 @@ mod mutation_boundary_tests {
 
         assert!(error.to_string().contains("outside workspace"));
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn stale_replace_preserves_external_edit() {
+        let workspace = workspace();
+        let mut cache = IndCache::open(workspace.path().to_path_buf()).unwrap();
+        let mutation_lock = cache.acquire_mutation_lock().unwrap();
+        let path = workspace.path().join("node.mdoc");
+        let mut node = MdocNode::new_at_path(&path, "Original");
+        node.fnode = "stale-node".to_string();
+        let _receipt = cache.create_node(&mutation_lock, &node).unwrap();
+        let snapshot = crate::workspace::FileSnapshot::capture(&path).unwrap();
+
+        let mut desired = node.clone();
+        desired.title = "Desired".to_string();
+        let mut external = node.clone();
+        external.title = "External edit".to_string();
+        write_node(&external);
+
+        let error = cache
+            .replace_node(&mutation_lock, &desired, &snapshot)
+            .unwrap_err();
+
+        assert!(error
+            .downcast_ref::<crate::workspace::FileConflict>()
+            .is_some());
+        assert_eq!(MdocNode::load(&path).unwrap().title, "External edit");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replace_rejects_read_only_files() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = workspace();
+        let mut cache = IndCache::open(workspace.path().to_path_buf()).unwrap();
+        let mutation_lock = cache.acquire_mutation_lock().unwrap();
+        let path = workspace.path().join("readonly.mdoc");
+        let mut node = MdocNode::new_at_path(&path, "Original");
+        node.fnode = "readonly-node".to_string();
+        let _receipt = cache.create_node(&mutation_lock, &node).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let snapshot = crate::workspace::FileSnapshot::capture(&path).unwrap();
+        node.title = "Changed".to_string();
+
+        let error = cache
+            .replace_node(&mutation_lock, &node, &snapshot)
+            .unwrap_err();
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(error.to_string().contains("read-only"));
+        assert_eq!(MdocNode::load(&path).unwrap().title, "Original");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replace_preserves_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = workspace();
+        let mut cache = IndCache::open(workspace.path().to_path_buf()).unwrap();
+        let mutation_lock = cache.acquire_mutation_lock().unwrap();
+        let path = workspace.path().join("metadata.mdoc");
+        let mut node = MdocNode::new_at_path(&path, "Original");
+        node.fnode = "metadata-node".to_string();
+        let _receipt = cache.create_node(&mutation_lock, &node).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let snapshot = crate::workspace::FileSnapshot::capture(&path).unwrap();
+        node.title = "Changed".to_string();
+
+        cache
+            .replace_node(&mutation_lock, &node, &snapshot)
+            .unwrap();
+
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(MdocNode::load(&path).unwrap().title, "Changed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_rejects_final_symlink_without_touching_target() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = workspace();
+        let outside = tempfile::TempDir::new().unwrap();
+        let outside_path = outside.path().join("victim.mdoc");
+        std::fs::write(&outside_path, "victim").unwrap();
+        let path = workspace.path().join("link.mdoc");
+        symlink(&outside_path, &path).unwrap();
+        let mut cache = IndCache::open(workspace.path().to_path_buf()).unwrap();
+        let mutation_lock = cache.acquire_mutation_lock().unwrap();
+        let node = MdocNode::new_at_path(&path, "Node");
+
+        assert!(cache.create_node(&mutation_lock, &node).is_err());
+        assert_eq!(std::fs::read_to_string(outside_path).unwrap(), "victim");
+        assert!(std::fs::symlink_metadata(path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
+    fn ancestor_replacement_cannot_redirect_indexed_create_or_replace() {
+        use std::os::unix::fs::symlink;
+
+        for replacing in [false, true] {
+            let workspace = workspace();
+            let outside = tempfile::TempDir::new().unwrap();
+            let ancestor = workspace.path().join("ancestor");
+            let parent = ancestor.join("parent");
+            std::fs::create_dir_all(&parent).unwrap();
+            std::fs::create_dir(outside.path().join("parent")).unwrap();
+            let path = parent.join("node.mdoc");
+            let outside_path = outside.path().join("parent/node.mdoc");
+            let displaced = workspace.path().join("displaced");
+            let mut node = MdocNode::new_at_path(&path, "After");
+            node.fnode = "ancestor-race-node".to_string();
+            let snapshot = if replacing {
+                let mut before = node.clone();
+                before.title = "Before".to_string();
+                write_node(&before);
+                std::fs::write(&outside_path, b"outside victim").unwrap();
+                crate::workspace::FileSnapshot::capture(&path).unwrap()
+            } else {
+                crate::workspace::FileSnapshot::Missing
+            };
+            let mut cache = IndCache::open(workspace.path().to_path_buf()).unwrap();
+            let mutation_lock = cache.acquire_mutation_lock().unwrap();
+            let hook_ancestor = ancestor.clone();
+            let hook_outside = outside.path().to_path_buf();
+            let hook_displaced = displaced.clone();
+            crate::workspace::set_test_hook(
+                crate::workspace::TestHookPoint::WriteBeforeDirectoryBinding,
+                move || {
+                    std::fs::rename(&hook_ancestor, &hook_displaced).unwrap();
+                    symlink(&hook_outside, &hook_ancestor).unwrap();
+                },
+            );
+
+            let error = if replacing {
+                cache
+                    .replace_node(&mutation_lock, &node, &snapshot)
+                    .unwrap_err()
+            } else {
+                cache.create_node(&mutation_lock, &node).unwrap_err()
+            };
+
+            assert!(crate::workspace::error_has_file_conflict(&error));
+            if replacing {
+                assert_eq!(std::fs::read(&outside_path).unwrap(), b"outside victim");
+                assert_eq!(
+                    MdocNode::load(&displaced.join("parent/node.mdoc"))
+                        .unwrap()
+                        .title,
+                    "Before"
+                );
+            } else {
+                assert!(!outside_path.exists());
+                assert!(!displaced.join("parent/node.mdoc").exists());
+            }
+        }
     }
 
     #[test]

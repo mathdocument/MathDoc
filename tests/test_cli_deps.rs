@@ -68,13 +68,13 @@ fn dep_add_target_accepts_paths_and_canonicalizes_prefixes() {
         &["dep", "add", "source.mdoc", "--target", "notes/target.mdoc"],
     );
     assert!(output.status.success(), "{}", output_text(&output.stderr));
-    let source = MdocNode::load(root, &root.join("source.mdoc")).unwrap();
+    let source = MdocNode::load(&root.join("source.mdoc")).unwrap();
     assert_eq!(source.depens, vec!["target-node-0001"]);
 
     let output = run_mdc(root, &["dep", "add", "source.mdoc", "-t", "target-node"]);
     assert!(output.status.success(), "{}", output_text(&output.stderr));
     assert!(output_text(&output.stdout).contains("already a dependency"));
-    let source = MdocNode::load(root, &root.join("source.mdoc")).unwrap();
+    let source = MdocNode::load(&root.join("source.mdoc")).unwrap();
     assert_eq!(source.depens, vec!["target-node-0001"]);
 
     let output = run_mdc(
@@ -143,8 +143,99 @@ fn dep_add_target_rejects_self_missing_ambiguous_and_cyclic_targets() {
     assert!(!output.status.success());
     assert!(output_text(&output.stderr).contains("must be valid"));
 
-    let source = MdocNode::load(root, &root.join("source.mdoc")).unwrap();
+    let source = MdocNode::load(&root.join("source.mdoc")).unwrap();
     assert!(source.depens.is_empty());
+}
+
+#[test]
+fn dep_add_query_reports_semantic_exclusions_without_prompting() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    init_workspace(root);
+    write_node(
+        root,
+        "source.mdoc",
+        "source-node",
+        "Mixed Candidate Source",
+        &["existing-node"],
+    );
+    write_node(
+        root,
+        "existing.mdoc",
+        "existing-node",
+        "Mixed Candidate Existing",
+        &[],
+    );
+    std::fs::write(
+        root.join("invalid.mdoc"),
+        "@fnode: invalid-node\n@title: Mixed Candidate Invalid\n@unknown: value\n",
+    )
+    .unwrap();
+    write_node(
+        root,
+        "duplicate-a.mdoc",
+        "duplicate-node",
+        "Mixed Candidate Duplicate A",
+        &[],
+    );
+    write_node(
+        root,
+        "duplicate-b.mdoc",
+        "duplicate-node",
+        "Mixed Candidate Duplicate B",
+        &[],
+    );
+    write_node(
+        root,
+        "available.mdoc",
+        "available-node",
+        "Available Candidate",
+        &[],
+    );
+
+    for (query, expected) in [
+        (
+            "Candidate Source",
+            "All matches for 'Candidate Source' refer to the source node itself.",
+        ),
+        (
+            "Candidate Existing",
+            "All matches for 'Candidate Existing' are already dependencies of this node.",
+        ),
+        (
+            "Candidate Invalid",
+            "All matches for 'Candidate Invalid' are invalid or duplicate nodes (1 excluded).",
+        ),
+        (
+            "Candidate Duplicate",
+            "All matches for 'Candidate Duplicate' are invalid or duplicate nodes (2 excluded).",
+        ),
+        (
+            "Mixed Candidate",
+            "All matches for 'Mixed Candidate' were excluded: 1 source, 1 existing dependencies, 3 invalid or duplicate.",
+        ),
+    ] {
+        let output = run_mdc(root, &["dep", "add", "source.mdoc", query]);
+        assert!(output.status.success(), "{}", output_text(&output.stderr));
+        assert!(output_text(&output.stdout).contains(expected));
+        assert!(!output_text(&output.stderr).contains("Create a new note?"));
+    }
+
+    let output = run_mdc(
+        root,
+        &[
+            "dep",
+            "add",
+            "source.mdoc",
+            "Available Candidate",
+            "--max-results",
+            "0",
+        ],
+    );
+    assert!(output.status.success(), "{}", output_text(&output.stderr));
+    assert!(output_text(&output.stdout).contains(
+        "Found 1 available match(es) for 'Available Candidate', but --max-results is zero."
+    ));
 }
 
 #[test]
@@ -181,6 +272,6 @@ fn dep_rm_target_handles_paths_missing_targets_and_ambiguity() {
     assert!(!output.status.success());
     assert!(output_text(&output.stderr).contains("not a direct dependency"));
 
-    let source = MdocNode::load(root, &root.join("source.mdoc")).unwrap();
+    let source = MdocNode::load(&root.join("source.mdoc")).unwrap();
     assert_eq!(source.depens, vec!["missing-two-0002"]);
 }

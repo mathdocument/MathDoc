@@ -1,15 +1,14 @@
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use crate::indcache::queries::{
-    compute_all_topo_depths_from_edges, edge_targets_for_source_path, fnode_for_path,
-    path_for_fnode_if_unique, path_has_blocking_issue, CHUNK_SIZE,
+    edge_targets_for_source_path, fnode_for_path, path_for_fnode_if_unique, path_has_blocking_issue,
 };
 use crate::mdocnode::{MdocHead, MdocIdentity};
-use crate::workspace::{find_nested_mdcroot, iter_mdoc_files, to_rel_path};
+use crate::workspace::{iter_mdoc_files, to_rel_path};
 
 // ── Public write functions ────────────────────────────────────────────────────
 
@@ -39,7 +38,7 @@ pub fn refresh_search_index(conn: &Connection, root: &Path) -> Result<()> {
         delete_indexed_path(conn, stale_path)?;
     }
 
-    super::queries::refresh_all_derived_data(conn)?;
+    super::derived::refresh_all_derived_data(conn)?;
     conn.execute(
         "UPDATE mdoc_index_state SET bootstrapped = 1 WHERE id = 1",
         [],
@@ -114,17 +113,8 @@ pub(crate) fn validate_cached_mdoc_path(root: &Path, rel_path: &str) -> Result<P
 
 /// Upsert a single .mdoc file: update metadata, parse, rebuild edges and issues.
 pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Result<()> {
-    let file_path = crate::workspace::resolve_mdoc_path(root, file_path)?;
-    // Guard: file must not be inside a nested workspace
-    let parent = file_path.parent().unwrap_or(&file_path);
     let root_resolved = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let parent_resolved = parent
-        .canonicalize()
-        .unwrap_or_else(|_| parent.to_path_buf());
-    if let Some(nested) = find_nested_mdcroot(&root_resolved, &parent_resolved) {
-        bail!("mdoc path is inside nested mdoc root: {}", nested.display());
-    }
-
+    let file_path = crate::workspace::resolve_mdoc_path(&root_resolved, file_path)?;
     let rel_path = to_rel_path(&root_resolved, &file_path);
     let old_fnode = fnode_for_path(conn, &rel_path)?;
     let old_had_blocking_issue = path_has_blocking_issue(conn, &rel_path)?;
@@ -212,11 +202,17 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
         }
     }
 
-    refresh_duplicate_issues_for_fnode(conn, old_fnode.as_deref())?;
-    refresh_duplicate_issues_for_fnode(conn, new_fnode.as_deref())?;
+    let identity_fnodes: HashSet<&str> = [old_fnode.as_deref(), new_fnode.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect();
+    for fnode in &identity_fnodes {
+        refresh_duplicate_issues_for_fnode(conn, Some(fnode))?;
+    }
     refresh_missing_issues_for_source(conn, &rel_path)?;
-    refresh_missing_issues_for_target(conn, old_fnode.as_deref())?;
-    refresh_missing_issues_for_target(conn, new_fnode.as_deref())?;
+    for fnode in &identity_fnodes {
+        refresh_missing_issues_for_target(conn, Some(fnode))?;
+    }
     let new_has_blocking_issue = path_has_blocking_issue(conn, &rel_path)?;
 
     // Collect all fnodes whose in_degree may have changed
@@ -231,7 +227,7 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
             .collect::<rusqlite::Result<_>>()?;
         affected.extend(targets);
     }
-    refresh_in_degree_for_fnodes(conn, &affected)?;
+    super::derived::refresh_in_degree_for_fnodes(conn, &affected)?;
 
     // Blocking issues filter edges and nodes without changing their stored
     // identities. In particular, a duplicate claimant becoming a malformed
@@ -243,7 +239,7 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
         || old_had_blocking_issue
         || new_has_blocking_issue
     {
-        bump_graph_epoch(conn)?;
+        super::derived::bump_graph_epoch(conn)?;
     }
     Ok(())
 }
@@ -275,158 +271,11 @@ pub fn delete_indexed_path(conn: &Connection, stale_path: &str) -> Result<()> {
             .collect::<rusqlite::Result<_>>()?;
         affected.extend(targets);
     }
-    refresh_in_degree_for_fnodes(conn, &affected)?;
+    super::derived::refresh_in_degree_for_fnodes(conn, &affected)?;
 
     if old_fnode.is_some() || !affected.is_empty() || old_had_blocking_issue {
-        bump_graph_epoch(conn)?;
+        super::derived::bump_graph_epoch(conn)?;
     }
-    Ok(())
-}
-
-// ── Topo depth helpers ────────────────────────────────────────────────────────
-
-/// Compute topo_depth for a single fnode: max(dep topo_depths) + 1, or 0 if no deps.
-fn compute_node_topo_depth(conn: &Connection, fnode: &str) -> Result<u32> {
-    let max_dep: Option<u32> = conn.query_row(
-        "SELECT MAX(m.topo_depth)
-         FROM mdoc_valid_edges e
-         LEFT JOIN mdocs m ON m.fnode = e.dst_fnode
-         WHERE e.src_fnode = ?",
-        [fnode],
-        |r| r.get::<_, Option<u32>>(0),
-    )?;
-    let has_deps: bool = conn.query_row(
-        "SELECT EXISTS (
-             SELECT 1 FROM mdoc_valid_edges e
-             WHERE e.src_fnode = ?
-         )",
-        [fnode],
-        |row| row.get(0),
-    )?;
-    Ok(if has_deps {
-        max_dep.unwrap_or(0) + 1
-    } else {
-        0
-    })
-}
-
-/// Recompute `start_fnode` and its reverse-reachable ancestors in dependency-first order.
-pub(crate) fn refresh_topo_depth_upward_from(conn: &Connection, start_fnode: &str) -> Result<()> {
-    use std::collections::VecDeque;
-
-    let mut affected: HashSet<String> = HashSet::from([start_fnode.to_string()]);
-    let mut reverse: HashMap<String, Vec<String>> = HashMap::new();
-    let mut queue: VecDeque<String> = VecDeque::from([start_fnode.to_string()]);
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT e.src_fnode
-         FROM mdoc_valid_edges e
-         WHERE e.dst_fnode = ?",
-    )?;
-    while let Some(fnode) = queue.pop_front() {
-        let parents: Vec<String> = stmt
-            .query_map([&fnode], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        for parent in &parents {
-            if affected.insert(parent.clone()) {
-                queue.push_back(parent.clone());
-            }
-        }
-        reverse.insert(fnode, parents);
-    }
-    drop(stmt);
-
-    // An ancestor is ready only after all of its affected dependencies have been
-    // refreshed. This allows nodes reached by both short and long paths to settle once.
-    let mut remaining: HashMap<String, usize> = affected.iter().map(|f| (f.clone(), 0)).collect();
-    for parents in reverse.values() {
-        for parent in parents {
-            *remaining.entry(parent.clone()).or_default() += 1;
-        }
-    }
-    let mut ready: VecDeque<String> = remaining
-        .iter()
-        .filter(|(_, count)| **count == 0)
-        .map(|(fnode, _)| fnode.clone())
-        .collect();
-    let mut processed = 0;
-    while let Some(fnode) = ready.pop_front() {
-        let new_depth = compute_node_topo_depth(conn, &fnode)?;
-        conn.execute(
-            "UPDATE mdocs SET topo_depth = ? WHERE fnode = ?",
-            rusqlite::params![new_depth, &fnode],
-        )?;
-        processed += 1;
-        for parent in reverse.get(&fnode).into_iter().flatten() {
-            if let Some(count) = remaining.get_mut(parent) {
-                *count -= 1;
-                if *count == 0 {
-                    ready.push_back(parent.clone());
-                }
-            }
-        }
-    }
-
-    // Cycles have no dependency-first ordering and repeated local relaxation would
-    // increase forever. Match the established full-graph cycle behavior instead.
-    if processed != affected.len() {
-        backfill_all_topo_depths(conn)?;
-    }
-    Ok(())
-}
-
-/// Recompute topo_depth for all nodes from scratch and persist to DB.
-/// Used after bulk scans where incremental updates would be incorrect or too expensive.
-pub(crate) fn backfill_all_topo_depths(conn: &Connection) -> Result<()> {
-    let depths = compute_all_topo_depths_from_edges(conn)?;
-    for chunk in depths.iter().collect::<Vec<_>>().chunks(CHUNK_SIZE) {
-        for (fnode, depth) in chunk {
-            conn.execute(
-                "UPDATE mdocs SET topo_depth = ? WHERE fnode = ?",
-                rusqlite::params![depth, fnode],
-            )?;
-        }
-    }
-    Ok(())
-}
-
-// ── Semi-public helpers used by discovery ────────────────────────────────────
-
-pub(crate) fn refresh_in_degree_for_fnodes(
-    conn: &Connection,
-    fnodes: &HashSet<String>,
-) -> Result<()> {
-    if fnodes.is_empty() {
-        return Ok(());
-    }
-    let fnode_vec: Vec<&str> = fnodes.iter().map(|s| s.as_str()).collect();
-    for chunk in fnode_vec.chunks(CHUNK_SIZE) {
-        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        conn.execute(
-            &format!("DELETE FROM mdoc_in_degree WHERE fnode IN ({placeholders})"),
-            rusqlite::params_from_iter(chunk.iter().copied()),
-        )?;
-        conn.execute(
-            &format!(
-                "INSERT INTO mdoc_in_degree (fnode, in_degree)
-                  SELECT dst_fnode, COUNT(*)
-                  FROM mdoc_valid_edges
-                  WHERE dst_fnode IN ({placeholders})
-                  GROUP BY dst_fnode
-                 HAVING COUNT(*) > 0"
-            ),
-            rusqlite::params_from_iter(chunk.iter().copied()),
-        )?;
-    }
-    Ok(())
-}
-
-pub(crate) fn bump_graph_epoch(conn: &Connection) -> Result<()> {
-    conn.execute(
-        "UPDATE mdoc_index_state
-         SET graph_epoch = graph_epoch + 1, weak_component_dirty = 1
-         WHERE id = 1",
-        [],
-    )?;
     Ok(())
 }
 
@@ -520,15 +369,7 @@ fn refresh_duplicate_issues_for_fnode(conn: &Connection, fnode: Option<&str>) ->
 }
 
 fn refresh_missing_issues_for_source(conn: &Connection, src_path: &str) -> Result<()> {
-    let has_blocking: bool = conn.query_row(
-        "SELECT EXISTS (
-             SELECT 1 FROM mdoc_issues
-             WHERE path = ? AND kind IN ('invalid', 'duplicate')
-         )",
-        [src_path],
-        |row| row.get(0),
-    )?;
-    if has_blocking {
+    if path_has_blocking_issue(conn, src_path)? {
         return Ok(());
     }
     let mut stmt =
@@ -568,15 +409,7 @@ fn refresh_missing_issues_for_target(conn: &Connection, target_fnode: Option<&st
         .query_map([target], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<_>>()?;
     for src_path in src_paths {
-        let src_has_blocking: bool = conn.query_row(
-            "SELECT EXISTS (
-                 SELECT 1 FROM mdoc_issues
-                 WHERE path = ? AND kind IN ('invalid', 'duplicate')
-             )",
-            [&src_path],
-            |row| row.get(0),
-        )?;
-        if src_has_blocking {
+        if path_has_blocking_issue(conn, &src_path)? {
             continue;
         }
         insert_issue(conn, &src_path, "missing", target, &error)?;
