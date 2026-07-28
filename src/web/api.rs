@@ -5,9 +5,9 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::core::{GraphCheckReport, GraphRootItem, NodeSummary};
+use crate::core::{DependencyCandidates, GraphCheckReport, GraphRootItem, NodeSummary};
 use crate::indcache::IndCache;
-use crate::mdocnode::{MdocNode, SrcBlock};
+use crate::mdocnode::MdocNode;
 use crate::workspace::to_rel_path;
 
 use super::AppState;
@@ -35,6 +35,14 @@ pub struct NodeDetail {
     /// Direct dependency fnodes (in source order, deduplicated).
     pub depens: Vec<String>,
     pub blocks: Vec<crate::mdocnode::SrcBlock>,
+}
+
+/// Focused node data needed by the three-column browser in one response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeView {
+    pub node: NodeDetail,
+    pub referrers: Vec<NodeSummary>,
+    pub children: Vec<NodeSummary>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,6 +108,22 @@ impl ApiError {
             ApiErrorKind::Validation,
             message.clone(),
             anyhow::anyhow!(message),
+        )
+    }
+
+    fn generation_conflict(expected_fnode: &str, loaded_fnode: &str) -> Self {
+        Self::new(
+            ApiErrorKind::Conflict,
+            "resource changed; refresh and retry",
+            anyhow::anyhow!("resolved node generation {expected_fnode}, but loaded {loaded_fnode}"),
+        )
+    }
+
+    fn snapshot_conflict(path: &std::path::Path) -> Self {
+        Self::new(
+            ApiErrorKind::Conflict,
+            "resource changed; refresh and retry",
+            anyhow::anyhow!("{} changed while loading node data", path.display()),
         )
     }
 
@@ -227,27 +251,27 @@ fn with_cache<R>(
     Ok(f(&mut cache)?)
 }
 
-/// Serialize each complete read-modify-write operation. Locking only individual
-/// cache calls would still allow two handlers to load the same old file and
-/// overwrite each other's changes, or to race cycle checks.
-fn with_mutation<R>(state: &AppState, f: impl FnOnce() -> ApiResult<R>) -> ApiResult<R> {
-    let _guard = state.mutation_lock.lock().expect("mutation mutex poisoned");
-    f()
-}
-
-fn with_workspace_mutation<R>(state: &AppState, f: impl FnOnce() -> ApiResult<R>) -> ApiResult<R> {
-    let _guard = state.mutation_lock.lock().expect("mutation mutex poisoned");
-    let _workspace_guard = crate::workspace::WorkspaceMutationLock::acquire(&state.mdcroot)?;
-    f()
-}
-
-/// Resolve a ref (fnode, prefix, or path) and return (fnode, title, abs_path).
-fn resolve(state: &AppState, raw: &str) -> ApiResult<(String, String, std::path::PathBuf)> {
+fn with_workspace_mutation<R>(
+    state: &AppState,
+    f: impl FnOnce(&mut IndCache, &crate::workspace::WorkspaceMutationLock) -> ApiResult<R>,
+) -> ApiResult<R> {
+    let _process_guard = state.mutation_lock.lock().expect("mutation mutex poisoned");
+    let root = {
+        let cache = state.cache.lock().expect("cache mutex poisoned");
+        cache.root().to_path_buf()
+    };
+    let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&root)?;
     let mut cache = state.cache.lock().expect("cache mutex poisoned");
+    cache.validate_mutation_lock(&mutation_lock)?;
+    f(&mut cache, &mutation_lock)
+}
+
+fn resolve_with_cache(
+    cache: &mut IndCache,
+    raw: &str,
+) -> anyhow::Result<(String, String, std::path::PathBuf)> {
     cache.discover_workspace_changes()?;
-    cache
-        .resolve_ref(raw, Some(&state.mdcroot))
-        .map_err(ApiError::from_resolve)
+    cache.resolve_ref(raw, Some(cache.root()))
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -273,7 +297,7 @@ pub async fn graph_full(State(state): State<AppState>) -> ApiResult<Json<GraphFu
     let (nodes, edges) = with_cache(&state, |c| {
         c.discover_workspace_changes()?;
         let nodes: Vec<NodeSummary> = c
-            .search_with_metadata("", usize::MAX)?
+            .all_node_summaries()?
             .into_iter()
             .filter(|item| !item.broken)
             .collect();
@@ -298,7 +322,7 @@ pub async fn search(
     let limit = q.n.min(MAX_SEARCH_RESULTS);
     let out = with_cache(&state, |c| {
         c.discover_workspace_changes()?;
-        c.search_with_metadata(&q.q, limit)
+        c.search(&q.q, limit)
     })?;
     Ok(Json(out))
 }
@@ -312,8 +336,10 @@ pub async fn resolve_ref(
     State(state): State<AppState>,
     Query(q): Query<ResolveQuery>,
 ) -> ApiResult<Json<ResolveResponse>> {
-    let (fnode, title, abs_path) = resolve(&state, &q.r#ref)?;
-    let rel_path = to_rel_path(&state.mdcroot, &abs_path);
+    let mut cache = state.cache.lock().expect("cache mutex poisoned");
+    let (fnode, title, abs_path) =
+        resolve_with_cache(&mut cache, &q.r#ref).map_err(ApiError::from_resolve)?;
+    let rel_path = to_rel_path(cache.root(), &abs_path);
     Ok(Json(ResolveResponse {
         fnode,
         title,
@@ -325,36 +351,104 @@ pub async fn node_detail(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
 ) -> ApiResult<Json<NodeDetail>> {
-    let (fnode, _, abs_path) = resolve(&state, &fnode)?;
-    let node = MdocNode::load(&state.mdcroot, &abs_path)?;
-    let info = with_cache(&state, |cache| cache.node_summary(&fnode))?;
-    Ok(Json(NodeDetail {
-        fnode: info.fnode,
-        title: info.title,
-        rel_path: info.rel_path,
-        broken: info.broken,
-        depth: info.depth,
-        depens: node.depens.clone(),
-        blocks: node.blocks,
-    }))
+    let mut cache = state.cache.lock().expect("cache mutex poisoned");
+    let (fnode, _, abs_path) =
+        resolve_with_cache(&mut cache, &fnode).map_err(ApiError::from_resolve)?;
+    let (snapshot, node) = load_node_generation(&mut cache, &fnode, &abs_path)?;
+    let summary = cache.node_summary(&fnode);
+    ensure_snapshot_unchanged(&snapshot, &abs_path)?;
+    Ok(Json(node_detail_from_generation(summary?, node)))
 }
 
-pub async fn node_referrers(
+pub async fn node_view(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
-) -> ApiResult<Json<Vec<NodeSummary>>> {
-    // Resolve first so prefix refs work and the node is indexed.
-    let (fnode, _, _) = resolve(&state, &fnode)?;
-    let out = with_cache(&state, |c| c.direct_referrer_summaries(&fnode))?;
-    Ok(Json(out))
+) -> ApiResult<Json<NodeView>> {
+    let mut cache = state.cache.lock().expect("cache mutex poisoned");
+    let (fnode, _, abs_path) =
+        resolve_with_cache(&mut cache, &fnode).map_err(ApiError::from_resolve)?;
+    let (snapshot, node) = load_node_generation(&mut cache, &fnode, &abs_path)?;
+    let cache_fields = (|| {
+        Ok::<_, anyhow::Error>((
+            cache.node_summary(&fnode)?,
+            cache.direct_referrer_summaries(&fnode)?,
+            cache.direct_dependency_summaries(&fnode)?,
+        ))
+    })();
+    ensure_snapshot_unchanged(&snapshot, &abs_path)?;
+    let (summary, referrers, children) = cache_fields?;
+    Ok(Json(NodeView {
+        node: node_detail_from_generation(summary, node),
+        referrers,
+        children,
+    }))
 }
 
 pub async fn node_children(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
 ) -> ApiResult<Json<Vec<NodeSummary>>> {
-    let (fnode, _, _) = resolve(&state, &fnode)?;
-    let out = with_cache(&state, |c| c.direct_dependency_summaries(&fnode))?;
+    let mut cache = state.cache.lock().expect("cache mutex poisoned");
+    let (fnode, _, _) = resolve_with_cache(&mut cache, &fnode).map_err(ApiError::from_resolve)?;
+    let out = cache.direct_dependency_summaries(&fnode)?;
+    Ok(Json(out))
+}
+
+fn load_node_generation(
+    cache: &mut IndCache,
+    fnode: &str,
+    abs_path: &std::path::Path,
+) -> ApiResult<(crate::workspace::FileSnapshot, MdocNode)> {
+    let (snapshot, node) = snapshot_node(cache.root(), abs_path)?;
+    if node.fnode != fnode {
+        return Err(ApiError::generation_conflict(fnode, &node.fnode));
+    }
+
+    // This is deliberately a strong single-path upsert: discovery's metadata
+    // fast path cannot detect every external edit.
+    if let Err(error) = cache.upsert_path(abs_path) {
+        ensure_snapshot_unchanged(&snapshot, abs_path)?;
+        return Err(error.into());
+    }
+    ensure_snapshot_unchanged(&snapshot, abs_path)?;
+    Ok((snapshot, node))
+}
+
+fn ensure_snapshot_unchanged(
+    snapshot: &crate::workspace::FileSnapshot,
+    abs_path: &std::path::Path,
+) -> ApiResult<()> {
+    if snapshot.unchanged(abs_path)? {
+        Ok(())
+    } else {
+        Err(ApiError::snapshot_conflict(abs_path))
+    }
+}
+
+fn node_detail_from_generation(info: NodeSummary, node: MdocNode) -> NodeDetail {
+    NodeDetail {
+        fnode: info.fnode,
+        title: info.title,
+        rel_path: info.rel_path,
+        broken: info.broken,
+        depth: info.depth,
+        depens: node.depens,
+        blocks: node.blocks,
+    }
+}
+
+pub async fn node_dependency_candidates(
+    State(state): State<AppState>,
+    Path(fnode): Path<String>,
+    Query(q): Query<SearchQuery>,
+) -> ApiResult<Json<DependencyCandidates>> {
+    let limit = q.n.min(MAX_SEARCH_RESULTS);
+    let mut cache = state.cache.lock().expect("cache mutex poisoned");
+    cache.discover_workspace_changes()?;
+    let (fnode, _, _) = cache
+        .resolve_ref(&fnode, Some(cache.root()))
+        .map_err(ApiError::from_resolve)?;
+    let out = cache.dependency_candidates(&fnode, &q.q, limit)?;
     Ok(Json(out))
 }
 
@@ -367,25 +461,11 @@ pub async fn node_put_block(
     Path((fnode, srctype)): Path<(String, String)>,
     Json(body): Json<BlockBody>,
 ) -> ApiResult<Json<NodeDetail>> {
-    with_workspace_mutation(&state, || {
-        validate_srctype(&srctype)?;
-        let (fnode, _, abs_path) = resolve(&state, &fnode)?;
-        let (snapshot, mut node) = snapshot_node(&state, &abs_path)?;
-        if node.fnode != fnode {
-            bail!("fnode mismatch when writing block");
-        }
-
-        let content = normalize_block_content(&body.content);
-        match node.blocks.iter_mut().find(|b| b.srctype == srctype) {
-            Some(block) => block.content = content,
-            None => node.blocks.push(SrcBlock {
-                srctype,
-                content,
-                metadata: Default::default(),
-            }),
-        }
-        save_and_index(&state, &node, &snapshot)?;
-        Ok(committed_node_detail(&state, &node))
+    let srctype = validate_srctype(&srctype)?;
+    let content = normalize_block_content(&body.content);
+    mutate_node(&state, &fnode, move |node| {
+        node.upsert_source_block(srctype, content)?;
+        Ok(())
     })
 }
 
@@ -394,20 +474,12 @@ pub async fn node_delete_block(
     State(state): State<AppState>,
     Path((fnode, srctype)): Path<(String, String)>,
 ) -> ApiResult<Json<NodeDetail>> {
-    with_workspace_mutation(&state, || {
-        validate_srctype(&srctype)?;
-        let (fnode, _, abs_path) = resolve(&state, &fnode)?;
-        let (snapshot, mut node) = snapshot_node(&state, &abs_path)?;
-        if node.fnode != fnode {
-            bail!("fnode mismatch when deleting block");
-        }
-        let before = node.blocks.len();
-        node.blocks.retain(|b| b.srctype != srctype);
-        if node.blocks.len() == before {
+    let srctype = validate_srctype(&srctype)?;
+    mutate_node(&state, &fnode, |node| {
+        if !node.remove_source_block(srctype) {
             bail!("no '@src: {srctype}' block on this node");
         }
-        save_and_index(&state, &node, &snapshot)?;
-        Ok(committed_node_detail(&state, &node))
+        Ok(())
     })
 }
 
@@ -417,19 +489,14 @@ pub async fn node_put_title(
     Path(fnode): Path<String>,
     Json(body): Json<TitleBody>,
 ) -> ApiResult<Json<NodeDetail>> {
-    with_workspace_mutation(&state, || {
-        let title = body.title.trim();
-        if title.is_empty() {
-            bail!("@title must be non-empty");
-        }
-        let (fnode, _, abs_path) = resolve(&state, &fnode)?;
-        let (snapshot, mut node) = snapshot_node(&state, &abs_path)?;
-        if node.fnode != fnode {
-            bail!("fnode mismatch when updating title");
-        }
-        node.title = title.to_string();
-        save_and_index(&state, &node, &snapshot)?;
-        Ok(committed_node_detail(&state, &node))
+    let title = body.title.trim();
+    if title.is_empty() {
+        bail!("@title must be non-empty");
+    }
+    let title = title.to_string();
+    mutate_node(&state, &fnode, move |node| {
+        node.set_title(title);
+        Ok(())
     })
 }
 
@@ -447,12 +514,8 @@ pub struct TitleBody {
 
 /// The five built-in srctypes. Rejecting unknown srctypes keeps the work/back
 /// pipeline (which keys off the compiler registry) consistent.
-fn validate_srctype(srctype: &str) -> ApiResult<()> {
-    if crate::config::BUILTIN_SRCTYPES.contains(&srctype) {
-        Ok(())
-    } else {
-        bail!("unsupported srctype '{srctype}'")
-    }
+fn validate_srctype(srctype: &str) -> ApiResult<&'static str> {
+    crate::config::builtin_srctype(srctype).map_err(|error| ApiError::validation(error.to_string()))
 }
 
 /// Normalise block content so save→load→save is stable.
@@ -466,39 +529,34 @@ fn normalize_block_content(raw: &str) -> String {
     s
 }
 
+fn mutate_node(
+    state: &AppState,
+    raw_ref: &str,
+    mutate: impl FnOnce(&mut MdocNode) -> ApiResult<()>,
+) -> ApiResult<Json<NodeDetail>> {
+    with_workspace_mutation(state, |cache, mutation_lock| {
+        let (fnode, _, abs_path) =
+            resolve_with_cache(cache, raw_ref).map_err(ApiError::from_resolve)?;
+        let (snapshot, mut node) = snapshot_node(cache.root(), &abs_path)?;
+        if node.fnode != fnode {
+            bail!("fnode mismatch when updating node");
+        }
+        mutate(&mut node)?;
+        save_and_index(cache, mutation_lock, &node, &snapshot)?;
+        Ok(committed_node_detail(cache, &node))
+    })
+}
+
 /// Once persistence and indexing succeed, response construction is infallible:
 /// callers receive the committed node even if optional derived metadata is unavailable.
-fn committed_node_detail(state: &AppState, node: &MdocNode) -> Json<NodeDetail> {
-    let mut cache = state.cache.lock().expect("cache mutex poisoned");
-    Json(node_detail_from_committed_cache(
-        &mut cache,
-        &state.mdcroot,
-        node,
-    ))
+fn committed_node_detail(cache: &mut IndCache, node: &MdocNode) -> Json<NodeDetail> {
+    Json(node_detail_from_committed_cache(cache, node))
 }
 
-fn committed_graph_detail(
-    state: &AppState,
-    mut graph: crate::depgraph::DepGraph,
-) -> Json<NodeDetail> {
-    let node = graph.root_node().clone();
-    let mdcroot = graph.mdcroot().to_path_buf();
-    let detail = node_detail_from_committed_cache(graph.cache_mut(), &mdcroot, &node);
-    *state.cache.lock().expect("cache mutex poisoned") = graph.into_cache();
-    Json(detail)
-}
-
-fn node_detail_from_committed_cache(
-    cache: &mut IndCache,
-    mdcroot: &std::path::Path,
-    node: &MdocNode,
-) -> NodeDetail {
+fn node_detail_from_committed_cache(cache: &mut IndCache, node: &MdocNode) -> NodeDetail {
     let summary = cache.node_summary(&node.fnode).ok();
     let broken = summary.as_ref().map(|item| item.broken).unwrap_or(true);
     let depth = summary.map(|item| item.depth).unwrap_or(0);
-    let root = mdcroot
-        .canonicalize()
-        .unwrap_or_else(|_| mdcroot.to_path_buf());
     let mut blocks = node.blocks.clone();
     for block in &mut blocks {
         if !block.content.is_empty() && !block.content.ends_with('\n') {
@@ -508,7 +566,7 @@ fn node_detail_from_committed_cache(
     NodeDetail {
         fnode: node.fnode.clone(),
         title: node.title.clone(),
-        rel_path: to_rel_path(&root, &node.path),
+        rel_path: to_rel_path(cache.root(), &node.path),
         broken,
         depth,
         depens: node.depens.clone(),
@@ -517,24 +575,26 @@ fn node_detail_from_committed_cache(
 }
 
 fn snapshot_node(
-    state: &AppState,
+    root: &std::path::Path,
     abs_path: &std::path::Path,
 ) -> ApiResult<(crate::workspace::FileSnapshot, MdocNode)> {
     let snapshot = crate::workspace::FileSnapshot::capture(abs_path)?;
     let content = snapshot
         .content()
         .ok_or_else(|| anyhow::anyhow!("mdoc file disappeared: {}", abs_path.display()))?;
-    let node = MdocNode::load_bytes(&state.mdcroot, abs_path, content)?;
+    let node = MdocNode::load_bytes(root, abs_path, content)?;
     Ok((snapshot, node))
 }
 
 fn save_and_index(
-    state: &AppState,
+    cache: &mut IndCache,
+    mutation_lock: &crate::workspace::WorkspaceMutationLock,
     node: &MdocNode,
     snapshot: &crate::workspace::FileSnapshot,
 ) -> ApiResult<()> {
-    let mut cache = state.cache.lock().expect("cache mutex poisoned");
-    crate::depgraph::replace_indexed_node(&mut cache, node, snapshot).map_err(ApiError::rejected)
+    cache
+        .replace_node(mutation_lock, node, snapshot)
+        .map_err(ApiError::rejected)
 }
 
 // ── Dependency mutation handlers ──────────────────────────────────────────────
@@ -551,16 +611,19 @@ pub async fn node_add_dep(
     Path(fnode): Path<String>,
     Json(body): Json<AddDepBody>,
 ) -> ApiResult<Json<NodeDetail>> {
-    with_mutation(&state, || {
-        let (fnode, _, _) = resolve(&state, &fnode)?;
-        let mut graph = crate::depgraph::DepGraph::new(state.mdcroot.clone(), &fnode)?;
+    with_workspace_mutation(&state, |cache, mutation_lock| {
+        let (fnode, _, _) = resolve_with_cache(cache, &fnode).map_err(ApiError::from_resolve)?;
+        let mut graph =
+            crate::depgraph::DepGraph::from_ref_under_lock(cache, mutation_lock, &fnode, None)?;
         let (added, _, _) = graph
-            .add_direct_dependency_ref(&body.dep_fnode)
+            .add_direct_dependency_ref_under_lock(mutation_lock, &body.dep_fnode, None)
             .map_err(ApiError::rejected)?;
         if added.is_empty() {
             bail!("dependency already present or equals self");
         }
-        Ok(committed_graph_detail(&state, graph))
+        let node = graph.root_node().clone();
+        drop(graph);
+        Ok(committed_node_detail(cache, &node))
     })
 }
 
@@ -575,19 +638,22 @@ pub async fn node_rm_deps(
     Path(fnode): Path<String>,
     Json(body): Json<RmDepBody>,
 ) -> ApiResult<Json<NodeDetail>> {
-    with_mutation(&state, || {
+    with_workspace_mutation(&state, |cache, mutation_lock| {
         if body.dep_fnodes.is_empty() {
             bail!("dep_fnodes must be non-empty");
         }
-        let (fnode, _, _) = resolve(&state, &fnode)?;
-        let mut graph = crate::depgraph::DepGraph::new(state.mdcroot.clone(), &fnode)?;
+        let (fnode, _, _) = resolve_with_cache(cache, &fnode).map_err(ApiError::from_resolve)?;
+        let mut graph =
+            crate::depgraph::DepGraph::from_ref_under_lock(cache, mutation_lock, &fnode, None)?;
         let removed = graph
-            .remove_direct_dependencies(body.dep_fnodes)
+            .remove_direct_dependencies_under_lock(mutation_lock, body.dep_fnodes)
             .map_err(ApiError::rejected)?;
         if removed.is_empty() {
             bail!("none of the given fnodes are direct dependencies");
         }
-        Ok(committed_graph_detail(&state, graph))
+        let node = graph.root_node().clone();
+        drop(graph);
+        Ok(committed_node_detail(cache, &node))
     })
 }
 
@@ -606,7 +672,7 @@ pub async fn node_new(
     State(state): State<AppState>,
     Json(body): Json<NewNodeBody>,
 ) -> ApiResult<Json<NodeDetail>> {
-    with_mutation(&state, || {
+    with_workspace_mutation(&state, |cache, mutation_lock| {
         let title = body.title.trim();
         if title.is_empty() {
             bail!("title must be non-empty");
@@ -615,33 +681,38 @@ pub async fn node_new(
 
         if let Some(parent) = &body.parent_fnode {
             // Resolve parent first so we can produce a clear error before write.
-            let (parent_fnode, _, _) = resolve(&state, parent)?;
-            let mut graph = crate::depgraph::DepGraph::new(state.mdcroot.clone(), &parent_fnode)?;
-            let mut new_node = crate::mdocnode::MdocNode::new_at_path(
-                &state.mdcroot,
-                &state.mdcroot.join("."),
-                title,
-            );
-            new_node.path =
-                crate::depgraph::resolve_new_node_path(&state.mdcroot, file_path, &new_node.fnode)
-                    .map_err(ApiError::rejected)?;
+            let (parent_fnode, _, _) =
+                resolve_with_cache(cache, parent).map_err(ApiError::from_resolve)?;
+            let mut graph = crate::depgraph::DepGraph::from_ref_under_lock(
+                cache,
+                mutation_lock,
+                &parent_fnode,
+                None,
+            )?;
+            let new_node = graph
+                .prepare_new_dependency_node(file_path, title, None)
+                .map_err(ApiError::rejected)?;
             graph
-                .create_and_add_dependency(new_node)
+                .create_and_add_dependency_under_lock(mutation_lock, new_node)
                 .map_err(ApiError::rejected)?;
             // Return the parent (the user is editing the parent and just added a
             // dep — they want to see it appear in the children column).
-            Ok(committed_graph_detail(&state, graph))
+            let node = graph.root_node().clone();
+            drop(graph);
+            Ok(committed_node_detail(cache, &node))
         } else {
             // Standalone new node, no parent.
-            let graph = crate::depgraph::DepGraph::create_root(
-                state.mdcroot.clone(),
+            let graph = crate::depgraph::DepGraph::create_root_under_lock(
+                cache,
+                mutation_lock,
                 file_path,
                 title,
                 None,
-                None,
             )
             .map_err(ApiError::rejected)?;
-            Ok(committed_graph_detail(&state, graph))
+            let node = graph.root_node().clone();
+            drop(graph);
+            Ok(committed_node_detail(cache, &node))
         }
     })
 }
@@ -656,17 +727,14 @@ mod tests {
         std::fs::create_dir(root.join(".mdc")).unwrap();
         let path = root.join("node.mdoc");
         let mut node = MdocNode::new_at_path(&root, &path, "Original");
-        node.blocks.push(SrcBlock {
-            srctype: "latex".to_string(),
-            content: "original block".to_string(),
-            metadata: Default::default(),
-        });
+        node.upsert_source_block("latex", "original block".to_string())
+            .unwrap();
         let fnode = node.fnode.clone();
         node.save_new().unwrap();
 
         let mut cache = IndCache::open(root.clone()).unwrap();
         cache.refresh_all().unwrap();
-        let state = AppState::new(root, cache);
+        let state = AppState::new(cache);
         (dir, state, path, fnode)
     }
 
@@ -674,7 +742,10 @@ mod tests {
     fn title_block_and_delete_conflicts_preserve_external_edit_and_index() {
         for operation in ["title", "block", "delete"] {
             let (_dir, state, path, fnode) = setup_state();
-            let (snapshot, mut desired) = snapshot_node(&state, &path).unwrap();
+            let mut cache = state.cache.lock().unwrap();
+            let root = cache.root().to_path_buf();
+            let mutation_lock = cache.acquire_mutation_lock().unwrap();
+            let (snapshot, mut desired) = snapshot_node(&root, &path).unwrap();
             match operation {
                 "title" => desired.title = "Requested title".to_string(),
                 "block" => desired.blocks[0].content = "requested block".to_string(),
@@ -684,16 +755,16 @@ mod tests {
 
             // Deterministic failpoint: another writer commits after our parse but
             // before replacement.
-            let mut external = MdocNode::load(&state.mdcroot, &path).unwrap();
+            let mut external = MdocNode::load(&root, &path).unwrap();
             external.title = format!("External edit during {operation}");
             external.save().unwrap();
             let external_bytes = std::fs::read(&path).unwrap();
 
-            let error = save_and_index(&state, &desired, &snapshot).unwrap_err();
+            let error =
+                save_and_index(&mut cache, &mutation_lock, &desired, &snapshot).unwrap_err();
             assert_eq!(error.into_response().status(), StatusCode::CONFLICT);
             assert_eq!(std::fs::read(&path).unwrap(), external_bytes);
 
-            let cache = state.cache.lock().unwrap();
             let rows = cache.exact_fnode_rows(&fnode).unwrap();
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].1, "Original");
@@ -701,33 +772,79 @@ mod tests {
     }
 
     #[test]
-    fn post_commit_cache_failure_returns_committed_graph_state() {
+    fn load_node_generation_rejects_a_different_loaded_fnode() {
         let (_dir, state, path, fnode) = setup_state();
-        let target_path = state.mdcroot.join("target.mdoc");
-        let target = MdocNode::new_at_path(&state.mdcroot, &target_path, "Target");
+        let mut cache = state.cache.lock().unwrap();
+        std::fs::write(&path, "@fnode: replacement-node\n@title: Replacement\n").unwrap();
+
+        let error = load_node_generation(&mut cache, &fnode, &path).unwrap_err();
+        assert_eq!(error.into_response().status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn waiting_for_workspace_lock_does_not_hold_cache_mutex() {
+        let (_dir, state, _path, _fnode) = setup_state();
+        let root = state.cache.lock().unwrap().root().to_path_buf();
+        let external_lock = crate::workspace::WorkspaceMutationLock::acquire(&root).unwrap();
+        let worker_state = state.clone();
+        let worker = std::thread::spawn(move || {
+            with_workspace_mutation(&worker_state, |_cache, _mutation_lock| Ok(()))
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match state.mutation_lock.try_lock() {
+                Err(std::sync::TryLockError::WouldBlock) => break,
+                Err(std::sync::TryLockError::Poisoned(_)) => panic!("mutation mutex poisoned"),
+                Ok(guard) => drop(guard),
+            }
+            assert!(std::time::Instant::now() < deadline, "writer did not start");
+            std::thread::yield_now();
+        }
+
+        let cache_available = loop {
+            match state.cache.try_lock() {
+                Ok(guard) => {
+                    drop(guard);
+                    break true;
+                }
+                Err(std::sync::TryLockError::Poisoned(_)) => panic!("cache mutex poisoned"),
+                Err(std::sync::TryLockError::WouldBlock) => {}
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::yield_now();
+        };
+
+        drop(external_lock);
+        worker.join().unwrap().unwrap();
+        assert!(cache_available, "workspace lock wait held the cache mutex");
+    }
+
+    #[test]
+    fn dependency_mutation_updates_the_existing_shared_cache() {
+        let (_dir, state, path, fnode) = setup_state();
+        let mut cache = state.cache.lock().unwrap();
+        let root = cache.root().to_path_buf();
+        let target_path = root.join("target.mdoc");
+        let target = MdocNode::new_at_path(&root, &target_path, "Target");
         let target_fnode = target.fnode.clone();
         target.save_new().unwrap();
 
-        let mut graph = crate::depgraph::DepGraph::new(state.mdcroot.clone(), &fnode).unwrap();
-        graph.add_direct_dependency_ref(&target_fnode).unwrap();
-
-        // Fault injection at the old post-commit refresh point: this cache belongs
-        // to another workspace, so refreshing `path` through it would fail.
-        let other = tempfile::TempDir::new().unwrap();
-        std::fs::create_dir(other.path().join(".mdc")).unwrap();
-        let other_cache = IndCache::open(other.path().to_path_buf()).unwrap();
-        *state.cache.lock().unwrap() = other_cache;
-
-        let detail = committed_graph_detail(&state, graph).0;
+        let mut graph = crate::depgraph::DepGraph::from_ref(&mut cache, &fnode, None).unwrap();
+        graph
+            .add_direct_dependency_ref(&target_fnode, None)
+            .unwrap();
+        let node = graph.root_node().clone();
+        drop(graph);
+        let detail = committed_node_detail(&mut cache, &node).0;
 
         assert_eq!(detail.depens, vec![target_fnode.clone()]);
         assert_eq!(
-            MdocNode::load(&state.mdcroot, &path).unwrap().depens,
+            MdocNode::load(&root, &path).unwrap().depens,
             vec![target_fnode]
         );
-        assert_eq!(
-            state.cache.lock().unwrap().db_path(),
-            state.mdcroot.canonicalize().unwrap().join(".mdc/index.db")
-        );
+        assert_eq!(cache.db_path(), root.join(".mdc/index.db"));
     }
 }

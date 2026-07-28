@@ -95,7 +95,7 @@ enum Commands {
     /// Open a mdoc file in $EDITOR and reindex it on exit.
     Edit { source: String },
 
-    /// Force refresh all index entries.
+    /// Refresh the index and reconcile mdoc blocks into the Lib source trees.
     Sync,
 
     /// Search mdocs by title or fnode.
@@ -111,17 +111,10 @@ enum Commands {
         command: GraphCommands,
     },
 
-    /// Generate merged work files for editing in native tools.
-    Work {
-        source: String,
-        #[arg(short, long, default_value = "1", allow_hyphen_values = true)]
-        depth: i32,
-        /// Compile all generated work files after merging.
-        #[arg(short, long)]
-        compile: bool,
-    },
+    /// Sync and compile one mdoc's mirrored source blocks.
+    Work { source: String },
 
-    /// Extract edits from work files and write back to mdoc files.
+    /// Reconcile mirrored source edits back into mdoc blocks.
     Back,
 
     /// Manage mdoc dependencies.
@@ -217,11 +210,7 @@ fn dispatch(cmd: Commands) -> Result<i32> {
             GraphCommands::Roots => cmd_graph::cmd_graph_roots(),
             GraphCommands::Tui { source } => cmd_tui::cmd_graph_tui(source),
         },
-        Commands::Work {
-            source,
-            depth,
-            compile,
-        } => cmd_work::cmd_work(source, depth, compile),
+        Commands::Work { source } => cmd_work::cmd_work(source),
         Commands::Back => cmd_work::cmd_back(),
         Commands::Dep { command } => match command {
             DepCommands::Add {
@@ -250,15 +239,34 @@ fn require_mdcroot() -> Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("not inside an mdoc directory, run `mdc init` first"))
 }
 
-fn open_cache(mdcroot: PathBuf) -> Result<IndCache> {
-    IndCache::open(mdcroot)
-}
-
 fn cwd() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
+fn resolve_start_ref(cache: &IndCache, source: &str) -> Result<String> {
+    cache
+        .resolve_start_ref(source, Some(&cwd()))
+        .map(|(fnode, _, _)| fnode)
+        .map_err(|error| anyhow::anyhow!("cannot resolve '{}': {}", source, error))
+}
+
 // ── Shared output helpers ─────────────────────────────────────────────────────
+
+fn print_workdraft_issues(issues: &[crate::workdraft::Issue]) {
+    for issue in issues {
+        let srctype = issue
+            .srctype
+            .as_deref()
+            .map(|value| format!(" [{value}]"))
+            .unwrap_or_default();
+        eprintln!(
+            "{YLW}warning:{RST} {}{}: {}",
+            escape_terminal(&issue.path.to_string_lossy()),
+            srctype,
+            escape_terminal(&issue.message)
+        );
+    }
+}
 
 /// Print a single cycle in vertical format with a left-side bracket.
 /// `label_map`: fnode → (title, rel_path), used for display titles.

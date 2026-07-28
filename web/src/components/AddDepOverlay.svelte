@@ -14,11 +14,10 @@
 
   interface Props {
     targetFnode: string;
-    existingDepFnodes: string[];
     onAdded: () => void;
     onClose: () => void;
   }
-  let { targetFnode, existingDepFnodes, onAdded, onClose }: Props = $props();
+  let { targetFnode, onAdded, onClose }: Props = $props();
 
   let query = $state("");
   let results = $state<NodeInfo[]>([]);
@@ -54,9 +53,7 @@
   // results. Used to distinguish "no matches at all" (can create new) from
   // "all matches are already deps" (should not create a duplicate).
   let rawHadMatches = $state(false);
-
-  // Existing deps + self are excluded from search results.
-  let excluded = $derived(new Set([...existingDepFnodes, targetFnode]));
+  let searchSucceeded = $state(false);
 
   onDestroy(() => {
     alive = false;
@@ -74,29 +71,35 @@
   $effect(() => {
     const q = query;
     const request = ++searchRequest;
-    const excludedForRequest = excluded;
     if (q.length === 0) {
       results = [];
       rawHadMatches = false;
+      searchSucceeded = false;
       selected = 0;
       loading = false;
+      error = null;
       return;
     }
     loading = true;
     results = [];
     rawHadMatches = false;
+    searchSucceeded = false;
     selected = 0;
+    error = null;
     const handle = setTimeout(async () => {
       try {
-        const all = await api.search(q, 50);
+        const candidates = await api.dependencyCandidates(targetFnode, q, 50);
         if (request !== searchRequest) return;
-        rawHadMatches = all.length > 0;
-        results = all.filter((r) => !excludedForRequest.has(r.fnode));
+        rawHadMatches = candidates.raw_had_matches;
+        results = candidates.nodes;
+        searchSucceeded = true;
         selected = firstSelectable(results);
-      } catch {
+      } catch (e) {
         if (request !== searchRequest) return;
         results = [];
         rawHadMatches = false;
+        searchSucceeded = false;
+        error = errMsg(e);
       } finally {
         if (request === searchRequest) loading = false;
       }
@@ -113,7 +116,13 @@
 
   // When results are empty, show a "create new" option — but only if the
   // raw search had zero matches (not if all matches were already deps).
-  let canCreate = $derived(query.trim().length > 0 && results.length === 0 && !loading && !rawHadMatches);
+  let canCreate = $derived(
+    query.trim().length > 0 &&
+      results.length === 0 &&
+      !loading &&
+      !rawHadMatches &&
+      searchSucceeded,
+  );
 
   function close() {
     if (saving || !confirmDiscardDrafts()) return;

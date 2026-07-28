@@ -70,30 +70,30 @@ Important format details:
 | --- | --- |
 | `src/mdocnode/` | `.mdoc` parser, serializer, and `MdocNode` model |
 | `src/indcache/` | SQLite-backed workspace index (`IndCache`) |
-| `src/depgraph/` | In-memory dependency graph and mutation API (`DepGraph`) |
-| `src/depgraph/workback.rs` | Work-file merge and extraction logic for `mdc work` / `mdc back` |
+| `src/depgraph/` | Dependency mutation session for one root node (`DepGraph`) |
 | `src/compiler/` | Synchronous subprocess compilers and `CompilerRegistry` |
 | `src/cli/` | `clap` command definitions, command handlers, and terminal output |
 | `src/web/` | `mdc serve` HTTP server (axum): JSON API over `IndCache`/`DepGraph` + SPA asset serving |
-| `src/core/` | Shared models and graph algorithms: topo order, cycle detection, SCC |
-| `src/config.rs` | `.mdc/config.toml`, srctype defaults, preamble/postamble files |
-| `src/workspace/` | Workspace discovery, path validation, mutation locking, and atomic file updates |
+| `src/core/` | Shared models and database-independent graph algorithms (topo depth, SCCs, and cycles) |
+| `src/config.rs` | `.mdc/config.toml`, its initialization template, and compiler defaults |
+| `src/workspace/` | Workspace initialization/discovery, path validation, mutation locking, and atomic file updates |
+| `src/workdraft/` | Source mirror manifest, safe layout, transactional updates, and `sync`/`back` reconciliation policy |
 | `editors/vscode/` | VS Code language extension for `.mdoc` files |
 | `web/` | Svelte 5 + Vite + TypeScript frontend; built output is embedded into the `mdc` binary via `rust-embed` |
 
 ## `.mdoc` Parsing
 
 `MdocNode::load` fully parses a file, including block contents. `MdocNode::load_head`
-parses only headers and dependency structure. The index uses head parsing so cache
-refreshes do not read large source blocks unnecessarily.
+parses only headers and dependency structure. The index does not retain source
+block contents.
 
-Invalid files are represented in `mdoc_issues` where possible. `read_mdoc_head`
+Invalid files are represented in `mdoc_issues` where possible. `MdocIdentity`
 is intentionally lenient and can recover `(fnode, title)` from a broken file so
 the cache can report useful invalid/duplicate diagnostics.
 
 ## IndCache
 
-The SQLite database lives at `.mdc/index.db`. Current schema version is `8`.
+The SQLite database lives at `.mdc/index.db`. Current schema version is `15`.
 The DB is opened with WAL mode and foreign keys enabled.
 
 Internal module boundaries are strict:
@@ -103,11 +103,18 @@ Internal module boundaries are strict:
   `&Connection` and do not own transactions.
 - `refresh.rs`: write/upsert/delete operations and derived-data maintenance.
   Functions take `&Connection` and do not own transactions.
-- `discovery.rs`: directory-mtime-based workspace discovery.
+- `discovery.rs`: workspace enumeration and `(mtime_ns, size)` change discovery.
 
 `IndCache` owns the SQLite connection and all transaction boundaries. Multi-step
 mutations should be wrapped as `conn.transaction()` followed by `tx.commit()` in
 `src/indcache/mod.rs`.
+
+Indexed node creation is also cache-owned: `IndCache::create_node()` validates the
+node against the cache root and workspace mutation lock, renders it, creates any
+parents, revalidates the final path, and atomically writes against
+`FileSnapshot::Missing`. Index failure rolls the file back and repairs the path's
+index state. Standalone `MdocNode::save_new()` remains available outside this
+production indexed-creation path.
 
 `CHUNK_SIZE = 500` is used for SQL `IN (...)` chunks and bulk inserts to stay
 under SQLite variable limits.
@@ -116,34 +123,39 @@ under SQLite variable limits.
 
 | Table | Key columns | Purpose |
 | --- | --- | --- |
-| `mdoc_dirs` | `path`, `mtime_ns` | Directory mtime cache for cheap add/delete/rename detection |
-| `mdoc_files` | `path`, `mtime_sec`, `mtime_ns`, `size` | File-state cache for change detection and stale-path cleanup |
-| `mdocs` | `path`, `fnode`, `title`, `title_lc`, `mtime_sec`, `mtime_ns`, `size`, `topo_depth` | Searchable node cache, reference resolution, persisted topo depth |
+| `mdoc_files` | `path`, `mtime_ns`, `size` | File-state cache for change detection and stale-path cleanup |
+| `mdocs` | `path`, `fnode`, `title`, `title_lc`, `topo_depth` | Searchable node cache, reference resolution, persisted topo depth |
 | `mdoc_edges` | `src_path`, `src_fnode`, `dst_fnode`, `ord` | Dependency edges in source order |
 | `mdoc_issues` | `path`, `kind`, `ref_fnode`, `error` | Structural problems: `invalid`, `duplicate`, `missing` |
 | `mdoc_in_degree` | `fnode`, `in_degree` | Precomputed in-degree for root detection |
-| `mdoc_weak_component` | `fnode`, `component_id`, `component_size` | Weak connected components with stable representative and size |
-| `mdoc_index_state` | `graph_epoch`, `weak_component_dirty`, `bootstrapped`, `topo_depth_backfilled` | Epoch, dirty flags, bootstrap and migration state |
+| `mdoc_weak_component` | `fnode`, `component_size` | Weak connected-component size for each node |
+| `mdoc_index_state` | `graph_epoch`, `weak_component_dirty`, `bootstrapped` | Epoch, weak-component dirty state, and bootstrap state |
 | `mdoc_scc_result` | `graph_epoch`, `cycles_json` | Cached SCC/cycle result, invalidated by epoch change |
+
+`mdoc_valid_edges` is the schema-owned view used by graph reads and derived-data
+refreshes. It contains `mdoc_edges` rows whose source path has no `invalid` or
+`duplicate` issue. A `missing` target issue does not suppress the source edge.
+The source and destination indexes on `mdoc_edges`, plus the path-leading primary
+key on `mdoc_issues`, support the view predicates.
+
+`IndCache::search(query, limit)` is the canonical ranked search and returns
+`NodeSummary` values. Dependency-candidate search reuses its match patterns,
+ranking, and summary projection before applying dependency-specific filters.
+`all_node_summaries()` is the unbounded non-search query used by the full graph API.
 
 ## Cache Refresh Model
 
 There are two broad refresh paths.
 
-`discover_workspace_changes()` is the fast path used by most commands. It compares
-cached directory `mtime_ns` values with filesystem directory mtimes. Unchanged
-directories are not re-statted file-by-file; changed directories are scanned for
-added, updated, deleted, and moved `.mdoc` files. Add/update operations trigger
-incremental topo-depth refreshes. Any deletion triggers full topo-depth backfill,
-because ancestor depths may decrease and there may be no single safe starting
-node.
+`discover_workspace_changes()` is the fast path used by most commands. It enumerates
+workspace `.mdoc` files and compares cached `(mtime_ns, size)` metadata. Add/update
+operations trigger incremental topo-depth refreshes. Any deletion triggers full
+topo-depth backfill because ancestor depths may decrease and there may be no single
+safe starting node. Same-metadata edits are intentionally deferred to strong refresh
+paths such as `mdc sync` and `mdc graph check`.
 
 `refresh_all()` is the full rescan path used by `mdc sync`. It walks the whole
 workspace, stats every `.mdoc`, reconciles stale paths, and rebuilds derived data.
-
-`refresh_workspace_index()` sits between those two. It discovers new/deleted files
-and also re-stats all already-indexed paths. `mdc graph check` uses it so graph
-validation is based on actual file content, not only directory discovery.
 
 ### Derived Data
 
@@ -154,17 +166,17 @@ validation is based on actual file content, not only directory discovery.
 walk. This keeps TUI and root-list displays cheap.
 
 Bulk paths call `refresh_all_derived_data()`, which loads the graph once, runs
-Kahn-style topo-depth computation, recomputes weak components with BFS, and
+the core Kahn-style topo-depth algorithm, recomputes weak components with BFS, and
 persists both results.
 
 Incremental paths call `refresh_topo_depth_upward_from(fnode)`. It recomputes the
-changed node, compares old and new `topo_depth`, and only if the value changed
-walks reverse edges to nodes that depend on it. The propagation stops at any
-ancestor whose depth remains unchanged.
+changed node and all reverse-reachable ancestors in dependency-first order. If
+the affected subgraph contains a cycle and therefore cannot be ordered, it falls
+back to a full topo-depth backfill.
 
 When one node's `@dep` list changes and its `@fnode` stays the same, the update is
 therefore targeted, not full-graph: rewrite that node's edges, recompute its
-`topo_depth`, then propagate upward through referrers only as needed.
+`topo_depth`, then propagate upward through its referrers.
 
 `weak_component_dirty` belongs to weak connected components, not topo depth. A
 graph change calls `bump_graph_epoch()`, which increments `graph_epoch` and sets
@@ -172,40 +184,30 @@ graph change calls `bump_graph_epoch()`, which increments `graph_epoch` and sets
 recomputes weak components before reading. If clear, it reads `topo_depth` and
 `component_size` directly with a JOIN.
 
-`upsert_path()` additionally attempts an incremental weak-component update for a
-single-file upsert. Edge additions are handled with component union. Edge removals
-run a split check within the old component. Fnode changes and deletions fall back
-to full weak-component recompute.
-
 `mdoc_scc_result` is invalidated by `graph_epoch`. `graph_check_report()` reuses
 cached cycles when the stored epoch matches the current epoch; otherwise it
 recomputes SCCs and representative cycles.
-
-`topo_depth_backfilled` is a migration recovery flag. `open_db()` returns whether
-`topo_depth` needs a backfill. `IndCache::open` backfills and sets the flag in one
-transaction before serving reads, so a crash between migration and backfill is
-recovered on the next open.
 
 ### Per-Command Cache Behavior
 
 | Command | Discovery | Content refresh | Notes |
 | --- | --- | --- | --- |
-| `mdc init` | none | none | Creates `.mdc/` and config files; does not touch the index |
+| `mdc init` | none | none | `workspace::initialize()` creates `.mdc/` and the template from `config`; does not touch the index |
 | `mdc new` | none | `upsert_path()` on created file | New file is indexed immediately |
 | `mdc edit` | `discover_workspace_changes()` | `upsert_path()` after editor exits | Opens `$EDITOR` |
-| `mdc sync` | none | `refresh_all()` | Intentional full-rescan escape hatch |
+| `mdc sync` | none | `refresh_all()` | Full rescan, then mirrors all five source types under `.mdc/<srctype>/Lib/<relative-path>.<ext>` |
 | `mdc search` | `discover_workspace_changes()` | none | Reads `mdocs`; does not re-stat unchanged known files |
 | `mdc dep add` | through `DepGraph::from_ref` | inside `add_direct_dependencies()` or `create_and_add_dependency()` | `--target` refreshes and uniquely resolves one target before cycle checking |
 | `mdc dep rm` | through `DepGraph::from_ref` | inside `remove_direct_dependencies()` | `--target` also resolves prefixes of dangling direct dependencies |
 | `mdc dep show` | `discover_workspace_changes()` | `refresh_reachable_from_path()` on source | Targeted reachable refresh; exits `1` if cycles are reported |
 | `mdc dep leaf` | `discover_workspace_changes()` | `refresh_reachable_from_path()` on source | Targeted reachable refresh; exits `1` if cycles are reported |
 | `mdc dep refs` | `discover_workspace_changes()` | `upsert_path()` on target | Target refreshed before reverse-edge query |
-| `mdc graph check` | `refresh_workspace_index()` | Re-stats all indexed paths | Reports missing, invalid, duplicate, and cycle issues |
+| `mdc graph check` | none | `refresh_all()` | Reports missing, invalid, duplicate, and cycle issues from a strong full refresh |
 | `mdc graph roots` | `discover_workspace_changes()` | none | Reads persisted `topo_depth`; graph load only if weak components are dirty |
-| `mdc graph tui` | `discover_workspace_changes()` | DepGraph mutation APIs plus post-op discovery | TUI add/rm/create delegate to DepGraph |
-| `mdc work` | `discover_workspace_changes()` | `upsert_path()` on source and `refresh_reachable_from_path()` | Skips work files with unsaved edits |
-| `mdc back` | `discover_workspace_changes()` before write | none after write | Writes `.mdoc` files; cache metadata may remain stale until targeted refresh or `mdc sync` |
-| `mdc serve` | `discover_workspace_changes()` on every read handler | `upsert_path()` after every write handler | A process-wide mutation mutex serializes each complete resolve/load/mutate/save/reindex operation; dep writes route through `DepGraph` while holding it. |
+| `mdc graph tui` | `discover_workspace_changes()` | DepGraph mutation APIs plus post-op discovery | TUI add/rm/create delegate to DepGraph; start refs also accept a unique exact title |
+| `mdc work` | `discover_workspace_changes()` | `workdraft::sync()` before compiling the selected mirrors | Dirty mirrors are compiled without being overwritten |
+| `mdc back` | `discover_workspace_changes()` before write | `refresh_all()` when mdocs changed | Imports dirty mirrors and refreshes the index |
+| `mdc serve` | `discover_workspace_changes()` on read handlers | guarded cache replacement after direct node edits | A process-wide mutation mutex serializes each complete resolve/load/mutate/save/reindex operation; column navigation gets detail, referrers, and children from one cache lock; dep writes route through `DepGraph`; start refs also accept a unique exact title. |
 
 ### File Change Detection
 
@@ -214,7 +216,7 @@ DepGraph mutation that calls it. `mdc new`, `mdc edit`, `mdc dep add`, and
 `mdc dep rm` follow this rule.
 
 External adds, deletes, and renames are detected by `discover_workspace_changes()`
-through directory mtime tracking.
+through workspace enumeration and file metadata.
 
 External content edits to already-known files are not guaranteed to change a
 directory mtime. Commands that need fresh dependency content use
@@ -222,30 +224,36 @@ directory mtime. Commands that need fresh dependency content use
 only need search/display data, such as `mdc search` and `mdc graph roots`, avoid
 file-by-file re-stat work for latency.
 
-Timestamp state is stored as `mtime_sec` and `mtime_ns`, where `mtime_ns` is
+After refreshing the index, `mdc sync` parses every valid workspace `.mdoc` and
+exports exactly five source mirrors under `.mdc/<srctype>/Lib/`, preserving the
+source's relative directory structure. Missing blocks become empty files.
+`.mdc/source-blocks.json` tracks which source paths were generated so deleted or
+renamed sources can be cleaned without touching unrelated files. It also records
+the content digest and block-presence baseline for every source/srctype pair.
+`mdc sync` updates a mirror only when it still matches that baseline; `mdc back`
+performs the inverse check before updating mdoc. Independent changes on both
+sides are preserved and reported. Invalid documents retain their previous
+files.
+
+File state is stored as `mtime_ns` and `size`, where `mtime_ns` is
 `secs * 1_000_000_000 + subsec_nanos`.
 
 ## DepGraph
 
-`DepGraph` is the primary API for mutating one document's dependency tree. It owns
-an `IndCache` plus `GraphState`, which stores loaded `MdocNode`s and an in-memory
-`HashMap<fnode, Vec<fnode>>` dependency graph.
+`DepGraph` is the primary API for mutating one document's dependency list. It owns
+one root `MdocNode` and borrows an `IndCache`; traversal and reachability stay in the
+SQLite-backed index rather than a second in-memory graph.
 
 Important constructors and operations:
 
-- `DepGraph::new(root, fnode)` opens the cache, bootstraps it, and loads a root.
 - `DepGraph::from_ref(cache, ref_str, cwd)` resolves a path/fnode/prefix, indexes
   the resolved file before duplicate checks, and loads the root node.
 - `DepGraph::create_root(...)` creates a new `.mdoc`, indexes it, and returns a
   graph rooted at the new node.
-- `DepGraph::scan_all()` loads every workspace `.mdoc` into memory for full-graph
-  checks.
 - `add_direct_dependencies()` and `create_and_add_dependency()` reject cycles by
   checking whether the candidate dependency can already reach the root in the
   indexed graph.
 - `remove_direct_dependencies()` saves the root node and reindexes it.
-- `ordered_nodes(depth)` expands the root subgraph, checks for cycles, and returns
-  dependency-first order using `topo_dependencies_first()`.
 
 Direct file edits can still create cycles. `mdc graph check` is the authoritative
 reporting path for cycles introduced outside the mutation API.
@@ -262,19 +270,17 @@ via the View Transitions API with a synchronous fallback.
 
 ### Architecture
 
-- `src/web/mod.rs` defines `AppState`, a `Clone` struct holding the
-  workspace root and an `Arc<Mutex<IndCache>>`. Every handler locks the
-  cache for the duration of its synchronous work; no handler holds the
-  lock across `.await`.
-- `src/web/api.rs` contains the handlers. Read handlers
-  (`graph_roots`, `graph_check`, `search`, `resolve_ref`, `node_detail`,
-  `node_referrers`, `node_children`) call `discover_workspace_changes`
-  then a single cache query. Write handlers
-  (`node_put_block`, `node_delete_block`, `node_put_title`,
-  `node_add_dep`, `node_rm_deps`, `node_new`) load the `MdocNode`,
-  mutate it, call `node.save()`, then `upsert_path` +
-  `discover_workspace_changes` so the index and derived data stay
-  consistent.
+- `src/web/mod.rs` defines `AppState`, a `Clone` struct holding an
+  `Arc<Mutex<IndCache>>` and a separate process-wide mutation mutex. Every
+  handler locks the cache for the duration of its synchronous work; no handler
+  holds the lock across `.await`.
+- `src/web/api.rs` contains the handlers. `node_view` performs one discovery and
+  reference resolution while holding one cache lock, then returns the focused
+  `NodeDetail`, direct referrers, and direct dependencies together. The separate
+  detail and children reads remain for editor/force-graph refresh and dependency
+  removal. `node_put_block`, `node_delete_block`, and `node_put_title` share one
+  local resolve/snapshot/identity-check/mutate/replace/detail transaction helper;
+  dependency writes continue through `DepGraph`.
 - `src/web/server.rs` builds the router, binds a free port (or a
   caller-supplied `--bind` address), opens the browser, and handles
   graceful shutdown on SIGINT/SIGTERM.
@@ -283,6 +289,7 @@ via the View Transitions API with a synchronous fallback.
   directly so Vite HMR works.
 - `web/` is a standalone Vite + Svelte 5 + TypeScript project.
   `web/src/lib/state.svelte.ts` holds navigation state in runes;
+  column navigation uses one `nodeView` API request;
   `web/src/components/BlockEditor.svelte` wraps a CodeMirror 6 editor
   per source block.
 
@@ -291,11 +298,13 @@ via the View Transitions API with a synchronous fallback.
 ```
 GET  /api/graph/roots
 GET  /api/graph/check
+GET  /api/graph/full
 GET  /api/search?q=&n=
 GET  /api/resolve?ref=
 GET  /api/node/:fnode
-GET  /api/node/:fnode/referrers
+GET  /api/node/:fnode/view
 GET  /api/node/:fnode/children
+GET  /api/node/:fnode/dep/candidates?q=&n=
 PUT  /api/node/:fnode/title                 { title }
 PUT  /api/node/:fnode/block/:srctype        { content }   # create-or-replace
 DELETE /api/node/:fnode/block/:srctype
@@ -312,11 +321,12 @@ SPA can refresh without a second round-trip.
 ### Concurrency Model
 
 `IndCache` owns a single SQLite connection. The web server wraps it in
-`Arc<Mutex<IndCache>>`, so handlers serialize on the mutex. This is
-fine for a single-user local tool. SQLite's WAL mode means a concurrent
-`DepGraph::new` (which opens its own connection for cycle checks in
-`node_add_dep` / `node_new`) can read without blocking the shared
-write connection.
+`Arc<Mutex<IndCache>>`, so cache operations serialize on that mutex. Dependency
+handlers construct `DepGraph` by borrowing the same cache. The separate mutation
+mutex serializes each complete write operation, while the workspace mutation lock
+coordinates writes with other mdc processes. The direct title/block helper holds
+both boundaries across resolve, source snapshot/parse, fnode recheck, mutation,
+conflict-aware replacement, index update, and committed response construction.
 
 ### Frontend Build
 
@@ -329,20 +339,27 @@ second terminal — see the Commands section above.
 
 ## Work/Back and Compilers
 
-`mdc work` builds one work file per srctype present in the dependency subgraph.
-Files are written under `.mdc/<srctype>/MdcWork.<ext>`, with `.MdcWork.hash` as a
-sidecar for unsaved-edit detection.
+`mdc work <source>` first reconciles mdoc blocks into the stable `Lib/` trees and then
+always compiles the selected node's present source types. It has no depth or
+compile mode and does not traverse the mdoc dependency graph. Language imports or
+includes in mirrored files define compiler dependencies.
 
-`depens` controls whether ancestor blocks of the same srctype are included.
-`reverse_depens` controls order: `true` puts the root first, `false` puts deepest
-dependencies first and the root last.
+`mdc back` performs the inverse mirror-to-mdoc reconciliation. The manifest baseline
+prevents either direction from overwriting independently modified content. Mirror
+deletion removes a block; empty placeholders distinguish the normal
+five-file layout using the stored block-presence bit.
 
-Preamble and postamble live in `.mdc/<srctype>/preamble.<ext>` and
-`.mdc/<srctype>/postamble.<ext>`. Only LaTeX has non-empty built-in defaults.
-
-`mdc back` parses `MdcWork` marker sections, refuses to sync structurally suspect
-files, treats `title:` marker lines as read-only, writes changed node block content
-back to `.mdoc` files, and updates hashes only on clean sync.
+Lean source files live under `.mdc/lean/Lib/` using the standard
+`lake init Lib lib` library layout. `lakefile.toml` owns declarative dependencies
+and retains its `[[lean_lib]] name = "Lib"` declaration. Before a build, mdc
+writes a single absolute import for the selected module to `Lib.lean`, then runs
+`lake build +Lib`. Lake follows the module's imports and reuses `.lake/build`
+artifacts; mdc never cleans `.olean` files.
+For LaTeX, mdc writes the selected mirror as an input in `Lib.tex` and compiles
+the user-editable `Main.tex` directly inside `.mdc/latex/`, without a separate
+build tree; the default `Main.tex` is created only when absent.
+Python executes the selected mirror directly. Rocq `.vo` files live in a parallel
+`build/` tree rather than beside editable mirrors.
 
 `SrcCompiler` has two required methods: `srctype()` and `compile(req)`. The default
 registry includes `text`, `python`, `latex`, `lean`, and `rocq`. Compilers are
@@ -363,6 +380,10 @@ merged with built-in defaults from `default_for_srctype()`.
 
 Path-like refs are resolved against the current working directory and the
 workspace root. Files under nested `.mdc/` roots are rejected.
+
+`IndCache::resolve_start_ref(raw_ref, cwd)` adds a unique, case-insensitive exact
+title fallback. `mdc serve [source]` and `mdc graph tui [source]` share this start
+resolver; other command references retain the path/fnode/prefix contract.
 
 `resolve_edit_target_path()` is the path-returning variant used by edit/refresh
 commands. It can resolve existing files even if they are not yet indexed.

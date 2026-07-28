@@ -70,8 +70,8 @@ fn test_refresh_all_skips_nested_workspace_files() {
     let mut cache = IndCache::open(parent).unwrap();
     cache.refresh_all().unwrap();
 
-    assert_eq!(cache.search("Parent Card").unwrap().len(), 1);
-    assert_eq!(cache.search("Child Card").unwrap().len(), 0);
+    assert_eq!(cache.search("Parent Card", usize::MAX).unwrap().len(), 1);
+    assert_eq!(cache.search("Child Card", usize::MAX).unwrap().len(), 0);
 }
 
 #[cfg(unix)]
@@ -109,14 +109,49 @@ fn test_refresh_all_detects_subnanosecond_mtime_change() {
 
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     cache.refresh_all().unwrap();
-    assert_eq!(cache.search("OLD0").unwrap().len(), 1);
+    assert_eq!(cache.search("OLD0", usize::MAX).unwrap().len(), 1);
 
     // Overwrite the file with different content
     write(&file_path, "@fnode: node-ns\n@title: NEW0\n");
 
     cache.refresh_all().unwrap();
-    assert_eq!(cache.search("NEW0").unwrap().len(), 1);
-    assert_eq!(cache.search("OLD0").unwrap().len(), 0);
+    assert_eq!(cache.search("NEW0", usize::MAX).unwrap().len(), 1);
+    assert_eq!(cache.search("OLD0", usize::MAX).unwrap().len(), 0);
+}
+
+#[test]
+fn malformed_block_fallback_ignores_embedded_fake_headers() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    write(
+        &root.join("malformed-src.mdoc"),
+        "@fnode: real-node\n@title: Real Node\n\n@src: \"unterminated\n@fnode: fake-src\n@title: Fake Src\n",
+    );
+    write(
+        &root.join("malformed-dep.mdoc"),
+        "@dep:\nnot a dependency\n@fnode: fake-dep\n@title: Fake Dep\n@end\n",
+    );
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    cache.refresh_all().unwrap();
+
+    assert_eq!(cache.exact_fnode_rows("real-node").unwrap().len(), 1);
+    assert!(cache.path_has_blocking_issue("malformed-src.mdoc").unwrap());
+    assert!(cache.exact_fnode_rows("fake-src").unwrap().is_empty());
+    assert!(cache.exact_fnode_rows("fake-dep").unwrap().is_empty());
+    assert!(cache.search("Fake Src", usize::MAX).unwrap().is_empty());
+    assert!(cache.search("Fake Dep", usize::MAX).unwrap().is_empty());
+
+    let report = cache.graph_check_report().unwrap();
+    assert!(report
+        .invalid
+        .iter()
+        .any(|issue| issue.fnode == "real-node"));
+    assert!(report
+        .invalid
+        .iter()
+        .any(|issue| issue.fnode == "<unknown>"));
 }
 
 #[cfg(unix)]
@@ -142,7 +177,7 @@ fn test_discovery_finds_new_file_when_directory_mtime_is_restored() {
     );
 
     cache.discover_workspace_changes().unwrap();
-    assert_eq!(cache.search("New Node").unwrap().len(), 1);
+    assert_eq!(cache.search("New Node", usize::MAX).unwrap().len(), 1);
 }
 
 fn rewrite_preserving_mtime_and_size(path: &Path, content: &str, atomic: bool) {
@@ -192,8 +227,8 @@ fn setup_preserved_metadata_change() -> (tempfile::TempDir, IndCache, std::path:
 }
 
 fn assert_preserved_metadata_change_detected(cache: &mut IndCache) {
-    assert!(cache.search("Title Old").unwrap().is_empty());
-    assert_eq!(cache.search("Title New").unwrap().len(), 1);
+    assert!(cache.search("Title Old", usize::MAX).unwrap().is_empty());
+    assert_eq!(cache.search("Title New", usize::MAX).unwrap().len(), 1);
     assert!(cache.exact_fnode_rows("root-old").unwrap().is_empty());
     assert_eq!(cache.exact_fnode_rows("root-new").unwrap().len(), 1);
     let edges: std::collections::HashSet<_> =
@@ -204,8 +239,8 @@ fn assert_preserved_metadata_change_detected(cache: &mut IndCache) {
 }
 
 fn assert_preserved_metadata_change_deferred(cache: &IndCache) {
-    assert_eq!(cache.search("Title Old").unwrap().len(), 1);
-    assert!(cache.search("Title New").unwrap().is_empty());
+    assert_eq!(cache.search("Title Old", usize::MAX).unwrap().len(), 1);
+    assert!(cache.search("Title New", usize::MAX).unwrap().is_empty());
     assert_eq!(cache.exact_fnode_rows("root-old").unwrap().len(), 1);
     assert!(cache.exact_fnode_rows("root-new").unwrap().is_empty());
 }
@@ -302,9 +337,9 @@ fn test_legacy_schema_is_rebuilt() {
 
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
 
-    let rows = cache.search("Legacy Title").unwrap();
+    let rows = cache.search("Legacy Title", usize::MAX).unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].0, "legacy-node");
+    assert_eq!(rows[0].fnode, "legacy-node");
 
     write(
         &root.join("legacy-copy.mdoc"),
@@ -378,11 +413,11 @@ fn test_search_and_resolve_surface_duplicate_fnodes() {
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     cache.refresh_all().unwrap();
 
-    let results = cache.search("dup-node").unwrap();
+    let results = cache.search("dup-node", usize::MAX).unwrap();
     assert_eq!(results.len(), 2);
-    assert!(results.iter().all(|(f, _, _)| f == "dup-node"));
+    assert!(results.iter().all(|node| node.fnode == "dup-node"));
     let titles: std::collections::HashSet<&str> =
-        results.iter().map(|(_, t, _)| t.as_str()).collect();
+        results.iter().map(|node| node.title.as_str()).collect();
     assert!(titles.contains("Dup A"));
     assert!(titles.contains("Dup B"));
 
@@ -416,12 +451,160 @@ fn test_search_treats_like_metacharacters_literally() {
 
     let cache = IndCache::open(root.to_path_buf()).unwrap();
 
-    assert_eq!(cache.search("%").unwrap()[0].0, "percent-node");
-    assert_eq!(cache.search("%").unwrap().len(), 1);
-    assert_eq!(cache.search("_").unwrap()[0].0, "underscore-node");
-    assert_eq!(cache.search("_").unwrap().len(), 1);
-    assert_eq!(cache.search("\\").unwrap()[0].0, "slash-node");
-    assert_eq!(cache.search("\\").unwrap().len(), 1);
+    assert_eq!(
+        cache.search("%", usize::MAX).unwrap()[0].fnode,
+        "percent-node"
+    );
+    assert_eq!(cache.search("%", usize::MAX).unwrap().len(), 1);
+    assert_eq!(
+        cache.search("_", usize::MAX).unwrap()[0].fnode,
+        "underscore-node"
+    );
+    assert_eq!(cache.search("_", usize::MAX).unwrap().len(), 1);
+    assert_eq!(
+        cache.search("\\", usize::MAX).unwrap()[0].fnode,
+        "slash-node"
+    );
+    assert_eq!(cache.search("\\", usize::MAX).unwrap().len(), 1);
+}
+
+#[test]
+fn search_returns_ranked_summaries_and_all_nodes_are_unbounded() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    write(
+        &root.join("a-fnode-match.mdoc"),
+        "@fnode: needle-node\n@title: Zeta\n",
+    );
+    write(
+        &root.join("b-title-match.mdoc"),
+        "@fnode: other-node\n@title: Needle\n",
+    );
+    write(
+        &root.join("c-invalid.mdoc"),
+        "@fnode: invalid-node\n@title: Invalid\n@unknown: value\n",
+    );
+
+    let cache = IndCache::open(root.to_path_buf()).unwrap();
+
+    let results = cache.search("needle", 1).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].fnode, "needle-node");
+    assert_eq!(results[0].rel_path, "a-fnode-match.mdoc");
+    assert!(!results[0].broken);
+
+    let all = cache.all_node_summaries().unwrap();
+    assert_eq!(all.len(), 3);
+    assert_eq!(
+        all.iter()
+            .map(|node| node.rel_path.as_str())
+            .collect::<Vec<_>>(),
+        ["a-fnode-match.mdoc", "b-title-match.mdoc", "c-invalid.mdoc"]
+    );
+    assert!(
+        all.iter()
+            .find(|node| node.fnode == "invalid-node")
+            .unwrap()
+            .broken
+    );
+}
+
+#[test]
+fn dependency_candidates_filter_before_limit_and_report_raw_matches() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+
+    let mut dependency_body =
+        String::from("@fnode: source-node\n@title: Candidate Source\n\n@dep:\n");
+    for index in 0..25 {
+        let fnode = format!("excluded-{index:02}");
+        write(
+            &root.join(format!("excluded-{index:02}.mdoc")),
+            &format!("@fnode: {fnode}\n@title: Candidate {index:02}\n"),
+        );
+        dependency_body.push_str(&fnode);
+        dependency_body.push('\n');
+    }
+    dependency_body.push_str("@end\n");
+    write(&root.join("source.mdoc"), &dependency_body);
+
+    write(
+        &root.join("invalid.mdoc"),
+        "@fnode: invalid-node\n@title: Candidate 25\n@title: Duplicate Title\n",
+    );
+    write(
+        &root.join("duplicate-a.mdoc"),
+        "@fnode: duplicate-node\n@title: Candidate 26\n",
+    );
+    write(
+        &root.join("duplicate-b.mdoc"),
+        "@fnode: duplicate-node\n@title: Candidate 27\n",
+    );
+    write(
+        &root.join("valid.mdoc"),
+        "@fnode: valid-node\n@title: Candidate Valid\n",
+    );
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    cache.refresh_all().unwrap();
+
+    let report = cache
+        .dependency_candidates("source-node", "Candidate", 1)
+        .unwrap();
+    assert!(report.raw_had_matches);
+    assert_eq!(report.nodes.len(), 1);
+    assert_eq!(report.nodes[0].fnode, "valid-node");
+    assert!(!report.nodes[0].broken);
+
+    let excluded = cache
+        .dependency_candidates("source-node", "Candidate 00", 1)
+        .unwrap();
+    assert!(excluded.raw_had_matches);
+    assert!(excluded.nodes.is_empty());
+
+    let absent = cache
+        .dependency_candidates("source-node", "No Such Candidate", 1)
+        .unwrap();
+    assert!(!absent.raw_had_matches);
+    assert!(absent.nodes.is_empty());
+}
+
+#[test]
+fn single_reference_lookups_ignore_unrelated_corrupt_rows() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    write(
+        &root.join("target.mdoc"),
+        "@fnode: target-node\n@title: Target\n",
+    );
+    write(
+        &root.join("source.mdoc"),
+        "@fnode: source-node\n@title: Source\n\n@dep:\nmissing-node\n@end\n",
+    );
+
+    let cache = IndCache::open(root.to_path_buf()).unwrap();
+    let conn = rusqlite::Connection::open(cache.db_path()).unwrap();
+    conn.execute_batch(
+        "INSERT INTO mdocs (path, fnode, title, title_lc, topo_depth)
+             VALUES ('corrupt.mdoc', 'corrupt-node', X'00', 'corrupt', 0);
+         INSERT INTO mdoc_issues (path, kind, ref_fnode, error)
+             VALUES ('unrelated.mdoc', 'invalid', 'unrelated-node', X'00');",
+    )
+    .unwrap();
+    drop(conn);
+
+    let issue = cache.issue_for_fnode("missing-node").unwrap().unwrap();
+    assert_eq!(issue.kind, mathdoc::core::IssueKind::Missing);
+    assert_eq!(issue.fnode, "missing-node");
+
+    let target = cache.ref_item_for_fnode("target-node", 7).unwrap();
+    assert_eq!(target.title, "Target");
+    assert_eq!(target.depth, 7);
+    let missing = cache.ref_item_for_fnode("missing-node", 1).unwrap();
+    assert_eq!(missing.title, "<missing>");
 }
 
 #[test]
@@ -519,29 +702,6 @@ fn test_duplicate_lookup_deletes_cached_parent_symlink_without_reading_target() 
         fs::read_to_string(target).unwrap(),
         "@fnode: cached-node\n@title: External Target\n"
     );
-}
-
-#[test]
-fn test_knows_fnode_tracks_valid_and_issue_entries() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let root = dir.path();
-    setup(root);
-    write(&root.join("ok.mdoc"), "@fnode: ok-node\n@title: OK Node\n");
-    write(
-        &root.join("dup-a.mdoc"),
-        "@fnode: dup-node\n@title: Dup Node\n",
-    );
-    write(
-        &root.join("dup-b.mdoc"),
-        "@fnode: dup-node\n@title: Dup Node\n",
-    );
-
-    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
-    cache.refresh_all().unwrap();
-
-    assert!(cache.knows_fnode("ok-node").unwrap());
-    assert!(cache.knows_fnode("dup-node").unwrap());
-    assert!(!cache.knows_fnode("missing-node").unwrap());
 }
 
 // ── graph queries ─────────────────────────────────────────────────────────────
@@ -706,14 +866,20 @@ fn test_discover_workspace_changes_finds_in_place_content_edit() {
 
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     cache.refresh_all().unwrap();
-    assert_eq!(cache.search("Before Edit").unwrap().len(), 1);
+    assert_eq!(cache.search("Before Edit", usize::MAX).unwrap().len(), 1);
 
     // Replacing file contents does not normally change the parent directory mtime.
     write(&path, "@fnode: edited-node\n@title: After External Edit\n");
     cache.discover_workspace_changes().unwrap();
 
-    assert!(cache.search("Before Edit").unwrap().is_empty());
-    assert_eq!(cache.search("After External Edit").unwrap().len(), 1);
+    assert!(cache.search("Before Edit", usize::MAX).unwrap().is_empty());
+    assert_eq!(
+        cache
+            .search("After External Edit", usize::MAX)
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -887,7 +1053,7 @@ fn test_incremental_topo_depth_converges_across_short_and_long_paths() {
 }
 
 #[test]
-fn test_incremental_component_union_updates_every_member_size() {
+fn test_lazy_component_rebuild_updates_every_member_size() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     setup(root);
@@ -916,24 +1082,35 @@ fn test_incremental_component_union_updates_every_member_size() {
         .all_valid_edges()
         .unwrap()
         .contains(&("a-node".to_string(), "c-node".to_string())));
+    cache.global_root_items().unwrap();
 
     let conn = rusqlite::Connection::open(cache.db_path()).unwrap();
-    let rows: Vec<(String, String, u32)> = conn
+    let rows: Vec<(String, u32)> = conn
         .prepare(
-            "SELECT fnode, component_id, component_size
+            "SELECT fnode, component_size
              FROM mdoc_weak_component ORDER BY fnode",
         )
         .unwrap()
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
     assert_eq!(rows.len(), 4);
     assert!(
-        rows.iter()
-            .all(|(_, component_id, size)| component_id == "a-node" && *size == 4),
+        rows.iter().all(|(_, size)| *size == 4),
         "unexpected component rows: {rows:?}"
     );
+    let has_component_id: bool = conn
+        .query_row(
+            "SELECT EXISTS (
+                 SELECT 1 FROM pragma_table_info('mdoc_weak_component')
+                 WHERE name = 'component_id'
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!has_component_id);
 }
 
 #[test]
@@ -1225,6 +1402,96 @@ fn test_graph_check_report_invalidates_scc_cache_on_fnode_rename() {
         0,
         "SCC cache must be invalidated after fnode rename"
     );
+}
+
+#[test]
+fn blocking_claimant_transition_refreshes_graph_caches_and_invalid_deletion_epoch() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    let claimant_b = root.join("claimant-b.mdoc");
+    write(
+        &root.join("claimant-a.mdoc"),
+        "@fnode: shared-node\n@title: Claimant A\n\n@dep:\ncycle-node\nleaf-node\n@end\n",
+    );
+    write(&claimant_b, "@fnode: shared-node\n@title: Claimant B\n");
+    write(
+        &root.join("cycle.mdoc"),
+        "@fnode: cycle-node\n@title: Cycle\n\n@dep:\nshared-node\n@end\n",
+    );
+    write(
+        &root.join("root.mdoc"),
+        "@fnode: root-node\n@title: Root\n\n@dep:\nshared-node\n@end\n",
+    );
+    write(&root.join("leaf.mdoc"), "@fnode: leaf-node\n@title: Leaf\n");
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    cache.refresh_all().unwrap();
+
+    assert!(cache.graph_check_report().unwrap().cycles.is_empty());
+    let initial_roots = cache.global_root_items().unwrap();
+    assert_eq!(
+        initial_roots
+            .iter()
+            .find(|item| item.fnode == "root-node")
+            .unwrap()
+            .component_size,
+        3
+    );
+    assert_eq!(
+        initial_roots
+            .iter()
+            .find(|item| item.fnode == "leaf-node")
+            .unwrap()
+            .component_size,
+        1
+    );
+
+    // The fallback identity keeps the same fnode but loses its title. Claimant A
+    // becomes valid, activating its stored edges without either claimant B's
+    // identity token or edge set changing.
+    write(&claimant_b, "@fnode: shared-node\n");
+    cache.upsert_path(&claimant_b).unwrap();
+
+    let report = cache.graph_check_report().unwrap();
+    assert_eq!(report.cycles.len(), 1, "stale SCC cache: {report:?}");
+    let refreshed_roots = cache.global_root_items().unwrap();
+    assert_eq!(
+        refreshed_roots
+            .iter()
+            .find(|item| item.fnode == "root-node")
+            .unwrap()
+            .component_size,
+        4
+    );
+    assert!(refreshed_roots.iter().all(|item| item.fnode != "leaf-node"));
+    assert_eq!(
+        cache.exact_fnode_rows("shared-node").unwrap().len(),
+        1,
+        "the malformed claimant must have no mdocs identity"
+    );
+
+    let epoch_before_delete: i64 = rusqlite::Connection::open(cache.db_path())
+        .unwrap()
+        .query_row(
+            "SELECT graph_epoch FROM mdoc_index_state WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    fs::remove_file(&claimant_b).unwrap();
+    cache.discover_workspace_changes().unwrap();
+
+    let conn = rusqlite::Connection::open(cache.db_path()).unwrap();
+    let (epoch_after_delete, component_dirty): (i64, bool) = conn
+        .query_row(
+            "SELECT graph_epoch, weak_component_dirty FROM mdoc_index_state WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert!(epoch_after_delete > epoch_before_delete);
+    assert!(component_dirty);
 }
 
 #[test]

@@ -11,7 +11,27 @@ pub struct SrcBlock {
     pub metadata: HashMap<String, String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MdocHead {
+    pub fnode: String,
+    pub title: String,
+    pub depens: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct MdocIdentity {
+    pub fnode: Option<String>,
+    pub title: Option<String>,
+}
+
+struct ParsedMdoc {
+    fnode: String,
+    title: String,
+    depens: Vec<String>,
+    blocks: Vec<SrcBlock>,
+}
+
+#[derive(Debug)]
 pub struct MdocNode {
     pub mdcroot: PathBuf,
     pub path: PathBuf,
@@ -19,8 +39,91 @@ pub struct MdocNode {
     pub title: String,
     pub depens: Vec<String>,
     pub blocks: Vec<SrcBlock>,
-    #[serde(skip, default)]
     original: std::sync::Mutex<Option<crate::workspace::FileSnapshot>>,
+}
+
+impl MdocHead {
+    /// Strictly parse the structural fields of an existing .mdoc file.
+    pub fn load(path: &Path) -> Result<Self> {
+        let snapshot = crate::workspace::FileSnapshot::capture(path)?;
+        let content = snapshot
+            .content()
+            .ok_or_else(|| anyhow::anyhow!("node file does not exist: {}", path.display()))?;
+        Self::load_bytes(path, content)
+    }
+
+    pub(crate) fn load_bytes(path: &Path, content: &[u8]) -> Result<Self> {
+        let content = std::str::from_utf8(content)
+            .with_context(|| format!("reading {} as UTF-8", path.display()))?;
+        let parsed = MdocNode::parse_content(path, content, false)?;
+        Ok(Self {
+            fnode: parsed.fnode,
+            title: parsed.title,
+            depens: parsed.depens,
+        })
+    }
+}
+
+impl MdocIdentity {
+    /// Recover header identity from malformed content without interpreting block
+    /// bodies as document-level structure.
+    pub(crate) fn from_bytes(content: &[u8]) -> Self {
+        let Ok(content) = std::str::from_utf8(content) else {
+            return Self::default();
+        };
+        let mut identity = Self::default();
+
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Status {
+            None,
+            Dep,
+            Src,
+        }
+        let mut status = Status::None;
+
+        for raw_line in content.lines() {
+            let line = raw_line.trim();
+            match status {
+                Status::Dep | Status::Src => {
+                    if line.eq_ignore_ascii_case("@end") {
+                        status = Status::None;
+                    }
+                    continue;
+                }
+                Status::None => {}
+            }
+
+            if line.eq_ignore_ascii_case("@dep:") {
+                status = Status::Dep;
+                continue;
+            }
+            if line
+                .get(..5)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("@src:"))
+            {
+                status = Status::Src;
+                continue;
+            }
+
+            let Some((directive, value)) = line.split_once(':') else {
+                continue;
+            };
+            let value = value.trim();
+            if value.is_empty() {
+                continue;
+            }
+            if identity.fnode.is_none() && directive.eq_ignore_ascii_case("@fnode") {
+                identity.fnode = Some(value.to_string());
+            } else if identity.title.is_none() && directive.eq_ignore_ascii_case("@title") {
+                identity.title = Some(value.to_string());
+            }
+        }
+        identity
+    }
+
+    pub(crate) fn complete(&self) -> Option<(&str, &str)> {
+        Some((self.fnode.as_deref()?, self.title.as_deref()?))
+    }
 }
 
 impl Clone for MdocNode {
@@ -58,18 +161,22 @@ impl MdocNode {
 
     /// Load a node from an existing .mdoc file (full parse including blocks).
     pub fn load(mdcroot: &Path, path: &Path) -> Result<Self> {
-        Self::load_inner(mdcroot, path, true)
-    }
-
-    /// Load a node from an existing .mdoc file, skipping block content.
-    pub fn load_head(mdcroot: &Path, path: &Path) -> Result<Self> {
-        Self::load_inner(mdcroot, path, false)
+        Self::load_inner(mdcroot, path)
     }
 
     pub(crate) fn load_bytes(mdcroot: &Path, path: &Path, content: &[u8]) -> Result<Self> {
         let content = std::str::from_utf8(content)
             .with_context(|| format!("reading {} as UTF-8", path.display()))?;
-        Self::parse_content(mdcroot, path, content, true)
+        let parsed = Self::parse_content(path, content, true)?;
+        Ok(Self {
+            mdcroot: mdcroot.to_path_buf(),
+            path: path.to_path_buf(),
+            fnode: parsed.fnode,
+            title: parsed.title,
+            depens: parsed.depens,
+            blocks: parsed.blocks,
+            original: std::sync::Mutex::new(None),
+        })
     }
 
     pub fn add_dependency(&mut self, dep_fnode: &str) {
@@ -80,6 +187,46 @@ impl MdocNode {
 
     pub fn remove_dependency(&mut self, dep_fnode: &str) {
         self.depens.retain(|d| d != dep_fnode);
+    }
+
+    pub fn set_title(&mut self, title: String) {
+        self.title = title;
+    }
+
+    pub fn source_block(&self, srctype: &str) -> Option<&SrcBlock> {
+        self.blocks
+            .iter()
+            .find(|block| block.srctype.eq_ignore_ascii_case(srctype))
+    }
+
+    pub fn upsert_source_block(&mut self, srctype: &str, content: String) -> Result<()> {
+        let srctype = crate::config::builtin_srctype(srctype)?;
+        if let Some(block) = self
+            .blocks
+            .iter_mut()
+            .find(|block| block.srctype.eq_ignore_ascii_case(srctype))
+        {
+            block.content = content;
+        } else {
+            self.blocks.push(SrcBlock {
+                srctype: srctype.to_string(),
+                content,
+                metadata: HashMap::new(),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn remove_source_block(&mut self, srctype: &str) -> bool {
+        let Some(index) = self
+            .blocks
+            .iter()
+            .position(|block| block.srctype.eq_ignore_ascii_case(srctype))
+        else {
+            return false;
+        };
+        self.blocks.remove(index);
+        true
     }
 
     /// Save node content to file.
@@ -115,8 +262,8 @@ impl MdocNode {
                 .clone()
                 .unwrap_or(crate::workspace::FileSnapshot::Missing)
         };
-        crate::workspace::atomic_replace(&path, &expected, payload.as_bytes())?;
-        *original = Some(crate::workspace::FileSnapshot::capture(&path)?);
+        let applied = expected.replace(&path, payload.as_bytes())?;
+        *original = Some(applied.into_after());
         Ok(())
     }
 
@@ -137,7 +284,8 @@ impl MdocNode {
         }
 
         for block in &self.blocks {
-            lines.push(format_src_header(&block.srctype, &block.metadata));
+            let srctype = crate::config::builtin_srctype(&block.srctype)?;
+            lines.push(format_src_header(srctype, &block.metadata));
             if !block.content.is_empty() {
                 lines.extend(block.content.lines().map(str::to_string));
             }
@@ -169,11 +317,11 @@ impl MdocNode {
             }
         }
 
-        let mut seen_srctypes: HashSet<String> = HashSet::new();
+        let mut seen_srctypes: HashSet<&str> = HashSet::new();
         for block in &self.blocks {
             validate_single_line("srctype", &block.srctype)?;
-            crate::config::validate_srctype_name(&block.srctype)?;
-            if !seen_srctypes.insert(block.srctype.to_ascii_lowercase()) {
+            let canonical_srctype = crate::config::builtin_srctype(&block.srctype)?;
+            if !seen_srctypes.insert(canonical_srctype) {
                 bail!("duplicate srctype '{}'", block.srctype);
             }
             for (key, value) in &block.metadata {
@@ -181,10 +329,10 @@ impl MdocNode {
                 validate_no_controls(&format!("src metadata value for '{key}'"), value)?;
             }
 
-            let header = format_src_header(&block.srctype, &block.metadata);
+            let header = format_src_header(canonical_srctype, &block.metadata);
             let payload = header.strip_prefix("@src:").unwrap_or_default().trim();
             let (srctype, metadata) = parse_src_header(payload, 0, &self.path)?;
-            if srctype != block.srctype || metadata != block.metadata {
+            if srctype != canonical_srctype || metadata != block.metadata {
                 bail!(
                     "@src header for '{}' cannot be represented without changing its value",
                     block.srctype
@@ -201,24 +349,17 @@ impl MdocNode {
         Ok(())
     }
 
-    fn load_inner(mdcroot: &Path, path: &Path, include_blocks: bool) -> Result<Self> {
+    fn load_inner(mdcroot: &Path, path: &Path) -> Result<Self> {
         let snapshot = crate::workspace::FileSnapshot::capture(path)?;
         let content = snapshot
             .content()
             .ok_or_else(|| anyhow::anyhow!("node file does not exist: {}", path.display()))?;
-        let content = std::str::from_utf8(content)
-            .with_context(|| format!("reading {} as UTF-8", path.display()))?;
-        let mut node = Self::parse_content(mdcroot, path, content, include_blocks)?;
+        let mut node = Self::load_bytes(mdcroot, path, content)?;
         node.original = std::sync::Mutex::new(Some(snapshot));
         Ok(node)
     }
 
-    fn parse_content(
-        mdcroot: &Path,
-        path: &Path,
-        content: &str,
-        include_blocks: bool,
-    ) -> Result<Self> {
+    fn parse_content(path: &Path, content: &str, include_blocks: bool) -> Result<ParsedMdoc> {
         let mut fnode = String::new();
         let mut title = String::new();
         let mut depens: Vec<String> = Vec::new();
@@ -334,8 +475,11 @@ impl MdocNode {
 
             if let Some(rest) = line.strip_prefix("@src:") {
                 let (srctype, metadata) = parse_src_header(rest.trim(), lineno, path)?;
-                crate::config::validate_srctype_name(&srctype).with_context(|| {
-                    format!("line {lineno}: invalid srctype in {}", path.display())
+                crate::config::validate_srctype_name(&srctype).map_err(|error| {
+                    anyhow::anyhow!(
+                        "line {lineno}: invalid srctype in {}: {error}",
+                        path.display()
+                    )
                 })?;
                 let srctype_identity = srctype.to_ascii_lowercase();
                 if seen_srctypes.contains(&srctype_identity) {
@@ -377,14 +521,11 @@ impl MdocNode {
             bail!("'@title' must exist and be non-empty in {}", path.display());
         }
 
-        Ok(MdocNode {
-            mdcroot: mdcroot.to_path_buf(),
-            path: path.to_path_buf(),
+        Ok(ParsedMdoc {
             fnode,
             title,
             depens,
             blocks,
-            original: std::sync::Mutex::new(None),
         })
     }
 }
@@ -419,32 +560,6 @@ fn validate_fnode(field: &str, value: &str) -> Result<()> {
         bail!("{field} must contain only lowercase ASCII letters, digits, and internal hyphens");
     }
     Ok(())
-}
-
-/// Quick header read: returns (fnode, title) or None on error/missing fields.
-/// Case-insensitive matching of @fnode/@title, stops early once both found.
-pub fn read_mdoc_head(path: &Path) -> Option<(String, String)> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let mut fnode = String::new();
-    let mut title = String::new();
-
-    for raw_line in content.lines() {
-        let line = raw_line.trim();
-        let lower = line.to_ascii_lowercase();
-        if lower.starts_with("@fnode:") && fnode.is_empty() {
-            fnode = line.split_once(':')?.1.trim().to_string();
-        } else if lower.starts_with("@title:") && title.is_empty() {
-            title = line.split_once(':')?.1.trim().to_string();
-        }
-        if !fnode.is_empty() && !title.is_empty() {
-            break;
-        }
-    }
-
-    if fnode.is_empty() || title.is_empty() {
-        return None;
-    }
-    Some((fnode, title))
 }
 
 /// Parse the content after `@src:` — returns (srctype, metadata).
@@ -502,8 +617,10 @@ fn format_src_header(srctype: &str, metadata: &HashMap<String, String>) -> Strin
     if metadata.is_empty() {
         return format!("@src: {srctype}");
     }
+    let mut metadata: Vec<_> = metadata.iter().collect();
+    metadata.sort_unstable_by_key(|(key, _)| *key);
     let meta_tokens: Vec<String> = metadata
-        .iter()
+        .into_iter()
         .map(|(k, v)| {
             let escaped = v.replace('\\', "\\\\").replace('"', "\\\"");
             format!("{k}=\"{escaped}\"")
@@ -607,16 +724,16 @@ mod tests {
     }
 
     #[test]
-    fn load_head_skips_blocks() {
+    fn load_head_returns_explicit_structural_type() {
         let dir = TempDir::new().unwrap();
         let path = write_mdoc(
             &dir,
             "c.mdoc",
             "@fnode: ff\n@title: C\n\n@src: lean\nbig content\n@end\n",
         );
-        let node = MdocNode::load_head(dir.path(), &path).unwrap();
-        assert_eq!(node.fnode, "ff");
-        assert!(node.blocks.is_empty());
+        let head = MdocHead::load(&path).unwrap();
+        assert_eq!(head.fnode, "ff");
+        assert!(head.depens.is_empty());
     }
 
     #[test]
@@ -720,22 +837,23 @@ mod tests {
     }
 
     #[test]
-    fn read_head_returns_none_on_missing_file() {
+    fn load_head_errors_on_missing_file() {
         let path = Path::new("/nonexistent/path.mdoc");
-        assert!(read_mdoc_head(path).is_none());
+        assert!(MdocHead::load(path).is_err());
     }
 
     #[test]
-    fn read_head_case_insensitive() {
-        let dir = TempDir::new().unwrap();
-        let path = write_mdoc(
-            &dir,
-            "ci.mdoc",
-            "@FNODE: theid\n@TITLE: The Title\n@src: latex\nstuff\n@end\n",
+    fn fallback_identity_is_case_insensitive_but_block_aware() {
+        let identity = MdocIdentity::from_bytes(
+            b"@FNODE: real-node\n@TITLE: Real Title\n\
+              @src: \"unterminated\n@fnode: fake-src\n@title: Fake Src\n",
         );
-        let (fnode, title) = read_mdoc_head(&path).unwrap();
-        assert_eq!(fnode, "theid");
-        assert_eq!(title, "The Title");
+        assert_eq!(identity.complete(), Some(("real-node", "Real Title")));
+
+        let identity = MdocIdentity::from_bytes(
+            b"@dep:\nnot a dependency\n@fnode: fake-dep\n@title: Fake Dep\n@end\n",
+        );
+        assert_eq!(identity, MdocIdentity::default());
     }
 
     #[test]

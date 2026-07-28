@@ -1,5 +1,5 @@
 use super::{
-    cfg_positive_int, process_error_result, require_tool, run_process, source_path, CompilerReq,
+    cfg_positive_int, lib_source, process_error_result, require_tool, run_process, CompilerReq,
     CompilerRes, SrcCompiler,
 };
 
@@ -20,11 +20,17 @@ impl SrcCompiler for CompilerPython {
             Ok(p) => p,
             Err(e) => return CompilerRes::err_code(e.to_string(), 127),
         };
-        let src = source_path(&req.mdcroot, "python");
-        let work_dir = src
-            .parent()
-            .expect("compiler source has a parent directory");
-        match run_process(&python, [&src], "python", timeout_sec, Some(work_dir)) {
+        let (lib_root, relative) = match lib_source(req, "python") {
+            Ok(source) => source,
+            Err(error) => return CompilerRes::err(error.to_string()),
+        };
+        match run_process(
+            &python,
+            [std::path::Path::new("-B"), relative.as_path()],
+            "python",
+            timeout_sec,
+            Some(&lib_root),
+        ) {
             Ok((rtcode, stdout, stderr)) => CompilerRes {
                 result: rtcode == 0,
                 stdout,

@@ -1,14 +1,11 @@
 use anyhow::{bail, Result};
-use std::collections::HashSet;
-use std::path::Path;
 
 use crate::core::{short_fnode, DependencyItem, DependencyTraversalReport, IssueKind};
 use crate::depgraph::DepGraph;
 use crate::indcache::IndCache;
-use crate::mdocnode::MdocNode;
 
 use super::{
-    cwd, fmt_item, open_cache, print_cycles_if_any, print_dep_report, print_missing_with_referrers,
+    cwd, fmt_item, print_cycles_if_any, print_dep_report, print_missing_with_referrers,
     require_mdcroot, BLD, RST,
 };
 
@@ -44,8 +41,8 @@ fn print_dep_report_sections(
 /// Open cache, discover changes, do a targeted refresh up to `refresh_depth`,
 /// and resolve `source` to a `DependencyItem`. Used by dep show and dep leaf.
 fn open_and_resolve_source(source: &str, refresh_depth: i32) -> Result<(IndCache, DependencyItem)> {
-    let mdcroot = require_mdcroot()?;
-    let mut cache = open_cache(mdcroot.clone())?;
+    let mut cache = IndCache::open(require_mdcroot()?)?;
+    let mdcroot = cache.root().to_path_buf();
     cache.discover_workspace_changes()?;
     let src_path = cache.resolve_edit_target_path(source, Some(&cwd()))?;
     cache.refresh_reachable_from_path(&src_path, refresh_depth)?;
@@ -78,43 +75,6 @@ pub(super) fn cmd_dep_leaf(source: String) -> Result<i32> {
 
 // ── cmd: dep add ──────────────────────────────────────────────────────────────
 
-fn resolve_existing_target(
-    cache: &mut IndCache,
-    mdcroot: &Path,
-    target_ref: &str,
-) -> Result<DependencyItem> {
-    let target_ref = target_ref.trim();
-    if target_ref.is_empty() {
-        bail!("target reference cannot be empty");
-    }
-
-    let (_, _, path) = cache.resolve_ref(target_ref, Some(&cwd()))?;
-    if path.extension().and_then(|ext| ext.to_str()) != Some("mdoc") {
-        bail!("target reference must resolve to a .mdoc file");
-    }
-
-    // Refresh the complete candidate subgraph so cycle checks do not rely on
-    // stale edges after an external edit.
-    cache.refresh_reachable_from_path(&path, -1)?;
-    let (fnode, title, path) = cache.resolve_ref(target_ref, Some(&cwd()))?;
-    let duplicate_paths = cache.duplicate_fnode_paths(&fnode)?;
-    if duplicate_paths.len() > 1 {
-        let paths = duplicate_paths
-            .iter()
-            .map(|path| crate::workspace::to_rel_path(mdcroot, path))
-            .collect::<Vec<_>>()
-            .join(", ");
-        bail!("target reference resolves to duplicate fnode '{fnode}': {paths}");
-    }
-
-    Ok(DependencyItem {
-        depth: 0,
-        fnode,
-        title,
-        rel_path: crate::workspace::to_rel_path(mdcroot, &path),
-    })
-}
-
 pub(super) fn cmd_dep_add(
     source: String,
     query: Option<String>,
@@ -125,15 +85,23 @@ pub(super) fn cmd_dep_add(
         bail!("provide exactly one of <query> or --target <target-ref>");
     }
 
-    let mdcroot = require_mdcroot()?;
-    let mut cache = open_cache(mdcroot.clone())?;
+    let q = query
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+    if query.is_some() && q.is_empty() {
+        bail!("query cannot be empty");
+    }
+
+    let mut cache = IndCache::open(require_mdcroot()?)?;
+    let mdcroot = cache.root().to_path_buf();
     cache.discover_workspace_changes()?;
-    let mut graph = DepGraph::from_ref(cache, &source, Some(&cwd()))?;
-    let source_item = graph.root_item()?;
+    let mut graph = DepGraph::from_ref(&mut cache, &source, Some(&cwd()))?;
 
     if let Some(target_ref) = target.as_deref() {
         let (added, skipped_existing, skipped_self) =
-            graph.add_direct_dependency_ref(target_ref)?;
+            graph.add_direct_dependency_ref(target_ref, Some(&cwd()))?;
         if !skipped_self.is_empty() {
             bail!("cannot add a node as its own dependency");
         }
@@ -166,27 +134,11 @@ pub(super) fn cmd_dep_add(
         return Ok(0);
     }
 
-    let q = query.unwrap_or_default().trim().to_string();
-    if q.is_empty() {
-        return Err(anyhow::anyhow!("query cannot be empty"));
-    }
-    let all_rows = graph.cache_mut().search(&q)?;
-    let existing_fnodes: HashSet<String> = {
-        let direct = graph.direct_dependency_fnodes().unwrap_or_default();
-        std::iter::once(source_item.fnode.clone())
-            .chain(direct)
-            .collect()
-    };
-    let candidates: Vec<_> = all_rows
-        .iter()
-        .filter(|(f, _, _)| !existing_fnodes.contains(f))
-        .take(max_results)
-        .collect();
+    let candidate_report = graph.dependency_candidates(&q, max_results)?;
+    let candidates = candidate_report.nodes;
 
     if candidates.is_empty() {
-        if !all_rows.is_empty() {
-            // Search returned matches, but they are all already dependencies
-            // (or the source itself). Don't prompt to create a duplicate.
+        if candidate_report.raw_had_matches {
             println!("All matches for '{q}' are already dependencies of this node.");
             return Ok(0);
         }
@@ -203,24 +155,18 @@ pub(super) fn cmd_dep_add(
             .with_prompt("Title")
             .default(q.clone())
             .interact_text()?;
-        let mdcroot = graph.mdcroot().to_path_buf();
-        let mut new_node = MdocNode::new_at_path(&mdcroot, &mdcroot, &title);
-        let short = short_fnode(&new_node.fnode);
+        let new_fnode = uuid::Uuid::new_v4().to_string();
+        let short = short_fnode(&new_fnode);
         let file_input: String = dialoguer::Input::new()
             .with_prompt(format!("File [{short}…]"))
             .allow_empty(true)
             .interact_text()?;
-        let filename = if file_input.trim().is_empty() {
-            format!("{}.mdoc", new_node.fnode)
-        } else {
-            format!("{}.mdoc", file_input.trim())
-        };
-        new_node.path = mdcroot.join(&filename);
-        let new_fnode = new_node.fnode.clone();
+        let new_node =
+            graph.prepare_new_dependency_node(file_input.trim(), &title, Some(&new_fnode))?;
         let node_path = new_node.path.clone();
         let added = graph.create_and_add_dependency(new_node)?;
         if added {
-            let rel = crate::workspace::to_rel_path(graph.mdcroot(), &node_path);
+            let rel = crate::workspace::to_rel_path(&mdcroot, &node_path);
             println!(
                 "created and added  {}",
                 fmt_item(&new_fnode, &title, &rel, false)
@@ -231,7 +177,14 @@ pub(super) fn cmd_dep_add(
 
     let items: Vec<(&str, &str, &str, bool)> = candidates
         .iter()
-        .map(|(f, t, p)| (f.as_str(), t.as_str(), p.as_str(), false))
+        .map(|item| {
+            (
+                item.fnode.as_str(),
+                item.title.as_str(),
+                item.rel_path.as_str(),
+                item.broken,
+            )
+        })
         .collect();
     let selected = match select_multi("Select dependencies to add", &items)? {
         None => {
@@ -245,7 +198,10 @@ pub(super) fn cmd_dep_add(
         Some(v) => v,
     };
 
-    let selected_fnodes: Vec<String> = selected.iter().map(|&i| candidates[i].0.clone()).collect();
+    let selected_fnodes: Vec<String> = selected
+        .iter()
+        .map(|&i| candidates[i].fnode.clone())
+        .collect();
     let (added, _, _) = graph.add_direct_dependencies(selected_fnodes)?;
 
     println!(
@@ -256,8 +212,8 @@ pub(super) fn cmd_dep_add(
     for fnode in &added {
         let label = candidates
             .iter()
-            .find(|(f, _, _)| f == fnode)
-            .map(|(f, t, p)| fmt_item(f, t, p, false))
+            .find(|item| &item.fnode == fnode)
+            .map(|item| fmt_item(&item.fnode, &item.title, &item.rel_path, item.broken))
             .unwrap_or_else(|| fnode.clone());
         println!("  + {label}");
     }
@@ -266,77 +222,12 @@ pub(super) fn cmd_dep_add(
 
 // ── cmd: dep rm ───────────────────────────────────────────────────────────────
 
-fn resolve_direct_dependency_target(
-    graph: &mut DepGraph,
-    direct_fnodes: &[String],
-    target_ref: &str,
-) -> Result<String> {
-    let target_ref = target_ref.trim();
-    if target_ref.is_empty() {
-        bail!("target reference cannot be empty");
-    }
-
-    if let Some(exact) = direct_fnodes
-        .iter()
-        .find(|fnode| fnode.as_str() == target_ref)
-    {
-        return Ok(exact.clone());
-    }
-
-    let target_lc = target_ref.to_lowercase();
-    let exact_lc: Vec<&String> = direct_fnodes
-        .iter()
-        .filter(|fnode| fnode.to_lowercase() == target_lc)
-        .collect();
-    if exact_lc.len() == 1 {
-        return Ok(exact_lc[0].clone());
-    }
-
-    let prefix_matches: Vec<&String> = direct_fnodes
-        .iter()
-        .filter(|fnode| fnode.to_lowercase().starts_with(&target_lc))
-        .collect();
-    match prefix_matches.as_slice() {
-        [matched] => return Ok((*matched).clone()),
-        matches if matches.len() > 1 => {
-            let preview = matches
-                .iter()
-                .map(|fnode| fnode.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            bail!("ambiguous direct dependency target '{target_ref}', matches: {preview}");
-        }
-        _ => {}
-    }
-
-    let mdcroot = graph.mdcroot().to_path_buf();
-    let target_item = resolve_existing_target(graph.cache_mut(), &mdcroot, target_ref)?;
-    let canonical_matches: Vec<&String> = direct_fnodes
-        .iter()
-        .filter(|fnode| fnode.eq_ignore_ascii_case(&target_item.fnode))
-        .collect();
-    match canonical_matches.as_slice() {
-        [matched] => Ok((*matched).clone()),
-        _ => bail!(
-            "target {} is not a direct dependency of this node",
-            fmt_item(
-                &target_item.fnode,
-                &target_item.title,
-                &target_item.rel_path,
-                false
-            )
-        ),
-    }
-}
-
 pub(super) fn cmd_dep_rm(source: String, target: Option<String>) -> Result<i32> {
-    let mdcroot = require_mdcroot()?;
-    let mut cache = open_cache(mdcroot)?;
+    let mut cache = IndCache::open(require_mdcroot()?)?;
     cache.discover_workspace_changes()?;
-    let mut graph = DepGraph::from_ref(cache, &source, Some(&cwd()))?;
+    let mut graph = DepGraph::from_ref(&mut cache, &source, Some(&cwd()))?;
     let source_item = graph.root_item()?;
     let dep_items = graph.direct_dependency_items()?;
-    let direct_fnodes = graph.direct_dependency_fnodes()?;
 
     if dep_items.is_empty() {
         if target.is_some() {
@@ -356,8 +247,7 @@ pub(super) fn cmd_dep_rm(source: String, target: Option<String>) -> Result<i32> 
     }
 
     if let Some(target_ref) = target {
-        let target_fnode =
-            resolve_direct_dependency_target(&mut graph, &direct_fnodes, &target_ref)?;
+        let target_fnode = graph.resolve_direct_dependency_ref(&target_ref, Some(&cwd()))?;
         let removed = graph.remove_direct_dependencies(vec![target_fnode.clone()])?;
         if removed.is_empty() {
             bail!("target is not a direct dependency of this node");
@@ -421,8 +311,8 @@ pub(super) fn cmd_dep_rm(source: String, target: Option<String>) -> Result<i32> 
 // ── cmd: dep refs ─────────────────────────────────────────────────────────────
 
 pub(super) fn cmd_dep_refs(target: String, depth: i32) -> Result<i32> {
-    let mdcroot = require_mdcroot()?;
-    let mut cache = open_cache(mdcroot.clone())?;
+    let mut cache = IndCache::open(require_mdcroot()?)?;
+    let mdcroot = cache.root().to_path_buf();
     cache.discover_workspace_changes()?;
     let target_path = cache.resolve_edit_target_path(&target, Some(&cwd()))?;
     cache.upsert_path(&target_path)?;

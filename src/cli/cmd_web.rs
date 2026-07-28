@@ -1,14 +1,13 @@
 use anyhow::Result;
 
-use super::{cwd, open_cache, require_mdcroot, short_fnode};
+use super::{require_mdcroot, resolve_start_ref, short_fnode};
 use crate::core::escape_terminal;
 use crate::indcache::IndCache;
 use crate::web;
 
 /// `mdc serve` — start the interactive web frontend.
 pub(super) fn cmd_serve(source: Option<String>, bind: String, no_open: bool) -> Result<i32> {
-    let mdcroot = require_mdcroot()?;
-    let mut cache: IndCache = open_cache(mdcroot.clone())?;
+    let mut cache = IndCache::open(require_mdcroot()?)?;
     cache.discover_workspace_changes()?;
 
     // If the caller gave us a starting ref, validate it now so we can fail
@@ -29,33 +28,12 @@ pub(super) fn cmd_serve(source: Option<String>, bind: String, no_open: bool) -> 
         .enable_all()
         .build()?;
     rt.block_on(web::server::serve(
-        mdcroot,
         cache,
         &bind,
         !no_open,
         initial_fnode.as_deref(),
     ))?;
     Ok(0)
-}
-
-fn resolve_start_ref(cache: &IndCache, source: &str) -> Result<String> {
-    match cache.resolve_ref(source, Some(&cwd())) {
-        Ok((fnode, _, _)) => Ok(fnode),
-        Err(ref_error) => {
-            let source_lc = source.trim().to_lowercase();
-            let title_matches: Vec<String> = cache
-                .search(source)?
-                .into_iter()
-                .filter(|(_, title, _)| title.to_lowercase() == source_lc)
-                .map(|(fnode, _, _)| fnode)
-                .collect();
-            match title_matches.as_slice() {
-                [fnode] => Ok(fnode.clone()),
-                [] => anyhow::bail!("cannot resolve '{}': {}", source, ref_error),
-                _ => anyhow::bail!("cannot resolve '{}': ambiguous title", source),
-            }
-        }
-    }
 }
 
 #[cfg(test)]

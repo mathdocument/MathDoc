@@ -1,16 +1,15 @@
 use anyhow::Result;
 
 use crate::core::{escape_terminal, GraphIssue, IssueKind};
+use crate::indcache::IndCache;
 
-use super::{
-    fmt_item, open_cache, print_missing_with_referrers, require_mdcroot, BLD, DIM, GRN, RED, RST,
-};
+use super::{fmt_item, print_missing_with_referrers, require_mdcroot, BLD, DIM, GRN, RED, RST};
 
 // ── cmd: graph check ──────────────────────────────────────────────────────────
 
 pub(super) fn cmd_graph_check() -> Result<i32> {
     let mdcroot = require_mdcroot()?;
-    let mut cache = open_cache(mdcroot)?;
+    let mut cache = IndCache::open(mdcroot)?;
     cache.refresh_all()?;
     let report = cache.graph_check_report()?;
     let ok = report.missing.is_empty() && report.invalid.is_empty() && report.cycles.is_empty();
@@ -50,7 +49,7 @@ pub(super) fn cmd_graph_check() -> Result<i32> {
 
 pub(super) fn cmd_graph_roots() -> Result<i32> {
     let mdcroot = require_mdcroot()?;
-    let mut cache = open_cache(mdcroot)?;
+    let mut cache = IndCache::open(mdcroot)?;
     cache.discover_workspace_changes()?;
     let items = cache.global_root_items()?;
     println!(

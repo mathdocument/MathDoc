@@ -3,12 +3,50 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
-use mathdoc::workspace::{find_mdcroot, find_nested_mdcroot, iter_mdoc_files, to_rel_path};
+use mathdoc::workspace::{
+    find_mdcroot, find_nested_mdcroot, initialize, iter_mdoc_files, to_rel_path,
+};
 
 fn setup_workspace(dir: &TempDir) -> std::path::PathBuf {
     let root = dir.path().to_path_buf();
     fs::create_dir(root.join(".mdc")).unwrap();
     root
+}
+
+#[test]
+fn initialize_preserves_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let control_dir = dir.path().join(".mdc");
+    fs::create_dir(&control_dir).unwrap();
+    fs::write(control_dir.join("config.toml"), "# custom\n").unwrap();
+
+    assert!(!initialize(dir.path()).unwrap());
+    assert_eq!(
+        fs::read_to_string(control_dir.join("config.toml")).unwrap(),
+        "# custom\n"
+    );
+    assert!(!initialize(dir.path()).unwrap());
+}
+
+#[test]
+fn initialize_rejects_non_directory_control_path() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join(".mdc"), "not a directory").unwrap();
+
+    assert!(initialize(dir.path()).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn initialize_rejects_symlinked_control_path() {
+    use std::os::unix::fs::symlink;
+
+    let dir = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    symlink(outside.path(), dir.path().join(".mdc")).unwrap();
+
+    assert!(initialize(dir.path()).is_err());
+    assert!(!outside.path().join("config.toml").exists());
 }
 
 #[test]
@@ -112,4 +150,12 @@ fn to_rel_path_root_file() {
     let root = Path::new("/workspace");
     let path = Path::new("/workspace/file.mdoc");
     assert_eq!(to_rel_path(root, path), "file.mdoc");
+}
+
+#[cfg(unix)]
+#[test]
+fn to_rel_path_preserves_literal_backslashes() {
+    let root = Path::new("/workspace");
+    let path = Path::new("/workspace/a\\b.mdoc");
+    assert_eq!(to_rel_path(root, path), "a\\b.mdoc");
 }

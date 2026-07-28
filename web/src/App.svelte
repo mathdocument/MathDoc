@@ -472,7 +472,6 @@
   {#key overlay.target}
     <AddDepOverlay
       targetFnode={overlay.target}
-      existingDepFnodes={activeDepens}
       onAdded={() => afterDepMutation()}
       onClose={() => (overlay = { kind: "none" })}
     />

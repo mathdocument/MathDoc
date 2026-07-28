@@ -1,102 +1,61 @@
 use std::collections::{HashMap, HashSet};
 
-/// Find a cycle in the dependency graph. Returns the cycle as a list of fnodes
-/// (first element == last element), or None if no cycle exists.
-/// If root_fnode is given, only searches from that node.
-pub fn find_cycle(
-    dep_graph: &HashMap<String, Vec<String>>,
-    root_fnode: Option<&str>,
-) -> Option<Vec<String>> {
-    // 0 = unvisited, 1 = gray (in current path), 2 = black (done)
-    let mut color: HashMap<String, u8> = HashMap::new();
-    let mut path: Vec<String> = Vec::new();
-    let mut path_idx: HashMap<String, usize> = HashMap::new();
+/// Compute every node's height from a pre-loaded dependency graph: leaves are 0,
+/// and every acyclic parent is one greater than its deepest dependency.
+/// Nodes in cycles retain the height accumulated before the cycle closes.
+pub fn all_topo_depths(graph: &HashMap<String, Vec<String>>) -> HashMap<String, u32> {
+    if graph.is_empty() {
+        return HashMap::new();
+    }
 
-    let roots: Vec<&str> = match root_fnode {
-        Some(r) => vec![r],
-        None => dep_graph.keys().map(String::as_str).collect(),
-    };
-
-    for start in roots {
-        if !dep_graph.contains_key(start) {
-            continue;
-        }
-        if color.get(start).copied().unwrap_or(0) != 0 {
-            continue;
-        }
-
-        // Iterative DFS: each frame is (fnode, next_child_index)
-        let mut dfs_stack: Vec<(String, usize)> = vec![(start.to_string(), 0)];
-        color.insert(start.to_string(), 1);
-        path_idx.insert(start.to_string(), path.len());
-        path.push(start.to_string());
-
-        while let Some(frame) = dfs_stack.last_mut() {
-            let fnode = frame.0.clone();
-            let children = dep_graph.get(&fnode).map(Vec::as_slice).unwrap_or_default();
-
-            if frame.1 < children.len() {
-                let child = children[frame.1].clone();
-                frame.1 += 1;
-
-                match color.get(&child).copied().unwrap_or(0) {
-                    0 => {
-                        // Unvisited: push onto DFS stack
-                        color.insert(child.clone(), 1);
-                        path_idx.insert(child.clone(), path.len());
-                        path.push(child.clone());
-                        dfs_stack.push((child, 0));
-                    }
-                    1 => {
-                        // Back edge: cycle found
-                        let start_idx = path_idx[&child];
-                        let mut cycle = path[start_idx..].to_vec();
-                        cycle.push(child);
-                        return Some(cycle);
-                    }
-                    _ => {} // already done
-                }
-            } else {
-                // All children processed: pop and mark done
-                dfs_stack.pop();
-                path.pop();
-                path_idx.remove(&fnode);
-                color.insert(fnode, 2);
+    let mut reverse: HashMap<&str, Vec<&str>> =
+        graph.keys().map(|fnode| (fnode.as_str(), vec![])).collect();
+    for (source, targets) in graph {
+        for target in targets {
+            if graph.contains_key(target.as_str()) {
+                reverse
+                    .entry(target.as_str())
+                    .or_default()
+                    .push(source.as_str());
             }
         }
     }
-    None
-}
 
-/// Return nodes in dependency-first order (post-order DFS): dependencies
-/// before the nodes that depend on them.
-pub fn topo_dependencies_first(
-    dep_graph: &HashMap<String, Vec<String>>,
-    root_fnode: &str,
-) -> Vec<String> {
-    let mut visited: HashSet<String> = HashSet::new();
-    let mut order: Vec<String> = Vec::new();
+    let mut remaining: HashMap<&str, usize> = graph
+        .iter()
+        .map(|(fnode, targets)| {
+            let count = targets
+                .iter()
+                .filter(|target| graph.contains_key(target.as_str()))
+                .count();
+            (fnode.as_str(), count)
+        })
+        .collect();
+    let mut depths: HashMap<&str, u32> = graph.keys().map(|fnode| (fnode.as_str(), 0)).collect();
+    let mut queue: std::collections::VecDeque<&str> = remaining
+        .iter()
+        .filter(|(_, count)| **count == 0)
+        .map(|(fnode, _)| *fnode)
+        .collect();
 
-    // Iterative post-order DFS: (fnode, entered)
-    // entered=false: first visit, push children; entered=true: emit node
-    let mut stack: Vec<(String, bool)> = vec![(root_fnode.to_string(), false)];
-
-    while let Some((fnode, entered)) = stack.pop() {
-        if entered {
-            order.push(fnode);
-        } else if !visited.contains(&fnode) {
-            visited.insert(fnode.clone());
-            stack.push((fnode.clone(), true));
-            let children = dep_graph.get(&fnode).map(Vec::as_slice).unwrap_or_default();
-            // Push in reverse so left-most child is processed first
-            for child in children.iter().rev() {
-                if !visited.contains(child) {
-                    stack.push((child.clone(), false));
-                }
+    while let Some(fnode) = queue.pop_front() {
+        let depth = depths[fnode];
+        for parent in reverse.get(fnode).into_iter().flatten() {
+            if let Some(parent_depth) = depths.get_mut(parent) {
+                *parent_depth = (*parent_depth).max(depth + 1);
+            }
+            let count = remaining.entry(parent).or_default();
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                queue.push_back(parent);
             }
         }
     }
-    order
+
+    depths
+        .into_iter()
+        .map(|(fnode, depth)| (fnode.to_string(), depth))
+        .collect()
 }
 
 /// Compute all strongly connected components using Kosaraju's algorithm.

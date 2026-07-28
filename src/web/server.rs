@@ -1,5 +1,4 @@
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -23,17 +22,16 @@ use super::AppState;
 
 /// Start the `mdc serve` HTTP server.
 ///
-/// `mdcroot` — workspace root (already validated to contain `.mdc/`).
 /// `bind` — `host:port`; port `0` picks a free port.
 /// `open_browser` — if true, open the default browser once listening.
 pub async fn serve(
-    mdcroot: PathBuf,
     cache: IndCache,
     bind: &str,
     open_browser: bool,
     initial_fnode: Option<&str>,
 ) -> Result<()> {
-    let state = AppState::new(mdcroot.clone(), cache);
+    let mdcroot = cache.root().to_path_buf();
+    let state = AppState::new(cache);
     let app = router(state);
 
     let bind_addr = validate_bind(bind)?;
@@ -96,8 +94,12 @@ pub fn router(state: AppState) -> Router {
         .route("/search", get(api::search))
         .route("/resolve", get(api::resolve_ref))
         .route("/node/:fnode", get(api::node_detail))
-        .route("/node/:fnode/referrers", get(api::node_referrers))
+        .route("/node/:fnode/view", get(api::node_view))
         .route("/node/:fnode/children", get(api::node_children))
+        .route(
+            "/node/:fnode/dep/candidates",
+            get(api::node_dependency_candidates),
+        )
         .route("/node/:fnode/title", put(api::node_put_title))
         .route(
             "/node/:fnode/block/:srctype",

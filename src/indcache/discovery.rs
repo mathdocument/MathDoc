@@ -28,7 +28,7 @@ pub fn discover_workspace_changes(
 
         let metadata = std::fs::metadata(&file_path)
             .with_context(|| format!("reading metadata for {}", file_path.display()))?;
-        if known.get(&rel_path) == Some(&metadata_state(&metadata)) {
+        if known.get(&rel_path) == Some(&metadata_state(&metadata)?) {
             continue;
         }
 

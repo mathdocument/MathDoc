@@ -37,6 +37,24 @@ fn make_node_with_block(root: &Path, title: &str, srctype: &str, content: &str) 
     node
 }
 
+fn rewrite_preserving_mtime_and_size(path: &Path, mut rewrite: impl FnMut(&mut MdocNode)) {
+    let original = std::fs::metadata(path).unwrap();
+    let modified = original.modified().unwrap();
+    let mut node = MdocNode::load(path.parent().unwrap(), path).unwrap();
+    rewrite(&mut node);
+    node.save().unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+
+    let current = std::fs::metadata(path).unwrap();
+    assert_eq!(current.len(), original.len());
+    assert_eq!(current.modified().unwrap(), modified);
+}
+
 /// Build an axum app against a temp workspace. Returns (root, app).
 fn build_app(dir: &TempDir) -> (PathBuf, axum::Router) {
     let root = init_workspace(dir);
@@ -51,7 +69,7 @@ fn build_app(dir: &TempDir) -> (PathBuf, axum::Router) {
     let mut cache = IndCache::open(root.clone()).unwrap();
     cache.discover_workspace_changes().unwrap();
 
-    let state = web::AppState::new(root.clone(), cache);
+    let state = web::AppState::new(cache);
     let app = build_router(state);
     (root, app)
 }
@@ -391,6 +409,64 @@ async fn search_caps_requested_rows() {
 }
 
 #[tokio::test]
+async fn dependency_candidates_are_filtered_for_the_source_node() {
+    let dir = TempDir::new().unwrap();
+    let (root, app) = build_app(&dir);
+    let (_, roots) = get_json(&app, "/api/graph/roots").await;
+    let roots = roots.as_array().unwrap();
+    let main_fnode = roots
+        .iter()
+        .find(|node| node["title"] == "Main Theorem")
+        .unwrap()["fnode"]
+        .as_str()
+        .unwrap();
+    let background_fnode = roots
+        .iter()
+        .find(|node| node["title"] == "Background Lemma")
+        .unwrap()["fnode"]
+        .as_str()
+        .unwrap();
+    let other = make_node(&root, "Other Lemma");
+    let other_fnode = other.fnode.clone();
+    other.save_new().unwrap();
+
+    let (status, _) = send_json(
+        &app,
+        "POST",
+        &format!("/api/node/{main_fnode}/dep/add"),
+        serde_json::json!({ "dep_fnode": background_fnode }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, candidates) = get_json(
+        &app,
+        &format!("/api/node/{main_fnode}/dep/candidates?q=Lemma&n=1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(candidates["raw_had_matches"], true);
+    assert_eq!(candidates["nodes"].as_array().unwrap().len(), 1);
+    assert_eq!(candidates["nodes"][0]["fnode"], other_fnode);
+
+    let (_, excluded) = get_json(
+        &app,
+        &format!("/api/node/{main_fnode}/dep/candidates?q=Background"),
+    )
+    .await;
+    assert_eq!(excluded["raw_had_matches"], true);
+    assert!(excluded["nodes"].as_array().unwrap().is_empty());
+
+    let (_, absent) = get_json(
+        &app,
+        &format!("/api/node/{main_fnode}/dep/candidates?q=NoSuchTitle"),
+    )
+    .await;
+    assert_eq!(absent["raw_had_matches"], false);
+    assert!(absent["nodes"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn graph_check_reports_clean() {
     let dir = TempDir::new().unwrap();
     let (_root, app) = build_app(&dir);
@@ -446,7 +522,7 @@ async fn resolve_ref_with_prefix_works() {
 }
 
 #[tokio::test]
-async fn referrers_and_children_are_consistent() {
+async fn node_view_returns_detail_referrers_and_children_together() {
     let dir = TempDir::new().unwrap();
     let (_root, app) = build_app(&dir);
 
@@ -464,43 +540,106 @@ async fn referrers_and_children_are_consistent() {
         .find(|r| r["title"] == "Background Lemma")
         .unwrap();
 
-    // Before linking, Main has no children, Background has no referrers.
-    let (_, children) = get_json(
+    // Before linking, Main has no children and includes its node detail.
+    let (_, view) = get_json(
         &app,
-        &format!("/api/node/{}/children", main["fnode"].as_str().unwrap()),
+        &format!("/api/node/{}/view", main["fnode"].as_str().unwrap()),
     )
     .await;
-    assert_eq!(children.as_array().unwrap().len(), 0);
+    assert_eq!(view["node"]["title"], "Main Theorem");
+    assert!(view["referrers"].as_array().unwrap().is_empty());
+    assert!(view["children"].as_array().unwrap().is_empty());
 
-    // Link Main → Background via DepGraph directly.
-    let root = dir.path().to_path_buf();
-    let mut graph =
-        mathdoc::depgraph::DepGraph::new(root.clone(), main["fnode"].as_str().unwrap()).unwrap();
-    graph
-        .add_direct_dependencies(vec![bg["fnode"].as_str().unwrap().to_string()])
-        .unwrap();
-
-    // The app's cache is stale; recreate to reflect the link.
-    let mut cache = IndCache::open(root.clone()).unwrap();
-    cache.discover_workspace_changes().unwrap();
-    let state = web::AppState::new(root.clone(), cache);
-    let app = build_router(state);
-
-    let (_, children) = get_json(
+    // Link Main -> Background through the app's existing shared cache.
+    let (status, _) = send_json(
         &app,
-        &format!("/api/node/{}/children", main["fnode"].as_str().unwrap()),
+        "POST",
+        &format!("/api/node/{}/dep/add", main["fnode"].as_str().unwrap()),
+        serde_json::json!({ "dep_fnode": bg["fnode"] }),
     )
     .await;
-    assert_eq!(children.as_array().unwrap().len(), 1);
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, main_view) = get_json(
+        &app,
+        &format!("/api/node/{}/view", main["fnode"].as_str().unwrap()),
+    )
+    .await;
+    let children = main_view["children"].as_array().unwrap();
+    assert_eq!(children.len(), 1);
     assert_eq!(children[0]["title"], "Background Lemma");
 
-    let (_, referrers) = get_json(
+    let (_, background_view) = get_json(
         &app,
-        &format!("/api/node/{}/referrers", bg["fnode"].as_str().unwrap()),
+        &format!("/api/node/{}/view", bg["fnode"].as_str().unwrap()),
     )
     .await;
-    assert_eq!(referrers.as_array().unwrap().len(), 1);
+    let referrers = background_view["referrers"].as_array().unwrap();
+    assert_eq!(referrers.len(), 1);
     assert_eq!(referrers[0]["title"], "Main Theorem");
+}
+
+#[tokio::test]
+async fn node_detail_and_view_refresh_same_fnode_file_generation() {
+    let dir = TempDir::new().unwrap();
+    let (root, app) = build_app(&dir);
+    let (_, roots) = get_json(&app, "/api/graph/roots").await;
+    let roots = roots.as_array().unwrap();
+    let main = roots
+        .iter()
+        .find(|node| node["title"] == "Main Theorem")
+        .unwrap();
+    let background = roots
+        .iter()
+        .find(|node| node["title"] == "Background Lemma")
+        .unwrap();
+    let main_fnode = main["fnode"].as_str().unwrap();
+    let background_fnode = background["fnode"].as_str().unwrap();
+    let main_path = root.join(main["rel_path"].as_str().unwrap());
+    let replacement = make_node(&root, "Replacement Lemma");
+    let replacement_fnode = replacement.fnode.clone();
+    replacement.save_new().unwrap();
+
+    let (status, _) = send_json(
+        &app,
+        "POST",
+        &format!("/api/node/{main_fnode}/dep/add"),
+        serde_json::json!({ "dep_fnode": background_fnode }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    rewrite_preserving_mtime_and_size(&main_path, |node| {
+        node.title = "Main Revised".to_string();
+        node.depens = vec![replacement_fnode.clone()];
+        node.blocks[0].content = "z = 3\n".to_string();
+    });
+
+    let (status, detail) = get_json(&app, &format!("/api/node/{main_fnode}")).await;
+    assert_eq!(status, StatusCode::OK, "detail={detail}");
+    assert_eq!(detail["title"], "Main Revised");
+    assert_eq!(detail["depens"], serde_json::json!([replacement_fnode]));
+    assert_eq!(detail["blocks"][0]["content"], "z = 3\n");
+
+    rewrite_preserving_mtime_and_size(&main_path, |node| {
+        node.title = "View Version".to_string();
+        node.depens = vec![background_fnode.to_string()];
+        node.blocks[0].content = "w = 4\n".to_string();
+    });
+
+    let (status, view) = get_json(&app, &format!("/api/node/{main_fnode}/view")).await;
+    assert_eq!(status, StatusCode::OK, "view={view}");
+    assert_eq!(view["node"]["title"], "View Version");
+    assert_eq!(
+        view["node"]["depens"],
+        serde_json::json!([background_fnode])
+    );
+    assert_eq!(view["node"]["blocks"][0]["content"], "w = 4\n");
+    assert!(view["referrers"].as_array().unwrap().is_empty());
+    let children = view["children"].as_array().unwrap();
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0]["fnode"], background_fnode);
+    assert_eq!(children[0]["title"], "Background Lemma");
 }
 
 // ── Write endpoint tests ──────────────────────────────────────────────────────
@@ -559,6 +698,50 @@ async fn put_block_creates_and_updates_block() {
         .find(|b| b["srctype"] == "text")
         .unwrap();
     assert_eq!(text_block["content"], "updated\n");
+}
+
+#[tokio::test]
+async fn put_block_preserves_existing_metadata() {
+    let dir = TempDir::new().unwrap();
+    let (root, app) = build_app(&dir);
+    let (_, roots) = get_json(&app, "/api/graph/roots").await;
+    let main = roots
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["title"] == "Main Theorem")
+        .unwrap();
+    let fnode = main["fnode"].as_str().unwrap();
+    let path = root.join(main["rel_path"].as_str().unwrap());
+    let mut node = MdocNode::load(&root, &path).unwrap();
+    node.blocks[0]
+        .metadata
+        .insert("preamble".to_string(), "article".to_string());
+    node.save().unwrap();
+
+    let (status, value) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/node/{fnode}/block/latex"),
+        serde_json::json!({ "content": "updated latex" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "value={value}");
+
+    let saved = MdocNode::load(&root, &path).unwrap();
+    assert_eq!(
+        saved.source_block("latex").unwrap().content,
+        "updated latex\n"
+    );
+    assert_eq!(
+        saved
+            .source_block("latex")
+            .unwrap()
+            .metadata
+            .get("preamble")
+            .unwrap(),
+        "article"
+    );
 }
 
 #[tokio::test]
@@ -1247,8 +1430,7 @@ async fn graph_full_returns_nodes_and_edges() {
     let dir = TempDir::new().unwrap();
     let (_root, app) = build_app(&dir);
 
-    // Link Main → Background via DepGraph directly so we have an edge.
-    let root = dir.path().to_path_buf();
+    // Link Main -> Background through the app's existing shared cache.
     let (_, roots) = get_json(&app, "/api/graph/roots").await;
     let main = roots
         .as_array()
@@ -1262,18 +1444,14 @@ async fn graph_full_returns_nodes_and_edges() {
         .iter()
         .find(|r| r["title"] == "Background Lemma")
         .unwrap();
-    let mut graph =
-        mathdoc::depgraph::DepGraph::new(root.clone(), main["fnode"].as_str().unwrap()).unwrap();
-    graph
-        .add_direct_dependencies(vec![bg["fnode"].as_str().unwrap().to_string()])
-        .unwrap();
-    drop(graph);
-
-    // Rebuild app cache to pick up the new edge.
-    let mut cache = IndCache::open(root.clone()).unwrap();
-    cache.discover_workspace_changes().unwrap();
-    let state = web::AppState::new(root.clone(), cache);
-    let app = build_router(state);
+    let (status, _) = send_json(
+        &app,
+        "POST",
+        &format!("/api/node/{}/dep/add", main["fnode"].as_str().unwrap()),
+        serde_json::json!({ "dep_fnode": bg["fnode"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
 
     let (status, val) = get_json(&app, "/api/graph/full").await;
     assert_eq!(status, StatusCode::OK, "val={val}");

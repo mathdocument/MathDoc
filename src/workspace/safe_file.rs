@@ -119,7 +119,7 @@ impl PreservedMetadata {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(crate) struct FileIdentity {
     device: u64,
     inode: u64,
@@ -164,6 +164,13 @@ impl FileSnapshot {
         }
     }
 
+    pub(crate) fn identity(&self) -> Option<&FileIdentity> {
+        match self {
+            Self::Missing => None,
+            Self::File { identity, .. } => Some(identity),
+        }
+    }
+
     pub(crate) fn unchanged(&self, path: &Path) -> Result<bool> {
         let current = match Self::capture(path) {
             Ok(current) => current,
@@ -190,12 +197,42 @@ impl FileSnapshot {
             _ => false,
         })
     }
+
+    pub(crate) fn replace(&self, path: &Path, content: &[u8]) -> Result<AppliedWrite> {
+        atomic_replace(path, self, content)
+    }
+
+    pub(crate) fn remove(&self, path: &Path) -> Result<Option<AppliedWrite>> {
+        atomic_remove(path, self)
+    }
+
+    pub(crate) fn case_rename(&self, from: &Path, to: &Path) -> Result<AppliedRename> {
+        atomic_case_rename(from, to, self)
+    }
 }
 
 pub(crate) struct AppliedWrite {
     path: PathBuf,
     before: FileSnapshot,
     after: FileSnapshot,
+}
+
+pub(crate) struct AppliedRename {
+    from: PathBuf,
+    to: PathBuf,
+    after: FileSnapshot,
+}
+
+impl AppliedRename {
+    pub(crate) fn rollback(self) -> Result<()> {
+        if !self.after.unchanged(&self.to)? {
+            bail!(
+                "refusing to roll back rename of {} because it changed after the operation",
+                self.to.display()
+            );
+        }
+        rename_through_temporary(&self.to, &self.from)
+    }
 }
 
 impl AppliedWrite {
@@ -218,17 +255,34 @@ impl AppliedWrite {
                     .content()
                     .expect("file snapshot has content")
                     .to_vec();
-                atomic_replace(&self.path, &current, &content)?;
+                let metadata = match &before {
+                    FileSnapshot::File { metadata, .. } => metadata,
+                    FileSnapshot::Missing => unreachable!(),
+                };
+                atomic_replace_inner(&self.path, &current, &content, Some(metadata))?;
             }
         }
         Ok(())
     }
+
+    pub(crate) fn into_after(self) -> FileSnapshot {
+        self.after
+    }
 }
 
-pub(crate) fn atomic_replace(
+fn atomic_replace(path: &Path, expected: &FileSnapshot, content: &[u8]) -> Result<AppliedWrite> {
+    let metadata = match expected {
+        FileSnapshot::Missing => None,
+        FileSnapshot::File { metadata, .. } => Some(metadata),
+    };
+    atomic_replace_inner(path, expected, content, metadata)
+}
+
+fn atomic_replace_inner(
     path: &Path,
     expected: &FileSnapshot,
     content: &[u8],
+    replacement_metadata: Option<&PreservedMetadata>,
 ) -> Result<AppliedWrite> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     ensure_regular_directory(parent)?;
@@ -256,7 +310,7 @@ pub(crate) fn atomic_replace(
 
     #[cfg(target_os = "macos")]
     reject_extended_acl(temp.path())?;
-    if let FileSnapshot::File { metadata, .. } = expected {
+    if let Some(metadata) = replacement_metadata {
         let temp_path = temp.path().to_path_buf();
         metadata.apply(temp.as_file_mut(), &temp_path)?;
     }
@@ -287,6 +341,85 @@ pub(crate) fn atomic_replace(
         before: expected.clone(),
         after,
     })
+}
+
+fn atomic_remove(path: &Path, expected: &FileSnapshot) -> Result<Option<AppliedWrite>> {
+    if matches!(expected, FileSnapshot::Missing) {
+        return Ok(None);
+    }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    ensure_regular_directory(parent)?;
+    if !expected.unchanged(path)? {
+        return Err(FileConflict::new(path).into());
+    }
+    std::fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?;
+    sync_parent(path);
+    Ok(Some(AppliedWrite {
+        path: path.to_path_buf(),
+        before: expected.clone(),
+        after: FileSnapshot::Missing,
+    }))
+}
+
+fn atomic_case_rename(from: &Path, to: &Path, expected: &FileSnapshot) -> Result<AppliedRename> {
+    if from == to {
+        bail!("source and destination of a case rename must differ");
+    }
+    let Some(expected_identity) = expected.identity() else {
+        bail!("cannot rename missing file {}", from.display());
+    };
+    ensure_regular_directory(from.parent().unwrap_or_else(|| Path::new(".")))?;
+    ensure_regular_directory(to.parent().unwrap_or_else(|| Path::new(".")))?;
+    if !expected.unchanged(from)? {
+        return Err(FileConflict::new(from).into());
+    }
+    let destination = FileSnapshot::capture(to)?;
+    if destination.identity() != Some(expected_identity) {
+        bail!(
+            "case-rename destination does not identify the source file: {}",
+            to.display()
+        );
+    }
+
+    rename_through_temporary(from, to)?;
+    let after = FileSnapshot::capture(to)?;
+    Ok(AppliedRename {
+        from: from.to_path_buf(),
+        to: to.to_path_buf(),
+        after,
+    })
+}
+
+fn rename_through_temporary(from: &Path, to: &Path) -> Result<()> {
+    let parent = from.parent().unwrap_or_else(|| Path::new("."));
+    let temporary = tempfile::Builder::new()
+        .prefix(".mdc-case-rename-")
+        .tempfile_in(parent)
+        .with_context(|| format!("creating case-rename temporary in {}", parent.display()))?;
+    let (_, temporary_path) = temporary
+        .keep()
+        .map_err(|error| error.error)
+        .with_context(|| format!("retaining case-rename temporary in {}", parent.display()))?;
+    if let Err(error) = std::fs::rename(from, &temporary_path) {
+        let _ = std::fs::remove_file(&temporary_path);
+        return Err(error).with_context(|| format!("renaming {}", from.display()));
+    }
+    if let Err(error) = std::fs::rename(&temporary_path, to) {
+        let restore = std::fs::rename(&temporary_path, from);
+        return match restore {
+            Ok(()) => Err(error).with_context(|| format!("renaming to {}", to.display())),
+            Err(restore_error) => bail!(
+                "renaming to {} failed: {error}; restoring {} also failed: {restore_error}",
+                to.display(),
+                from.display()
+            ),
+        };
+    }
+    sync_parent(from);
+    if from.parent() != to.parent() {
+        sync_parent(to);
+    }
+    Ok(())
 }
 
 pub(crate) fn atomic_create_if_missing(path: &Path, content: &[u8]) -> Result<bool> {
@@ -562,6 +695,29 @@ mod tests {
         };
         assert!(error.to_string().contains("hard-linked file"));
         assert_eq!(std::fs::read_to_string(path).unwrap(), "before");
+    }
+
+    #[test]
+    fn removed_file_rollback_restores_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("generated.lean");
+        std::fs::write(&path, "before").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let snapshot = FileSnapshot::capture(&path).unwrap();
+
+        atomic_remove(&path, &snapshot)
+            .unwrap()
+            .unwrap()
+            .rollback()
+            .unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "before");
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[cfg(target_os = "macos")]

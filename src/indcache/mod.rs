@@ -3,15 +3,16 @@ mod queries;
 mod refresh;
 mod schema;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::core::{
-    short_fnode, DependencyItem, DependencyTraversalReport, GraphCheckReport, GraphIssue,
-    GraphRootItem, NodeSummary,
+    short_fnode, DependencyCandidates, DependencyItem, DependencyTraversalReport, GraphCheckReport,
+    GraphIssue, GraphRootItem, NodeSummary,
 };
+use crate::mdocnode::{MdocHead, MdocIdentity, MdocNode};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ResolveRefError {
@@ -27,25 +28,49 @@ pub enum ResolveRefError {
 
 /// SQLite-backed index of a MathDoc workspace.
 pub struct IndCache {
-    pub root: PathBuf,
+    root: PathBuf,
+    control_identity: (u64, u64),
     conn: Connection,
 }
 
 impl IndCache {
     /// Open (or create) the index database for the workspace rooted at `root`.
     pub fn open(root: PathBuf) -> Result<Self> {
-        let root = crate::workspace::validate_mdcroot(&root)?;
-        let _mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&root)?;
-        Self::open_under_mutation_lock(root)
+        let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&root)?;
+        Self::open_under_mutation_lock(&mutation_lock)
     }
 
-    pub(crate) fn open_under_mutation_lock(root: PathBuf) -> Result<Self> {
-        let root = crate::workspace::validate_mdcroot(&root)?;
+    pub(crate) fn open_under_mutation_lock(
+        mutation_lock: &crate::workspace::WorkspaceMutationLock,
+    ) -> Result<Self> {
+        let root = mutation_lock.root()?.to_path_buf();
+        let control_identity = mutation_lock.control_identity()?;
         let db_path = root.join(".mdc").join("index.db");
         let conn = schema::open_db(&db_path)?;
-        let mut cache = IndCache { root, conn };
+        let mut cache = IndCache {
+            root,
+            control_identity,
+            conn,
+        };
         cache.bootstrap_if_needed()?;
         Ok(cache)
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub(crate) fn acquire_mutation_lock(&self) -> Result<crate::workspace::WorkspaceMutationLock> {
+        let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&self.root)?;
+        self.validate_mutation_lock(&mutation_lock)?;
+        Ok(mutation_lock)
+    }
+
+    pub(crate) fn validate_mutation_lock(
+        &self,
+        mutation_lock: &crate::workspace::WorkspaceMutationLock,
+    ) -> Result<()> {
+        mutation_lock.validate_identity(&self.root, self.control_identity)
     }
 
     /// Absolute path to the SQLite database file.
@@ -95,27 +120,19 @@ impl IndCache {
         Ok(())
     }
 
-    /// Upsert a single file path with incremental topo and weak component updates.
+    /// Upsert a single file path and update its topo depths.
     pub fn upsert_path(&mut self, file_path: &Path) -> Result<()> {
         let file_path = crate::workspace::resolve_mdoc_path(&self.root, file_path)?;
         let tx = self.conn.transaction()?;
         let rel_path = crate::workspace::to_rel_path(&self.root, &file_path);
 
-        // Capture pre-upsert state for incremental updates.
+        // Capture pre-upsert identity for incremental topo updates.
         let old_fnode = queries::fnode_for_path(&tx, &rel_path)?;
-        let old_dsts: std::collections::HashSet<String> =
-            queries::edge_targets_for_source_path(&tx, &rel_path)?
-                .into_iter()
-                .collect();
 
         refresh::upsert_mdoc_row(&tx, &self.root, &file_path)?;
 
-        // Post-upsert state.
+        // Post-upsert identity.
         let new_fnode = queries::fnode_for_path(&tx, &rel_path)?;
-        let new_dsts: std::collections::HashSet<String> =
-            queries::edge_targets_for_source_path(&tx, &rel_path)?
-                .into_iter()
-                .collect();
 
         // A rename affects both ancestors of the old token and the new node.
         match (old_fnode.as_deref(), new_fnode.as_deref()) {
@@ -127,17 +144,82 @@ impl IndCache {
             (_, None) => refresh::backfill_all_topo_depths(&tx)?,
         }
 
-        // Incremental weak component update (also clears weak_component_dirty).
-        refresh::update_weak_component_incremental(
-            &tx,
-            old_fnode.as_deref(),
-            new_fnode.as_deref(),
-            &old_dsts,
-            &new_dsts,
-        )?;
-
         tx.commit()?;
         Ok(())
+    }
+
+    /// Create a node and index it as one recoverable operation.
+    pub(crate) fn create_node(
+        &mut self,
+        mutation_lock: &crate::workspace::WorkspaceMutationLock,
+        node: &MdocNode,
+    ) -> Result<()> {
+        self.validate_mutation_lock(mutation_lock)?;
+        let path = self.validate_node_path(node)?;
+        let payload = node.render_payload()?;
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating parent dirs for {}", path.display()))?;
+        }
+        self.validate_mutation_lock(mutation_lock)?;
+        let path = self.validate_node_path(node)?;
+        let applied = crate::workspace::FileSnapshot::Missing.replace(&path, payload.as_bytes())?;
+        if let Err(index_error) = self.upsert_path(&path) {
+            if let Err(rollback_error) = applied.rollback() {
+                return Err(anyhow!(
+                    "{index_error}; additionally failed to remove {}: {rollback_error}",
+                    path.display()
+                ));
+            }
+            if let Err(restore_index_error) = self.upsert_path(&path) {
+                return Err(anyhow!(
+                    "{index_error}; file was removed but its index could not be restored: {restore_index_error}"
+                ));
+            }
+            return Err(index_error);
+        }
+        Ok(())
+    }
+
+    /// Replace a node and update its index entry as one recoverable operation.
+    pub(crate) fn replace_node(
+        &mut self,
+        mutation_lock: &crate::workspace::WorkspaceMutationLock,
+        node: &MdocNode,
+        snapshot: &crate::workspace::FileSnapshot,
+    ) -> Result<()> {
+        self.validate_mutation_lock(mutation_lock)?;
+        let path = self.validate_node_path(node)?;
+        let payload = node.render_payload()?;
+        let applied = snapshot.replace(&path, payload.as_bytes())?;
+        if let Err(index_error) = self.upsert_path(&path) {
+            if let Err(rollback_error) = applied.rollback() {
+                return Err(anyhow!(
+                    "{index_error}; additionally failed to restore {}: {rollback_error}",
+                    path.display()
+                ));
+            }
+            if let Err(restore_index_error) = self.upsert_path(&path) {
+                return Err(anyhow!(
+                    "{index_error}; file was restored but its index could not be restored: {restore_index_error}"
+                ));
+            }
+            return Err(index_error);
+        }
+        Ok(())
+    }
+
+    fn validate_node_path(&self, node: &MdocNode) -> Result<PathBuf> {
+        let node_root = crate::workspace::validate_mdcroot(&node.mdcroot)?;
+        if node_root != self.root {
+            bail!(
+                "node workspace root {} does not match cache root {}",
+                node_root.display(),
+                self.root.display()
+            );
+        }
+        crate::workspace::resolve_mdoc_path(&self.root, &node.path)
     }
 
     /// Upsert all dependencies reachable from `root_path` up to `depth` hops (-1 = infinite).
@@ -145,8 +227,8 @@ impl IndCache {
         let tx = self.conn.transaction()?;
         let upserted_fnodes =
             refresh::refresh_reachable_from_path(&tx, &self.root, root_path, depth)?;
-        // Incremental topo update for each upserted fnode; weak components are handled
-        // lazily via the weak_component_dirty flag already set by bump_graph_epoch.
+        // Incremental topo update for each upserted fnode. Weak components are
+        // rebuilt lazily from the dirty flag when roots are queried.
         for fnode in &upserted_fnodes {
             refresh::refresh_topo_depth_upward_from(&tx, fnode)?;
         }
@@ -160,28 +242,25 @@ impl IndCache {
         queries::mdoc_count(&self.conn)
     }
 
-    pub fn indexed_file_count(&self) -> Result<u32> {
-        queries::indexed_file_count(&self.conn)
-    }
-
-    pub fn fnode_for_path(&self, rel_path: &str) -> Result<Option<String>> {
-        queries::fnode_for_path(&self.conn, rel_path)
-    }
-
     pub fn path_has_blocking_issue(&self, rel_path: &str) -> Result<bool> {
         queries::path_has_blocking_issue(&self.conn, rel_path)
     }
 
-    pub fn knows_fnode(&self, fnode: &str) -> Result<bool> {
-        queries::knows_fnode(&self.conn, fnode)
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<NodeSummary>> {
+        queries::search(&self.conn, query, limit)
     }
 
-    pub fn search(&self, query: &str) -> Result<Vec<(String, String, String)>> {
-        queries::search(&self.conn, query)
+    pub fn all_node_summaries(&self) -> Result<Vec<NodeSummary>> {
+        queries::all_node_summaries(&self.conn)
     }
 
-    pub fn search_with_metadata(&self, query: &str, limit: usize) -> Result<Vec<NodeSummary>> {
-        queries::search_with_metadata(&self.conn, query, limit)
+    pub fn dependency_candidates(
+        &self,
+        source_fnode: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<DependencyCandidates> {
+        queries::dependency_candidates(&self.conn, source_fnode, query, limit)
     }
 
     pub fn node_summary(&self, fnode: &str) -> Result<NodeSummary> {
@@ -215,6 +294,15 @@ impl IndCache {
         queries::ref_item_for_fnode(&self.conn, fnode, depth)
     }
 
+    pub(crate) fn ref_items_for_fnodes(
+        &self,
+        fnodes: &[String],
+        depth: u32,
+    ) -> Result<Vec<DependencyItem>> {
+        let fnodes: Vec<&str> = fnodes.iter().map(String::as_str).collect();
+        queries::ref_items_for_fnodes(&self.conn, &fnodes, depth)
+    }
+
     pub fn referrer_items(&self, target_fnode: &str, depth: i32) -> Result<Vec<DependencyItem>> {
         queries::referrer_items(&self.conn, target_fnode, depth)
     }
@@ -231,7 +319,7 @@ impl IndCache {
         queries::all_topo_depths(&self.conn)
     }
 
-    /// All (src_fnode, dst_fnode) edges between valid nodes.
+    /// All dependency edges whose source document has no blocking issue.
     pub fn all_valid_edges(&self) -> Result<Vec<(String, String)>> {
         queries::all_valid_edges(&self.conn)
     }
@@ -250,10 +338,6 @@ impl IndCache {
 
     pub fn leaf_dependency_report(&self, root_fnode: &str) -> Result<DependencyTraversalReport> {
         queries::leaf_dependency_report(&self.conn, root_fnode)
-    }
-
-    pub fn has_issues(&self, fnode: &str) -> Result<bool> {
-        Ok(self.issue_for_fnode(fnode)?.is_some())
     }
 
     // ── Write-then-read (need &mut for transaction) ───────────────────────────
@@ -297,9 +381,19 @@ impl IndCache {
             if let Some((fnode, title)) = queries::resolve_ref_by_path(&self.conn, &rel_path)? {
                 return Ok((fnode, title, candidate));
             }
-            match crate::mdocnode::read_mdoc_head(&candidate) {
-                Some((fnode, title)) if !fnode.is_empty() => return Ok((fnode, title, candidate)),
-                _ => return Err(ResolveRefError::Invalid(candidate.display().to_string()).into()),
+            let snapshot = crate::workspace::FileSnapshot::capture(&candidate)?;
+            let content = snapshot
+                .content()
+                .ok_or_else(|| ResolveRefError::Invalid(candidate.display().to_string()))?;
+            match MdocHead::load_bytes(&candidate, content) {
+                Ok(head) => return Ok((head.fnode, head.title, candidate)),
+                Err(_) => {
+                    let identity = MdocIdentity::from_bytes(content);
+                    if let Some((fnode, title)) = identity.complete() {
+                        return Ok((fnode.to_string(), title.to_string(), candidate));
+                    }
+                    return Err(ResolveRefError::Invalid(candidate.display().to_string()).into());
+                }
             }
         }
 
@@ -341,6 +435,38 @@ impl IndCache {
             .into());
         };
         Ok((chosen.0.clone(), chosen.1.clone(), chosen.3.clone()))
+    }
+
+    /// Resolve a browser start reference, additionally accepting a unique exact title.
+    pub fn resolve_start_ref(
+        &self,
+        raw_ref: &str,
+        cwd: Option<&Path>,
+    ) -> Result<(String, String, PathBuf)> {
+        let ref_error = match self.resolve_ref(raw_ref, cwd) {
+            Ok(resolved) => return Ok(resolved),
+            Err(error) => error,
+        };
+        let raw_ref = raw_ref.trim();
+        if raw_ref.is_empty() {
+            return Err(ref_error);
+        }
+
+        let mut rows = Vec::new();
+        for (fnode, title, rel_path) in queries::exact_title_rows(&self.conn, raw_ref)? {
+            if let Some(path) = self.valid_cached_path(&rel_path)? {
+                rows.push((fnode, title, rel_path, path));
+            }
+        }
+        match rows.as_slice() {
+            [(fnode, title, _, path)] => Ok((fnode.clone(), title.clone(), path.clone())),
+            [] => Err(ref_error),
+            _ => Err(ResolveRefError::Ambiguous {
+                reference: raw_ref.to_string(),
+                matches: format_ref_preview(&rows.iter().collect::<Vec<_>>()),
+            }
+            .into()),
+        }
     }
 
     /// Like `resolve_ref` but returns only the path (also accepts refs that aren't indexed).
@@ -392,14 +518,21 @@ impl IndCache {
             vec![cwd.join(&raw_path), self.root.join(&raw_path)]
         };
         for candidate in candidates {
-            if std::fs::symlink_metadata(&candidate).is_ok() {
-                let resolved = crate::workspace::resolve_mdoc_path(&self.root, &candidate)?;
-                let meta = std::fs::symlink_metadata(&resolved)?;
-                if meta.file_type().is_symlink() || !meta.is_file() {
-                    bail!("mdoc path is not a regular file: {}", candidate.display());
+            match std::fs::symlink_metadata(&candidate) {
+                Ok(_) => {
+                    let resolved = crate::workspace::resolve_mdoc_path(&self.root, &candidate)?;
+                    let meta = std::fs::symlink_metadata(&resolved)?;
+                    if meta.file_type().is_symlink() || !meta.is_file() {
+                        bail!("mdoc path is not a regular file: {}", candidate.display());
+                    }
+                    let rel_path = self.workspace_rel_path(&resolved)?;
+                    return Ok(Some((resolved, rel_path)));
                 }
-                let rel_path = self.workspace_rel_path(&resolved)?;
-                return Ok(Some((resolved, rel_path)));
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("inspecting {}", candidate.display()))
+                }
             }
         }
         if raw_ref.ends_with(".mdoc") {
@@ -415,7 +548,7 @@ impl IndCache {
         }
         candidate
             .strip_prefix(&self.root)
-            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .map(|p| p.to_string_lossy().into_owned())
             .map_err(|_| {
                 anyhow::anyhow!("mdoc path must be under mdoc root: {}", self.root.display())
             })
@@ -431,4 +564,128 @@ fn format_ref_preview(rows: &[&(String, String, String, PathBuf)]) -> String {
         .map(|(f, _, p, _)| format!("{}:{}", short_fnode(f), p))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+#[cfg(test)]
+mod mutation_boundary_tests {
+    use super::*;
+
+    fn workspace() -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join(".mdc")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn create_rejects_a_mutation_lock_from_another_cache() {
+        let first = workspace();
+        let second = workspace();
+        let mut cache = IndCache::open(first.path().to_path_buf()).unwrap();
+        let other_cache = IndCache::open(second.path().to_path_buf()).unwrap();
+        let other_lock = other_cache.acquire_mutation_lock().unwrap();
+        let path = first.path().join("node.mdoc");
+        let node = MdocNode::new_at_path(first.path(), &path, "Node");
+
+        let error = cache.create_node(&other_lock, &node).unwrap_err();
+
+        assert!(error.to_string().contains("does not match cache root"));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn create_rejects_a_node_from_another_workspace_before_writing() {
+        let first = workspace();
+        let second = workspace();
+        let mut cache = IndCache::open(first.path().to_path_buf()).unwrap();
+        let mutation_lock = cache.acquire_mutation_lock().unwrap();
+        let path = second.path().join("node.mdoc");
+        let node = MdocNode::new_at_path(second.path(), &path, "Node");
+
+        let error = cache.create_node(&mutation_lock, &node).unwrap_err();
+
+        assert!(error.to_string().contains("does not match cache root"));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn create_builds_parents_and_indexes_the_validated_path() {
+        let workspace = workspace();
+        let mut cache = IndCache::open(workspace.path().to_path_buf()).unwrap();
+        let mutation_lock = cache.acquire_mutation_lock().unwrap();
+        let path = workspace.path().join("notes/nested/node.mdoc");
+        let mut node = MdocNode::new_at_path(workspace.path(), &path, "Node");
+        node.fnode = "created-node".to_string();
+
+        cache.create_node(&mutation_lock, &node).unwrap();
+
+        assert!(path.is_file());
+        assert_eq!(cache.exact_fnode_rows("created-node").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn create_rolls_back_file_and_recovers_index_after_index_failure() {
+        let workspace = workspace();
+        let mut cache = IndCache::open(workspace.path().to_path_buf()).unwrap();
+        cache
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER reject_created_node
+                 BEFORE INSERT ON mdocs
+                 WHEN NEW.fnode = 'created-node'
+                 BEGIN
+                     SELECT RAISE(ABORT, 'injected index failure');
+                 END;",
+            )
+            .unwrap();
+        let mutation_lock = cache.acquire_mutation_lock().unwrap();
+        let path = workspace.path().join("created.mdoc");
+        let mut node = MdocNode::new_at_path(workspace.path(), &path, "Node");
+        node.fnode = "created-node".to_string();
+
+        let error = cache.create_node(&mutation_lock, &node).unwrap_err();
+
+        assert!(error.to_string().contains("injected index failure"));
+        assert!(!path.exists());
+        assert!(cache.exact_fnode_rows("created-node").unwrap().is_empty());
+    }
+
+    #[test]
+    fn replace_rejects_an_outside_path_before_writing() {
+        let workspace = workspace();
+        let outside = tempfile::TempDir::new().unwrap();
+        let mut cache = IndCache::open(workspace.path().to_path_buf()).unwrap();
+        let mutation_lock = cache.acquire_mutation_lock().unwrap();
+        let path = outside.path().join("node.mdoc");
+        let node = MdocNode::new_at_path(workspace.path(), &path, "Node");
+
+        let error = cache
+            .replace_node(
+                &mutation_lock,
+                &node,
+                &crate::workspace::FileSnapshot::Missing,
+            )
+            .unwrap_err();
+
+        assert!(error.to_string().contains("outside workspace"));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn cache_rejects_a_replaced_control_directory() {
+        let workspace = workspace();
+        let cache = IndCache::open(workspace.path().to_path_buf()).unwrap();
+        std::fs::rename(
+            workspace.path().join(".mdc"),
+            workspace.path().join("old-mdc"),
+        )
+        .unwrap();
+        std::fs::create_dir(workspace.path().join(".mdc")).unwrap();
+
+        let error = match cache.acquire_mutation_lock() {
+            Err(error) => error,
+            Ok(_) => panic!("expected replaced control directory to be rejected"),
+        };
+
+        assert!(error.to_string().contains("does not match the cache"));
+    }
 }

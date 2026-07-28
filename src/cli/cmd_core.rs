@@ -2,11 +2,10 @@ use anyhow::Result;
 use std::ffi::OsStr;
 use std::path::Path;
 
-use crate::config::default_for_srctype;
 use crate::depgraph::DepGraph;
 use crate::indcache::IndCache;
 
-use super::{cwd, fmt_item, open_cache, require_mdcroot, BLD, CYN, RST};
+use super::{cwd, fmt_item, print_workdraft_issues, require_mdcroot, BLD, CYN, RST};
 
 // ── cmd: edit ─────────────────────────────────────────────────────────────────
 
@@ -25,7 +24,7 @@ pub(super) fn launch_editor_with(editor: &OsStr, path: &Path) -> Result<()> {
 
 pub(super) fn cmd_edit(source: String) -> Result<i32> {
     let mdcroot = require_mdcroot()?;
-    let mut cache = open_cache(mdcroot)?;
+    let mut cache = IndCache::open(mdcroot)?;
     cache.discover_workspace_changes()?;
     let path = cache.resolve_edit_target_path(&source, Some(&cwd()))?;
     launch_editor(&path)?;
@@ -35,38 +34,9 @@ pub(super) fn cmd_edit(source: String) -> Result<i32> {
 
 // ── cmd: init ─────────────────────────────────────────────────────────────────
 
-fn generate_config_toml() -> String {
-    let mut out = String::from(
-        "# MathDoc configuration\n\
-         # Uncomment and edit sections below to override built-in defaults.\n\
-         # Preamble/postamble are managed as files in .mdc/<srctype>/.\n",
-    );
-
-    for srctype in crate::config::BUILTIN_SRCTYPES {
-        let cfg = default_for_srctype(srctype);
-        out.push('\n');
-        out.push_str(&format!("# [src.{srctype}]\n"));
-
-        if let Some(v) = cfg.depens {
-            out.push_str(&format!("# depens = {v}\n"));
-        }
-        if let Some(v) = cfg.reverse_depens {
-            out.push_str(&format!("# reverse_depens = {v}\n"));
-        }
-        if let Some(v) = cfg.timeout_sec {
-            out.push_str(&format!("# timeout_sec = {v}\n"));
-        }
-        if let Some(v) = cfg.setup_timeout_sec {
-            out.push_str(&format!("# setup_timeout_sec = {v}\n"));
-        }
-    }
-
-    out
-}
-
 pub(super) fn cmd_init() -> Result<i32> {
-    let mdcroot = cwd();
-    let changed = init_workspace(&mdcroot)?;
+    let mdcroot = std::env::current_dir()?;
+    let changed = crate::workspace::initialize(&mdcroot)?;
     if changed {
         println!("mdoc folder initialized");
     } else {
@@ -78,27 +48,13 @@ pub(super) fn cmd_init() -> Result<i32> {
     Ok(0)
 }
 
-fn init_workspace(mdcroot: &Path) -> Result<bool> {
-    let mdc = mdcroot.join(".mdc");
-    let mut changed = crate::workspace::ensure_regular_directory_exists(&mdc)?;
-    changed |= crate::workspace::atomic_create_if_missing(
-        &mdc.join("config.toml"),
-        generate_config_toml().as_bytes(),
-    )?;
-    changed |= crate::config::init_amble_files(mdcroot)?;
-    Ok(changed)
-}
-
 // ── cmd: new ──────────────────────────────────────────────────────────────────
 
 pub(super) fn cmd_new(title: String, file: String) -> Result<i32> {
     let mdcroot = require_mdcroot()?;
-    let cache = open_cache(mdcroot.clone())?;
-    let graph = DepGraph::create_root(mdcroot, &file, &title, None, Some(cache))?;
-    let item = {
-        let mut g = graph;
-        g.root_item()?
-    };
+    let mut cache = IndCache::open(mdcroot)?;
+    let graph = DepGraph::create_root(&mut cache, &file, &title, None)?;
+    let item = graph.root_item()?;
     println!(
         "created  {}",
         fmt_item(&item.fnode, &item.title, &item.rel_path, false)
@@ -110,11 +66,27 @@ pub(super) fn cmd_new(title: String, file: String) -> Result<i32> {
 
 pub(super) fn cmd_sync() -> Result<i32> {
     let mdcroot = require_mdcroot()?;
-    let mut cache = IndCache::open(mdcroot)?;
+    let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&mdcroot)?;
+    let mut cache = IndCache::open_under_mutation_lock(&mutation_lock)?;
     cache.refresh_all()?;
     let total = cache.count()?;
+    let draft = crate::workdraft::sync(&mutation_lock)?;
     println!("synced  {BLD}{total}{RST} mdocs");
-    Ok(0)
+    println!(
+        "exported {BLD}{}{RST} source files from {} valid mdocs ({} updated, {} removed)",
+        draft.valid_mdocs * crate::config::BUILTIN_SRCTYPES.len(),
+        draft.valid_mdocs,
+        draft.updated,
+        draft.removed
+    );
+    print_workdraft_issues(&draft.warnings);
+    print_workdraft_issues(&draft.dirty);
+    print_workdraft_issues(&draft.conflicts);
+    Ok(if draft.dirty.is_empty() && draft.conflicts.is_empty() {
+        0
+    } else {
+        1
+    })
 }
 
 // ── cmd: search ───────────────────────────────────────────────────────────────
@@ -125,68 +97,20 @@ pub(super) fn cmd_search(query: String, max_results: usize) -> Result<i32> {
         return Err(anyhow::anyhow!("query cannot be empty"));
     }
     let mdcroot = require_mdcroot()?;
-    let mut cache = open_cache(mdcroot)?;
+    let mut cache = IndCache::open(mdcroot)?;
     cache.discover_workspace_changes()?;
-    let rows = cache.search(&q)?;
-    let shown: Vec<_> = rows.iter().take(max_results).collect();
+    let rows = cache.search(&q, max_results)?;
 
     println!(
         "{BLD}{}{RST} result{} for {CYN}{q}{RST}",
-        shown.len(),
-        if shown.len() == 1 { "" } else { "s" }
+        rows.len(),
+        if rows.len() == 1 { "" } else { "s" }
     );
-    for (fnode, title, rel_path) in &shown {
-        println!("  {}", fmt_item(fnode, title, rel_path, false));
+    for node in &rows {
+        println!(
+            "  {}",
+            fmt_item(&node.fnode, &node.title, &node.rel_path, node.broken)
+        );
     }
     Ok(0)
-}
-
-#[cfg(test)]
-mod init_tests {
-    use super::*;
-
-    #[test]
-    fn init_repairs_partial_workspace_without_overwriting_files() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let mdc = dir.path().join(".mdc");
-        std::fs::create_dir(&mdc).unwrap();
-        std::fs::write(mdc.join("config.toml"), "# custom\n").unwrap();
-        std::fs::create_dir(mdc.join("latex")).unwrap();
-        std::fs::write(mdc.join("latex/preamble.tex"), "custom preamble\n").unwrap();
-
-        assert!(init_workspace(dir.path()).unwrap());
-        assert_eq!(
-            std::fs::read_to_string(mdc.join("config.toml")).unwrap(),
-            "# custom\n"
-        );
-        assert_eq!(
-            std::fs::read_to_string(mdc.join("latex/preamble.tex")).unwrap(),
-            "custom preamble\n"
-        );
-        assert_eq!(
-            std::fs::read_to_string(mdc.join("latex/postamble.tex")).unwrap(),
-            crate::config::default_postamble("latex")
-        );
-        assert!(!init_workspace(dir.path()).unwrap());
-    }
-
-    #[test]
-    fn init_rejects_non_directory_control_path() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join(".mdc"), "not a directory").unwrap();
-        assert!(init_workspace(dir.path()).is_err());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn init_rejects_symlinked_control_path() {
-        use std::os::unix::fs::symlink;
-
-        let dir = tempfile::TempDir::new().unwrap();
-        let outside = tempfile::TempDir::new().unwrap();
-        symlink(outside.path(), dir.path().join(".mdc")).unwrap();
-
-        assert!(init_workspace(dir.path()).is_err());
-        assert!(!outside.path().join("config.toml").exists());
-    }
 }

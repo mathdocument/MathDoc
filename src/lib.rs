@@ -18,4 +18,6 @@ pub mod mdocnode;
 #[cfg(unix)]
 pub mod web;
 #[cfg(unix)]
+pub(crate) mod workdraft;
+#[cfg(unix)]
 pub mod workspace;

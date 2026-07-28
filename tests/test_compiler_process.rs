@@ -27,7 +27,7 @@ fn ctrl_c_escalates_and_returns_signal_exit_code() {
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_mdc"))
         .current_dir(root)
-        .args(["work", &node.fnode, "--compile"])
+        .args(["work", &node.fnode])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -77,7 +77,7 @@ fn tool_missing_returns_127_from_cli() {
     let status = Command::new(env!("CARGO_BIN_EXE_mdc"))
         .current_dir(dir.path())
         .env("PATH", &empty_path)
-        .args(["work", &fnode, "--compile"])
+        .args(["work", &fnode])
         .status()
         .unwrap();
 
@@ -109,7 +109,7 @@ fn compiler_timeout_returns_124_from_cli() {
     let status = Command::new(env!("CARGO_BIN_EXE_mdc"))
         .current_dir(dir.path())
         .env("PATH", &bin)
-        .args(["work", &fnode, "--compile"])
+        .args(["work", &fnode])
         .status()
         .unwrap();
 

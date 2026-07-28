@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 14;
+const SCHEMA_VERSION: i32 = 15;
 
 const CREATE_SQL: &str = "
 CREATE TABLE IF NOT EXISTS mdocs (
@@ -41,6 +41,15 @@ CREATE TABLE IF NOT EXISTS mdoc_issues (
 CREATE INDEX IF NOT EXISTS idx_mdoc_issues_kind      ON mdoc_issues(kind);
 CREATE INDEX IF NOT EXISTS idx_mdoc_issues_ref_fnode ON mdoc_issues(ref_fnode);
 
+CREATE VIEW IF NOT EXISTS mdoc_valid_edges AS
+SELECT e.src_path, e.src_fnode, e.dst_fnode, e.ord
+FROM mdoc_edges e
+WHERE NOT EXISTS (
+    SELECT 1 FROM mdoc_issues i
+    WHERE i.path = e.src_path
+      AND i.kind IN ('invalid', 'duplicate')
+);
+
 CREATE TABLE IF NOT EXISTS mdoc_index_state (
     id                   INTEGER PRIMARY KEY CHECK (id = 1),
     bootstrapped         INTEGER NOT NULL DEFAULT 0,
@@ -62,12 +71,12 @@ CREATE TABLE IF NOT EXISTS mdoc_scc_result (
 
 CREATE TABLE IF NOT EXISTS mdoc_weak_component (
     fnode          TEXT    PRIMARY KEY,
-    component_id   TEXT    NOT NULL DEFAULT '',
     component_size INTEGER NOT NULL DEFAULT 1
 );
 ";
 
 const RESET_SQL: &str = "
+DROP VIEW IF EXISTS mdoc_valid_edges;
 DROP TABLE IF EXISTS mdoc_weak_component;
 DROP TABLE IF EXISTS mdoc_scc_result;
 DROP TABLE IF EXISTS mdoc_in_degree;
@@ -194,6 +203,40 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn valid_edge_view_filters_only_blocking_source_issues() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_db(&dir.path().join("index.db")).unwrap();
+        conn.execute_batch(
+            "INSERT INTO mdoc_edges (src_path, src_fnode, dst_fnode, ord) VALUES
+                 ('valid.mdoc', 'valid', 'target', 0),
+                 ('missing.mdoc', 'missing', 'target', 0),
+                 ('invalid.mdoc', 'invalid', 'target', 0),
+                 ('duplicate.mdoc', 'duplicate', 'target', 0);
+             INSERT INTO mdoc_issues (path, kind, ref_fnode, error) VALUES
+                 ('missing.mdoc', 'missing', 'absent', 'missing target'),
+                 ('invalid.mdoc', 'invalid', 'invalid', 'invalid source'),
+                 ('duplicate.mdoc', 'duplicate', 'duplicate', 'duplicate source');",
+        )
+        .unwrap();
+
+        let rows: Vec<(String, String)> = conn
+            .prepare("SELECT src_fnode, dst_fnode FROM mdoc_valid_edges ORDER BY src_fnode")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+
+        assert_eq!(
+            rows,
+            vec![
+                ("missing".to_string(), "target".to_string()),
+                ("valid".to_string(), "target".to_string()),
+            ]
+        );
     }
 
     #[test]

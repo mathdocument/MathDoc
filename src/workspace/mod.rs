@@ -8,9 +8,20 @@ mod safe_file;
 
 pub(crate) use mutation_lock::WorkspaceMutationLock;
 pub(crate) use safe_file::{
-    atomic_create_if_missing, atomic_replace, ensure_regular_directory,
-    ensure_regular_directory_exists, AppliedWrite, FileConflict, FileSnapshot,
+    atomic_create_if_missing, ensure_regular_directory, ensure_regular_directory_exists,
+    AppliedRename, AppliedWrite, FileConflict, FileSnapshot,
 };
+
+/// Initialize the workspace control directory and its default configuration.
+pub fn initialize(root: &Path) -> Result<bool> {
+    let control_dir = root.join(".mdc");
+    let mut changed = ensure_regular_directory_exists(&control_dir)?;
+    changed |= atomic_create_if_missing(
+        &control_dir.join("config.toml"),
+        crate::config::config_template().as_bytes(),
+    )?;
+    Ok(changed)
+}
 
 /// Walk up from `start` looking for a `.mdc/` directory. Returns the workspace root if found.
 pub fn find_mdcroot(start: &Path) -> Option<PathBuf> {
@@ -79,7 +90,7 @@ pub fn iter_mdoc_files(root: &Path) -> impl Iterator<Item = Result<PathBuf>> + '
                     return false;
                 }
                 // Skip non-root directories that are nested workspace roots
-                if entry.depth() > 0 && entry.path().join(".mdc").is_dir() {
+                if entry.depth() > 0 && is_regular_directory(&entry.path().join(".mdc")) {
                     return false;
                 }
             }
@@ -97,11 +108,11 @@ pub fn iter_mdoc_files(root: &Path) -> impl Iterator<Item = Result<PathBuf>> + '
         })
 }
 
-/// Convert `path` to a POSIX-style string relative to `root`.
+/// Convert `path` to a display string relative to `root`.
 /// Caller must ensure both are canonicalized. Falls back to the absolute path on error.
 pub fn to_rel_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| path.to_string_lossy().into_owned())
 }
 
@@ -176,7 +187,41 @@ pub(crate) fn resolve_mdoc_path(root: &Path, file_path: &Path) -> Result<PathBuf
     Ok(resolved)
 }
 
-pub(crate) fn validate_workspace_relative_path(relative: &Path, original: &Path) -> Result<()> {
+/// Resolve an unused path for a new `.mdoc` file. `raw_target` is relative to
+/// the workspace and may omit the extension; `.` uses the node fnode as name.
+pub(crate) fn resolve_new_mdoc_path(root: &Path, raw_target: &str, fnode: &str) -> Result<PathBuf> {
+    let target = raw_target.trim();
+    let candidate = if target.is_empty() || target == "." {
+        root.join(format!("{fnode}.mdoc"))
+    } else {
+        let relative = Path::new(target);
+        if relative.is_absolute() {
+            bail!("target path must be relative to the mdoc root");
+        }
+        let joined = root.join(relative);
+        if joined.extension().and_then(|ext| ext.to_str()) == Some("mdoc") {
+            joined
+        } else {
+            let stem = joined
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("invalid target path"))?
+                .to_string_lossy();
+            joined.with_file_name(format!("{stem}.mdoc"))
+        }
+    };
+
+    validate_new_mdoc_path(root, &candidate)
+}
+
+pub(crate) fn validate_new_mdoc_path(root: &Path, candidate: &Path) -> Result<PathBuf> {
+    let resolved = resolve_mdoc_path(root, candidate)?;
+    if std::fs::symlink_metadata(&resolved).is_ok() {
+        bail!("mdoc file already exists: {}", resolved.display());
+    }
+    Ok(resolved)
+}
+
+fn validate_workspace_relative_path(relative: &Path, original: &Path) -> Result<()> {
     for (index, component) in relative.components().enumerate() {
         let std::path::Component::Normal(name) = component else {
             bail!("invalid mdoc path: {}", original.display());

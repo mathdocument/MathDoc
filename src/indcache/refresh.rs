@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -8,7 +8,7 @@ use crate::indcache::queries::{
     compute_all_topo_depths_from_edges, edge_targets_for_source_path, fnode_for_path,
     path_for_fnode_if_unique, path_has_blocking_issue, CHUNK_SIZE,
 };
-use crate::mdocnode::{read_mdoc_head, MdocNode};
+use crate::mdocnode::{MdocHead, MdocIdentity};
 use crate::workspace::{find_nested_mdcroot, iter_mdoc_files, to_rel_path};
 
 // ── Public write functions ────────────────────────────────────────────────────
@@ -127,16 +127,27 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
 
     let rel_path = to_rel_path(&root_resolved, &file_path);
     let old_fnode = fnode_for_path(conn, &rel_path)?;
+    let old_had_blocking_issue = path_has_blocking_issue(conn, &rel_path)?;
 
     let meta = match std::fs::metadata(&file_path) {
         Ok(m) if m.is_file() => m,
-        _ => {
+        Ok(_) => bail!("mdoc path is not a regular file: {}", file_path.display()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             delete_indexed_path(conn, &rel_path)?;
             return Ok(());
         }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("reading metadata for {}", file_path.display()))
+        }
+    };
+    let snapshot = crate::workspace::FileSnapshot::capture(&file_path)?;
+    let Some(content) = snapshot.content() else {
+        delete_indexed_path(conn, &rel_path)?;
+        return Ok(());
     };
 
-    let (mtime_ns, size) = metadata_state(&meta);
+    let (mtime_ns, size) = metadata_state(&meta)?;
 
     conn.execute(
         "INSERT INTO mdoc_files (path, mtime_ns, size)
@@ -146,9 +157,6 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
              size = excluded.size",
         rusqlite::params![rel_path, mtime_ns, size],
     )?;
-
-    // Quick head read (fallback for mdocs row if full parse fails)
-    let head = read_mdoc_head(&file_path);
 
     // Snapshot old edge targets before clearing
     let old_dst_fnodes: HashSet<String> = {
@@ -161,38 +169,37 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
     conn.execute("DELETE FROM mdoc_edges WHERE src_path = ?", [&rel_path])?;
     conn.execute("DELETE FROM mdoc_issues WHERE path = ?", [&rel_path])?;
 
-    // Full parse (headers + deps, no block content)
-    let parse_result = MdocNode::load_head(&root_resolved, &file_path);
+    // Strict structural parse and tolerant identity fallback both use this one
+    // captured byte generation.
+    let parse_result = MdocHead::load_bytes(&file_path, content);
     let new_fnode: Option<String>;
     let mut new_dst_fnodes: HashSet<String> = HashSet::new();
 
     match parse_result {
-        Ok(node) => {
-            new_fnode = Some(node.fnode.clone());
+        Ok(head) => {
+            new_fnode = Some(head.fnode.clone());
 
             // Before inserting, remove any stale rows that share this fnode
             // at a different path (file was renamed/moved). This must happen
             // BEFORE upsert_search_row to avoid UNIQUE constraint violations
             // if the DB schema enforces fnode uniqueness.
-            cleanup_stale_fnode_paths(conn, &root_resolved, &node.fnode, &rel_path)?;
+            cleanup_stale_fnode_paths(conn, &root_resolved, &head.fnode, &rel_path)?;
 
-            upsert_search_row(conn, &rel_path, &node.fnode, &node.title)?;
-            for (order, dep_fnode) in node.depens.iter().enumerate() {
+            upsert_search_row(conn, &rel_path, &head.fnode, &head.title)?;
+            for (order, dep_fnode) in head.depens.iter().enumerate() {
                 conn.execute(
                     "INSERT INTO mdoc_edges (src_path, src_fnode, dst_fnode, ord)
                      VALUES (?, ?, ?, ?)",
-                    rusqlite::params![rel_path, node.fnode, dep_fnode, order as i64],
+                    rusqlite::params![rel_path, head.fnode, dep_fnode, order as i64],
                 )?;
                 new_dst_fnodes.insert(dep_fnode.clone());
             }
         }
         Err(e) => {
-            let ref_fnode = head
-                .as_ref()
-                .map(|(f, _)| f.as_str())
-                .unwrap_or("<unknown>");
-            new_fnode = head.as_ref().map(|(f, _)| f.clone());
-            match &head {
+            let identity = MdocIdentity::from_bytes(content);
+            let ref_fnode = identity.fnode.as_deref().unwrap_or("<unknown>");
+            new_fnode = identity.fnode.clone();
+            match identity.complete() {
                 Some((fnode, title)) => {
                     cleanup_stale_fnode_paths(conn, &root_resolved, fnode, &rel_path)?;
                     upsert_search_row(conn, &rel_path, fnode, title)?;
@@ -210,6 +217,7 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
     refresh_missing_issues_for_source(conn, &rel_path)?;
     refresh_missing_issues_for_target(conn, old_fnode.as_deref())?;
     refresh_missing_issues_for_target(conn, new_fnode.as_deref())?;
+    let new_has_blocking_issue = path_has_blocking_issue(conn, &rel_path)?;
 
     // Collect all fnodes whose in_degree may have changed
     let mut affected: HashSet<String> = old_dst_fnodes.union(&new_dst_fnodes).cloned().collect();
@@ -225,7 +233,16 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
     }
     refresh_in_degree_for_fnodes(conn, &affected)?;
 
-    if old_fnode != new_fnode || old_dst_fnodes != new_dst_fnodes {
+    // Blocking issues filter edges and nodes without changing their stored
+    // identities. In particular, a duplicate claimant becoming a malformed
+    // partial identity can make another claimant valid while this path remains
+    // blocking and reports the same fallback fnode. Conservatively invalidate
+    // graph-derived caches whenever a touched path is or was blocking.
+    if old_fnode != new_fnode
+        || old_dst_fnodes != new_dst_fnodes
+        || old_had_blocking_issue
+        || new_has_blocking_issue
+    {
         bump_graph_epoch(conn)?;
     }
     Ok(())
@@ -234,6 +251,7 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
 /// Remove all index entries for a path (file deleted or moved).
 pub fn delete_indexed_path(conn: &Connection, stale_path: &str) -> Result<()> {
     let old_fnode = fnode_for_path(conn, stale_path)?;
+    let old_had_blocking_issue = path_has_blocking_issue(conn, stale_path)?;
     let old_dst_fnodes: HashSet<String> = {
         let mut stmt = conn.prepare("SELECT dst_fnode FROM mdoc_edges WHERE src_path = ?")?;
         let rows: HashSet<String> = stmt
@@ -259,7 +277,7 @@ pub fn delete_indexed_path(conn: &Connection, stale_path: &str) -> Result<()> {
     }
     refresh_in_degree_for_fnodes(conn, &affected)?;
 
-    if old_fnode.is_some() {
+    if old_fnode.is_some() || !affected.is_empty() || old_had_blocking_issue {
         bump_graph_epoch(conn)?;
     }
     Ok(())
@@ -271,24 +289,16 @@ pub fn delete_indexed_path(conn: &Connection, stale_path: &str) -> Result<()> {
 fn compute_node_topo_depth(conn: &Connection, fnode: &str) -> Result<u32> {
     let max_dep: Option<u32> = conn.query_row(
         "SELECT MAX(m.topo_depth)
-         FROM mdoc_edges e
+         FROM mdoc_valid_edges e
          LEFT JOIN mdocs m ON m.fnode = e.dst_fnode
-         WHERE e.src_fnode = ?
-           AND NOT EXISTS (
-             SELECT 1 FROM mdoc_issues i
-             WHERE i.path = e.src_path AND i.kind IN ('invalid', 'duplicate')
-           )",
+         WHERE e.src_fnode = ?",
         [fnode],
         |r| r.get::<_, Option<u32>>(0),
     )?;
     let has_deps: bool = conn.query_row(
         "SELECT EXISTS (
-             SELECT 1 FROM mdoc_edges e
+             SELECT 1 FROM mdoc_valid_edges e
              WHERE e.src_fnode = ?
-               AND NOT EXISTS (
-                 SELECT 1 FROM mdoc_issues i
-                 WHERE i.path = e.src_path AND i.kind IN ('invalid', 'duplicate')
-               )
          )",
         [fnode],
         |row| row.get(0),
@@ -309,12 +319,8 @@ pub(crate) fn refresh_topo_depth_upward_from(conn: &Connection, start_fnode: &st
     let mut queue: VecDeque<String> = VecDeque::from([start_fnode.to_string()]);
     let mut stmt = conn.prepare(
         "SELECT DISTINCT e.src_fnode
-         FROM mdoc_edges e
-         WHERE e.dst_fnode = ?
-           AND NOT EXISTS (
-             SELECT 1 FROM mdoc_issues i
-             WHERE i.path = e.src_path AND i.kind IN ('invalid', 'duplicate')
-           )",
+         FROM mdoc_valid_edges e
+         WHERE e.dst_fnode = ?",
     )?;
     while let Some(fnode) = queue.pop_front() {
         let parents: Vec<String> = stmt
@@ -383,270 +389,6 @@ pub(crate) fn backfill_all_topo_depths(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-// ── Incremental weak component helpers ───────────────────────────────────────
-
-/// Insert a node as its own isolated component (no-op if already present).
-fn ensure_component_entry(conn: &Connection, fnode: &str) -> Result<()> {
-    if fnode.starts_with('<') && fnode.ends_with('>') {
-        return Ok(());
-    }
-    conn.execute(
-        "INSERT OR IGNORE INTO mdoc_weak_component (fnode, component_id, component_size)
-         VALUES (?, ?, 1)",
-        rusqlite::params![fnode, fnode],
-    )?;
-    Ok(())
-}
-
-/// Union the components of `u` and `v`. Merges smaller into larger by size.
-fn union_components(conn: &Connection, u: &str, v: &str) -> Result<()> {
-    if (u.starts_with('<') && u.ends_with('>')) || (v.starts_with('<') && v.ends_with('>')) {
-        return Ok(());
-    }
-    ensure_component_entry(conn, u)?;
-    ensure_component_entry(conn, v)?;
-
-    let row_u: Option<(String, u32)> = conn
-        .query_row(
-            "SELECT component_id, component_size FROM mdoc_weak_component WHERE fnode = ?",
-            [u],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .ok();
-    let row_v: Option<(String, u32)> = conn
-        .query_row(
-            "SELECT component_id, component_size FROM mdoc_weak_component WHERE fnode = ?",
-            [v],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .ok();
-    let (cid_u, size_u) = match row_u {
-        Some(r) => r,
-        None => return Ok(()),
-    };
-    let (cid_v, size_v) = match row_v {
-        Some(r) => r,
-        None => return Ok(()),
-    };
-    if cid_u == cid_v {
-        return Ok(());
-    }
-    let (keep, replace, new_size) = if size_u >= size_v {
-        (cid_u, cid_v, size_u + size_v)
-    } else {
-        (cid_v, cid_u, size_u + size_v)
-    };
-    conn.execute(
-        "UPDATE mdoc_weak_component SET component_id = ?, component_size = ?
-         WHERE component_id IN (?, ?)",
-        rusqlite::params![keep, new_size, keep, replace],
-    )?;
-    Ok(())
-}
-
-/// Build undirected adjacency (restricted to `members`) from the current `mdoc_edges` table.
-fn build_undirected_adj_for_members(
-    conn: &Connection,
-    members: &HashSet<String>,
-) -> Result<HashMap<String, HashSet<String>>> {
-    let mut adj: HashMap<String, HashSet<String>> = members
-        .iter()
-        .map(|m| (m.clone(), HashSet::new()))
-        .collect();
-
-    let member_vec: Vec<&str> = members.iter().map(|s| s.as_str()).collect();
-    for chunk in member_vec.chunks(CHUNK_SIZE) {
-        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!(
-            "SELECT DISTINCT src_fnode, dst_fnode FROM mdoc_edges
-             WHERE src_fnode IN ({placeholders})
-               AND NOT EXISTS (
-                 SELECT 1 FROM mdoc_issues
-                 WHERE mdoc_issues.path = mdoc_edges.src_path
-                   AND mdoc_issues.kind IN ('invalid', 'duplicate')
-               )"
-        );
-        let params: Vec<&dyn rusqlite::types::ToSql> = chunk
-            .iter()
-            .map(|f| f as &dyn rusqlite::types::ToSql)
-            .collect();
-        let mut stmt = conn.prepare(&sql)?;
-        for row in stmt.query_map(params.as_slice(), |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })? {
-            let (src, dst) = row?;
-            if members.contains(&dst) {
-                adj.entry(src.clone()).or_default().insert(dst.clone());
-                adj.entry(dst).or_default().insert(src);
-            }
-        }
-    }
-    Ok(adj)
-}
-
-/// BFS from `start` using undirected `adj`. Returns the set of reachable nodes.
-fn bfs_reachable(adj: &HashMap<String, HashSet<String>>, start: &str) -> HashSet<String> {
-    use std::collections::VecDeque;
-    let mut visited: HashSet<String> = HashSet::new();
-    if !adj.contains_key(start) {
-        return visited;
-    }
-    let mut queue: VecDeque<String> = VecDeque::from([start.to_string()]);
-    while let Some(node) = queue.pop_front() {
-        if !visited.insert(node.clone()) {
-            continue;
-        }
-        for nb in adj.get(&node).into_iter().flatten() {
-            if !visited.contains(nb.as_str()) {
-                queue.push_back(nb.clone());
-            }
-        }
-    }
-    visited
-}
-
-/// After edge `u → v` removal, check if `u` and `v` are still connected; split if not.
-fn check_and_split_component(conn: &Connection, u: &str, v: &str) -> Result<()> {
-    if (u.starts_with('<') && u.ends_with('>')) || (v.starts_with('<') && v.ends_with('>')) {
-        return Ok(());
-    }
-    let cid_u: Option<String> = conn
-        .query_row(
-            "SELECT component_id FROM mdoc_weak_component WHERE fnode = ?",
-            [u],
-            |r| r.get(0),
-        )
-        .ok();
-    let cid_v: Option<String> = conn
-        .query_row(
-            "SELECT component_id FROM mdoc_weak_component WHERE fnode = ?",
-            [v],
-            |r| r.get(0),
-        )
-        .ok();
-    let (cid_u, cid_v) = match (cid_u, cid_v) {
-        (Some(a), Some(b)) => (a, b),
-        _ => return Ok(()),
-    };
-    if cid_u != cid_v {
-        return Ok(());
-    }
-
-    // Get all members of this component
-    let mut stmt = conn.prepare("SELECT fnode FROM mdoc_weak_component WHERE component_id = ?")?;
-    let members: HashSet<String> = stmt
-        .query_map([&cid_u], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    if members.len() <= 1 {
-        return Ok(());
-    }
-
-    let adj = build_undirected_adj_for_members(conn, &members)?;
-    let u_side = bfs_reachable(&adj, u);
-    if u_side.contains(v) {
-        return Ok(());
-    }
-
-    let v_side: HashSet<String> = members.difference(&u_side).cloned().collect();
-    let new_cid_u = u_side
-        .iter()
-        .min()
-        .cloned()
-        .unwrap_or_else(|| u.to_string());
-    let new_cid_v = v_side
-        .iter()
-        .min()
-        .cloned()
-        .unwrap_or_else(|| v.to_string());
-    let sz_u = u_side.len() as u32;
-    let sz_v = v_side.len() as u32;
-
-    for chunk in u_side.iter().collect::<Vec<_>>().chunks(CHUNK_SIZE) {
-        let ph = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!(
-            "UPDATE mdoc_weak_component SET component_id = ?, component_size = ?
-             WHERE fnode IN ({ph})"
-        );
-        let mut params: Vec<&dyn rusqlite::types::ToSql> = vec![
-            &new_cid_u as &dyn rusqlite::types::ToSql,
-            &sz_u as &dyn rusqlite::types::ToSql,
-        ];
-        params.extend(chunk.iter().map(|f| *f as &dyn rusqlite::types::ToSql));
-        conn.execute(&sql, params.as_slice())?;
-    }
-    for chunk in v_side.iter().collect::<Vec<_>>().chunks(CHUNK_SIZE) {
-        let ph = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!(
-            "UPDATE mdoc_weak_component SET component_id = ?, component_size = ?
-             WHERE fnode IN ({ph})"
-        );
-        let mut params: Vec<&dyn rusqlite::types::ToSql> = vec![
-            &new_cid_v as &dyn rusqlite::types::ToSql,
-            &sz_v as &dyn rusqlite::types::ToSql,
-        ];
-        params.extend(chunk.iter().map(|f| *f as &dyn rusqlite::types::ToSql));
-        conn.execute(&sql, params.as_slice())?;
-    }
-    Ok(())
-}
-
-/// Incrementally update weak components after a single-file upsert.
-///
-/// Handles:
-/// - New node (old=None, new=Some): insert isolated, union with new deps.
-/// - Same fnode, edge changes: split-check removed edges, union added edges.
-/// - Other cases (fnode rename, deletion): fall back to full recompute.
-///
-/// Always ends with `weak_component_dirty = 0`.
-pub(crate) fn update_weak_component_incremental(
-    conn: &Connection,
-    old_fnode: Option<&str>,
-    new_fnode: Option<&str>,
-    old_dsts: &HashSet<String>,
-    new_dsts: &HashSet<String>,
-) -> Result<()> {
-    let was_dirty: bool = conn.query_row(
-        "SELECT weak_component_dirty != 0 FROM mdoc_index_state WHERE id = 1",
-        [],
-        |row| row.get(0),
-    )?;
-    if was_dirty {
-        super::queries::recompute_weak_components_full(conn)?;
-        return Ok(());
-    }
-
-    match (old_fnode, new_fnode) {
-        (None, None) => {}
-
-        (None, Some(new_f)) => {
-            ensure_component_entry(conn, new_f)?;
-            for dep in new_dsts {
-                union_components(conn, new_f, dep)?;
-            }
-        }
-
-        (Some(old_f), Some(new_f)) if old_f == new_f => {
-            for dep in old_dsts.difference(new_dsts) {
-                check_and_split_component(conn, old_f, dep)?;
-            }
-            for dep in new_dsts.difference(old_dsts) {
-                union_components(conn, new_f, dep)?;
-            }
-        }
-
-        _ => {
-            // Fnode changed or node deleted: fall back to full recompute.
-            super::queries::recompute_weak_components_full(conn)?;
-            return Ok(());
-        }
-    }
-    conn.execute(
-        "UPDATE mdoc_index_state SET weak_component_dirty = 0 WHERE id = 1",
-        [],
-    )?;
-    Ok(())
-}
-
 // ── Semi-public helpers used by discovery ────────────────────────────────────
 
 pub(crate) fn refresh_in_degree_for_fnodes(
@@ -666,15 +408,10 @@ pub(crate) fn refresh_in_degree_for_fnodes(
         conn.execute(
             &format!(
                 "INSERT INTO mdoc_in_degree (fnode, in_degree)
-                 SELECT dst_fnode, COUNT(*)
-                 FROM mdoc_edges
-                 WHERE dst_fnode IN ({placeholders})
-                   AND NOT EXISTS (
-                     SELECT 1 FROM mdoc_issues
-                     WHERE mdoc_issues.path = mdoc_edges.src_path
-                       AND mdoc_issues.kind IN ('invalid', 'duplicate')
-                   )
-                 GROUP BY dst_fnode
+                  SELECT dst_fnode, COUNT(*)
+                  FROM mdoc_valid_edges
+                  WHERE dst_fnode IN ({placeholders})
+                  GROUP BY dst_fnode
                  HAVING COUNT(*) > 0"
             ),
             rusqlite::params_from_iter(chunk.iter().copied()),
@@ -695,15 +432,15 @@ pub(crate) fn bump_graph_epoch(conn: &Connection) -> Result<()> {
 
 // ── Private helpers ───────────────────────────────────────────────────────────
 
-pub(crate) fn metadata_state(meta: &std::fs::Metadata) -> (i64, i64) {
-    let mtime_ns = meta
+pub(crate) fn metadata_state(meta: &std::fs::Metadata) -> Result<(i64, i64)> {
+    let modified = meta
         .modified()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64 * 1_000_000_000 + d.subsec_nanos() as i64)
-        .unwrap_or(0);
+        .context("reading file modification time")?
+        .duration_since(UNIX_EPOCH)
+        .context("file modification time predates the Unix epoch")?;
+    let mtime_ns = modified.as_secs() as i64 * 1_000_000_000 + modified.subsec_nanos() as i64;
     let size = meta.len() as i64;
-    (mtime_ns, size)
+    Ok((mtime_ns, size))
 }
 
 fn upsert_search_row(conn: &Connection, rel_path: &str, fnode: &str, title: &str) -> Result<()> {
@@ -783,14 +520,14 @@ fn refresh_duplicate_issues_for_fnode(conn: &Connection, fnode: Option<&str>) ->
 }
 
 fn refresh_missing_issues_for_source(conn: &Connection, src_path: &str) -> Result<()> {
-    let has_blocking = conn
-        .query_row(
-            "SELECT 1 FROM mdoc_issues
-             WHERE path = ? AND kind IN ('invalid', 'duplicate') LIMIT 1",
-            [src_path],
-            |_| Ok(()),
-        )
-        .is_ok();
+    let has_blocking: bool = conn.query_row(
+        "SELECT EXISTS (
+             SELECT 1 FROM mdoc_issues
+             WHERE path = ? AND kind IN ('invalid', 'duplicate')
+         )",
+        [src_path],
+        |row| row.get(0),
+    )?;
     if has_blocking {
         return Ok(());
     }
@@ -831,14 +568,14 @@ fn refresh_missing_issues_for_target(conn: &Connection, target_fnode: Option<&st
         .query_map([target], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<_>>()?;
     for src_path in src_paths {
-        let src_has_blocking = conn
-            .query_row(
-                "SELECT 1 FROM mdoc_issues
-                 WHERE path = ? AND kind IN ('invalid', 'duplicate') LIMIT 1",
-                [&src_path],
-                |_| Ok(()),
-            )
-            .is_ok();
+        let src_has_blocking: bool = conn.query_row(
+            "SELECT EXISTS (
+                 SELECT 1 FROM mdoc_issues
+                 WHERE path = ? AND kind IN ('invalid', 'duplicate')
+             )",
+            [&src_path],
+            |row| row.get(0),
+        )?;
         if src_has_blocking {
             continue;
         }

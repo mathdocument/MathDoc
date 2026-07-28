@@ -9,6 +9,11 @@ export interface NodeInfo {
   depth: number;
 }
 
+export interface DependencyCandidates {
+  nodes: NodeInfo[];
+  raw_had_matches: boolean;
+}
+
 export interface SrcBlock {
   srctype: string;
   content: string;
@@ -23,6 +28,12 @@ export interface NodeDetail {
   depth: number;
   depens: string[];
   blocks: SrcBlock[];
+}
+
+export interface NodeView {
+  node: NodeDetail;
+  referrers: NodeInfo[];
+  children: NodeInfo[];
 }
 
 export interface ResolveResponse {

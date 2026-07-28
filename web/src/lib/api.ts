@@ -3,10 +3,12 @@
 // server's { error: string } message.
 
 import type {
+  DependencyCandidates,
   GraphFull,
   GraphRootItem,
   NodeDetail,
   NodeInfo,
+  NodeView,
   ResolveResponse,
 } from "./types";
 
@@ -49,10 +51,14 @@ export const api = {
   resolve: (ref: string) =>
     req<ResolveResponse>(`/api/resolve?ref=${encodeURIComponent(ref)}`),
   node: (fnode: string) => req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}`),
-  referrers: (fnode: string) =>
-    req<NodeInfo[]>(`/api/node/${encodeURIComponent(fnode)}/referrers`),
+  nodeView: (fnode: string) =>
+    req<NodeView>(`/api/node/${encodeURIComponent(fnode)}/view`),
   children: (fnode: string) =>
     req<NodeInfo[]>(`/api/node/${encodeURIComponent(fnode)}/children`),
+  dependencyCandidates: (fnode: string, q: string, n = 50) =>
+    req<DependencyCandidates>(
+      `/api/node/${encodeURIComponent(fnode)}/dep/candidates?q=${encodeURIComponent(q)}&n=${n}`,
+    ),
   putBlock: (fnode: string, srctype: string, content: string) =>
     req<NodeDetail>(
       `/api/node/${encodeURIComponent(fnode)}/block/${encodeURIComponent(srctype)}`,

@@ -12,6 +12,12 @@ pub struct NodeSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DependencyCandidates {
+    pub nodes: Vec<NodeSummary>,
+    pub raw_had_matches: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DependencyItem {
     pub depth: u32,
     pub fnode: String,
@@ -37,21 +43,6 @@ pub enum IssueKind {
     Invalid,
 }
 
-impl IssueKind {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            IssueKind::Missing => "missing",
-            IssueKind::Invalid => "invalid",
-        }
-    }
-}
-
-impl std::fmt::Display for IssueKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphIssue {
     pub kind: IssueKind,
@@ -72,9 +63,7 @@ pub struct GraphCheckReport {
 
 #[derive(Debug, Clone)]
 pub struct DependencyTraversalReport {
-    pub root_fnode: String,
     pub items: Vec<DependencyItem>,
-    pub dep_graph: HashMap<String, Vec<String>>,
     pub issues_by_fnode: HashMap<String, GraphIssue>,
     /// Cycles detected in the traversed subgraph. Each cycle is [A, B, ..., A].
     pub cycles: Vec<Vec<String>>,

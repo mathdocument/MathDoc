@@ -158,6 +158,51 @@ fn test_metadata_roundtrip() {
 }
 
 #[test]
+fn test_source_block_upsert_preserves_metadata_and_create_defaults_it() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("blocks.mdoc");
+    let mut node = MdocNode::new_at_path(dir.path(), &path, "Blocks");
+
+    node.upsert_source_block("latex", "first".to_string())
+        .unwrap();
+    assert!(node.source_block("latex").unwrap().metadata.is_empty());
+    node.blocks[0]
+        .metadata
+        .insert("preamble".to_string(), "article".to_string());
+
+    node.upsert_source_block("LATEX", "second".to_string())
+        .unwrap();
+    let block = node.source_block("latex").unwrap();
+    assert_eq!(block.content, "second");
+    assert_eq!(block.metadata.get("preamble").unwrap(), "article");
+    assert!(node.remove_source_block("Latex"));
+    assert!(!node.remove_source_block("latex"));
+    assert!(node.source_block("latex").is_none());
+}
+
+#[test]
+fn test_metadata_rendering_sorts_keys() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("ordered.mdoc");
+    let mut node = MdocNode::new_at_path(dir.path(), &path, "Ordered Metadata");
+    node.blocks.push(SrcBlock {
+        srctype: "text".to_string(),
+        content: String::new(),
+        metadata: [
+            ("zeta".to_string(), "last".to_string()),
+            ("alpha".to_string(), "first".to_string()),
+            ("middle".to_string(), "center".to_string()),
+        ]
+        .into(),
+    });
+
+    node.save().unwrap();
+
+    let rendered = fs::read_to_string(path).unwrap();
+    assert!(rendered.contains("@src: text alpha=\"first\" middle=\"center\" zeta=\"last\""));
+}
+
+#[test]
 fn test_new_at_path_creates_unique_fnode() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
@@ -229,6 +274,32 @@ fn test_load_rejects_path_traversing_srctype() {
     .unwrap();
 
     assert!(MdocNode::load(dir.path(), &path).is_err());
+}
+
+#[test]
+fn test_parse_and_save_reject_unknown_srctypes() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let parsed_path = dir.path().join("unknown.mdoc");
+    write_file(
+        &parsed_path,
+        "@fnode: unknown-src\n@title: Unknown Source\n\n@src: markdown\nbody\n@end\n",
+    );
+
+    let parse_error = MdocNode::load(dir.path(), &parsed_path)
+        .unwrap_err()
+        .to_string();
+    assert!(parse_error.contains("unsupported srctype 'markdown'"));
+
+    let saved_path = dir.path().join("save-unknown.mdoc");
+    let mut node = MdocNode::new_at_path(dir.path(), &saved_path, "Unknown Save");
+    node.blocks.push(SrcBlock {
+        srctype: "markdown".to_string(),
+        content: String::new(),
+        metadata: Default::default(),
+    });
+    let save_error = node.save().unwrap_err().to_string();
+    assert!(save_error.contains("unsupported srctype 'markdown'"));
+    assert!(!saved_path.exists());
 }
 
 #[test]

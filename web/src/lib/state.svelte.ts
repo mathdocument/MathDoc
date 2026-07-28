@@ -183,11 +183,7 @@ export async function navigate(
   // The old content stays on screen until the View Transition snapshot
   // is taken (inside withViewTransition's callback), so there's no flash.
   try {
-    const [node, refs, kids] = await Promise.all([
-      api.node(fnode),
-      api.referrers(fnode),
-      api.children(fnode),
-    ]);
+    const view = await api.nodeView(fnode);
 
     let committed = false;
     const apply = () => {
@@ -196,9 +192,9 @@ export async function navigate(
       const leaving = appState.load.kind === "ready" ? appState.load.node.fnode : null;
       appState.lastVisitedFnode = leaving;
       appState.editorRevision++;
-      appState.load = { kind: "ready", node };
-      appState.referrers = { items: refs, selected: -1 };
-      appState.children = { items: kids, selected: -1 };
+      appState.load = { kind: "ready", node: view.node };
+      appState.referrers = { items: view.referrers, selected: -1 };
+      appState.children = { items: view.children, selected: -1 };
       commitFocusedHistory(fnode, {
         pushHistory: push,
         historyIndex: opts.historyIndex,

@@ -2,12 +2,11 @@ mod algorithms;
 mod models;
 
 pub use algorithms::{
-    component_has_cycle, find_cycle, representative_cycle, strongly_connected_components,
-    topo_dependencies_first,
+    all_topo_depths, component_has_cycle, representative_cycle, strongly_connected_components,
 };
 pub use models::{
-    DependencyItem, DependencyTraversalReport, GraphCheckReport, GraphIssue, GraphRootItem,
-    IssueKind, NodeSummary,
+    DependencyCandidates, DependencyItem, DependencyTraversalReport, GraphCheckReport, GraphIssue,
+    GraphRootItem, IssueKind, NodeSummary,
 };
 
 /// Return at most eight Unicode scalar values from an fnode for display.

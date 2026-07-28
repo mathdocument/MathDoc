@@ -1,16 +1,15 @@
 use anyhow::{bail, Result};
-use std::path::Path;
+use std::path::{Component, Path};
 
 use super::{
-    cfg_positive_int, emit_progress, process_error_result, require_tool, run_process, CompilerReq,
-    CompilerRes, ProgressCallback, SrcCompiler,
+    cfg_positive_int, emit_progress, lib_source, process_error_result, require_tool, run_process,
+    CompilerReq, CompilerRes, ProgressCallback, SrcCompiler,
 };
 
 pub(super) struct CompilerLean;
 
-const MODULE_NAME: &str = "MdcWork";
-const SETUP_MARKER: &str = ".mdc-setup-v1";
-const SETUP_MARKER_CONTENT: &[u8] = b"lake-init-v1\n";
+const DRIVER_MODULE: &str = "Lib";
+const DRIVER_FILE: &str = "Lib.lean";
 
 impl SrcCompiler for CompilerLean {
     fn srctype(&self) -> &str {
@@ -38,19 +37,30 @@ impl SrcCompiler for CompilerLean {
         };
 
         let ws_root = req.mdcroot.join(".mdc").join("lean");
-        if let Err(e) = ensure_workspace(&ws_root, &lake, setup_timeout_sec, &req.progress) {
-            return process_error_result(e, 1);
+        if let Err(error) = ensure_workspace(&ws_root, &lake, setup_timeout_sec, &req.progress) {
+            return process_error_result(error, 1);
+        }
+
+        let (_, relative) = match lib_source(req, "lean") {
+            Ok(source) => source,
+            Err(error) => return CompilerRes::err(error.to_string()),
+        };
+        let module = match module_name_from_relative(&relative) {
+            Ok(module) => module,
+            Err(error) => return CompilerRes::err(error.to_string()),
+        };
+        if let Err(error) = write_driver(&ws_root, &module) {
+            return CompilerRes::err(error.to_string());
         }
 
         emit_progress(
             &req.progress,
-            &format!("building with `lake build +{MODULE_NAME}`"),
+            &format!("building `{DRIVER_MODULE}` importing `{module}`"),
         );
-        let module = format!("+{MODULE_NAME}");
         match run_process(
             &lake,
-            ["--quiet", "--no-ansi", "build", module.as_str()],
-            &format!("lake build +{MODULE_NAME}"),
+            ["--quiet", "--no-ansi", "build", "+Lib"],
+            "lake build +Lib",
             timeout_sec,
             Some(&ws_root),
         ) {
@@ -69,8 +79,6 @@ impl SrcCompiler for CompilerLean {
     }
 }
 
-// ── Workspace setup ──────────────────────────────────────────────────────────
-
 fn ensure_workspace(
     root: &Path,
     lake_path: &Path,
@@ -78,26 +86,45 @@ fn ensure_workspace(
     progress: &Option<ProgressCallback>,
 ) -> Result<()> {
     std::fs::create_dir_all(root)?;
-    if setup_complete(root)? {
-        return Ok(());
+    let toml_path = root.join("lakefile.toml");
+    let lean_path = root.join("lakefile.lean");
+    let toml_snapshot = crate::workspace::FileSnapshot::capture(&toml_path)?;
+    let lean_snapshot = crate::workspace::FileSnapshot::capture(&lean_path)?;
+    if toml_snapshot.content().is_some() && lean_snapshot.content().is_some() {
+        bail!(
+            "both lakefile.toml and lakefile.lean exist in {}",
+            root.display()
+        );
+    }
+    if lean_snapshot.content().is_some() {
+        bail!(
+            "{} must use a standard lakefile.toml with a `Lib` lean library",
+            root.display()
+        );
+    }
+    if let Some(content) = toml_snapshot.content() {
+        validate_lakefile(content)?;
     }
 
-    if has_lakefile(root) && validate_workspace(root, lake_path, timeout_sec).is_ok() {
-        crate::workspace::atomic_create_if_missing(&root.join(SETUP_MARKER), SETUP_MARKER_CONTENT)?;
+    let needs_lakefile = toml_snapshot.content().is_none();
+    let toolchain_path = root.join("lean-toolchain");
+    let toolchain_snapshot = crate::workspace::FileSnapshot::capture(&toolchain_path)?;
+    let needs_toolchain = toolchain_snapshot.content().is_none();
+    if !needs_lakefile && !needs_toolchain {
         return Ok(());
     }
 
     emit_progress(
         progress,
-        "initializing Lean workspace with `lake init mdc_work`",
+        "initializing Lean library workspace with `lake init Lib lib`",
     );
     let staging = tempfile::Builder::new()
         .prefix(".mdc-lean-init-")
         .tempdir_in(root.parent().unwrap_or(root))?;
     let (rtcode, stdout, stderr) = run_process(
         lake_path,
-        ["init", "mdc_work"],
-        "lake init",
+        ["init", "Lib", "lib"],
+        "lake init Lib lib",
         timeout_sec,
         Some(staging.path()),
     )?;
@@ -105,33 +132,98 @@ fn ensure_workspace(
         bail!("lake init failed:\n{}", combine_output(&stdout, &stderr));
     }
 
-    install_setup_file(staging.path(), root, "lakefile.toml")?;
-    install_setup_file(staging.path(), root, "lakefile.lean")?;
-    install_setup_file(staging.path(), root, "lean-toolchain")?;
-    validate_workspace(root, lake_path, timeout_sec)?;
-    crate::workspace::atomic_create_if_missing(&root.join(SETUP_MARKER), SETUP_MARKER_CONTENT)?;
-    Ok(())
-}
-
-fn setup_complete(root: &Path) -> Result<bool> {
-    let marker = root.join(SETUP_MARKER);
-    match std::fs::symlink_metadata(&marker) {
-        Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
-            bail!("invalid Lean setup marker: {}", marker.display())
-        }
-        Ok(_) => {
-            if std::fs::read(&marker)? != SETUP_MARKER_CONTENT {
-                bail!("invalid Lean setup marker: {}", marker.display());
+    let mut setup_changes = Vec::new();
+    let setup_result = (|| -> Result<()> {
+        if needs_lakefile {
+            if let Some(change) = install_setup_file(staging.path(), root, "lakefile.toml")? {
+                setup_changes.push(change);
             }
-            Ok(true)
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error.into()),
+        if needs_toolchain {
+            if let Some(change) = install_setup_file(staging.path(), root, "lean-toolchain")? {
+                setup_changes.push(change);
+            }
+        }
+        let content = crate::workspace::FileSnapshot::capture(&toml_path)?
+            .content()
+            .ok_or_else(|| anyhow::anyhow!("lake init did not generate lakefile.toml"))?
+            .to_vec();
+        validate_lakefile(&content)?;
+        validate_workspace(root, lake_path, timeout_sec)
+    })();
+    match setup_result {
+        Ok(()) => Ok(()),
+        Err(error) => match rollback_setup_changes(setup_changes) {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(anyhow::anyhow!(
+                "{error}; additionally failed to restore the previous Lake configuration: {rollback_error}"
+            )),
+        },
     }
 }
 
-fn has_lakefile(root: &Path) -> bool {
-    root.join("lakefile.toml").is_file() || root.join("lakefile.lean").is_file()
+fn validate_lakefile(content: &[u8]) -> Result<()> {
+    let text = std::str::from_utf8(content)?;
+    let parsed = text
+        .parse::<toml::Value>()
+        .map_err(|error| anyhow::anyhow!("invalid lakefile.toml: {error}"))?;
+    let has_lib = parsed
+        .get("lean_lib")
+        .and_then(toml::Value::as_array)
+        .is_some_and(|libraries| {
+            libraries.iter().any(|library| {
+                library.get("name").and_then(toml::Value::as_str) == Some(DRIVER_MODULE)
+            })
+        });
+    if !has_lib {
+        bail!("lakefile.toml must declare `[[lean_lib]] name = \"Lib\"`");
+    }
+    Ok(())
+}
+
+fn module_name_from_relative(relative: &Path) -> Result<String> {
+    let source = relative.with_extension("");
+    let mut components = vec![DRIVER_MODULE.to_string()];
+    for component in source.components() {
+        let Component::Normal(name) = component else {
+            bail!("invalid Lean module path {}", relative.display());
+        };
+        let name = name
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Lean module path is not valid UTF-8"))?;
+        if name.contains(['«', '»', '\n', '\r']) {
+            bail!("Lean module path component cannot be quoted safely: {name:?}");
+        }
+        components.push(format!("«{name}»"));
+    }
+    if components.len() == 1 {
+        bail!("empty Lean module path");
+    }
+    Ok(components.join("."))
+}
+
+fn write_driver(root: &Path, module: &str) -> Result<()> {
+    let path = root.join(DRIVER_FILE);
+    let snapshot = crate::workspace::FileSnapshot::capture(&path)?;
+    let content = format!("import {module}\n");
+    if snapshot.content() != Some(content.as_bytes()) {
+        snapshot.replace(&path, content.as_bytes())?;
+    }
+    Ok(())
+}
+
+fn rollback_setup_changes(changes: Vec<crate::workspace::AppliedWrite>) -> Result<()> {
+    let mut errors = Vec::new();
+    for change in changes.into_iter().rev() {
+        if let Err(error) = change.rollback() {
+            errors.push(error.to_string());
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        bail!("{}", errors.join("; "))
+    }
 }
 
 fn validate_workspace(root: &Path, lake_path: &Path, timeout_sec: u64) -> Result<()> {
@@ -151,26 +243,21 @@ fn validate_workspace(root: &Path, lake_path: &Path, timeout_sec: u64) -> Result
     Ok(())
 }
 
-fn install_setup_file(staging: &Path, root: &Path, name: &str) -> Result<()> {
+fn install_setup_file(
+    staging: &Path,
+    root: &Path,
+    name: &str,
+) -> Result<Option<crate::workspace::AppliedWrite>> {
     let generated_path = staging.join(name);
-    let Ok(generated) = std::fs::read(&generated_path) else {
-        return Ok(());
-    };
+    let generated = std::fs::read(&generated_path)
+        .map_err(|error| anyhow::anyhow!("reading {}: {error}", generated_path.display()))?;
     let target = root.join(name);
     let snapshot = crate::workspace::FileSnapshot::capture(&target)?;
-    match snapshot.content() {
-        None => {
-            crate::workspace::atomic_replace(&target, &snapshot, &generated)?;
-        }
-        Some(existing) if existing != generated && generated.starts_with(existing) => {
-            crate::workspace::atomic_replace(&target, &snapshot, &generated)?;
-        }
-        Some(_) => {}
+    if snapshot.content().is_none() {
+        return snapshot.replace(&target, &generated).map(Some);
     }
-    Ok(())
+    Ok(None)
 }
-
-// ── Build output processing ──────────────────────────────────────────────────
 
 fn classify_build_output(stdout: &str, stderr: &str, ok: bool) -> (String, String) {
     let lines = clean_output_lines(stdout, stderr);
@@ -241,47 +328,110 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
-    fn interrupted_setup_repairs_partial_lakefile_and_marks_completion() {
+    fn module_path_uses_lib_prefix_and_quoted_components() {
+        assert_eq!(
+            module_name_from_relative(Path::new("EGA/1-1.1.2.lean")).unwrap(),
+            "Lib.«EGA».«1-1.1.2»"
+        );
+    }
+
+    #[test]
+    fn workspace_setup_uses_standard_library_template_once() {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path().join("lean");
         std::fs::create_dir(&root).unwrap();
-        std::fs::write(root.join("lakefile.toml"), "name = \"mdc_work\"\n").unwrap();
-
-        let lake = dir.path().join("fake-lake");
-        std::fs::write(
-            &lake,
+        let lake = executable(
+            dir.path(),
             r#"#!/bin/sh
 if [ "$1" = "env" ]; then
-  grep -q 'version = "0.1.0"' lakefile.toml
+  grep -q 'name = "Lib"' lakefile.toml
   exit $?
 fi
-if [ "$1" = "init" ]; then
+if [ "$1" = "init" ] && [ "$2" = "Lib" ] && [ "$3" = "lib" ]; then
   printf x >> "$(dirname "$0")/init-count"
-  printf 'name = "mdc_work"\nversion = "0.1.0"\n' > lakefile.toml
+  printf 'name = "Lib"\nversion = "0.1.0"\ndefaultTargets = ["Lib"]\n\n[[lean_lib]]\nname = "Lib"\n' > lakefile.toml
   printf 'leanprover/lean4:stable\n' > lean-toolchain
   exit 0
 fi
 exit 1
 "#,
-        )
-        .unwrap();
-        let mut permissions = std::fs::metadata(&lake).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&lake, permissions).unwrap();
+        );
 
         ensure_workspace(&root, &lake, 5, &None).unwrap();
         assert!(std::fs::read_to_string(root.join("lakefile.toml"))
             .unwrap()
-            .contains("version = \"0.1.0\""));
-        assert_eq!(
-            std::fs::read(root.join(SETUP_MARKER)).unwrap(),
-            SETUP_MARKER_CONTENT
-        );
+            .contains("name = \"Lib\""));
+        assert!(root.join("lean-toolchain").is_file());
 
         ensure_workspace(&root, &lake, 5, &None).unwrap();
         assert_eq!(
             std::fs::read_to_string(dir.path().join("init-count")).unwrap(),
             "x"
         );
+    }
+
+    #[test]
+    fn conventional_toml_preserves_user_configuration() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path().join("lean");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("lean-toolchain"), "leanprover/lean4:stable\n").unwrap();
+        let custom = "# keep this comment\nname = \"custom\"\n\n[[require]]\nname = \"mathlib\"\nscope = \"leanprover-community\"\n\n[[lean_lib]]\nname = \"Lib\"\n";
+        std::fs::write(root.join("lakefile.toml"), custom).unwrap();
+
+        ensure_workspace(&root, Path::new("missing-lake"), 5, &None).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("lakefile.toml")).unwrap(),
+            custom
+        );
+    }
+
+    #[test]
+    fn non_lib_configuration_is_preserved_and_rejected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path().join("lean");
+        std::fs::create_dir(&root).unwrap();
+        let custom = "name = \"custom\"\n\n[[lean_lib]]\nname = \"Other\"\n";
+        std::fs::write(root.join("lakefile.toml"), custom).unwrap();
+
+        let error = ensure_workspace(&root, Path::new("missing-lake"), 5, &None).unwrap_err();
+
+        assert!(error.to_string().contains("name = \"Lib\""));
+        assert_eq!(
+            std::fs::read_to_string(root.join("lakefile.toml")).unwrap(),
+            custom
+        );
+    }
+
+    #[test]
+    fn failed_validation_rolls_back_generated_setup() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path().join("lean");
+        std::fs::create_dir(&root).unwrap();
+        let lake = executable(
+            dir.path(),
+            r#"#!/bin/sh
+if [ "$1" = "init" ]; then
+  printf 'name = "Lib"\n\n[[lean_lib]]\nname = "Lib"\n' > lakefile.toml
+  printf 'leanprover/lean4:stable\n' > lean-toolchain
+  exit 0
+fi
+exit 1
+"#,
+        );
+
+        assert!(ensure_workspace(&root, &lake, 5, &None).is_err());
+        assert!(!root.join("lakefile.toml").exists());
+        assert!(!root.join("lean-toolchain").exists());
+    }
+
+    fn executable(dir: &Path, content: &str) -> std::path::PathBuf {
+        let path = dir.join("fake-lake");
+        std::fs::write(&path, content).unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        path
     }
 }

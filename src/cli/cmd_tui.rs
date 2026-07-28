@@ -16,10 +16,9 @@ use ratatui::{
     Terminal,
 };
 use std::io;
-use std::path::PathBuf;
 use uuid::Uuid;
 
-use super::{cwd, fmt_item, open_cache, require_mdcroot, BLD, CYN, GRN, RED, RST};
+use super::{fmt_item, require_mdcroot, resolve_start_ref, BLD, CYN, GRN, RED, RST};
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -121,15 +120,11 @@ impl<C: TerminalControl> Drop for TerminalGuard<C> {
 }
 
 pub(super) fn cmd_graph_tui(source: Option<String>) -> Result<i32> {
-    let mdcroot = require_mdcroot()?;
-    let mut cache = open_cache(mdcroot.clone())?;
+    let mut cache = crate::indcache::IndCache::open(require_mdcroot()?)?;
     cache.discover_workspace_changes()?;
 
-    let start_fnode = if let Some(ref s) = source {
-        match cache.resolve_ref(s, Some(&cwd())) {
-            Ok((f, _, _)) => f,
-            Err(e) => anyhow::bail!("cannot resolve '{}': {}", s, e),
-        }
+    let start_fnode = if let Some(ref source) = source {
+        resolve_start_ref(&cache, source)?
     } else {
         let roots = cache.global_root_items()?;
         roots
@@ -139,7 +134,7 @@ pub(super) fn cmd_graph_tui(source: Option<String>) -> Result<i32> {
             .fnode
     };
 
-    let mut app = TuiApp::new(cache, mdcroot, start_fnode)?;
+    let mut app = TuiApp::new(cache, start_fnode)?;
 
     let mut guard = TerminalGuard::new(CrosstermControl);
     guard.enter()?;
@@ -205,7 +200,6 @@ enum Overlay {
 }
 
 struct TuiApp {
-    mdcroot: PathBuf,
     cache: crate::indcache::IndCache,
 
     focused: NodeInfo,
@@ -229,9 +223,8 @@ struct TuiApp {
 // ── TuiApp impl ───────────────────────────────────────────────────────────────
 
 impl TuiApp {
-    fn new(cache: crate::indcache::IndCache, mdcroot: PathBuf, fnode: String) -> Result<Self> {
+    fn new(cache: crate::indcache::IndCache, fnode: String) -> Result<Self> {
         let mut app = TuiApp {
-            mdcroot,
             cache,
             focused: NodeInfo {
                 fnode: fnode.clone(),
@@ -284,8 +277,9 @@ impl TuiApp {
         self.preview_offset = 0;
 
         self.preview_lines = if !self.focused.rel_path.is_empty() {
-            let abs = self.mdcroot.join(&self.focused.rel_path);
-            match crate::mdocnode::MdocNode::load(&self.mdcroot, &abs) {
+            let root = self.cache.root();
+            let abs = root.join(&self.focused.rel_path);
+            match crate::mdocnode::MdocNode::load(root, &abs) {
                 Ok(node) => {
                     let mut lines: Vec<String> = Vec::new();
                     for (i, block) in node.blocks.iter().enumerate() {
@@ -362,8 +356,10 @@ impl TuiApp {
         dep_rel: String,
         dep_broken: bool,
     ) -> Result<()> {
-        let mut graph = crate::depgraph::DepGraph::new(self.mdcroot.clone(), &self.focused.fnode)?;
-        let (added, _, _) = graph.add_direct_dependency_ref(&dep_fnode)?;
+        let focused_fnode = self.focused.fnode.clone();
+        let mut graph = crate::depgraph::DepGraph::from_ref(&mut self.cache, &focused_fnode, None)?;
+        let (added, _, _) = graph.add_direct_dependency_ref(&dep_fnode, None)?;
+        drop(graph);
         if !added.is_empty() {
             let src = fmt_item(
                 &self.focused.fnode,
@@ -379,15 +375,17 @@ impl TuiApp {
         self.refresh_after_op()
     }
 
-    /// Create a new node (already path-resolved) and add it as a dependency.
-    fn do_create_and_add_dep(&mut self, new_node: crate::mdocnode::MdocNode) -> Result<()> {
-        let mut graph = crate::depgraph::DepGraph::new(self.mdcroot.clone(), &self.focused.fnode)?;
+    fn do_create_and_add_dep(&mut self, title: &str, file: &str, fnode: &str) -> Result<()> {
+        let focused_fnode = self.focused.fnode.clone();
+        let mut graph = crate::depgraph::DepGraph::from_ref(&mut self.cache, &focused_fnode, None)?;
+        let new_node = graph.prepare_new_dependency_node(file, title, Some(fnode))?;
         let new_fnode = new_node.fnode.clone();
         let node_path = new_node.path.clone();
         let node_title = new_node.title.clone();
         let added = graph.create_and_add_dependency(new_node)?;
+        drop(graph);
         if added {
-            let rel = crate::workspace::to_rel_path(&self.mdcroot, &node_path);
+            let rel = crate::workspace::to_rel_path(self.cache.root(), &node_path);
             let focused_fnode = self.focused.fnode.clone();
             let focused_title = self.focused.title.clone();
             let focused_rel = self.focused.rel_path.clone();
@@ -409,8 +407,10 @@ impl TuiApp {
         if fnodes.is_empty() {
             return Ok(());
         }
-        let mut graph = crate::depgraph::DepGraph::new(self.mdcroot.clone(), &self.focused.fnode)?;
+        let focused_fnode = self.focused.fnode.clone();
+        let mut graph = crate::depgraph::DepGraph::from_ref(&mut self.cache, &focused_fnode, None)?;
         let removed = graph.remove_direct_dependencies(fnodes)?;
+        drop(graph);
         for fnode in &removed {
             let (title, rel, broken) = self
                 .children
@@ -463,47 +463,21 @@ fn record_edit_result(app: &mut TuiApp, rel_path: &str, result: Result<()>) {
 
 const NEW_NODE_SENTINEL: &str = "\x00new";
 
-fn prepare_new_dependency_node(
-    mdcroot: &std::path::Path,
-    title: &str,
-    raw_target: &str,
-    fnode: &str,
-) -> Result<crate::mdocnode::MdocNode> {
-    let target = if raw_target.trim().is_empty() {
-        "."
-    } else {
-        raw_target
-    };
-    let path = crate::depgraph::resolve_new_node_path(mdcroot, target, fnode)?;
-    let mut node = crate::mdocnode::MdocNode::new_at_path(mdcroot, &path, title);
-    node.fnode = fnode.to_string();
-    Ok(node)
-}
-
 fn search_fields(cache: &crate::indcache::IndCache, q: &str) -> Result<Vec<NodeInfo>> {
-    cache.search_with_metadata(q, 20)
+    cache.search(q, 20)
 }
 
 /// Free function so it can be called while `app.overlay` is mutably borrowed.
 fn adddep_search_fields(
     cache: &crate::indcache::IndCache,
     focused_fnode: &str,
-    children: &[NodeInfo],
     q: &str,
 ) -> Result<Vec<NodeInfo>> {
-    let existing: std::collections::HashSet<&str> = std::iter::once(focused_fnode)
-        .chain(children.iter().map(|c| c.fnode.as_str()))
-        .collect();
-    let raw = cache.search_with_metadata(q, usize::MAX)?;
-    let raw_had_matches = !raw.is_empty();
-    let mut results: Vec<NodeInfo> = raw
-        .into_iter()
-        .filter(|item| !existing.contains(item.fnode.as_str()))
-        .take(20)
-        .collect();
+    let candidate_report = cache.dependency_candidates(focused_fnode, q, 20)?;
+    let mut results = candidate_report.nodes;
     // Only offer to create if the raw search had zero matches — not if
     // all matches were filtered out because they're already dependencies.
-    if results.is_empty() && !q.is_empty() && !raw_had_matches {
+    if results.is_empty() && !q.is_empty() && !candidate_report.raw_had_matches {
         results.push(NodeInfo {
             fnode: NEW_NODE_SENTINEL.to_string(),
             title: format!("✦ Create new: {q}"),
@@ -599,7 +573,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                 KeyCode::Char('e') => {
                     let rel = app.focused.rel_path.clone();
                     if !rel.is_empty() {
-                        let abs_path = app.mdcroot.join(&rel);
+                        let abs_path = app.cache.root().join(&rel);
                         // Clear the alternate screen before leaving it so the transition
                         // shows a blank terminal rather than a flash of the TUI content.
                         execute!(
@@ -689,15 +663,13 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                 KeyCode::Backspace => {
                     input.pop();
                     let q = input.clone();
-                    *results =
-                        adddep_search_fields(&app.cache, &app.focused.fnode, &app.children, &q)?;
+                    *results = adddep_search_fields(&app.cache, &app.focused.fnode, &q)?;
                     *sel = 0;
                 }
                 KeyCode::Char(c) => {
                     input.push(c);
                     let q = input.clone();
-                    *results =
-                        adddep_search_fields(&app.cache, &app.focused.fnode, &app.children, &q)?;
+                    *results = adddep_search_fields(&app.cache, &app.focused.fnode, &q)?;
                     *sel = 0;
                 }
                 _ => {}
@@ -752,8 +724,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                     } else {
                         String::new()
                     };
-                    let results =
-                        adddep_search_fields(&app.cache, &app.focused.fnode, &app.children, &q)?;
+                    let results = adddep_search_fields(&app.cache, &app.focused.fnode, &q)?;
                     app.overlay = Overlay::AddDep {
                         input: q,
                         results,
@@ -781,9 +752,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiA
                         };
                         if let Some((title, file, fnode)) = data {
                             app.overlay = Overlay::None;
-                            let result =
-                                prepare_new_dependency_node(&app.mdcroot, &title, &file, &fnode)
-                                    .and_then(|node| app.do_create_and_add_dep(node));
+                            let result = app.do_create_and_add_dep(&title, &file, &fnode);
                             match result {
                                 Ok(()) => {
                                     app.set_notify("node created and added", true);
@@ -1699,8 +1668,17 @@ mod tests {
     #[test]
     fn default_dependency_path_uses_the_node_fnode() {
         let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".mdc")).unwrap();
+        let source_path = dir.path().join("source.mdoc");
+        let source = crate::mdocnode::MdocNode::new_at_path(dir.path(), &source_path, "Source");
+        let source_fnode = source.fnode.clone();
+        source.save_new().unwrap();
+        let mut cache = crate::indcache::IndCache::open(dir.path().to_path_buf()).unwrap();
+        let graph = crate::depgraph::DepGraph::from_ref(&mut cache, &source_fnode, None).unwrap();
         let fnode = "new-node-0001";
-        let node = prepare_new_dependency_node(dir.path(), "New Node", "", fnode).unwrap();
+        let node = graph
+            .prepare_new_dependency_node("", "New Node", Some(fnode))
+            .unwrap();
 
         assert_eq!(node.fnode, fnode);
         assert_eq!(
@@ -1730,7 +1708,24 @@ mod tests {
         assert!(results[0].broken);
     }
 
-    fn test_app() -> (tempfile::TempDir, TuiApp, PathBuf) {
+    #[test]
+    fn tui_start_ref_accepts_unique_exact_title() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".mdc")).unwrap();
+        std::fs::write(
+            dir.path().join("start.mdoc"),
+            "@fnode: title-start-node\n@title: Start by Title\n",
+        )
+        .unwrap();
+        let cache = crate::indcache::IndCache::open(dir.path().to_path_buf()).unwrap();
+
+        assert_eq!(
+            resolve_start_ref(&cache, "Start by Title").unwrap(),
+            "title-start-node"
+        );
+    }
+
+    fn test_app() -> (tempfile::TempDir, TuiApp, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir(root.join(".mdc")).unwrap();
@@ -1740,7 +1735,7 @@ mod tests {
         node.save().unwrap();
         let mut cache = crate::indcache::IndCache::open(root.to_path_buf()).unwrap();
         cache.refresh_all().unwrap();
-        let app = TuiApp::new(cache, root.to_path_buf(), fnode).unwrap();
+        let app = TuiApp::new(cache, fnode).unwrap();
         (dir, app, path)
     }
 
