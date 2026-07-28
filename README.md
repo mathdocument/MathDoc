@@ -300,6 +300,29 @@ navigation, search, source preview, editor launch, and dependency add/remove/cre
 
 ---
 
+### Metrics
+
+#### `mdc metric ior`
+
+Evaluate the smoothed in-degree/out-degree ratio for one node:
+
+```bash
+mdc metric ior <source>
+```
+
+For a node `p`, the metric is
+`ln((in_degree(p) + 1) / (out_degree(p) + 1))`. It is positive when the node has
+more incoming than outgoing edges, negative in the opposite case, and zero when
+the degrees are equal. The command strongly refreshes the complete index before
+evaluation and accepts the normal path/fnode/prefix reference forms.
+
+Degrees use the same valid-source edge semantics as graph checks: edges from an
+invalid or duplicate source are excluded, while an outgoing edge to a missing
+target still contributes to out-degree. The source itself must be one valid,
+uniquely indexed node. Stdout contains only the numeric value for scripting.
+
+---
+
 ### Web frontend
 
 #### `mdc serve`

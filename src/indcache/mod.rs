@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::core::{
     short_fnode, DependencyCandidates, DependencyItem, DependencyTraversalReport, GraphCheckReport,
-    GraphIssue, GraphRootItem, NodeSummary,
+    GraphIssue, GraphRootItem, NodeDegrees, NodeSummary,
 };
 use crate::mdocnode::{MdocHead, MdocIdentity, MdocNode};
 
@@ -252,6 +252,10 @@ impl IndCache {
 
     pub fn node_summary(&self, fnode: &str) -> Result<NodeSummary> {
         queries::node_summary(&self.conn, fnode)
+    }
+
+    pub fn node_degrees(&self, fnode: &str) -> Result<NodeDegrees> {
+        queries::node_degrees(&self.conn, fnode)
     }
 
     #[cfg(test)]

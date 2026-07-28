@@ -6,7 +6,8 @@ pub(crate) const CHUNK_SIZE: usize = 500;
 
 use crate::core::{
     representative_cycles, DependencyCandidates, DependencyCandidatesEmpty, DependencyItem,
-    DependencyTraversalReport, GraphCheckReport, GraphIssue, GraphRootItem, IssueKind, NodeSummary,
+    DependencyTraversalReport, GraphCheckReport, GraphIssue, GraphRootItem, IssueKind, NodeDegrees,
+    NodeSummary,
 };
 
 // ── Public query functions ──────────────────────────────────────────────────
@@ -130,6 +131,31 @@ pub fn node_summary(conn: &Connection, fnode: &str) -> Result<NodeSummary> {
         bail!("no mdoc matched reference: {fnode}");
     }
     bail!("duplicate fnode: {fnode}")
+}
+
+pub fn node_degrees(conn: &Connection, fnode: &str) -> Result<NodeDegrees> {
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(id.in_degree, 0),
+                (SELECT COUNT(*) FROM mdoc_valid_edges e WHERE e.src_fnode = m.fnode)
+         FROM mdocs m
+         LEFT JOIN mdoc_in_degree id ON id.fnode = m.fnode
+         WHERE m.fnode = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM mdoc_issues i
+             WHERE i.path = m.path AND i.kind IN ('invalid', 'duplicate')
+           )
+         ORDER BY m.path",
+    )?;
+    let rows: Vec<(i64, i64)> = stmt
+        .query_map([fnode], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let [(in_degree, out_degree)] = rows.as_slice() else {
+        bail!("metric source must be one valid, uniquely indexed node: {fnode}");
+    };
+    Ok(NodeDegrees {
+        in_degree: u32::try_from(*in_degree)?,
+        out_degree: u32::try_from(*out_degree)?,
+    })
 }
 
 /// Direct referrers with all list metadata in one query.

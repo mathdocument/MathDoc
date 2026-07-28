@@ -1,6 +1,7 @@
 mod cmd_core;
 mod cmd_deps;
 mod cmd_graph;
+mod cmd_metric;
 mod cmd_tui;
 mod cmd_web;
 mod cmd_work;
@@ -111,6 +112,12 @@ enum Commands {
         command: GraphCommands,
     },
 
+    /// Evaluate numeric metrics on the dependency graph.
+    Metric {
+        #[command(subcommand)]
+        command: MetricCommands,
+    },
+
     /// Reconcile workspace mirrors, then compile one mdoc's available source types.
     Work { source: String },
 
@@ -147,6 +154,12 @@ enum GraphCommands {
         /// Start at this node (fnode prefix, path, or title). Defaults to deepest root.
         source: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum MetricCommands {
+    /// Natural log of the smoothed in-degree/out-degree ratio for one node.
+    Ior { source: String },
 }
 
 #[derive(Subcommand)]
@@ -209,6 +222,9 @@ fn dispatch(cmd: Commands) -> Result<i32> {
             GraphCommands::Check => cmd_graph::cmd_graph_check(),
             GraphCommands::Roots => cmd_graph::cmd_graph_roots(),
             GraphCommands::Tui { source } => cmd_tui::cmd_graph_tui(source),
+        },
+        Commands::Metric { command } => match command {
+            MetricCommands::Ior { source } => cmd_metric::cmd_metric_ior(source),
         },
         Commands::Work { source } => cmd_work::cmd_work(source),
         Commands::Back => cmd_work::cmd_back(),

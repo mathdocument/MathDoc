@@ -11,6 +11,12 @@ pub struct NodeSummary {
     pub depth: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeDegrees {
+    pub in_degree: u32,
+    pub out_degree: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DependencyCandidates {
     pub nodes: Vec<NodeSummary>,

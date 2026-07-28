@@ -79,6 +79,7 @@ Important format details:
 | `src/mdocnode/` | `.mdoc` parser, serializer, and `MdocNode` model |
 | `src/indcache/` | SQLite-backed workspace index (`IndCache`) |
 | `src/depgraph/` | Dependency mutation session for one root node (`DepGraph`) |
+| `src/metric/` | Read-only metric framework: registry/context in `mod.rs`, with all concrete formulas in `function.rs` |
 | `src/compiler/` | Compiler registry/language implementations plus shared subprocess control in `process.rs` |
 | `src/cli/` | `clap` command definitions, command handlers, and terminal output |
 | `src/web/` | `mdc serve` HTTP server (axum): JSON API over `IndCache`/`DepGraph` + SPA asset serving |
@@ -267,6 +268,7 @@ cache in its transaction, then passes the cycles to the pure report query.
 | `mdc graph check` | none | `refresh_all()` | Reports missing targets, invalid issues (including duplicate fnodes), and representative cycles |
 | `mdc graph roots` | `discover_workspace_changes()` | none | Reads persisted `topo_depth`; graph load only if weak components are dirty |
 | `mdc graph tui` | `discover_workspace_changes()` | DepGraph mutation APIs plus post-op discovery | TUI add/rm/create delegate to DepGraph; start refs also accept a unique exact title |
+| `mdc metric ior` | none | `refresh_all()` | Resolves one valid node and prints `ln1p(in_degree) - ln1p(out_degree)` using valid-source edges |
 | `mdc work` | `discover_workspace_changes()` | workspace-wide `workdraft::sync()` before selected-node compilation | Any sync conflict aborts compilation; dirty mirrors are compiled without being overwritten; no targets is a successful no-op |
 | `mdc back` | `discover_workspace_changes()` before write | `refresh_all()` when mdocs changed | Imports dirty mirrors and refreshes the index |
 | `mdc serve` | `discover_workspace_changes()` on read handlers | guarded cache replacement after direct node edits | A process-wide mutation mutex serializes each complete resolve/load/mutate/save/reindex operation; column navigation gets detail, referrers, and children from one cache lock; dep writes route through `DepGraph`; start refs also accept a unique exact title. |
@@ -321,6 +323,25 @@ Important constructors and operations:
 
 Direct file edits can still create cycles. `mdc graph check` is the authoritative
 reporting path for cycles introduced outside the mutation API.
+
+## Metrics
+
+Metrics are a read-only layer over `IndCache`, not part of `DepGraph`.
+`DepGraph` owns a mutable root-node dependency session, while metrics consume
+indexed graph primitives without loading or mutating an `MdocNode`.
+
+`src/metric/mod.rs` defines `MetricContext`, the `NodeMetric` interface, and the
+compile-time `NodeMetricKind` registry. `src/metric/function.rs` intentionally
+keeps every concrete metric formula together instead of creating one module per
+metric. Adding another node metric consists of adding its function there, wiring
+its implementation and enum mapping in `mod.rs`, and adding its typed Clap
+variant and dispatch arm in `src/cli/`.
+
+`IndCache::node_degrees()` is the shared data boundary. It reads precomputed
+in-degree and indexed valid-source out-degree for one valid, uniquely indexed
+node. IOR is evaluated as `ln1p(i) - ln1p(o)`, which is equivalent to
+`ln((i + 1) / (o + 1))` without constructing the intermediate ratio. The CLI
+uses `refresh_all()` before evaluation and emits only the finite `f64` value.
 
 ## Web Frontend (`mdc serve`)
 

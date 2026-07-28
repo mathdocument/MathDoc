@@ -16,6 +16,8 @@ pub mod indcache;
 #[cfg(unix)]
 pub mod mdocnode;
 #[cfg(unix)]
+pub mod metric;
+#[cfg(unix)]
 pub mod web;
 #[cfg(unix)]
 pub(crate) mod workdraft;
