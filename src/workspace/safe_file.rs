@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
@@ -141,6 +142,7 @@ pub(crate) enum FileSnapshot {
 pub(crate) struct ReadFileSnapshot {
     content: Vec<u8>,
     metadata: std::fs::Metadata,
+    identity: FileIdentity,
 }
 
 impl ReadFileSnapshot {
@@ -150,6 +152,10 @@ impl ReadFileSnapshot {
 
     pub(crate) fn metadata(&self) -> &std::fs::Metadata {
         &self.metadata
+    }
+
+    pub(crate) fn identity(&self) -> &FileIdentity {
+        &self.identity
     }
 }
 
@@ -580,9 +586,13 @@ impl FileSnapshot {
     }
 
     fn capture_at(binding: &DirectoryBinding, name: &CStr) -> Result<Self> {
+        Self::capture_from_directory(binding.raw_fd(), name, &binding.path_for(name))
+    }
+
+    fn capture_from_directory(directory_fd: RawFd, name: &CStr, path: &Path) -> Result<Self> {
         let fd = unsafe {
             libc::openat(
-                binding.raw_fd(),
+                directory_fd,
                 name.as_ptr(),
                 libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
             )
@@ -591,32 +601,24 @@ impl FileSnapshot {
             let error = std::io::Error::last_os_error();
             return match error.raw_os_error() {
                 Some(libc::ENOENT) => Ok(Self::Missing),
-                Some(libc::ELOOP) => {
-                    bail!("refusing to access symlink {}", binding.display_path(name))
-                }
-                _ => {
-                    Err(error).with_context(|| format!("inspecting {}", binding.display_path(name)))
-                }
+                Some(libc::ELOOP) => bail!("refusing to access symlink {}", path.display()),
+                _ => Err(error).with_context(|| format!("inspecting {}", path.display())),
             };
         }
 
         let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
         let metadata = file
             .metadata()
-            .with_context(|| format!("inspecting {}", binding.display_path(name)))?;
+            .with_context(|| format!("inspecting {}", path.display()))?;
         if !metadata.is_file() {
-            bail!(
-                "refusing to access non-regular file {}",
-                binding.display_path(name)
-            );
+            bail!("refusing to access non-regular file {}", path.display());
         }
         let mut content = Vec::new();
         file.read_to_end(&mut content)
-            .with_context(|| format!("reading {}", binding.display_path(name)))?;
-        let display_path = binding.path_for(name);
+            .with_context(|| format!("reading {}", path.display()))?;
         Ok(Self::File {
             content,
-            metadata: PreservedMetadata::capture(&display_path, &file, &metadata)?,
+            metadata: PreservedMetadata::capture(path, &file, &metadata)?,
             identity: file_identity(&metadata),
         })
     }
@@ -626,7 +628,7 @@ impl FileSnapshot {
         Ok(self.matches(&current))
     }
 
-    fn matches(&self, current: &Self) -> bool {
+    pub(crate) fn matches(&self, current: &Self) -> bool {
         match (self, current) {
             (Self::Missing, Self::Missing) => true,
             (
@@ -675,6 +677,252 @@ impl FileSnapshot {
         to: &Path,
     ) -> Result<AppliedRename> {
         atomic_case_rename_beneath(root, from, to, self)
+    }
+}
+
+pub(crate) struct FileSnapshotBatch {
+    root: PathBuf,
+    root_identity: FileIdentity,
+    root_directory: std::fs::File,
+    directories: HashMap<PathBuf, SnapshotDirectory>,
+    identities: HashMap<PathBuf, FileIdentity>,
+}
+
+struct SnapshotDirectory {
+    identity: FileIdentity,
+    directory: std::fs::File,
+}
+
+const SNAPSHOT_DIRECTORY_CACHE_SIZE: usize = 16;
+
+impl FileSnapshotBatch {
+    pub(crate) fn new(root: &Path) -> Result<Self> {
+        let canonical_root = root
+            .canonicalize()
+            .with_context(|| format!("canonicalizing snapshot root {}", root.display()))?;
+        if canonical_root != root {
+            return Err(FileConflict::new(root).into());
+        }
+        let metadata = std::fs::symlink_metadata(root)
+            .with_context(|| format!("inspecting snapshot root {}", root.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            bail!("refusing to use non-directory root {}", root.display());
+        }
+        let identity = file_identity(&metadata);
+        let directory = open_directory(root)?;
+        if file_identity(&directory.metadata()?) != identity {
+            return Err(FileConflict::new(root).into());
+        }
+        Ok(Self {
+            root: root.to_path_buf(),
+            root_identity: identity.clone(),
+            root_directory: directory,
+            directories: HashMap::new(),
+            identities: HashMap::from([(root.to_path_buf(), identity)]),
+        })
+    }
+
+    pub(crate) fn capture(&mut self, path: &Path) -> Result<FileSnapshot> {
+        let (directory_fd, file_name) = self.bind_file(path)?;
+        FileSnapshot::capture_from_directory(directory_fd, &file_name, path)
+    }
+
+    pub(crate) fn capture_read(&mut self, path: &Path) -> Result<Option<ReadFileSnapshot>> {
+        let (directory_fd, file_name) = self.bind_file(path)?;
+        let fd = unsafe {
+            libc::openat(
+                directory_fd,
+                file_name.as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if fd < 0 {
+            let error = std::io::Error::last_os_error();
+            return match error.raw_os_error() {
+                Some(libc::ENOENT) => Ok(None),
+                Some(libc::ELOOP) => bail!("refusing to access symlink {}", path.display()),
+                _ => Err(error).with_context(|| format!("opening {}", path.display())),
+            };
+        }
+        let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+        let metadata = file
+            .metadata()
+            .with_context(|| format!("inspecting {}", path.display()))?;
+        if !metadata.is_file() {
+            bail!("refusing to access non-regular file {}", path.display());
+        }
+        if metadata.nlink() > 1 {
+            bail!(
+                "refusing to access hard-linked file {} ({} links)",
+                path.display(),
+                metadata.nlink()
+            );
+        }
+        let mut content = Vec::new();
+        file.read_to_end(&mut content)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let final_metadata = file
+            .metadata()
+            .with_context(|| format!("reinspecting {}", path.display()))?;
+        if !same_read_generation(&metadata, &final_metadata) {
+            return Err(FileConflict::new(path).into());
+        }
+        run_test_hook(TestHookPoint::ReadAfterContent);
+        let current_fd = unsafe {
+            libc::openat(
+                directory_fd,
+                file_name.as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if current_fd < 0 {
+            let error = std::io::Error::last_os_error();
+            return Err(anyhow::Error::from(FileConflict::new(path)))
+                .context(format!("could not verify {}: {error}", path.display()));
+        }
+        let current = unsafe { std::fs::File::from_raw_fd(current_fd) };
+        let current_metadata = current
+            .metadata()
+            .with_context(|| format!("verifying {}", path.display()))?;
+        if !current_metadata.is_file()
+            || current_metadata.nlink() > 1
+            || !same_read_generation(&final_metadata, &current_metadata)
+        {
+            return Err(FileConflict::new(path).into());
+        }
+        Ok(Some(ReadFileSnapshot {
+            content,
+            identity: file_identity(&final_metadata),
+            metadata: final_metadata,
+        }))
+    }
+
+    fn bind_file(&mut self, path: &Path) -> Result<(RawFd, CString)> {
+        let relative = path.strip_prefix(&self.root).map_err(|_| {
+            anyhow::anyhow!(
+                "snapshot path {} is outside root {}",
+                path.display(),
+                self.root.display()
+            )
+        })?;
+        let parent = relative
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("snapshot path has no parent: {}", path.display()))?;
+        let file_name = relative
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("snapshot path has no file name: {}", path.display()))?;
+        let file_name = CString::new(file_name.as_bytes())
+            .with_context(|| format!("path contains a null byte: {}", path.display()))?;
+        let directory_fd = self.bind_directory(parent, path)?;
+        Ok((directory_fd, file_name))
+    }
+
+    pub(crate) fn finish(self) -> Result<()> {
+        if file_identity(&self.root_directory.metadata()?) != self.root_identity {
+            return Err(FileConflict::new(&self.root).into());
+        }
+        for (relative, bound) in &self.directories {
+            if file_identity(&bound.directory.metadata()?) != bound.identity {
+                return Err(FileConflict::new(&self.root.join(relative)).into());
+            }
+        }
+        for (path, identity) in self.identities {
+            let metadata = std::fs::symlink_metadata(&path)
+                .with_context(|| format!("verifying snapshot directory {}", path.display()))?;
+            if metadata.file_type().is_symlink()
+                || !metadata.is_dir()
+                || file_identity(&metadata) != identity
+            {
+                return Err(FileConflict::new(&path).into());
+            }
+        }
+        Ok(())
+    }
+
+    fn bind_directory(&mut self, relative: &Path, target_path: &Path) -> Result<RawFd> {
+        if relative.as_os_str().is_empty() {
+            return Ok(self.root_directory.as_raw_fd());
+        }
+        if let Some(directory) = self.directories.get(relative) {
+            return Ok(directory.directory.as_raw_fd());
+        }
+
+        let mut absolute_path = self.root.clone();
+        let mut directory_fd = self.root_directory.as_raw_fd();
+        let mut opened_directory = None;
+        for component in relative.components() {
+            let std::path::Component::Normal(name) = component else {
+                bail!(
+                    "refusing non-normalized snapshot path {}",
+                    target_path.display()
+                );
+            };
+            absolute_path.push(name);
+            let name = CString::new(name.as_bytes())
+                .with_context(|| format!("path contains a null byte: {}", target_path.display()))?;
+            let fd = unsafe {
+                libc::openat(
+                    directory_fd,
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+                )
+            };
+            if fd < 0 {
+                let error = std::io::Error::last_os_error();
+                return if matches!(
+                    error.raw_os_error(),
+                    Some(libc::ELOOP) | Some(libc::ENOTDIR)
+                ) {
+                    Err(FileConflict::new(target_path).into())
+                } else {
+                    Err(error).with_context(|| {
+                        format!("binding snapshot directory {}", absolute_path.display())
+                    })
+                };
+            }
+            let directory = unsafe { std::fs::File::from_raw_fd(fd) };
+            let metadata = directory.metadata()?;
+            if !metadata.is_dir() {
+                return Err(FileConflict::new(target_path).into());
+            }
+            let identity = file_identity(&metadata);
+            if self
+                .identities
+                .get(&absolute_path)
+                .is_some_and(|expected| *expected != identity)
+            {
+                return Err(FileConflict::new(target_path).into());
+            }
+            self.identities
+                .entry(absolute_path.clone())
+                .or_insert_with(|| identity.clone());
+            directory_fd = directory.as_raw_fd();
+            opened_directory = Some((directory, identity));
+        }
+        if self.directories.len() >= SNAPSHOT_DIRECTORY_CACHE_SIZE {
+            let evicted = self
+                .directories
+                .keys()
+                .next()
+                .expect("nonempty full directory cache")
+                .clone();
+            self.directories.remove(&evicted);
+        }
+        let (directory, identity) =
+            opened_directory.expect("a nonempty relative directory opens at least one component");
+        self.directories.insert(
+            relative.to_path_buf(),
+            SnapshotDirectory {
+                identity,
+                directory,
+            },
+        );
+        Ok(self
+            .directories
+            .get(relative)
+            .expect("bound directory was inserted")
+            .directory
+            .as_raw_fd())
     }
 }
 
@@ -747,6 +995,7 @@ pub(crate) fn read_regular_file_beneath(root: &Path, path: &Path) -> Result<Read
     binding.require_current(path)?;
     Ok(ReadFileSnapshot {
         content,
+        identity,
         metadata: final_metadata,
     })
 }
@@ -2130,6 +2379,100 @@ mod tests {
 
         assert_file_conflict(&error);
         assert_eq!(std::fs::read_to_string(path).unwrap(), "after");
+    }
+
+    #[test]
+    fn snapshot_batch_captures_existing_and_missing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let nested = root.join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let existing = nested.join("node.mdoc");
+        std::fs::write(&existing, "content").unwrap();
+
+        let mut batch = FileSnapshotBatch::new(&root).unwrap();
+        let snapshot = batch.capture(&existing).unwrap();
+        let missing = batch.capture(&nested.join("missing.mdoc")).unwrap();
+        let read = batch.capture_read(&existing).unwrap().unwrap();
+        batch.finish().unwrap();
+
+        assert_eq!(snapshot.content(), Some(b"content".as_slice()));
+        assert!(matches!(missing, FileSnapshot::Missing));
+        assert_eq!(read.content(), b"content");
+    }
+
+    #[test]
+    fn snapshot_batch_read_rejects_hard_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("node.mdoc");
+        std::fs::write(&path, "content").unwrap();
+        std::fs::hard_link(&path, root.join("alias.bin")).unwrap();
+
+        let mut batch = FileSnapshotBatch::new(&root).unwrap();
+        let error = batch.capture_read(&path).unwrap_err();
+
+        assert!(error.to_string().contains("hard-linked file"));
+    }
+
+    #[test]
+    fn snapshot_batch_finish_rejects_ancestor_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let parent = root.join("nested");
+        std::fs::create_dir(&parent).unwrap();
+        let path = parent.join("node.mdoc");
+        std::fs::write(&path, "before").unwrap();
+        let mut batch = FileSnapshotBatch::new(&root).unwrap();
+        batch.capture_read(&path).unwrap();
+
+        std::fs::rename(&parent, root.join("detached")).unwrap();
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::write(parent.join("node.mdoc"), "after").unwrap();
+        let error = batch.finish().unwrap_err();
+
+        assert_file_conflict(&error);
+    }
+
+    #[test]
+    fn snapshot_batch_read_rejects_final_entry_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("node.mdoc");
+        let replacement = root.join("replacement.mdoc");
+        std::fs::write(&path, "before").unwrap();
+        std::fs::write(&replacement, "after").unwrap();
+        let hook_path = path.clone();
+        set_test_hook(TestHookPoint::ReadAfterContent, move || {
+            std::fs::rename(replacement, hook_path).unwrap();
+        });
+
+        let mut batch = FileSnapshotBatch::new(&root).unwrap();
+        let error = batch.capture_read(&path).unwrap_err();
+
+        assert_file_conflict(&error);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "after");
+    }
+
+    #[test]
+    fn snapshot_batch_bounds_open_directory_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let mut paths = Vec::new();
+        for index in 0..(SNAPSHOT_DIRECTORY_CACHE_SIZE * 3) {
+            let parent = root.join(format!("dir-{index}"));
+            std::fs::create_dir(&parent).unwrap();
+            let path = parent.join("node.mdoc");
+            std::fs::write(&path, "content").unwrap();
+            paths.push(path);
+        }
+
+        let mut batch = FileSnapshotBatch::new(&root).unwrap();
+        for path in paths {
+            batch.capture_read(&path).unwrap();
+            assert!(batch.directories.len() <= SNAPSHOT_DIRECTORY_CACHE_SIZE);
+        }
+        batch.finish().unwrap();
     }
 
     #[test]

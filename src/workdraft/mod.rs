@@ -3,12 +3,15 @@ mod mirror;
 mod transaction;
 
 use anyhow::{bail, Context, Result};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::config::builtin_srctypes;
 use crate::mdocnode::MdocNode;
-use crate::workspace::{iter_mdoc_files, FileSnapshot};
+use crate::workspace::{
+    ensure_regular_directory_tree, iter_mdoc_files, FileSnapshot, FileSnapshotBatch,
+    ReadFileSnapshot,
+};
 
 use manifest::{
     decode_source_path, encode_source_path, parse_manifest, BlockBaseline, LoadedManifest,
@@ -53,6 +56,16 @@ enum Reconciliation<'a> {
     Conflict,
 }
 
+struct ScannedSyncSource {
+    path: PathBuf,
+    relative: PathBuf,
+    source_id: String,
+    snapshot: FileSnapshot,
+    node: Result<MdocNode>,
+}
+
+const SYNC_SOURCE_BATCH: usize = 2048;
+
 fn reconcile<'a>(
     baseline: &BlockBaseline,
     mdoc_content: &[u8],
@@ -77,16 +90,27 @@ fn reconcile<'a>(
 }
 
 pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> Result<SyncReport> {
+    let _profile = crate::profile::scope("workdraft::sync");
     let mdcroot = mutation_lock.root()?.to_path_buf();
     let manifest_path = mdcroot.join(".mdc").join(MANIFEST_NAME);
-    let manifest_snapshot = FileSnapshot::capture(&manifest_path)?;
+    let (manifest_snapshot, loaded_manifest) = {
+        let _phase = crate::profile::scope("workdraft::load_manifest");
+        let snapshot = FileSnapshot::capture(&manifest_path)?;
+        let loaded = parse_manifest(&snapshot, &manifest_path)?;
+        (snapshot, loaded)
+    };
     let LoadedManifest {
         manifest: mut new_manifest,
         legacy_sources,
-    } = parse_manifest(&manifest_snapshot, &manifest_path)?;
+    } = loaded_manifest;
 
-    let mut source_files = iter_mdoc_files(&mdcroot).collect::<Result<Vec<_>>>()?;
-    source_files.sort();
+    let source_files = {
+        let _phase = crate::profile::scope("workdraft::enumerate_mdocs");
+        let mut files = iter_mdoc_files(&mdcroot).collect::<Result<Vec<_>>>()?;
+        files.sort();
+        files
+    };
+    let reconcile_profile = crate::profile::scope("workdraft::reconcile_mdocs");
     let mut current_source_ids = BTreeSet::new();
     let mut writes = Vec::new();
     let mut removals = Vec::new();
@@ -98,102 +122,149 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
     let mut desired_outputs = HashMap::new();
     let mut valid_mdocs = 0;
     let mut had_invalid_mdoc = false;
+    let mut prepared_output_parents = HashSet::new();
+    let mut write_snapshots = FileSnapshotBatch::new(&mdcroot)?;
+    let mut source_files = source_files.into_iter();
 
-    for source_path in source_files {
-        let relative = source_path
-            .strip_prefix(&mdcroot)
-            .with_context(|| format!("relativizing {}", source_path.display()))?
-            .to_path_buf();
-        validate_source_relative(&relative)?;
-        let source_id = encode_source_path(&relative);
-        current_source_ids.insert(source_id.clone());
-        let snapshot = FileSnapshot::capture(&source_path)?;
-        let node = match snapshot.content() {
-            Some(content) => MdocNode::load_bytes(&source_path, content),
-            None => Err(anyhow::anyhow!(
-                "mdoc file disappeared: {}",
-                source_path.display()
-            )),
-        };
-        let node = match node {
-            Ok(node) => node,
-            Err(error) => {
-                had_invalid_mdoc = true;
-                inputs.push((source_path, snapshot));
-                warnings.push(issue(&relative, None, error.to_string()));
-                continue;
-            }
-        };
-        valid_mdocs += 1;
-
-        let source_baseline = new_manifest.sources.entry(source_id).or_default();
-        for srctype in builtin_srctypes() {
-            let (mdoc_content, mdoc_present) = block_state(&node, srctype);
-            let raw_path = prepare_output_path(&mdcroot, &relative, srctype)?;
-            let raw_snapshot = FileSnapshot::capture(&raw_path)?;
-            if let Some(identity) = raw_snapshot.identity() {
-                desired_outputs.insert(identity.clone(), raw_path.clone());
-            }
-            let raw_content = raw_snapshot.content();
-
-            if let Some(baseline) = source_baseline.blocks.get_mut(srctype) {
-                match reconcile(baseline, mdoc_content, mdoc_present, raw_content) {
-                    Reconciliation::Unchanged => {}
-                    Reconciliation::MdocChanged => {
-                        if raw_content != Some(mdoc_content) {
-                            writes.push(PreparedWrite {
-                                path: raw_path,
-                                snapshot: raw_snapshot,
-                                content: mdoc_content.to_vec(),
-                            });
-                        }
-                        baseline.update(mdoc_content, mdoc_present);
-                    }
-                    Reconciliation::MirrorChanged(_) => dirty.push(issue(
-                        &relative,
-                        Some(srctype),
-                        "source mirror has uncommitted changes; run `mdc back`",
-                    )),
-                    Reconciliation::Converged(raw_state) => {
-                        if raw_content != Some(raw_state.content.as_ref()) {
-                            let normalized_content = raw_state.content.into_owned();
-                            writes.push(PreparedWrite {
-                                path: raw_path,
-                                snapshot: raw_snapshot,
-                                content: normalized_content,
-                            });
-                        }
-                        baseline.update(mdoc_content, mdoc_present);
-                    }
-                    Reconciliation::Conflict => conflicts.push(issue(
-                        &relative,
-                        Some(srctype),
-                        "mdoc block and source mirror both changed",
-                    )),
-                }
-            } else {
-                if raw_content.is_none() {
-                    writes.push(PreparedWrite {
-                        path: raw_path,
-                        snapshot: raw_snapshot,
-                        content: mdoc_content.to_vec(),
-                    });
-                } else if raw_content != Some(mdoc_content) {
-                    conflicts.push(issue(
-                        &relative,
-                        Some(srctype),
-                        "source mirror has no baseline and differs from the mdoc block",
-                    ));
-                }
-                source_baseline.blocks.insert(
-                    srctype.to_string(),
-                    BlockBaseline::new(mdoc_content, mdoc_present),
-                );
-            }
+    loop {
+        let source_batch: Vec<_> = source_files.by_ref().take(SYNC_SOURCE_BATCH).collect();
+        if source_batch.is_empty() {
+            break;
         }
-        inputs.push((source_path, snapshot));
-    }
+        let scanned_sources = {
+            let _phase = crate::profile::scope("workdraft::read_mdocs_parallel");
+            scan_sources_parallel(&mdcroot, &source_batch)?
+        };
+        let mirror_paths = {
+            let _phase = crate::profile::scope("workdraft::prepare_output_paths");
+            let mut paths = Vec::new();
+            for source in &scanned_sources {
+                if source.node.is_err() {
+                    continue;
+                }
+                for srctype in builtin_srctypes() {
+                    let raw_path = output_path(&mdcroot, &source.relative, srctype);
+                    let raw_parent = raw_path
+                        .parent()
+                        .expect("source mirror always has a parent directory");
+                    if prepared_output_parents.insert(raw_parent.to_path_buf()) {
+                        ensure_regular_directory_tree(&mdcroot, raw_parent)?;
+                    }
+                    paths.push(raw_path);
+                }
+            }
+            paths
+        };
+        let mirror_snapshots = {
+            let _phase = crate::profile::scope("workdraft::read_mirrors_parallel");
+            read_files_parallel(&mdcroot, &mirror_paths)?
+        };
+        let mut mirror_paths = mirror_paths.into_iter();
+        let mut mirror_snapshots = mirror_snapshots.into_iter();
 
+        let classify_profile = crate::profile::scope("workdraft::classify_reconciliation");
+        for source in scanned_sources {
+            let ScannedSyncSource {
+                path: source_path,
+                relative,
+                source_id,
+                snapshot,
+                node,
+            } = source;
+            current_source_ids.insert(source_id.clone());
+            let node = match node {
+                Ok(node) => node,
+                Err(error) => {
+                    had_invalid_mdoc = true;
+                    inputs.push((source_path, snapshot));
+                    warnings.push(issue(&relative, None, error.to_string()));
+                    continue;
+                }
+            };
+            valid_mdocs += 1;
+
+            let source_baseline = new_manifest.sources.entry(source_id).or_default();
+            for srctype in builtin_srctypes() {
+                let (mdoc_content, mdoc_present) = block_state(&node, srctype);
+                let raw_path = mirror_paths
+                    .next()
+                    .expect("every valid mdoc has five prepared mirror paths");
+                let raw_snapshot = mirror_snapshots
+                    .next()
+                    .expect("every valid mdoc has five mirror snapshots");
+                if let Some(identity) = raw_snapshot.as_ref().map(ReadFileSnapshot::identity) {
+                    desired_outputs.insert(identity.clone(), raw_path.clone());
+                }
+                let raw_content = raw_snapshot.as_ref().map(ReadFileSnapshot::content);
+
+                if let Some(baseline) = source_baseline.blocks.get_mut(srctype) {
+                    match reconcile(baseline, mdoc_content, mdoc_present, raw_content) {
+                        Reconciliation::Unchanged => {}
+                        Reconciliation::MdocChanged => {
+                            if raw_content != Some(mdoc_content) {
+                                writes.push(prepare_mirror_write(
+                                    &mut write_snapshots,
+                                    raw_path,
+                                    raw_content,
+                                    mdoc_content.to_vec(),
+                                )?);
+                            }
+                            baseline.update(mdoc_content, mdoc_present);
+                        }
+                        Reconciliation::MirrorChanged(_) => dirty.push(issue(
+                            &relative,
+                            Some(srctype),
+                            "source mirror has uncommitted changes; run `mdc back`",
+                        )),
+                        Reconciliation::Converged(raw_state) => {
+                            if raw_content != Some(raw_state.content.as_ref()) {
+                                let normalized_content = raw_state.content.into_owned();
+                                writes.push(prepare_mirror_write(
+                                    &mut write_snapshots,
+                                    raw_path,
+                                    raw_content,
+                                    normalized_content,
+                                )?);
+                            }
+                            baseline.update(mdoc_content, mdoc_present);
+                        }
+                        Reconciliation::Conflict => conflicts.push(issue(
+                            &relative,
+                            Some(srctype),
+                            "mdoc block and source mirror both changed",
+                        )),
+                    }
+                } else {
+                    if raw_content.is_none() {
+                        writes.push(prepare_mirror_write(
+                            &mut write_snapshots,
+                            raw_path,
+                            raw_content,
+                            mdoc_content.to_vec(),
+                        )?);
+                    } else if raw_content != Some(mdoc_content) {
+                        conflicts.push(issue(
+                            &relative,
+                            Some(srctype),
+                            "source mirror has no baseline and differs from the mdoc block",
+                        ));
+                    }
+                    source_baseline.blocks.insert(
+                        srctype.to_string(),
+                        BlockBaseline::new(mdoc_content, mdoc_present),
+                    );
+                }
+            }
+            inputs.push((source_path, snapshot));
+        }
+        debug_assert!(mirror_paths.next().is_none());
+        debug_assert!(mirror_snapshots.next().is_none());
+        drop(classify_profile);
+    }
+    write_snapshots.finish()?;
+    drop(reconcile_profile);
+
+    let orphan_profile = crate::profile::scope("workdraft::reconcile_orphans");
     let orphaned_sources: Vec<_> = new_manifest
         .sources
         .extract_if(.., |source_id, _| !current_source_ids.contains(source_id))
@@ -277,21 +348,25 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
             "cannot upgrade source-blocks.json while orphaned v1 mirrors are unresolved; restore the mdoc or remove the orphaned mirrors explicitly"
         );
     }
+    drop(orphan_profile);
 
     let source_write_count = writes.len();
     let removed = removals.len();
-    apply_changes(
-        &mdcroot,
-        PreparedManifest {
-            path: &manifest_path,
-            snapshot: &manifest_snapshot,
-            content: &new_manifest,
-        },
-        &inputs,
-        writes,
-        removals,
-        renames,
-    )?;
+    {
+        let _phase = crate::profile::scope("workdraft::apply_changes");
+        apply_changes(
+            &mdcroot,
+            PreparedManifest {
+                path: &manifest_path,
+                snapshot: &manifest_snapshot,
+                content: &new_manifest,
+            },
+            &inputs,
+            writes,
+            removals,
+            renames,
+        )?;
+    }
     Ok(SyncReport {
         valid_mdocs,
         updated: source_write_count,
@@ -300,6 +375,157 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
         conflicts,
         warnings,
     })
+}
+
+fn prepare_mirror_write(
+    snapshots: &mut FileSnapshotBatch,
+    path: PathBuf,
+    observed_content: Option<&[u8]>,
+    content: Vec<u8>,
+) -> Result<PreparedWrite> {
+    let snapshot = snapshots.capture(&path)?;
+    if snapshot.content() != observed_content {
+        bail!(
+            "{} changed during source block reconciliation",
+            path.display()
+        );
+    }
+    Ok(PreparedWrite {
+        path,
+        snapshot,
+        content,
+    })
+}
+
+fn scan_sources_parallel(root: &Path, paths: &[PathBuf]) -> Result<Vec<ScannedSyncSource>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let worker_count = parallel_worker_count(paths.len());
+    let chunk_size = paths.len().div_ceil(worker_count);
+    std::thread::scope(|scope| {
+        let mut workers = Vec::with_capacity(worker_count);
+        for chunk in paths.chunks(chunk_size) {
+            workers.push(scope.spawn(move || -> Result<Vec<ScannedSyncSource>> {
+                let mut snapshots = FileSnapshotBatch::new(root)?;
+                let mut result = Vec::with_capacity(chunk.len());
+                for source_path in chunk {
+                    let relative = source_path
+                        .strip_prefix(root)
+                        .with_context(|| format!("relativizing {}", source_path.display()))?
+                        .to_path_buf();
+                    validate_source_relative(&relative)?;
+                    let source_id = encode_source_path(&relative);
+                    let snapshot = snapshots.capture(source_path)?;
+                    let node = match snapshot.content() {
+                        Some(content) => MdocNode::load_bytes(source_path, content),
+                        None => Err(anyhow::anyhow!(
+                            "mdoc file disappeared: {}",
+                            source_path.display()
+                        )),
+                    };
+                    result.push(ScannedSyncSource {
+                        path: source_path.clone(),
+                        relative,
+                        source_id,
+                        snapshot,
+                        node,
+                    });
+                }
+                snapshots.finish()?;
+                Ok(result)
+            }));
+        }
+        join_snapshot_workers(workers, paths.len(), "mdoc snapshot worker panicked")
+    })
+}
+
+pub(super) fn read_files_parallel(
+    root: &Path,
+    paths: &[PathBuf],
+) -> Result<Vec<Option<ReadFileSnapshot>>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let worker_count = parallel_worker_count(paths.len());
+    let chunk_size = paths.len().div_ceil(worker_count);
+    std::thread::scope(|scope| {
+        let mut workers = Vec::with_capacity(worker_count);
+        for chunk in paths.chunks(chunk_size) {
+            workers.push(
+                scope.spawn(move || -> Result<Vec<Option<ReadFileSnapshot>>> {
+                    let mut snapshots = FileSnapshotBatch::new(root)?;
+                    let mut result = Vec::with_capacity(chunk.len());
+                    for path in chunk {
+                        result.push(snapshots.capture_read(path)?);
+                    }
+                    snapshots.finish()?;
+                    Ok(result)
+                }),
+            );
+        }
+        join_snapshot_workers(workers, paths.len(), "file snapshot worker panicked")
+    })
+}
+
+pub(super) fn capture_files_parallel(root: &Path, paths: &[PathBuf]) -> Result<Vec<FileSnapshot>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let worker_count = parallel_worker_count(paths.len());
+    let chunk_size = paths.len().div_ceil(worker_count);
+    std::thread::scope(|scope| {
+        let mut workers = Vec::with_capacity(worker_count);
+        for chunk in paths.chunks(chunk_size) {
+            workers.push(scope.spawn(move || -> Result<Vec<FileSnapshot>> {
+                let mut snapshots = FileSnapshotBatch::new(root)?;
+                let mut result = Vec::with_capacity(chunk.len());
+                for path in chunk {
+                    result.push(snapshots.capture(path)?);
+                }
+                snapshots.finish()?;
+                Ok(result)
+            }));
+        }
+        join_snapshot_workers(workers, paths.len(), "file snapshot worker panicked")
+    })
+}
+
+fn parallel_worker_count(item_count: usize) -> usize {
+    std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1)
+        .min(8)
+        .min(item_count)
+}
+
+fn join_snapshot_workers<T>(
+    workers: Vec<std::thread::ScopedJoinHandle<'_, Result<Vec<T>>>>,
+    item_count: usize,
+    panic_message: &'static str,
+) -> Result<Vec<T>> {
+    let mut result = Vec::with_capacity(item_count);
+    let mut first_error = None;
+    for worker in workers {
+        match worker.join() {
+            Ok(Ok(items)) => result.extend(items),
+            Ok(Err(error)) => {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+            Err(_) => {
+                if first_error.is_none() {
+                    first_error = Some(anyhow::anyhow!(panic_message));
+                }
+            }
+        }
+    }
+    if let Some(error) = first_error {
+        Err(error)
+    } else {
+        Ok(result)
+    }
 }
 
 pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> Result<BackReport> {

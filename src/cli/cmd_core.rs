@@ -65,6 +65,7 @@ pub(super) fn cmd_new(title: String, file: String) -> Result<i32> {
 // ── cmd: sync ─────────────────────────────────────────────────────────────────
 
 pub(super) fn cmd_sync() -> Result<i32> {
+    let _profile = crate::profile::scope("cli::cmd_sync");
     let mdcroot = require_mdcroot()?;
     let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&mdcroot)?;
     let mut cache = IndCache::open_under_mutation_lock(&mutation_lock)?;

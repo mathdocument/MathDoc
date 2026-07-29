@@ -39,6 +39,26 @@ pub(super) fn apply_changes(
     removals: Vec<PreparedRemoval>,
     renames: Vec<PreparedRename>,
 ) -> Result<()> {
+    let _profile = crate::profile::scope("workdraft::transaction::apply_changes");
+    let mut manifest_content = serde_json::to_vec_pretty(manifest.content)?;
+    manifest_content.push(b'\n');
+    let manifest_changed = manifest.snapshot.content() != Some(manifest_content.as_slice());
+    if writes.is_empty() && removals.is_empty() && renames.is_empty() && !manifest_changed {
+        let _phase = crate::profile::scope("workdraft::validate_noop_inputs");
+        for chunk in inputs.chunks(2048) {
+            let paths: Vec<_> = chunk.iter().map(|(path, _)| path.clone()).collect();
+            let current = super::capture_files_parallel(allowed_root, &paths)?;
+            for ((path, snapshot), current) in chunk.iter().zip(&current) {
+                if !snapshot.matches(current) {
+                    bail!("{} changed during source block operation", path.display());
+                }
+            }
+        }
+        ensure_unchanged(manifest.path, manifest.snapshot)?;
+        return Ok(());
+    }
+
+    let validate_profile = crate::profile::scope("workdraft::validate_inputs_before");
     for (path, snapshot) in inputs {
         ensure_unchanged(path, snapshot)?;
     }
@@ -52,10 +72,8 @@ pub(super) fn apply_changes(
         ensure_unchanged(&rename.from, &rename.snapshot)?;
     }
     ensure_unchanged(manifest.path, manifest.snapshot)?;
+    drop(validate_profile);
 
-    let mut manifest_content = serde_json::to_vec_pretty(manifest.content)?;
-    manifest_content.push(b'\n');
-    let manifest_changed = manifest.snapshot.content() != Some(manifest_content.as_slice());
     let write_paths: HashSet<&Path> = writes.iter().map(|write| write.path.as_path()).collect();
     let mut applied = Vec::new();
     let result = (|| -> Result<()> {
@@ -81,6 +99,7 @@ pub(super) fn apply_changes(
                 applied.push(AppliedChange::Write(write));
             }
         }
+        let validate_profile = crate::profile::scope("workdraft::validate_inputs_after");
         for (path, snapshot) in inputs {
             if write_paths.contains(path.as_path()) {
                 continue;
@@ -92,6 +111,7 @@ pub(super) fn apply_changes(
                 );
             }
         }
+        drop(validate_profile);
         if manifest_changed {
             applied.push(AppliedChange::Write(manifest.snapshot.replace_beneath(
                 allowed_root,
@@ -201,6 +221,45 @@ mod tests {
         assert_eq!(std::fs::read(&first_path).unwrap(), b"first before\n");
         assert_eq!(std::fs::read(&failing_path).unwrap(), b"readonly before\n");
         assert_eq!(std::fs::read(&manifest_path).unwrap(), original_manifest);
+    }
+
+    #[test]
+    fn noop_reconciliation_rejects_a_changed_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let manifest_path = root.join("source-blocks.json");
+        std::fs::write(&manifest_path, b"{\"version\":2,\"sources\":{}}\n").unwrap();
+        let initial_snapshot = FileSnapshot::capture(&manifest_path).unwrap();
+        let manifest = super::super::manifest::parse_manifest(&initial_snapshot, &manifest_path)
+            .unwrap()
+            .manifest;
+        let mut manifest_content = serde_json::to_vec_pretty(&manifest).unwrap();
+        manifest_content.push(b'\n');
+        std::fs::write(&manifest_path, manifest_content).unwrap();
+        let manifest_snapshot = FileSnapshot::capture(&manifest_path).unwrap();
+
+        let source_path = root.join("source.mdoc");
+        std::fs::write(&source_path, b"before\n").unwrap();
+        let source_snapshot = FileSnapshot::capture(&source_path).unwrap();
+        std::fs::write(&source_path, b"after\n").unwrap();
+
+        let error = apply_changes(
+            &root,
+            PreparedManifest {
+                path: &manifest_path,
+                snapshot: &manifest_snapshot,
+                content: &manifest,
+            },
+            &[(source_path, source_snapshot)],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("changed during source block operation"));
     }
 
     #[test]

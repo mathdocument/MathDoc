@@ -170,6 +170,17 @@ The SQLite database is opened no-follow and multiply linked databases are
 rejected. Multi-file rollback is best-effort rather than guaranteed or
 crash-atomic.
 
+Workspace-wide source reconciliation uses an operation-scoped
+`FileSnapshotBatch`. It keeps a bounded cache of no-follow parent-directory
+descriptors, records every traversed directory identity, and verifies those
+generations before reconciliation can apply writes. Mdocs are processed in
+2,048-source batches; mdoc and mirror reads are split across at most eight scoped
+workers, with deterministic result ordering. Read-only mirror snapshots omit replacement
+metadata, while a mirror selected for writing is recaptured as a full
+`FileSnapshot` and its observed content is checked again. When reconciliation
+produces no writes, removals, renames, or manifest change, one lightweight batch
+read confirms that all mdoc inputs still match before returning.
+
 `CHUNK_SIZE = 500` is used for SQL `IN (...)` chunks. Full refresh replacement
 uses 200-row multi-value inserts to stay under SQLite variable limits even for
 the four-column edge and issue tables.
