@@ -1,11 +1,13 @@
 use anyhow::{bail, Context, Result};
-use rusqlite::Connection;
-use std::collections::HashSet;
+use rusqlite::{Connection, ToSql};
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use crate::indcache::queries::{
-    edge_targets_for_source_path, fnode_for_path, path_for_fnode_if_unique, path_has_blocking_issue,
+    edge_targets_for_source_path, fnode_for_path, path_for_fnode_if_unique,
+    path_has_blocking_issue, CHUNK_SIZE,
 };
 use crate::mdocnode::{MdocHead, MdocIdentity};
 use crate::workspace::{iter_mdoc_files, to_rel_path};
@@ -14,34 +16,378 @@ use crate::workspace::{iter_mdoc_files, to_rel_path};
 
 /// Full workspace scan: reparse every file and delete stale paths.
 pub fn refresh_search_index(conn: &Connection, root: &Path) -> Result<()> {
-    let mut stmt = conn.prepare(
-        "SELECT path FROM mdoc_files
-         UNION SELECT path FROM mdocs
-         UNION SELECT path FROM mdoc_issues
-         UNION SELECT src_path AS path FROM mdoc_edges",
-    )?;
-    let indexed_paths: HashSet<String> = stmt
-        .query_map([], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<_>>()?;
-
-    let mut seen_paths: HashSet<String> = HashSet::new();
-    for file_path in iter_mdoc_files(root) {
-        let file_path = file_path?;
-        let rel_path = to_rel_path(root, &file_path);
-        seen_paths.insert(rel_path.clone());
-        // A force refresh intentionally parses every discovered file. Metadata
-        // equality is not a content guarantee.
-        upsert_mdoc_row(conn, root, &file_path)?;
+    let _profile = crate::profile::scope("refresh::refresh_search_index");
+    let files = {
+        let _phase = crate::profile::scope("refresh::scan_workspace");
+        scan_workspace(root)?
+    };
+    {
+        let _phase = crate::profile::scope("refresh::sync_file_states");
+        sync_file_states(conn, &files)?;
     }
 
-    for stale_path in indexed_paths.difference(&seen_paths) {
-        delete_indexed_path(conn, stale_path)?;
-    }
-
-    super::derived::refresh_all_derived_data(conn)?;
-    conn.execute(
-        "UPDATE mdoc_index_state SET bootstrapped = 1 WHERE id = 1",
+    let digest = {
+        let _phase = crate::profile::scope("refresh::index_digest");
+        index_digest(&files)
+    };
+    let (old_digest, bootstrapped): (String, bool) = conn.query_row(
+        "SELECT index_digest, bootstrapped FROM mdoc_index_state WHERE id = 1",
         [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if !bootstrapped || old_digest != digest {
+        let issues = {
+            let _phase = crate::profile::scope("refresh::build_issues");
+            build_issues(&files)
+        };
+        {
+            let _phase = crate::profile::scope("refresh::replace_index_rows");
+            replace_index_rows(conn, &files, &issues)?;
+        }
+        {
+            let _phase = crate::profile::scope("refresh::rebuild_in_degree");
+            rebuild_in_degree(conn)?;
+        }
+        super::derived::bump_graph_epoch(conn)?;
+        super::derived::refresh_all_derived_data(conn)?;
+    }
+    conn.execute(
+        "UPDATE mdoc_index_state SET bootstrapped = 1, index_digest = ? WHERE id = 1",
+        [&digest],
+    )?;
+    Ok(())
+}
+
+const BULK_ROWS: usize = 200;
+
+struct ScannedMdoc {
+    path: String,
+    mtime_ns: i64,
+    size: i64,
+    node: Option<ScannedNode>,
+    invalid: Option<IndexIssue>,
+}
+
+struct ScannedNode {
+    fnode: String,
+    title: String,
+    title_lc: String,
+    dependencies: Vec<String>,
+    structurally_valid: bool,
+}
+
+struct IndexIssue {
+    path: String,
+    kind: &'static str,
+    ref_fnode: String,
+    error: String,
+}
+
+fn scan_workspace(root: &Path) -> Result<Vec<ScannedMdoc>> {
+    let mut paths = iter_mdoc_files(root).collect::<Result<Vec<_>>>()?;
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|path| scan_mdoc(root, &path))
+        .collect()
+}
+
+fn scan_mdoc(root: &Path, path: &Path) -> Result<ScannedMdoc> {
+    let snapshot = crate::workspace::read_regular_file_beneath(root, path)?;
+    let content = snapshot.content();
+    let path_string = to_rel_path(root, path);
+    let (mtime_ns, size) = metadata_state(snapshot.metadata())?;
+
+    match MdocHead::load_bytes(path, content) {
+        Ok(head) => Ok(ScannedMdoc {
+            path: path_string,
+            mtime_ns,
+            size,
+            node: Some(ScannedNode {
+                fnode: head.fnode,
+                title_lc: head.title.to_lowercase(),
+                title: head.title,
+                dependencies: head.depens,
+                structurally_valid: true,
+            }),
+            invalid: None,
+        }),
+        Err(error) => {
+            let identity = MdocIdentity::from_bytes(content);
+            let ref_fnode = identity.fnode.clone().unwrap_or_else(|| "<unknown>".into());
+            let node = identity.complete().map(|(fnode, title)| ScannedNode {
+                fnode: fnode.to_string(),
+                title_lc: title.to_lowercase(),
+                title: title.to_string(),
+                dependencies: Vec::new(),
+                structurally_valid: false,
+            });
+            Ok(ScannedMdoc {
+                invalid: Some(IndexIssue {
+                    path: path_string.clone(),
+                    kind: "invalid",
+                    ref_fnode,
+                    error: error.to_string(),
+                }),
+                path: path_string,
+                mtime_ns,
+                size,
+                node,
+            })
+        }
+    }
+}
+
+fn build_issues(files: &[ScannedMdoc]) -> Vec<IndexIssue> {
+    let mut issues = Vec::new();
+    let mut claimants: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut blocking_paths = HashSet::new();
+
+    for file in files {
+        if let Some(invalid) = &file.invalid {
+            issues.push(IndexIssue {
+                path: invalid.path.clone(),
+                kind: invalid.kind,
+                ref_fnode: invalid.ref_fnode.clone(),
+                error: invalid.error.clone(),
+            });
+            blocking_paths.insert(file.path.as_str());
+        }
+        if let Some(node) = &file.node {
+            if is_reportable_fnode(&node.fnode) {
+                claimants
+                    .entry(node.fnode.as_str())
+                    .or_default()
+                    .push(file.path.as_str());
+            }
+        }
+    }
+
+    for (fnode, paths) in &claimants {
+        if paths.len() < 2 {
+            continue;
+        }
+        let error = format!("duplicate fnode '{}' across: {}", fnode, paths.join(", "));
+        for path in paths {
+            blocking_paths.insert(*path);
+            issues.push(IndexIssue {
+                path: (*path).to_string(),
+                kind: "duplicate",
+                ref_fnode: fnode.to_string(),
+                error: error.clone(),
+            });
+        }
+    }
+
+    for file in files {
+        let Some(node) = &file.node else {
+            continue;
+        };
+        if !node.structurally_valid || blocking_paths.contains(file.path.as_str()) {
+            continue;
+        }
+        for dependency in &node.dependencies {
+            if !claimants.contains_key(dependency.as_str()) {
+                issues.push(IndexIssue {
+                    path: file.path.clone(),
+                    kind: "missing",
+                    ref_fnode: dependency.clone(),
+                    error: format!("missing dependency target: {dependency}"),
+                });
+            }
+        }
+    }
+    issues.sort_by(|left, right| {
+        (&left.path, left.kind, &left.ref_fnode).cmp(&(&right.path, right.kind, &right.ref_fnode))
+    });
+    issues
+}
+
+fn index_digest(files: &[ScannedMdoc]) -> String {
+    let mut digest = Sha256::new();
+    hash_value(&mut digest, b"mathdoc-index-v1");
+    for file in files {
+        hash_value(&mut digest, file.path.as_bytes());
+        match &file.node {
+            Some(node) => {
+                hash_value(&mut digest, b"node");
+                hash_value(&mut digest, node.fnode.as_bytes());
+                hash_value(&mut digest, node.title.as_bytes());
+                hash_value(&mut digest, &[u8::from(node.structurally_valid)]);
+                for dependency in &node.dependencies {
+                    hash_value(&mut digest, dependency.as_bytes());
+                }
+            }
+            None => hash_value(&mut digest, b"no-node"),
+        }
+        if let Some(invalid) = &file.invalid {
+            hash_value(&mut digest, invalid.ref_fnode.as_bytes());
+            hash_value(&mut digest, invalid.error.as_bytes());
+        }
+    }
+    format!("{:x}", digest.finalize())
+}
+
+fn hash_value(digest: &mut Sha256, value: &[u8]) {
+    digest.update((value.len() as u64).to_le_bytes());
+    digest.update(value);
+}
+
+fn sync_file_states(conn: &Connection, files: &[ScannedMdoc]) -> Result<()> {
+    let mut stmt = conn.prepare("SELECT path, mtime_ns, size FROM mdoc_files")?;
+    let current: HashMap<String, (i64, i64)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(stmt);
+
+    let desired_paths: HashSet<&str> = files.iter().map(|file| file.path.as_str()).collect();
+    let stale: Vec<&str> = current
+        .keys()
+        .map(String::as_str)
+        .filter(|path| !desired_paths.contains(path))
+        .collect();
+    for chunk in stale.chunks(CHUNK_SIZE) {
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        conn.execute(
+            &format!("DELETE FROM mdoc_files WHERE path IN ({placeholders})"),
+            rusqlite::params_from_iter(chunk.iter().copied()),
+        )?;
+    }
+
+    let changed: Vec<&ScannedMdoc> = files
+        .iter()
+        .filter(|file| current.get(&file.path) != Some(&(file.mtime_ns, file.size)))
+        .collect();
+    for chunk in changed.chunks(BULK_ROWS) {
+        let placeholders = chunk
+            .iter()
+            .map(|_| "(?,?,?)")
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut params: Vec<&dyn ToSql> = Vec::with_capacity(chunk.len() * 3);
+        for file in chunk {
+            params.push(&file.path);
+            params.push(&file.mtime_ns);
+            params.push(&file.size);
+        }
+        conn.execute(
+            &format!(
+                "INSERT INTO mdoc_files (path, mtime_ns, size) VALUES {placeholders}
+                 ON CONFLICT(path) DO UPDATE SET
+                   mtime_ns = excluded.mtime_ns,
+                   size = excluded.size"
+            ),
+            params.as_slice(),
+        )?;
+    }
+    Ok(())
+}
+
+fn replace_index_rows(
+    conn: &Connection,
+    files: &[ScannedMdoc],
+    issues: &[IndexIssue],
+) -> Result<()> {
+    conn.execute_batch("DELETE FROM mdoc_edges; DELETE FROM mdoc_issues; DELETE FROM mdocs;")?;
+
+    let nodes: Vec<(&ScannedMdoc, &ScannedNode)> = files
+        .iter()
+        .filter_map(|file| file.node.as_ref().map(|node| (file, node)))
+        .collect();
+    for chunk in nodes.chunks(BULK_ROWS) {
+        let placeholders = chunk
+            .iter()
+            .map(|_| "(?,?,?,?)")
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut params: Vec<&dyn ToSql> = Vec::with_capacity(chunk.len() * 4);
+        for (file, node) in chunk {
+            params.push(&file.path);
+            params.push(&node.fnode);
+            params.push(&node.title);
+            params.push(&node.title_lc);
+        }
+        conn.execute(
+            &format!("INSERT INTO mdocs (path, fnode, title, title_lc) VALUES {placeholders}"),
+            params.as_slice(),
+        )?;
+    }
+
+    let edges: Vec<(&str, &str, &str, i64)> = files
+        .iter()
+        .filter_map(|file| {
+            file.node
+                .as_ref()
+                .filter(|node| node.structurally_valid)
+                .map(|node| (file, node))
+        })
+        .flat_map(|(file, node)| {
+            node.dependencies
+                .iter()
+                .enumerate()
+                .map(move |(order, dep)| {
+                    (
+                        file.path.as_str(),
+                        node.fnode.as_str(),
+                        dep.as_str(),
+                        order as i64,
+                    )
+                })
+        })
+        .collect();
+    for chunk in edges.chunks(BULK_ROWS) {
+        let placeholders = chunk
+            .iter()
+            .map(|_| "(?,?,?,?)")
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut params: Vec<&dyn ToSql> = Vec::with_capacity(chunk.len() * 4);
+        for (path, source, target, order) in chunk {
+            params.push(path);
+            params.push(source);
+            params.push(target);
+            params.push(order);
+        }
+        conn.execute(
+            &format!(
+                "INSERT INTO mdoc_edges (src_path, src_fnode, dst_fnode, ord)
+                 VALUES {placeholders}"
+            ),
+            params.as_slice(),
+        )?;
+    }
+
+    for chunk in issues.chunks(BULK_ROWS) {
+        let placeholders = chunk
+            .iter()
+            .map(|_| "(?,?,?,?)")
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut params: Vec<&dyn ToSql> = Vec::with_capacity(chunk.len() * 4);
+        for issue in chunk {
+            params.push(&issue.path);
+            params.push(&issue.kind);
+            params.push(&issue.ref_fnode);
+            params.push(&issue.error);
+        }
+        conn.execute(
+            &format!(
+                "INSERT INTO mdoc_issues (path, kind, ref_fnode, error) VALUES {placeholders}"
+            ),
+            params.as_slice(),
+        )?;
+    }
+    Ok(())
+}
+
+fn rebuild_in_degree(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DELETE FROM mdoc_in_degree;
+         INSERT INTO mdoc_in_degree (fnode, in_degree)
+         SELECT dst_fnode, COUNT(*)
+         FROM mdoc_valid_edges
+         GROUP BY dst_fnode
+         HAVING COUNT(*) > 0;",
     )?;
     Ok(())
 }
@@ -241,6 +587,7 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
     {
         super::derived::bump_graph_epoch(conn)?;
     }
+    invalidate_index_digest(conn)?;
     Ok(())
 }
 
@@ -276,10 +623,19 @@ pub fn delete_indexed_path(conn: &Connection, stale_path: &str) -> Result<()> {
     if old_fnode.is_some() || !affected.is_empty() || old_had_blocking_issue {
         super::derived::bump_graph_epoch(conn)?;
     }
+    invalidate_index_digest(conn)?;
     Ok(())
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
+
+fn invalidate_index_digest(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "UPDATE mdoc_index_state SET index_digest = '' WHERE id = 1",
+        [],
+    )?;
+    Ok(())
+}
 
 pub(crate) fn metadata_state(meta: &std::fs::Metadata) -> Result<(i64, i64)> {
     let modified = meta
@@ -347,7 +703,7 @@ fn cleanup_stale_fnode_paths(
 
 fn refresh_duplicate_issues_for_fnode(conn: &Connection, fnode: Option<&str>) -> Result<()> {
     let fnode = match fnode {
-        Some(f) if !(f.is_empty() || f.starts_with('<') && f.ends_with('>')) => f,
+        Some(f) if is_reportable_fnode(f) => f,
         _ => return Ok(()),
     };
     conn.execute(
@@ -366,6 +722,10 @@ fn refresh_duplicate_issues_for_fnode(conn: &Connection, fnode: Option<&str>) ->
         insert_issue(conn, path, "duplicate", fnode, &error)?;
     }
     Ok(())
+}
+
+fn is_reportable_fnode(fnode: &str) -> bool {
+    !(fnode.is_empty() || fnode.starts_with('<') && fnode.ends_with('>'))
 }
 
 fn refresh_missing_issues_for_source(conn: &Connection, src_path: &str) -> Result<()> {

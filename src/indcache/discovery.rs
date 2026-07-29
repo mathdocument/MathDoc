@@ -1,9 +1,10 @@
 //! Workspace change detection using a metadata fast path.
 
 use std::collections::{HashMap, HashSet};
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
 use super::queries::fnode_for_path;
@@ -29,6 +30,13 @@ pub fn discover_workspace_changes(
 
         let metadata = std::fs::metadata(&file_path)
             .with_context(|| format!("reading metadata for {}", file_path.display()))?;
+        if metadata.nlink() > 1 {
+            bail!(
+                "refusing to access hard-linked file {} ({} links)",
+                file_path.display(),
+                metadata.nlink()
+            );
+        }
         if known.get(&rel_path) == Some(&metadata_state(&metadata)?) {
             continue;
         }

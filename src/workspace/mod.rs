@@ -9,9 +9,10 @@ mod safe_file;
 pub(crate) use mutation_lock::WorkspaceMutationLock;
 pub(crate) use safe_file::{
     atomic_create_if_missing_beneath, ensure_regular_directory_tree, ensure_regular_file_beneath,
-    error_has_file_conflict, error_has_infrastructure_failure, regular_directory_exists_beneath,
-    remove_directory_tree_beneath, remove_empty_directory_beneath, AppliedRename, AppliedWrite,
-    FileSnapshot, PersistenceRecoveryError,
+    error_has_file_conflict, error_has_infrastructure_failure, read_regular_file_beneath,
+    regular_directory_exists_beneath, remove_directory_tree_beneath,
+    remove_empty_directory_beneath, AppliedRename, AppliedWrite, FileSnapshot,
+    PersistenceRecoveryError,
 };
 #[cfg(test)]
 pub(crate) use safe_file::{set_test_hook, FileConflict, TestHookPoint};

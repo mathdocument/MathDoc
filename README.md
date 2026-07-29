@@ -125,6 +125,15 @@ mdc graph check
 
 ## Command reference
 
+Every command accepts the global `--prof` flag. It writes an inclusive elapsed-time
+breakdown to stderr while preserving the command's normal stdout, which is useful
+for diagnosing full-refresh and graph costs:
+
+```bash
+mdc graph check --prof
+mdc metric ior notes/theorem.mdoc --prof
+```
+
 ### Workspace
 
 #### `mdc init`
@@ -271,10 +280,13 @@ mdc dep refs <target> -d -1
 Scan the workspace and report repository-wide issues:
 ```bash
 mdc graph check
+mdc graph check --prof
 ```
 Reports discovered `.mdoc` count, valid-source edge count, missing targets,
 invalid files (including duplicate fnodes), and one representative cycle from
-each cyclic strongly connected component.
+each cyclic strongly connected component. A strong refresh still reads every
+`.mdoc`; when indexed paths, identities, titles, dependencies, and parse issues
+are unchanged, it skips graph-row and derived-data reconstruction.
 
 #### `mdc graph roots`
 

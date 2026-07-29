@@ -75,6 +75,9 @@ fn fmt_item(fnode: &str, title: &str, rel_path: &str, broken: bool) -> String {
 #[derive(Parser)]
 #[command(name = "mdc", about = "MathDoc CLI")]
 struct Cli {
+    /// Print inclusive function timings to stderr.
+    #[arg(long, global = true)]
+    prof: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -202,7 +205,13 @@ enum DepCommands {
 
 pub fn run() -> i32 {
     let cli = Cli::parse();
-    match dispatch(cli.command) {
+    crate::profile::set_enabled(cli.prof);
+    let result = {
+        let _profile = crate::profile::scope("cli::dispatch");
+        dispatch(cli.command)
+    };
+    crate::profile::print_report();
+    match result {
         Ok(code) => code,
         Err(e) => {
             eprintln_err(&e.to_string());

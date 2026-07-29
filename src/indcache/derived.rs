@@ -71,6 +71,7 @@ fn persist_weak_components(
 }
 
 pub(super) fn ensure_scc_cache(conn: &Connection) -> Result<Vec<Vec<String>>> {
+    let _profile = crate::profile::scope("derived::ensure_scc_cache");
     let current_epoch: i32 = conn.query_row(
         "SELECT graph_epoch FROM mdoc_index_state WHERE id = 1",
         [],
@@ -82,8 +83,14 @@ pub(super) fn ensure_scc_cache(conn: &Connection) -> Result<Vec<Vec<String>>> {
         }
     }
 
-    let graph = dep_graph_snapshot(conn, None, None)?;
-    let cycles = representative_cycles(&graph);
+    let graph = {
+        let _phase = crate::profile::scope("derived::load_scc_graph");
+        dep_graph_snapshot(conn, None, None)?
+    };
+    let cycles = {
+        let _phase = crate::profile::scope("algorithm::representative_cycles");
+        representative_cycles(&graph)
+    };
     write_scc_cache(conn, current_epoch, &cycles)?;
     Ok(cycles)
 }
@@ -113,11 +120,23 @@ fn write_scc_cache(conn: &Connection, graph_epoch: i32, cycles: &[Vec<String>]) 
 
 /// Recompute topo depths and weak components from one graph snapshot.
 pub(super) fn refresh_all_derived_data(conn: &Connection) -> Result<()> {
+    let _profile = crate::profile::scope("derived::refresh_all_derived_data");
     let valid_nodes = valid_node_rows(conn)?;
     let invalid_issues = invalid_issue_rows(conn)?;
-    let graph = dep_graph_snapshot(conn, Some(&valid_nodes), Some(&invalid_issues))?;
+    let graph = {
+        let _phase = crate::profile::scope("derived::load_graph");
+        dep_graph_snapshot(conn, Some(&valid_nodes), Some(&invalid_issues))?
+    };
 
-    persist_topo_depths(conn, &all_topo_depths(&graph))?;
+    let depths = {
+        let _phase = crate::profile::scope("algorithm::all_topo_depths");
+        all_topo_depths(&graph)
+    };
+    {
+        let _phase = crate::profile::scope("derived::persist_topo_depths");
+        persist_topo_depths(conn, &depths)?;
+    }
+    let _phase = crate::profile::scope("derived::persist_weak_components");
     persist_weak_components(conn, &graph, &valid_nodes, &invalid_issues)
 }
 
@@ -211,13 +230,9 @@ pub(super) fn backfill_all_topo_depths(conn: &Connection) -> Result<()> {
 }
 
 fn persist_topo_depths(conn: &Connection, depths: &HashMap<String, u32>) -> Result<()> {
-    for chunk in depths.iter().collect::<Vec<_>>().chunks(CHUNK_SIZE) {
-        for (fnode, depth) in chunk {
-            conn.execute(
-                "UPDATE mdocs SET topo_depth = ? WHERE fnode = ?",
-                rusqlite::params![depth, fnode],
-            )?;
-        }
+    let mut stmt = conn.prepare("UPDATE mdocs SET topo_depth = ? WHERE fnode = ?")?;
+    for (fnode, depth) in depths {
+        stmt.execute(rusqlite::params![depth, fnode])?;
     }
     Ok(())
 }

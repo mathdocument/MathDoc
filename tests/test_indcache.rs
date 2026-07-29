@@ -486,6 +486,88 @@ fn test_search_treats_like_metacharacters_literally() {
 }
 
 #[test]
+fn full_refresh_preserves_unicode_case_insensitive_title_search() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    write(
+        &root.join("unicode.mdoc"),
+        "@fnode: unicode-title-node\n@title: École\n",
+    );
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    assert_eq!(
+        cache.search("école", 10).unwrap()[0].fnode,
+        "unicode-title-node"
+    );
+
+    cache.refresh_all().unwrap();
+    assert_eq!(
+        cache.search("école", 10).unwrap()[0].fnode,
+        "unicode-title-node"
+    );
+}
+
+#[test]
+fn full_refresh_crosses_bulk_insert_boundaries() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    for index in 0..201 {
+        write(
+            &root.join(format!("node-{index:03}.mdoc")),
+            &format!(
+                "@fnode: node-{index:03}\n@title: Node {index:03}\n\n@dep:\nmissing-{index:03}\n@end\n"
+            ),
+        );
+    }
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    let report = cache.graph_check_report().unwrap();
+
+    assert_eq!(report.nodes, 201);
+    assert_eq!(report.edges, 201);
+    assert_eq!(report.missing.len(), 201);
+}
+
+#[test]
+fn discovery_rejects_a_hard_link_added_after_indexing() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    let path = root.join("node.mdoc");
+    write(&path, "@fnode: hard-link-node\n@title: Hard Link\n");
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    std::fs::hard_link(&path, root.join("alias.bin")).unwrap();
+
+    let error = cache.discover_workspace_changes().unwrap_err();
+
+    assert!(error.to_string().contains("hard-linked file"));
+}
+
+#[test]
+fn full_refresh_does_not_duplicate_placeholder_fnodes() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    for path in ["first.mdoc", "second.mdoc"] {
+        write(
+            &root.join(path),
+            "@fnode: <invalid>\n@title: Invalid\n@unknown: value\n",
+        );
+    }
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    let report = cache.graph_check_report().unwrap();
+
+    assert_eq!(report.invalid.len(), 2);
+    assert!(report
+        .invalid
+        .iter()
+        .all(|issue| !issue.error.contains("duplicate fnode")));
+}
+
+#[test]
 fn search_returns_ranked_summaries_and_all_nodes_are_unbounded() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
@@ -1525,6 +1607,49 @@ fn test_graph_check_report_invalidates_scc_cache_on_fnode_rename() {
         0,
         "SCC cache must be invalidated after fnode rename"
     );
+}
+
+#[test]
+fn full_refresh_skips_graph_rebuild_when_index_semantics_are_unchanged() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    let source = root.join("source.mdoc");
+    write(
+        &source,
+        "@fnode: source-node\n@title: Source\n\n@src: text\nfirst body\n@end\n",
+    );
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    let epoch = |cache: &IndCache| -> i64 {
+        rusqlite::Connection::open(index_path(cache))
+            .unwrap()
+            .query_row(
+                "SELECT graph_epoch FROM mdoc_index_state WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    let initial_epoch = epoch(&cache);
+
+    cache.refresh_all().unwrap();
+    assert_eq!(epoch(&cache), initial_epoch);
+
+    write(
+        &source,
+        "@fnode: source-node\n@title: Source\n\n@src: text\nchanged body\n@end\n",
+    );
+    cache.refresh_all().unwrap();
+    assert_eq!(epoch(&cache), initial_epoch);
+
+    write(
+        &source,
+        "@fnode: source-node\n@title: Source\n\n@dep:\nmissing-node\n@end\n",
+    );
+    cache.refresh_all().unwrap();
+    assert!(epoch(&cache) > initial_epoch);
+    assert_eq!(cache.graph_check_report().unwrap().missing.len(), 1);
 }
 
 #[test]

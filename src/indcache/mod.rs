@@ -37,6 +37,7 @@ pub struct IndCache {
 impl IndCache {
     /// Open (or create) the index database for the workspace rooted at `root`.
     pub fn open(root: PathBuf) -> Result<Self> {
+        let _profile = crate::profile::scope("IndCache::open");
         let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&root)?;
         Self::open_under_mutation_lock(&mutation_lock)
     }
@@ -78,9 +79,11 @@ impl IndCache {
 
     /// Bootstrap the index on first use; no-op if already bootstrapped.
     fn bootstrap_if_needed(&mut self) -> Result<()> {
+        let _profile = crate::profile::scope("IndCache::bootstrap_if_needed");
         if !queries::is_bootstrapped(&self.conn)? {
             let tx = self.conn.transaction()?;
             refresh::refresh_search_index(&tx, &self.root)?;
+            let _commit = crate::profile::scope("sqlite::bootstrap_commit");
             tx.commit()?;
         }
         Ok(())
@@ -88,8 +91,10 @@ impl IndCache {
 
     /// Full workspace rescan; rebuilds the entire index.
     pub fn refresh_all(&mut self) -> Result<()> {
+        let _profile = crate::profile::scope("IndCache::refresh_all");
         let tx = self.conn.transaction()?;
         refresh::refresh_search_index(&tx, &self.root)?;
+        let _commit = crate::profile::scope("sqlite::refresh_all_commit");
         tx.commit()?;
         Ok(())
     }
@@ -348,6 +353,7 @@ impl IndCache {
     }
 
     pub fn graph_check_report(&mut self) -> Result<GraphCheckReport> {
+        let _profile = crate::profile::scope("IndCache::graph_check_report");
         let tx = self.conn.transaction()?;
         let cycles = derived::ensure_scc_cache(&tx)?;
         let result = queries::graph_check_report(&tx, cycles)?;

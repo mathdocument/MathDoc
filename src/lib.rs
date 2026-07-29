@@ -18,6 +18,8 @@ pub mod mdocnode;
 #[cfg(unix)]
 pub mod metric;
 #[cfg(unix)]
+pub(crate) mod profile;
+#[cfg(unix)]
 pub mod web;
 #[cfg(unix)]
 pub(crate) mod workdraft;

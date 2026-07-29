@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 15;
+const SCHEMA_VERSION: i32 = 16;
 
 const CREATE_SQL: &str = "
 CREATE TABLE IF NOT EXISTS mdocs (
@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS mdoc_index_state (
     id                   INTEGER PRIMARY KEY CHECK (id = 1),
     bootstrapped         INTEGER NOT NULL DEFAULT 0,
     graph_epoch          INTEGER NOT NULL DEFAULT 0,
-    weak_component_dirty INTEGER NOT NULL DEFAULT 1
+    weak_component_dirty INTEGER NOT NULL DEFAULT 1,
+    index_digest         TEXT    NOT NULL DEFAULT ''
 );
 INSERT OR IGNORE INTO mdoc_index_state (id, bootstrapped) VALUES (1, 0);
 
@@ -350,5 +351,28 @@ mod tests {
         assert_eq!(edges, 0);
         // Applying the current schema again must not discard new data or fail.
         apply_schema(&mut conn).unwrap();
+    }
+
+    #[test]
+    fn schema_fifteen_is_rebuilt_with_an_index_digest() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("index.db");
+        let conn = open_db(&path).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE mdoc_index_state DROP COLUMN index_digest;
+             PRAGMA user_version = 15;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open_db(&path).unwrap();
+        let digest: String = conn
+            .query_row(
+                "SELECT index_digest FROM mdoc_index_state WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(digest.is_empty());
     }
 }

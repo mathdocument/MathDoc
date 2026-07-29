@@ -8,6 +8,7 @@ use super::{fmt_item, print_missing_with_referrers, require_mdcroot, BLD, DIM, G
 // ── cmd: graph check ──────────────────────────────────────────────────────────
 
 pub(super) fn cmd_graph_check() -> Result<i32> {
+    let _profile = crate::profile::scope("cli::cmd_graph_check");
     let mdcroot = require_mdcroot()?;
     let mut cache = IndCache::open(mdcroot)?;
     cache.refresh_all()?;

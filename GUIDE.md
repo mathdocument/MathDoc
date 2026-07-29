@@ -93,9 +93,10 @@ Important format details:
 ## `.mdoc` Parsing
 
 `MdocNode::load` fully parses a file, including block contents. Index refreshes
-capture the file once and pass those bytes to `MdocHead::load_bytes`, which walks
-and structurally validates the complete document, including source headers and
-block termination, but does not allocate or retain source-block bodies.
+open each regular file descriptor-relatively with no symlink following, read it
+once, and pass those bytes to `MdocHead::load_bytes`, which walks and structurally
+validates the complete document, including source headers and block termination,
+but does not allocate or retain source-block bodies.
 `MdocNode::upsert_source_block()` normalizes nonempty mutation content to the same
 trailing-newline representation produced by the parser.
 
@@ -105,7 +106,7 @@ the cache can report useful invalid/duplicate diagnostics.
 
 ## IndCache
 
-The SQLite database lives at `.mdc/index.db`. Current schema version is `15`.
+The SQLite database lives at `.mdc/index.db`. Current schema version is `16`.
 The DB is opened with WAL mode and foreign keys enabled.
 
 Internal module boundaries are strict:
@@ -169,8 +170,9 @@ The SQLite database is opened no-follow and multiply linked databases are
 rejected. Multi-file rollback is best-effort rather than guaranteed or
 crash-atomic.
 
-`CHUNK_SIZE = 500` is used for SQL `IN (...)` chunks and bulk inserts to stay
-under SQLite variable limits.
+`CHUNK_SIZE = 500` is used for SQL `IN (...)` chunks. Full refresh replacement
+uses 200-row multi-value inserts to stay under SQLite variable limits even for
+the four-column edge and issue tables.
 
 ### Database Tables
 
@@ -182,7 +184,7 @@ under SQLite variable limits.
 | `mdoc_issues` | `path`, `kind`, `ref_fnode`, `error` | Structural problems: `invalid`, `duplicate`, `missing` |
 | `mdoc_in_degree` | `fnode`, `in_degree` | Precomputed in-degree for root detection |
 | `mdoc_weak_component` | `fnode`, `component_size` | Weak connected-component size for each node |
-| `mdoc_index_state` | `graph_epoch`, `weak_component_dirty`, `bootstrapped` | Epoch, weak-component dirty state, and bootstrap state |
+| `mdoc_index_state` | `graph_epoch`, `weak_component_dirty`, `bootstrapped`, `index_digest` | Epoch, weak-component dirty state, bootstrap state, and full-refresh semantic digest |
 | `mdoc_scc_result` | `graph_epoch`, `cycles_json` | One representative cycle per cyclic SCC for an epoch; it does not persist the complete SCC decomposition |
 
 `mdoc_valid_edges` is the schema-owned view used by graph reads and derived-data
@@ -207,10 +209,18 @@ topo-depth backfill because ancestor depths may decrease and there may be no sin
 safe starting node. Same-metadata edits are intentionally deferred to strong refresh
 paths such as `mdc sync` and `mdc graph check`.
 
-`refresh_all()` is the full rescan path used by `mdc sync`. It reparses every
-discovered `.mdoc`, reconciles stale paths, and eagerly rebuilds topological
-depths and weak components. Graph changes invalidate the epoch-keyed SCC/cycle
-cache, which `graph_check_report()` rebuilds lazily.
+`refresh_all()` is the strong full-rescan path used by `mdc sync`, `mdc graph
+check`, and metrics. It descriptor-relatively reads and reparses every discovered
+`.mdoc`, then updates changed `(mtime_ns, size)` file states. A deterministic
+`index_digest` covers sorted paths, recovered identity, title, dependency order,
+and parse status, but not source-block bodies. If the digest matches, refresh
+keeps the existing node, edge, issue, in-degree, epoch, and derived rows. If it
+differs, refresh globally constructs invalid, duplicate, and missing issues in
+memory, replaces base rows with multi-value inserts, rebuilds in-degree in one
+grouped query, and eagerly rebuilds topological depths and weak components. Graph
+changes invalidate the epoch-keyed SCC/cycle cache, which
+`graph_check_report()` rebuilds lazily. Incremental path upserts and deletions
+clear `index_digest` so the next strong refresh must reconcile the complete graph.
 
 Those descriptions are steady-state behavior. The first `IndCache::open()` after
 database creation or schema rebuild performs a full bootstrap. Node creation and
@@ -342,6 +352,18 @@ in-degree and indexed valid-source out-degree for one valid, uniquely indexed
 node. IOR is evaluated as `ln1p(i) - ln1p(o)`, which is equivalent to
 `ln((i + 1) / (o + 1))` without constructing the intermediate ratio. The CLI
 uses `refresh_all()` before evaluation and emits only the finite `f64` value.
+
+## Profiling
+
+The Clap-level global `--prof` flag enables the low-overhead scopes in
+`src/profile.rs`. At process exit, the CLI writes an inclusive elapsed-time tree
+to stderr, grouping separate worker-thread trees when needed. Normal stdout
+remains unchanged, including numeric-only metric output.
+The current scopes separate CLI dispatch, cache open/bootstrap, workspace scan,
+digest comparison, issue construction, bulk row replacement, in-degree rebuild,
+derived graph algorithms, and SQLite commits. Scopes are intentionally inclusive,
+so a parent's duration contains all reported child durations; do not sum an
+entire report as though entries were disjoint.
 
 ## Web Frontend (`mdc serve`)
 

@@ -137,6 +137,22 @@ pub(crate) enum FileSnapshot {
     },
 }
 
+#[derive(Debug)]
+pub(crate) struct ReadFileSnapshot {
+    content: Vec<u8>,
+    metadata: std::fs::Metadata,
+}
+
+impl ReadFileSnapshot {
+    pub(crate) fn content(&self) -> &[u8] {
+        &self.content
+    }
+
+    pub(crate) fn metadata(&self) -> &std::fs::Metadata {
+        &self.metadata
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct PreservedMetadata {
     permissions: std::fs::Permissions,
@@ -470,6 +486,7 @@ fn open_directory(path: &Path) -> Result<std::fs::File> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TestHookPoint {
+    ReadAfterContent,
     WriteBeforeDirectoryBinding,
     RemoveBeforeDirectoryBinding,
     RemoveTreeBeforeDirectoryBinding,
@@ -659,6 +676,88 @@ impl FileSnapshot {
     ) -> Result<AppliedRename> {
         atomic_case_rename_beneath(root, from, to, self)
     }
+}
+
+pub(crate) fn read_regular_file_beneath(root: &Path, path: &Path) -> Result<ReadFileSnapshot> {
+    let binding = DirectoryBinding::open_beneath(root, path)?;
+    let fd = unsafe {
+        libc::openat(
+            binding.raw_fd(),
+            binding.target_name().as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if fd < 0 {
+        let error = std::io::Error::last_os_error();
+        return match error.raw_os_error() {
+            Some(libc::ELOOP) => bail!("refusing to access symlink {}", path.display()),
+            _ => Err(error).with_context(|| format!("opening {}", path.display())),
+        };
+    }
+
+    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("inspecting {}", path.display()))?;
+    if !metadata.is_file() {
+        bail!("refusing to access non-regular file {}", path.display());
+    }
+    if metadata.nlink() > 1 {
+        bail!(
+            "refusing to access hard-linked file {} ({} links)",
+            path.display(),
+            metadata.nlink()
+        );
+    }
+    let identity = file_identity(&metadata);
+    let mut content = Vec::new();
+    file.read_to_end(&mut content)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let final_metadata = file
+        .metadata()
+        .with_context(|| format!("reinspecting {}", path.display()))?;
+    if !same_read_generation(&metadata, &final_metadata) {
+        return Err(FileConflict::new(path).into());
+    }
+    run_test_hook(TestHookPoint::ReadAfterContent);
+    binding.require_current(path)?;
+    let current_fd = unsafe {
+        libc::openat(
+            binding.raw_fd(),
+            binding.target_name().as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if current_fd < 0 {
+        let error = std::io::Error::last_os_error();
+        return Err(anyhow::Error::from(FileConflict::new(path)))
+            .context(format!("could not verify {}: {error}", path.display()));
+    }
+    let current = unsafe { std::fs::File::from_raw_fd(current_fd) };
+    let current_metadata = current
+        .metadata()
+        .with_context(|| format!("verifying {}", path.display()))?;
+    if !current_metadata.is_file()
+        || current_metadata.nlink() > 1
+        || file_identity(&current_metadata) != identity
+        || !same_read_generation(&final_metadata, &current_metadata)
+    {
+        return Err(FileConflict::new(path).into());
+    }
+    binding.require_current(path)?;
+    Ok(ReadFileSnapshot {
+        content,
+        metadata: final_metadata,
+    })
+}
+
+fn same_read_generation(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    file_identity(left) == file_identity(right)
+        && left.len() == right.len()
+        && left.mtime() == right.mtime()
+        && left.mtime_nsec() == right.mtime_nsec()
+        && left.ctime() == right.ctime()
+        && left.ctime_nsec() == right.ctime_nsec()
 }
 
 #[derive(Debug)]
@@ -1982,6 +2081,55 @@ mod tests {
         };
         assert!(error.to_string().contains("hard-linked file"));
         assert_eq!(std::fs::read_to_string(path).unwrap(), "before");
+    }
+
+    #[test]
+    fn read_beneath_rejects_hard_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("node.mdoc");
+        std::fs::write(&path, "before").unwrap();
+        std::fs::hard_link(&path, root.join("alias.mdoc")).unwrap();
+
+        let error = read_regular_file_beneath(&root, &path).unwrap_err();
+
+        assert!(error.to_string().contains("hard-linked file"));
+    }
+
+    #[test]
+    fn read_beneath_rejects_final_entry_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("node.mdoc");
+        std::fs::write(&path, "before").unwrap();
+        let replacement = root.join("replacement.mdoc");
+        std::fs::write(&replacement, "after").unwrap();
+        let hook_path = path.clone();
+        set_test_hook(TestHookPoint::ReadAfterContent, move || {
+            std::fs::rename(&replacement, hook_path).unwrap();
+        });
+
+        let error = read_regular_file_beneath(&root, &path).unwrap_err();
+
+        assert_file_conflict(&error);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "after");
+    }
+
+    #[test]
+    fn read_beneath_rejects_in_place_write_after_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("node.mdoc");
+        std::fs::write(&path, "before").unwrap();
+        let hook_path = path.clone();
+        set_test_hook(TestHookPoint::ReadAfterContent, move || {
+            std::fs::write(hook_path, "after").unwrap();
+        });
+
+        let error = read_regular_file_beneath(&root, &path).unwrap_err();
+
+        assert_file_conflict(&error);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "after");
     }
 
     #[test]
