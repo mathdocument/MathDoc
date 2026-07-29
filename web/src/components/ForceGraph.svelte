@@ -58,45 +58,48 @@
   const ROOT_COLOR = "#e0af68";
   const LEAF_COLOR = "#2ac3de";
 
-  // Degree = number of edges connected to a node. Computed once after load.
-  let degreeMap = new Map<string, number>();
+  let inDegreeMap = new Map<string, number>();
+  let outDegreeMap = new Map<string, number>();
 
   function nodeRadius(n: SimNode): number {
-    const deg = degreeMap.get(n.id) ?? 0;
-    const r = 6 + 0.6 * deg;
+    const inDegree = inDegreeMap.get(n.id) ?? 0;
+    const outDegree = outDegreeMap.get(n.id) ?? 0;
+    const ior = Math.log1p(inDegree) - Math.log1p(outDegree);
+    const r = 6 * (Math.max(0, ior) + 1);
     if (selectedFnode && n.id === selectedFnode) return r + 3;
     if (hoveredNode && n.id === hoveredNode.id) return r + 2;
     return r;
   }
 
-  // Compute degree, root, and leaf status for all nodes.
+  // Compute directed degrees, root, and leaf status for all rendered nodes.
   function computeMetadata(nodeList: SimNode[], linkList: SimLink[]) {
-    degreeMap = new Map<string, number>();
-    const hasIncoming = new Set<string>();
-    const hasOutgoing = new Set<string>();
-    for (const n of nodeList) degreeMap.set(n.id, 0);
+    inDegreeMap = new Map<string, number>();
+    outDegreeMap = new Map<string, number>();
+    for (const n of nodeList) {
+      inDegreeMap.set(n.id, 0);
+      outDegreeMap.set(n.id, 0);
+    }
     for (const l of linkList) {
       const s = typeof l.source === "string" ? l.source : l.source.id;
       const t = typeof l.target === "string" ? l.target : l.target.id;
-      degreeMap.set(s, (degreeMap.get(s) ?? 0) + 1);
-      degreeMap.set(t, (degreeMap.get(t) ?? 0) + 1);
-      hasOutgoing.add(s);
-      hasIncoming.add(t);
+      outDegreeMap.set(s, (outDegreeMap.get(s) ?? 0) + 1);
+      inDegreeMap.set(t, (inDegreeMap.get(t) ?? 0) + 1);
     }
     for (const n of nodeList) {
-      n.isRoot = !hasIncoming.has(n.id);
-      n.isLeaf = !hasOutgoing.has(n.id);
+      n.isRoot = (inDegreeMap.get(n.id) ?? 0) === 0;
+      n.isLeaf = (outDegreeMap.get(n.id) ?? 0) === 0;
     }
   }
 
   // ── Data ────────────────────────────────────────────────────────────────────
   let graphRequest = 0;
 
-  async function loadGraph() {
+  async function loadGraph(): Promise<boolean> {
     const request = ++graphRequest;
     try {
+      loadError = null;
       const data = await api.full();
-      if (request !== graphRequest) return;
+      if (request !== graphRequest) return false;
       nodes = data.nodes.map((n: NodeInfo) => ({
         id: n.fnode,
         title: n.title,
@@ -111,20 +114,23 @@
         .map((e) => ({ source: e.source, target: e.target }));
       computeMetadata(nodes, links);
       buildSimulation();
+      return true;
     } catch (e) {
-      if (request !== graphRequest) return;
+      if (request !== graphRequest) return false;
       loadError = e instanceof Error ? e.message : String(e);
+      return false;
     }
   }
 
   // Incremental reload: fetch fresh data but preserve existing node positions
   // so the graph doesn't jump. New nodes appear near the centroid; removed
   // nodes are dropped. Simulation restarts gently with alpha(0.5).
-  async function reloadGraph() {
+  async function reloadGraph(): Promise<boolean> {
     const request = ++graphRequest;
     try {
+      loadError = null;
       const data = await api.full();
-      if (request !== graphRequest) return;
+      if (request !== graphRequest) return false;
       loadError = null;
       // Preserve positions of existing nodes.
       const posMap = new Map<string, { x: number; y: number }>();
@@ -171,10 +177,12 @@
         buildSimulation();
       }
       requestRender();
+      return true;
     } catch (e) {
-      if (request === graphRequest && !sim) {
+      if (request === graphRequest) {
         loadError = e instanceof Error ? e.message : String(e);
       }
+      return false;
     }
   }
 
@@ -365,7 +373,7 @@
 
   function findNodeAt(canvasX: number, canvasY: number): SimNode | null {
     const { x: wx, y: wy } = screenToWorld(canvasX, canvasY);
-    // Search in reverse so larger (higher-degree) nodes drawn on top are hit first.
+    // Search in reverse draw order so visually topmost nodes are hit first.
     for (let i = nodes.length - 1; i >= 0; i--) {
       const n = nodes[i]!;
       if (n.x == null || n.y == null) continue;
@@ -534,6 +542,43 @@
 
   let resizeObserver: ResizeObserver | null = null;
   let needsFit = false;
+  let graphInitialized = false;
+  let graphDirty = false;
+  let graphLoadPromise: Promise<void> | null = null;
+
+  function ensureGraphLoaded(): Promise<void> {
+    if (!running) return Promise.resolve();
+    if (graphLoadPromise) return graphLoadPromise;
+    if (graphInitialized && !graphDirty) return Promise.resolve();
+
+    graphLoadPromise = (async () => {
+      if (!graphInitialized) {
+        const loaded = await loadGraph();
+        if (!loaded) {
+          graphDirty = false;
+          return;
+        }
+        if (!running) return;
+        graphInitialized = true;
+        if (canvasEl && canvasEl.clientWidth > 0) {
+          fitToNodes();
+        } else {
+          needsFit = true;
+        }
+      }
+      if (graphDirty) {
+        graphDirty = false;
+        if (!await reloadGraph()) return;
+      }
+      if (!running) return;
+      resizeCanvas();
+      requestRender();
+    })().finally(() => {
+      graphLoadPromise = null;
+      if (running && active && graphDirty) void ensureGraphLoaded();
+    });
+    return graphLoadPromise;
+  }
 
   onMount(() => {
     resizeCanvas();
@@ -554,18 +599,6 @@
       });
       resizeObserver.observe(containerEl);
     }
-    (async () => {
-      await loadGraph();
-      // If canvas has real dimensions, fit immediately. Otherwise defer
-      // to the ResizeObserver (will fire when the view becomes visible).
-      if (canvasEl && canvasEl.clientWidth > 0) {
-        fitToNodes();
-      } else {
-        needsFit = true;
-      }
-      resizeCanvas();
-      requestRender();
-    })();
   });
 
   onDestroy(() => {
@@ -586,6 +619,7 @@
 
   $effect(() => {
     if (active) {
+      void ensureGraphLoaded();
       resizeCanvas();
       requestRender();
     } else {
@@ -603,7 +637,13 @@
       revisionInitialized = true;
       return;
     }
-    void reloadGraph();
+    if (!graphInitialized) {
+      if (graphLoadPromise) graphDirty = true;
+      else if (active) void ensureGraphLoaded();
+      return;
+    }
+    graphDirty = true;
+    if (active) void ensureGraphLoaded();
   });
 </script>
 

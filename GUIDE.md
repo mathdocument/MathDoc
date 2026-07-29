@@ -443,6 +443,11 @@ Additional contracts:
   the title fallback.
 - `/api/graph/full` includes only non-broken nodes and edges whose endpoints
   remain in that set.
+- The always-mounted force-graph component defers `/api/graph/full` and D3
+  simulation construction until the force view is first activated. Its base node
+  radius is `6 * (max(0, ln1p(in_degree) - ln1p(out_degree)) + 1)`, using the
+  directed edges rendered by that endpoint; selection and hover add their visual
+  emphasis afterward.
 - `dep/add.dep_fnode` and `node/new.parent_fnode` are resolved as normal
   path/fnode/prefix references despite their names; neither uses title fallback.
   Self or existing dependency additions return `422`.

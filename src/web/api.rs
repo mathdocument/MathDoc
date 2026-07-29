@@ -273,6 +273,7 @@ fn resolve_with_cache(
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 pub async fn graph_roots(State(state): State<AppState>) -> ApiResult<Json<Vec<GraphRootItem>>> {
+    let _profile = crate::profile::scope("web::api::graph_roots");
     let roots = with_cache(&state, |c| {
         c.discover_workspace_changes()?;
         c.global_root_items()
@@ -290,6 +291,7 @@ pub async fn graph_check(State(state): State<AppState>) -> ApiResult<Json<GraphC
 
 /// Full workspace graph for the force-directed view: all valid nodes + edges.
 pub async fn graph_full(State(state): State<AppState>) -> ApiResult<Json<GraphFull>> {
+    let _profile = crate::profile::scope("web::api::graph_full");
     let (nodes, edges) = with_cache(&state, |c| {
         c.discover_workspace_changes()?;
         let nodes: Vec<NodeSummary> = c
@@ -360,6 +362,7 @@ pub async fn node_view(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
 ) -> ApiResult<Json<NodeView>> {
+    let _profile = crate::profile::scope("web::api::node_view");
     let mut cache = state.cache.lock().expect("cache mutex poisoned");
     let (fnode, _, abs_path) =
         resolve_with_cache(&mut cache, &fnode).map_err(ApiError::from_resolve)?;

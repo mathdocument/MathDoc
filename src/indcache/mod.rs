@@ -101,6 +101,7 @@ impl IndCache {
 
     /// Discover additions, deletions, and metadata changes; marks bootstrapped.
     pub fn discover_workspace_changes(&mut self) -> Result<()> {
+        let _profile = crate::profile::scope("IndCache::discover_workspace_changes");
         let tx = self.conn.transaction()?;
         let (changed_fnodes, has_deletion) =
             discovery::discover_workspace_changes(&tx, &self.root)?;

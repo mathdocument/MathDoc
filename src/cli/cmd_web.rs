@@ -7,6 +7,7 @@ use crate::web;
 
 /// `mdc serve` — start the interactive web frontend.
 pub(super) fn cmd_serve(source: Option<String>, bind: String, no_open: bool) -> Result<i32> {
+    let _profile = crate::profile::scope("cli::cmd_serve");
     let mut cache = IndCache::open(require_mdcroot()?)?;
     cache.discover_workspace_changes()?;
 
