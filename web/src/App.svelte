@@ -442,7 +442,7 @@
         title="Create node"
       ><Plus size={15} strokeWidth={2} /><span>New node</span></button>
     </div>
-    <span class="spacer"></span>
+    <span class="toolbar-divider compact"></span>
     <div class="view-switch" aria-label="workspace view">
       <button
         class:active={view === "columns"}
@@ -465,6 +465,7 @@
       title="Refresh external file changes"
       aria-label="Refresh external file changes"
     ><RefreshCw size={16} strokeWidth={1.8} /></button>
+    <span class="spacer"></span>
     {#if statusLine()}
       <span class="toolbar-divider compact"></span>
       <span class="status"><span class="status-dot"></span>{statusLine()}</span>
