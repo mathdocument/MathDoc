@@ -1,18 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { Maximize2 } from "@lucide/svelte";
-  import {
-    forceSimulation,
-    forceManyBody,
-    forceLink,
-    forceCenter,
-    forceCollide,
-    forceX,
-    forceY,
-    type Simulation,
-    type SimulationNodeDatum,
-  } from "d3-force";
-  import type { NodeInfo } from "../lib/types";
+  import type { GraphFull, NodeInfo } from "../lib/types";
   import { api } from "../lib/api";
   import { shortFnode } from "../lib/format";
 
@@ -25,13 +14,15 @@
   }
   let { active, onSelect, selectedFnode, revision = 0 }: Props = $props();
 
-  interface SimNode extends SimulationNodeDatum {
+  interface SimNode {
     id: string;
     title: string;
     depth: number;
     broken: boolean;
     isRoot: boolean;
     isLeaf: boolean;
+    x?: number;
+    y?: number;
   }
   interface SimLink {
     source: string | SimNode;
@@ -40,7 +31,6 @@
 
   let canvasEl = $state<HTMLCanvasElement | null>(null);
   let containerEl = $state<HTMLDivElement | null>(null);
-  let sim: Simulation<SimNode, SimLink> | null = null;
   let nodes: SimNode[] = [];
   let links: SimLink[] = [];
   let rafId = 0;
@@ -59,8 +49,6 @@
   const NODE_COLOR = "#7c9cff";
   const ROOT_COLOR = "#e8b86d";
   const LEAF_COLOR = "#63d8b2";
-  const LARGE_GRAPH_THRESHOLD = 800;
-  const LARGE_EDGE_THRESHOLD = 5_000;
   const MAX_NODE_RADIUS = 24;
   const SPATIAL_CELL_SIZE = 64;
   const MIN_ZOOM = 0.0001;
@@ -103,12 +91,25 @@
     }
   }
 
-  function useStaticLayout(): boolean {
-    return nodes.length > LARGE_GRAPH_THRESHOLD || links.length > LARGE_EDGE_THRESHOLD;
-  }
-
   // ── Data ────────────────────────────────────────────────────────────────────
   let graphRequest = 0;
+
+  function installGraph(data: GraphFull) {
+    nodes = data.nodes.map((node: NodeInfo) => ({
+      id: node.fnode,
+      title: node.title,
+      depth: node.depth,
+      broken: node.broken,
+      isRoot: false,
+      isLeaf: false,
+    }));
+    const idSet = new Set(nodes.map((node) => node.id));
+    links = data.edges
+      .filter((edge) => idSet.has(edge.source) && idSet.has(edge.target))
+      .map((edge) => ({ source: edge.source, target: edge.target }));
+    computeMetadata(nodes, links);
+    applyStaticGraphLayout();
+  }
 
   async function loadGraph(): Promise<boolean> {
     const request = ++graphRequest;
@@ -117,20 +118,7 @@
       loadError = null;
       const data = await api.full();
       if (request !== graphRequest) return false;
-      nodes = data.nodes.map((n: NodeInfo) => ({
-        id: n.fnode,
-        title: n.title,
-        depth: n.depth,
-        broken: n.broken,
-        isRoot: false,
-        isLeaf: false,
-      }));
-      const idSet = new Set(nodes.map((n) => n.id));
-      links = data.edges
-        .filter((e) => idSet.has(e.source) && idSet.has(e.target))
-        .map((e) => ({ source: e.source, target: e.target }));
-      computeMetadata(nodes, links);
-      buildSimulation();
+      installGraph(data);
       return true;
     } catch (e) {
       if (request !== graphRequest) return false;
@@ -141,9 +129,7 @@
     }
   }
 
-  // Incremental reload: fetch fresh data but preserve existing node positions
-  // so the graph doesn't jump. New nodes appear near the centroid; removed
-  // nodes are dropped. Simulation restarts gently with alpha(0.5).
+  // Reload into the deterministic depth layout after graph mutations.
   async function reloadGraph(): Promise<boolean> {
     const request = ++graphRequest;
     try {
@@ -151,57 +137,7 @@
       const data = await api.full();
       if (request !== graphRequest) return false;
       loadError = null;
-      // Preserve positions of existing nodes.
-      const posMap = new Map<string, { x: number; y: number }>();
-      for (const n of nodes) {
-        if (n.x != null && n.y != null) posMap.set(n.id, { x: n.x, y: n.y });
-      }
-      // Compute centroid for new nodes.
-      let cx = 0, cy = 0, count = 0;
-      for (const p of posMap.values()) { cx += p.x; cy += p.y; count++; }
-      if (count > 0) { cx /= count; cy /= count; }
-
-      const newNodes: SimNode[] = data.nodes.map((n: NodeInfo) => {
-        const existing = posMap.get(n.fnode);
-        return {
-          id: n.fnode,
-          title: n.title,
-          depth: n.depth,
-          broken: n.broken,
-          isRoot: false,
-          isLeaf: false,
-          x: existing?.x ?? cx + (Math.random() - 0.5) * 60,
-          y: existing?.y ?? cy + (Math.random() - 0.5) * 60,
-          vx: 0,
-          vy: 0,
-        };
-      });
-      const idSet = new Set(newNodes.map((n) => n.id));
-      const newLinks = data.edges
-        .filter((e) => idSet.has(e.source) && idSet.has(e.target))
-        .map((e) => ({ source: e.source, target: e.target }));
-
-      computeMetadata(newNodes, newLinks);
-
-      // Hot-swap smaller graphs; large graphs use the static layered layout.
-      nodes = newNodes;
-      links = newLinks;
-      if (useStaticLayout()) {
-        const enteringStaticLayout = sim !== null;
-        sim?.stop();
-        sim = null;
-        if (enteringStaticLayout) applyLargeGraphLayout();
-        else resolveLinkNodes();
-        requestRender();
-      } else if (sim) {
-        sim.nodes(nodes);
-        const linkForce = sim.force("link") as any;
-        if (linkForce) linkForce.links(links);
-        sim.alpha(0.5).stop();
-        startRaf();
-      } else {
-        buildSimulation();
-      }
+      installGraph(data);
       requestRender();
       return true;
     } catch (e) {
@@ -212,7 +148,7 @@
     }
   }
 
-  // ── Simulation (org-roam-ui model) ──────────────────────────────────────────
+  // ── Static depth layout ──────────────────────────────────────────────────────
 
   function resolveLinkNodes() {
     const nodesById = new Map(nodes.map((node) => [node.id, node]));
@@ -222,7 +158,7 @@
     }
   }
 
-  function applyLargeGraphLayout() {
+  function applyStaticGraphLayout() {
     resolveLinkNodes();
 
     const layers = new Map<number, SimNode[]>();
@@ -247,52 +183,12 @@
         const row = index % rowsPerColumn;
         node.x = cursorX + column * spacing;
         node.y = (row - (rows - 1) / 2) * spacing;
-        node.vx = 0;
-        node.vy = 0;
-        node.fx = null;
-        node.fy = null;
       }
       cursorX += Math.max(140, columns * spacing + 90);
     }
 
     const offsetX = cursorX / 2;
     for (const node of nodes) node.x = (node.x ?? 0) - offsetX;
-  }
-
-  function buildSimulation() {
-    sim?.stop();
-    if (useStaticLayout()) {
-      sim = null;
-      applyLargeGraphLayout();
-      requestRender();
-      return;
-    }
-
-    // org-roam-ui force model: strong charge + equal per-axis gravity
-    // toward origin → isotropic equilibrium → circular disc layout.
-    sim = forceSimulation<SimNode>(nodes)
-      .force("charge", forceManyBody().strength(-700))
-      .force(
-        "link",
-        forceLink<SimNode, SimLink>(links)
-          .id((d) => d.id)
-          .strength(0.3)
-          .distance(30),
-      )
-      .force("center", forceCenter(0, 0).strength(0.2))
-      .force("collide", forceCollide<SimNode>().radius((node) => baseNodeRadius(node) + 6))
-      .force("x", forceX(0).strength(0.3))
-      .force("y", forceY(0).strength(0.3))
-      .alpha(1)
-      .alphaDecay(0.05)
-      .velocityDecay(0.25)
-      .stop();
-
-    // Warm up small graphs only. Larger simulations settle progressively in
-    // requestAnimationFrame instead of blocking a view switch for 300 ticks.
-    const warmupTicks = nodes.length < 200 ? 120 : 70;
-    for (let i = 0; i < warmupTicks; i++) sim.tick();
-    requestRender();
   }
 
   // Render-on-demand flag. Set by requestRender(), consumed by the RAF loop.
@@ -304,20 +200,14 @@
 
   function startRaf() {
     if (rafId || !running || !active) return;
-    const loop = () => {
+    rafId = requestAnimationFrame(() => {
       rafId = 0;
       if (!running || !active) return;
-      const simulationActive = sim && sim.alpha() > sim.alphaMin();
-      if (simulationActive) sim!.tick();
-      if (simulationActive || needsRender) {
+      if (needsRender) {
         render();
         needsRender = false;
       }
-      if ((sim && sim.alpha() > sim.alphaMin()) || needsRender) {
-        rafId = requestAnimationFrame(loop);
-      }
-    };
-    rafId = requestAnimationFrame(loop);
+    });
   }
 
   function stopRaf() {
@@ -484,11 +374,9 @@
     canvas.height = rect.height * dpr;
     canvas.style.width = `${rect.width}px`;
     canvas.style.height = `${rect.height}px`;
-    // Large static graphs redraw on the next frame so showing the view is not
-    // blocked by an O(nodes + edges) paint. The grid remains visible beneath
-    // the cleared canvas during that frame.
-    if (useStaticLayout()) requestRender();
-    else render();
+    // Redraw on the next frame so showing the view is not blocked by an
+    // O(nodes + edges) paint. The grid remains visible beneath the canvas.
+    requestRender();
   }
 
   // ── Interaction ─────────────────────────────────────────────────────────────
@@ -526,10 +414,9 @@
     return null;
   }
 
-  type MouseMode = "idle" | "pan" | "drag-node";
+  type MouseMode = "idle" | "pan";
   let mouseMode: MouseMode = "idle";
-  let dragNode: SimNode | null = null;
-  let mouseStart: { x: number; y: number } | null = null;
+  let pressedNode: SimNode | null = null;
   let panStart: { x: number; y: number; viewX: number; viewY: number } | null = null;
   let mouseMoved = false;
   let activePointerId: number | null = null;
@@ -542,23 +429,11 @@
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    mouseStart = { x, y };
     mouseMoved = false;
 
-    const node = findNodeAt(x, y);
-    if (node) {
-      mouseMode = "drag-node";
-      dragNode = node;
-      node.fx = node.x;
-      node.fy = node.y;
-      sim?.alphaTarget(0.3);
-      if (sim && sim.alpha() < 0.3) sim.alpha(0.3);
-      startRaf();
-    } else {
-      mouseMode = "pan";
-      panStart = { x, y, viewX, viewY };
-      canvas.style.cursor = "grabbing";
-    }
+    pressedNode = findNodeAt(x, y);
+    mouseMode = "pan";
+    panStart = { x, y, viewX, viewY };
   }
 
   function onPointerMove(e: PointerEvent) {
@@ -569,25 +444,14 @@
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    if (mouseMode === "drag-node" && dragNode && mouseStart) {
-      mouseMoved = Math.hypot(x - mouseStart.x, y - mouseStart.y) > 3;
-      const { x: wx, y: wy } = screenToWorld(x, y);
-      dragNode.fx = wx;
-      dragNode.fy = wy;
-      if (sim) {
-        sim.alphaTarget(0.3);
-        if (sim.alpha() < 0.3) sim.alpha(0.3);
-        startRaf();
-      } else {
-        dragNode.x = wx;
-        dragNode.y = wy;
+    if (mouseMode === "pan" && panStart) {
+      mouseMoved = Math.hypot(x - panStart.x, y - panStart.y) > 3;
+      if (mouseMoved) {
+        viewX = panStart.viewX + (x - panStart.x);
+        viewY = panStart.viewY + (y - panStart.y);
+        canvas.style.cursor = "grabbing";
         requestRender();
       }
-    } else if (mouseMode === "pan" && panStart) {
-      mouseMoved = Math.hypot(x - panStart.x, y - panStart.y) > 3;
-      viewX = panStart.viewX + (x - panStart.x);
-      viewY = panStart.viewY + (y - panStart.y);
-      requestRender();
     } else {
       const node = findNodeAt(x, y);
       const changed = (node?.id ?? null) !== (hoveredNode?.id ?? null);
@@ -604,26 +468,18 @@
     const x = e ? e.clientX - rect.left : 0;
     const y = e ? e.clientY - rect.top : 0;
 
-    if (mouseMode === "drag-node" && dragNode) {
-      dragNode.fx = null;
-      dragNode.fy = null;
-      sim?.alphaTarget(0);
-      if (!cancelled && !mouseMoved) {
-        onSelect(dragNode.id === selectedFnode ? null : dragNode.id);
-      }
-      dragNode = null;
-      startRaf();
-    } else if (!cancelled && mouseMode === "pan" && !mouseMoved) {
-      const node = findNodeAt(x, y);
-      if (!node && selectedFnode) {
+    if (!cancelled && mouseMode === "pan" && !mouseMoved) {
+      if (pressedNode) {
+        onSelect(pressedNode.id === selectedFnode ? null : pressedNode.id);
+      } else if (selectedFnode) {
         onSelect(null);
       }
     }
     mouseMode = "idle";
-    mouseStart = null;
     panStart = null;
+    pressedNode = null;
     mouseMoved = false;
-    canvas.style.cursor = "grab";
+    canvas.style.cursor = findNodeAt(x, y) ? "pointer" : "grab";
     if (activePointerId !== null && canvas.hasPointerCapture(activePointerId)) {
       canvas.releasePointerCapture(activePointerId);
     }
@@ -754,7 +610,6 @@
     stopRaf();
     resizeObserver?.disconnect();
     canvasEl?.removeEventListener("wheel", onWheel);
-    sim?.stop();
   });
 
   // Re-render when selection changes from outside.
@@ -771,7 +626,6 @@
     } else {
       finishPointer(null, true);
       stopRaf();
-      sim?.stop();
       if (canvasEl) {
         canvasEl.width = 1;
         canvasEl.height = 1;
@@ -799,7 +653,7 @@
 
 <svelte:window onblur={() => finishPointer(null, true)} />
 
-<div class="force-container" bind:this={containerEl}>
+<div class="graph-container" bind:this={containerEl}>
   {#if graphLoading}
     <div class="graph-loading" role="status">
       <span class="spinner"></span>
@@ -823,7 +677,7 @@
 </div>
 
 <style>
-  .force-container {
+  .graph-container {
     position: relative;
     width: 100%;
     height: 100%;

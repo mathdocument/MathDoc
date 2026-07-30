@@ -208,11 +208,13 @@
           />
         {/each}
       {/if}
-      <AddBlockControl
-        fnode={node.fnode}
-        existingSrctypes={node.blocks.map((b) => b.srctype)}
-        onAdded={refreshNode}
-      />
+      {#key node.fnode}
+        <AddBlockControl
+          fnode={node.fnode}
+          existingSrctypes={node.blocks.map((b) => b.srctype)}
+          onAdded={refreshNode}
+        />
+      {/key}
     </div>
     {/key}
   {/if}

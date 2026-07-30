@@ -45,33 +45,49 @@ function supportsViewTransitions(): boolean {
  * otherwise run it synchronously. The callback must perform all reactive
  * updates that should be part of the transition.
  */
-async function withViewTransition(
+let viewTransitionToken = 0;
+let activeViewTransition: { skipTransition: () => void } | null = null;
+
+export async function withViewTransition(
   direction: "up" | "down" | "neutral",
   mutate: () => void,
+  scope?: string,
 ): Promise<void> {
   if (!supportsViewTransitions()) {
     mutate();
     return;
   }
-  document.body.dataset.vtDirection = direction;
+  activeViewTransition?.skipTransition();
+  const token = ++viewTransitionToken;
+  let applied = false;
+  const apply = () => {
+    if (applied) return;
+    applied = true;
+    mutate();
+  };
+  const cleanup = () => {
+    if (token !== viewTransitionToken) return;
+    activeViewTransition = null;
+    delete document.documentElement.dataset.vtDirection;
+    delete document.documentElement.dataset.vtScope;
+  };
+  document.documentElement.dataset.vtDirection = direction;
+  if (scope) document.documentElement.dataset.vtScope = scope;
+  else delete document.documentElement.dataset.vtScope;
   try {
     const vt = (document as Document & {
       startViewTransition: (cb: () => void) => {
         finished: Promise<void>;
         updateCallbackDone: Promise<void>;
+        skipTransition: () => void;
       };
-    }).startViewTransition(() => {
-      mutate();
-    });
-    void vt.finished.then(() => {
-      delete document.body.dataset.vtDirection;
-    }).catch(() => {
-      delete document.body.dataset.vtDirection;
-    });
+    }).startViewTransition(apply);
+    activeViewTransition = vt;
+    void vt.finished.then(cleanup).catch(cleanup);
     await vt.updateCallbackDone;
   } catch {
-    delete document.body.dataset.vtDirection;
-    mutate();
+    cleanup();
+    apply();
   }
 }
 

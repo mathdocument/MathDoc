@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount } from "svelte";
   import {
     ArrowLeft,
     ArrowRight,
@@ -14,6 +14,7 @@
   } from "@lucide/svelte";
   import {
     navigate,
+    withViewTransition,
     appState,
     goBack,
     goForward,
@@ -33,7 +34,7 @@
   import AddDepOverlay from "./components/AddDepOverlay.svelte";
   import RmDepOverlay from "./components/RmDepOverlay.svelte";
   import NewNodeOverlay from "./components/NewNodeOverlay.svelte";
-  import ForceGraph from "./components/ForceGraph.svelte";
+  import DepthGraph from "./components/DepthGraph.svelte";
   import type { NodeDetail } from "./lib/types";
   import {
     confirmDiscardDrafts,
@@ -59,14 +60,14 @@
   let viewSwitching = $state(false);
   // Selected fnode in the force graph (drives the side editor panel).
   let forceSelectedFnode = $state<string | null>(null);
-  // Increment after dep mutations to trigger ForceGraph data refresh.
+  // Increment after dependency mutations to refresh the graph data.
   let graphRevision = $state(0);
   let forceLoadRequest = 0;
   let viewRequest = 0;
-  let forceEditorRevision = $state(0);
   let forceRelationsDirty = false;
   // NodeDetail for the force-graph side panel (fetched on selection).
   let forceNodeLoad = $state<LoadState>({ kind: "idle" });
+  let forceEditorRevision = $state(0);
 
   onMount(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -190,7 +191,6 @@
       const node = await api.node(targetFnode);
       if (request !== forceLoadRequest || forceSelectedFnode !== targetFnode) return false;
       if (unsavedDraftRevision() !== confirmedDraftRevision) return false;
-      forceEditorRevision++;
       forceNodeLoad = { kind: "ready", node };
       return true;
     } catch (e) {
@@ -286,45 +286,50 @@
   ): Promise<boolean> {
     if (!opts.skipUnsavedGuard && !confirmDiscardDrafts()) return false;
     if (!await settlePendingMutations()) return false;
-    const previousFnode = forceSelectedFnode;
-    const previousLoad = forceNodeLoad;
     const request = ++forceLoadRequest;
-    forceSelectedFnode = fnode;
     if (!fnode) {
-      forceNodeLoad = { kind: "idle" };
-      return true;
+      let committed = false;
+      await withViewTransition("neutral", () => {
+        if (request !== forceLoadRequest) return;
+        forceEditorRevision++;
+        forceSelectedFnode = null;
+        forceNodeLoad = { kind: "idle" };
+        committed = true;
+      }, "force-editor");
+      return committed;
     }
-    forceNodeLoad = { kind: "loading" };
-    await tick();
     const confirmedDraftRevision = unsavedDraftRevision();
     try {
       const node = await api.node(fnode);
-      if (request !== forceLoadRequest || forceSelectedFnode !== fnode) return false;
-      if (unsavedDraftRevision() !== confirmedDraftRevision) {
-        if (opts.preserveOnFailure) {
-          forceSelectedFnode = previousFnode;
-          forceNodeLoad = previousLoad;
-        }
-        return false;
-      }
-      forceEditorRevision++;
-      forceNodeLoad = { kind: "ready", node };
-      commitFocusedHistory(fnode, {
-        pushHistory: opts.pushHistory,
-        historyIndex: opts.historyIndex,
-        browserHistory: opts.browserHistory,
-      });
-      return true;
+      if (request !== forceLoadRequest) return false;
+      if (unsavedDraftRevision() !== confirmedDraftRevision) return false;
+      let committed = false;
+      await withViewTransition("neutral", () => {
+        if (request !== forceLoadRequest || committed) return;
+        if (unsavedDraftRevision() !== confirmedDraftRevision) return;
+        forceEditorRevision++;
+        forceSelectedFnode = fnode;
+        forceNodeLoad = { kind: "ready", node };
+        commitFocusedHistory(fnode, {
+          pushHistory: opts.pushHistory,
+          historyIndex: opts.historyIndex,
+          browserHistory: opts.browserHistory,
+        });
+        committed = true;
+      }, "force-editor");
+      return committed;
     } catch (e) {
-      if (request !== forceLoadRequest || forceSelectedFnode !== fnode) return false;
-      if (opts.preserveOnFailure) {
-        forceSelectedFnode = previousFnode;
-        forceNodeLoad = previousLoad;
-      } else {
-        forceNodeLoad = {
-          kind: "error",
-          message: e instanceof Error ? e.message : String(e),
-        };
+      if (request !== forceLoadRequest) return false;
+      if (!opts.preserveOnFailure) {
+        await withViewTransition("neutral", () => {
+          if (request !== forceLoadRequest) return;
+          forceEditorRevision++;
+          forceSelectedFnode = fnode;
+          forceNodeLoad = {
+            kind: "error",
+            message: e instanceof Error ? e.message : String(e),
+          };
+        }, "force-editor");
       }
       return false;
     }
@@ -345,7 +350,6 @@
           const node = appState.load.node;
           const draftRevision = unsavedDraftRevision();
           forceSelectedFnode = node.fnode;
-          forceEditorRevision++;
           forceNodeLoad = { kind: "ready", node };
           commitFocusedHistory(node.fnode, { pushHistory: false });
           void refreshReusedForceNode(node.fnode, forceRequest, draftRevision);
@@ -461,8 +465,10 @@
       title="Refresh external file changes"
       aria-label="Refresh external file changes"
     ><RefreshCw size={16} strokeWidth={1.8} /></button>
-    <span class="toolbar-divider compact"></span>
-    <span class="status"><span class="status-dot"></span>{statusLine()}</span>
+    {#if statusLine()}
+      <span class="toolbar-divider compact"></span>
+      <span class="status"><span class="status-dot"></span>{statusLine()}</span>
+    {/if}
   </header>
   {#if appState.navigationError || refreshError}
     <div class="app-error" role="alert">
@@ -480,21 +486,21 @@
 
   <!-- Force graph view: always mounted, hidden via CSS when in columns mode. -->
   <main class="force-layout" class:hidden={view !== "force"}>
-    <div class="force-canvas-wrap" class:full={!forceSelectedFnode}>
-        <ForceGraph
+    <div class="force-canvas-wrap">
+        <DepthGraph
           active={view === "force"}
           onSelect={onForceSelect}
           selectedFnode={forceSelectedFnode}
           revision={graphRevision}
         />
     </div>
-    {#if view === "force" && forceSelectedFnode}
-      <div class="force-editor-wrap">
-        {#key `${forceSelectedFnode}:${forceEditorRevision}`}
+    <div class="force-editor-wrap">
+      {#if view === "force"}
+        {#key forceEditorRevision}
           <EditorPane load={forceNodeLoad} onRefresh={refreshForceNode} />
         {/key}
-      </div>
-    {/if}
+      {/if}
+    </div>
   </main>
 
   <!-- Unmount editors after a confirmed view switch so hidden drafts cannot linger. -->
@@ -778,9 +784,6 @@
     position: relative;
     box-shadow: 0 10px 35px rgba(0, 0, 0, 0.16);
   }
-  .force-canvas-wrap.full {
-    flex: 1;
-  }
   .force-editor-wrap {
     flex: 2;
     min-width: 0;
@@ -822,11 +825,30 @@
     }
   }
 
-  /* View Transitions: node-switch animation.
-   *
-   * The OLD snapshot stays fully visible (no fade-out). The NEW snapshot
-   * fades/slides in ON TOP of the old one. This prevents any blank frame.
-   */
+  /* View Transitions: the new snapshot fades over the stable old snapshot. */
+  :global(html[data-vt-scope="force-editor"]) {
+    view-transition-name: none;
+  }
+  :global(html[data-vt-scope="force-editor"] .force-editor-wrap) {
+    view-transition-name: force-editor;
+    background: var(--mdc-bg);
+    border-radius: var(--mdc-radius-md);
+  }
+  :global(::view-transition-group(force-editor)) {
+    animation: none;
+  }
+  :global(::view-transition-image-pair(force-editor)) {
+    isolation: auto;
+  }
+  :global(::view-transition-old(force-editor)) {
+    animation: none;
+    mix-blend-mode: normal;
+    opacity: 1;
+  }
+  :global(::view-transition-new(force-editor)) {
+    mix-blend-mode: normal;
+    animation: mdc-vt-in 0.22s ease forwards;
+  }
   :global(::view-transition-old(root)) {
     animation: none;
   }
@@ -834,24 +856,8 @@
     animation: mdc-vt-in 0.22s ease forwards;
   }
 
-  /* Directional modifiers: up = slide from top, down = slide from bottom. */
-  :global(body[data-vt-direction="up"] ::view-transition-new(root)) {
-    animation: mdc-vt-in-up 0.26s cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
-  }
-  :global(body[data-vt-direction="down"] ::view-transition-new(root)) {
-    animation: mdc-vt-in-down 0.26s cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
-  }
-
   @keyframes mdc-vt-in {
     from { opacity: 0; }
     to { opacity: 1; }
-  }
-  @keyframes mdc-vt-in-up {
-    from { opacity: 0; transform: translateY(-12px) scale(0.985); }
-    to { opacity: 1; transform: translateY(0) scale(1); }
-  }
-  @keyframes mdc-vt-in-down {
-    from { opacity: 0; transform: translateY(12px) scale(0.985); }
-    to { opacity: 1; transform: translateY(0) scale(1); }
   }
 </style>

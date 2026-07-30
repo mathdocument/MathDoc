@@ -8,7 +8,7 @@
     Trash2,
     Zap,
   } from "@lucide/svelte";
-  import { EditorState } from "@codemirror/state";
+  import { Compartment, EditorState } from "@codemirror/state";
   import {
     EditorView,
     keymap,
@@ -46,7 +46,6 @@
   let lastSavedContent = $state("");
   let error: string | null = $state(null);
   let expanded = $state(true);
-  let loading = $state(true);
   let shikiError: string | null = $state(null);
   let alive = false;
   const draftId = Symbol("block draft");
@@ -56,6 +55,8 @@
   let prevSrctype: string | null = null;
   let prevContent: string | null = null;
   let pendingSaveContent: string | null = null;
+  const syntaxCompartment = new Compartment();
+  let syntaxExtension: Extension = [];
 
   const SHIKI_THEME = "tokyo-night";
 
@@ -99,6 +100,10 @@
     ];
   }
 
+  function buildEditorExtensions(): Extension[] {
+    return [...buildBaseExtensions(), syntaxCompartment.of(syntaxExtension)];
+  }
+
   function setDirty(value: boolean) {
     dirty = value;
     setDraftDirty(draftId, value);
@@ -106,29 +111,31 @@
 
   onMount(() => {
     alive = true;
+    // Effects may run before or after onMount. Seed the identity before the
+    // synchronous view creation so initial mount never replaces its own doc.
+    prevFnode = fnode;
+    prevSrctype = block.srctype;
+    prevContent = block.content;
+    lastSavedContent = block.content;
+    editorExtensions = buildEditorExtensions();
+    editorView = new EditorView({
+      doc: block.content,
+      extensions: editorExtensions,
+      parent: host!,
+    });
+
     getHighlighter()
       .then((hl) => {
-        if (!alive || !host) { loading = false; return; }
+        if (!alive || !editorView) return;
         const lang = srctypeToLang(block.srctype);
-        const shikiExt = shikiHighlight(hl, lang, SHIKI_THEME);
-        editorExtensions = [...buildBaseExtensions(), shikiExt];
-        editorView = new EditorView({
-          doc: block.content,
-          extensions: editorExtensions,
-          parent: host,
+        syntaxExtension = shikiHighlight(hl, lang, SHIKI_THEME);
+        editorExtensions = buildEditorExtensions();
+        editorView.dispatch({
+          effects: syntaxCompartment.reconfigure(syntaxExtension),
         });
-        loading = false;
       })
       .catch((e) => {
         shikiError = errMsg(e);
-        if (!alive || !host) { loading = false; return; }
-        editorExtensions = buildBaseExtensions();
-        editorView = new EditorView({
-          doc: block.content,
-          extensions: editorExtensions,
-          parent: host,
-        });
-        loading = false;
       });
   });
 
@@ -266,9 +273,6 @@
     <button class="delete" onclick={onDelete} disabled={saving || deleting} title="Delete block" aria-label="Delete block"><Trash2 size={14} strokeWidth={1.8} /></button>
   </header>
   <div class="editor-host" class:expanded class:collapsed={!expanded} bind:this={host}>
-    {#if loading}
-      <div class="loading">loading editor…</div>
-    {/if}
   </div>
   {#if error}<div class="error-bar">{error}</div>{/if}
 </article>
@@ -367,9 +371,6 @@
     font-family: var(--mdc-mono); font-size: 0.8rem;
   }
   .editor-host :global(.cm-editor .cm-scroller) { font-family: var(--mdc-mono); }
-  .loading {
-    padding: 1rem; color: var(--mdc-muted); font-family: var(--mdc-mono); font-size: 0.72rem;
-  }
   .error-bar {
     padding: 0.4rem 0.6rem;
     background: rgba(255, 125, 143, 0.1);
