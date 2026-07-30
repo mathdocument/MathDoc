@@ -1,6 +1,18 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import {
+    ArrowLeft,
+    ArrowRight,
+    BookOpenText,
+    Columns3,
+    Link2,
+    Network,
+    Plus,
+    RefreshCw,
+    Search,
+    Unlink2,
+  } from "@lucide/svelte";
+  import {
     navigate,
     appState,
     goBack,
@@ -44,6 +56,7 @@
 
   // Top-level view state: three-column layout vs. full-screen force graph.
   let view = $state<"columns" | "force">("columns");
+  let viewSwitching = $state(false);
   // Selected fnode in the force graph (drives the side editor panel).
   let forceSelectedFnode = $state<string | null>(null);
   // Increment after dep mutations to trigger ForceGraph data refresh.
@@ -51,6 +64,7 @@
   let forceLoadRequest = 0;
   let viewRequest = 0;
   let forceEditorRevision = $state(0);
+  let forceRelationsDirty = false;
   // NodeDetail for the force-graph side panel (fetched on selection).
   let forceNodeLoad = $state<LoadState>({ kind: "idle" });
 
@@ -187,9 +201,27 @@
     }
   }
 
+  async function refreshReusedForceNode(
+    targetFnode: string,
+    request: number,
+    draftRevision: number,
+  ) {
+    try {
+      const node = await api.node(targetFnode);
+      if (request !== forceLoadRequest || forceSelectedFnode !== targetFnode) return;
+      if (unsavedDraftRevision() !== draftRevision) return;
+      forceNodeLoad = { kind: "ready", node };
+    } catch {
+      // Keep the already displayed Knowledge snapshot if background refresh fails.
+    }
+  }
+
   function afterDepMutation() {
     graphRevision++;
-    if (view === "force") void refreshForceNodeRaw();
+    if (view === "force") {
+      forceRelationsDirty = true;
+      void refreshForceNodeRaw();
+    }
     else void refreshCurrent();
   }
 
@@ -299,95 +331,138 @@
   }
 
   async function toggleGraphView() {
-    if (!confirmDiscardDrafts()) return;
+    if (viewSwitching || !confirmDiscardDrafts()) return;
+    viewSwitching = true;
     const request = ++viewRequest;
-    if (view === "columns") {
-      // Enter graph view: select the current column-view node.
-      const currentFnode = appState.load.kind === "ready" ? appState.load.node.fnode : null;
-      view = "force";
-      await tick();
-      if (request !== viewRequest) return;
-      if (currentFnode) {
-        await onForceSelect(currentFnode, {
-          skipUnsavedGuard: true,
-          pushHistory: false,
-        });
+    try {
+      if (view === "columns") {
+        if (!await settlePendingMutations()) return;
+        // Reuse the node already displayed by Knowledge. The graph data loads
+        // progressively after the view changes, so switching never waits for
+        // a full-workspace fetch or layout pass.
+        const forceRequest = ++forceLoadRequest;
+        if (appState.load.kind === "ready") {
+          const node = appState.load.node;
+          const draftRevision = unsavedDraftRevision();
+          forceSelectedFnode = node.fnode;
+          forceEditorRevision++;
+          forceNodeLoad = { kind: "ready", node };
+          commitFocusedHistory(node.fnode, { pushHistory: false });
+          void refreshReusedForceNode(node.fnode, forceRequest, draftRevision);
+        } else {
+          forceSelectedFnode = null;
+          forceNodeLoad = { kind: "idle" };
+        }
+        forceRelationsDirty = false;
+        if (request !== viewRequest) return;
+        view = "force";
       } else {
+        // Keep the complete graph view visible until the column data is ready.
+        const target = forceSelectedFnode;
+        const canReuseColumns = target !== null &&
+          appState.load.kind === "ready" &&
+          appState.load.node.fnode === target &&
+          !forceRelationsDirty;
+        if (canReuseColumns && forceNodeLoad.kind === "ready") {
+          refreshFocused(forceNodeLoad.node);
+        } else if (target) {
+          await navigate(target, {
+            pushHistory: false,
+            skipTransition: true,
+            skipUnsavedGuard: true,
+          });
+        }
+        if (request !== viewRequest) return;
+        view = "columns";
         forceSelectedFnode = null;
         forceLoadRequest++;
         forceNodeLoad = { kind: "idle" };
+        forceRelationsDirty = false;
       }
-    } else {
-      // Exit graph view. Keep the force view visible while navigating
-      // to avoid flashing the old column-view node (A) before the new
-      // one (B) arrives.
-      const target = forceSelectedFnode;
-      forceSelectedFnode = null;
-      forceLoadRequest++;
-      forceNodeLoad = { kind: "idle" };
-      await tick();
-      if (target) {
-        await navigate(target, {
-          pushHistory: false,
-          skipTransition: true,
-          skipUnsavedGuard: true,
-        });
+    } finally {
+      if (request === viewRequest) {
+        viewSwitching = false;
       }
-      if (request !== viewRequest) return;
-      view = "columns";
     }
   }
 </script>
 
 <div class="app" inert={overlay.kind !== "none"}>
   <header class="toolbar">
-    <span class="brand">mdc</span>
-    <button
-      class="tool"
-      onclick={() => void goBack()}
-      disabled={!canGoBack()}
-      title="back"
-    >‹</button>
-    <button
-      class="tool"
-      onclick={() => void goForward()}
-      disabled={!canGoForward()}
-      title="forward"
-    >›</button>
-    <button class="tool primary" onclick={() => (overlay = { kind: "search" })} title="search">
-      search
+    <div class="identity" aria-label="MathDoc">
+      <span class="brand-mark"><BookOpenText size={17} strokeWidth={1.8} /></span>
+      <span class="brand-copy">
+        <strong>MathDoc</strong>
+        <small>DAG workspace</small>
+      </span>
+    </div>
+    <span class="toolbar-divider"></span>
+    <div class="history-tools" aria-label="navigation history">
+      <button
+        class="tool icon-only"
+        onclick={() => void goBack()}
+        disabled={!canGoBack()}
+        title="Back"
+        aria-label="Back"
+      ><ArrowLeft size={16} strokeWidth={1.8} /></button>
+      <button
+        class="tool icon-only"
+        onclick={() => void goForward()}
+        disabled={!canGoForward()}
+        title="Forward"
+        aria-label="Forward"
+      ><ArrowRight size={16} strokeWidth={1.8} /></button>
+    </div>
+    <button class="tool search-tool" onclick={() => (overlay = { kind: "search" })} title="Search nodes">
+      <Search size={15} strokeWidth={1.9} />
+      <span>Search</span>
     </button>
-    <button
-      class="tool"
-      onclick={() => { if (activeFnode) overlay = { kind: "add-dep", target: activeFnode }; }}
-      disabled={!activeReady}
-      title="add dependency"
-    >+ dep</button>
-    <button
-      class="tool"
-      onclick={() => { if (activeFnode) overlay = { kind: "rm-dep", target: activeFnode }; }}
-      disabled={!activeReady || activeDepens.length === 0}
-      title="remove dependency"
-    >− dep</button>
-    <button
-      class="tool"
-      onclick={() => { if (activeFnode) overlay = { kind: "new-node", target: activeFnode }; }}
-      disabled={!activeReady}
-      title="create node"
-    >+node</button>
-    <button
-      class="tool"
-      onclick={toggleGraphView}
-      class:primary={view === "force"}
-      title={view === "force" ? "back to columns" : "force-directed graph view"}
-    >graph</button>
-    <button
-      class="tool"
-      onclick={refreshView}
-      title="refresh — pick up external file changes"
-    >refresh</button>
+    <span class="toolbar-divider compact"></span>
+    <div class="node-tools" aria-label="node actions">
+      <button
+        class="tool"
+        onclick={() => { if (activeFnode) overlay = { kind: "add-dep", target: activeFnode }; }}
+        disabled={!activeReady}
+        title="Add dependency"
+      ><Link2 size={15} strokeWidth={1.8} /><span>Add dependency</span></button>
+      <button
+        class="tool"
+        onclick={() => { if (activeFnode) overlay = { kind: "rm-dep", target: activeFnode }; }}
+        disabled={!activeReady || activeDepens.length === 0}
+        title="Remove dependency"
+      ><Unlink2 size={15} strokeWidth={1.8} /><span>Remove dependency</span></button>
+      <button
+        class="tool"
+        onclick={() => { if (activeFnode) overlay = { kind: "new-node", target: activeFnode }; }}
+        disabled={!activeReady}
+        title="Create node"
+      ><Plus size={15} strokeWidth={2} /><span>New node</span></button>
+    </div>
     <span class="spacer"></span>
-    <span class="status">{statusLine()}</span>
+    <div class="view-switch" aria-label="workspace view">
+      <button
+        class:active={view === "columns"}
+        aria-pressed={view === "columns"}
+        disabled={viewSwitching}
+        onclick={() => { if (view !== "columns") void toggleGraphView(); }}
+        title="Knowledge view"
+      ><Columns3 size={15} strokeWidth={1.8} /><span>Knowledge</span></button>
+      <button
+        class:active={view === "force"}
+        aria-pressed={view === "force"}
+        disabled={viewSwitching}
+        onclick={() => { if (view !== "force") void toggleGraphView(); }}
+        title="Graph view"
+      ><Network size={15} strokeWidth={1.8} /><span>Graph</span></button>
+    </div>
+    <button
+      class="tool icon-only"
+      onclick={refreshView}
+      title="Refresh external file changes"
+      aria-label="Refresh external file changes"
+    ><RefreshCw size={16} strokeWidth={1.8} /></button>
+    <span class="toolbar-divider compact"></span>
+    <span class="status"><span class="status-dot"></span>{statusLine()}</span>
   </header>
   {#if appState.navigationError || refreshError}
     <div class="app-error" role="alert">
@@ -429,7 +504,7 @@
       <div class="full-error">{initialError}</div>
     {:else}
       <NodeColumn
-        title="upstream · referrers"
+        title="Referrers"
         items={appState.referrers.items}
         selected={appState.referrers.selected}
         accent="up"
@@ -441,7 +516,7 @@
         <EditorPane load={appState.load} onRefresh={refreshColumnNode} />
       {/key}
       <NodeColumn
-        title="downstream · dependencies"
+        title="Dependencies"
         items={appState.children.items}
         selected={appState.children.selected}
         accent="down"
@@ -496,114 +571,186 @@
 {/if}
 
 <style>
-  :global(:root) {
-    --mdc-bg: #1a1b26;
-    --mdc-panel: #1f2335;
-    --mdc-card: #24283b;
-    --mdc-card-hover: #2d3149;
-    --mdc-card-selected: #363b54;
-    --mdc-border: #3b3f54;
-    --mdc-border-strong: #565f89;
-    --mdc-fg: #c0caf5;
-    --mdc-dim: #565f89;
-    --mdc-accent: #7aa2f7;
-    --mdc-accent-up: #bb9af7;
-    --mdc-accent-down: #9ece6a;
-    --mdc-error: #f7768e;
-    --mdc-code-bg: #16161e;
-    --mdc-code-fg: #c0caf5;
-    --mdc-mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
-    color-scheme: dark;
-  }
-  :global(*) {
-    box-sizing: border-box;
-  }
-  :global(html, body) {
-    margin: 0;
-    height: 100%;
-  }
-  :global(body) {
-    background: var(--mdc-bg);
-    color: var(--mdc-fg);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  }
-  :global(#app) {
-    height: 100vh;
-  }
   .app {
     display: flex;
     flex-direction: column;
-    height: 100vh;
+    height: 100%;
+    position: relative;
   }
   .toolbar {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    padding: 0.4rem 0.6rem;
+    gap: 0.45rem;
+    min-height: 58px;
+    padding: 0 0.85rem;
     border-bottom: 1px solid var(--mdc-border);
-    background: var(--mdc-panel);
+    background: rgba(15, 21, 31, 0.94);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.015);
     flex-shrink: 0;
   }
-  .brand {
-    font-weight: 700;
+  .identity {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    min-width: 148px;
+  }
+  .brand-mark {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    color: #101722;
+    background: linear-gradient(145deg, var(--mdc-accent-strong), #6fd4c3);
+    border-radius: 9px;
+    box-shadow: 0 5px 18px rgba(89, 124, 224, 0.22);
+  }
+  .brand-copy {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.05;
+  }
+  .brand-copy strong {
+    color: var(--mdc-fg);
+    font-size: 0.9rem;
+    letter-spacing: -0.01em;
+  }
+  .brand-copy small {
+    margin-top: 0.25rem;
+    color: var(--mdc-muted);
     font-family: var(--mdc-mono);
-    color: var(--mdc-accent);
-    padding-right: 0.5rem;
+    font-size: 0.62rem;
+    letter-spacing: 0.02em;
+  }
+  .toolbar-divider {
+    width: 1px;
+    height: 26px;
+    margin: 0 0.25rem;
+    background: var(--mdc-border);
+  }
+  .toolbar-divider.compact {
+    margin-inline: 0.1rem;
+  }
+  .history-tools,
+  .node-tools {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
   }
   .tool {
-    background: var(--mdc-card);
-    color: var(--mdc-fg);
-    border: 1px solid var(--mdc-border);
-    border-radius: 4px;
-    padding: 0.3rem 0.6rem;
-    font-size: 0.85rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.42rem;
+    min-height: 32px;
+    padding: 0 0.65rem;
+    color: var(--mdc-fg-soft);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--mdc-radius-sm);
+    font-size: 0.76rem;
+    font-weight: 550;
     cursor: pointer;
-    font-family: inherit;
+    transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
   }
   .tool:hover:not(:disabled) {
     background: var(--mdc-card-hover);
+    border-color: var(--mdc-border);
+    color: var(--mdc-fg);
   }
   .tool:disabled {
-    opacity: 0.4;
+    opacity: 0.32;
     cursor: not-allowed;
   }
-  .tool.primary {
-    background: var(--mdc-accent);
-    color: var(--mdc-bg);
-    border-color: var(--mdc-accent);
+  .tool.icon-only {
+    width: 32px;
+    padding: 0;
+  }
+  .search-tool {
+    padding-inline: 0.72rem 0.85rem;
+    color: var(--mdc-fg);
+    background: var(--mdc-card);
+    border-color: var(--mdc-border);
+  }
+  .view-switch {
+    display: flex;
+    align-items: center;
+    padding: 3px;
+    background: var(--mdc-bg);
+    border: 1px solid var(--mdc-border);
+    border-radius: 8px;
+  }
+  .view-switch button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.38rem;
+    min-height: 27px;
+    padding: 0 0.62rem;
+    color: var(--mdc-muted);
+    background: transparent;
+    border: 0;
+    border-radius: 5px;
+    font-size: 0.72rem;
     font-weight: 600;
+    cursor: pointer;
+  }
+  .view-switch button:hover {
+    color: var(--mdc-fg-soft);
+  }
+  .view-switch button:disabled {
+    cursor: wait;
+  }
+  .view-switch button.active {
+    color: var(--mdc-fg);
+    background: var(--mdc-card-selected);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.22);
   }
   .spacer {
     flex: 1;
   }
   .status {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    max-width: 250px;
     font-family: var(--mdc-mono);
-    font-size: 0.78rem;
-    color: var(--mdc-dim);
+    font-size: 0.68rem;
+    color: var(--mdc-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--mdc-accent-down);
+    box-shadow: 0 0 0 3px rgba(99, 216, 178, 0.09);
   }
   .app-error {
     display: flex;
     justify-content: center;
     gap: 0.7rem;
-    padding: 0.35rem 0.6rem;
-    background: rgba(247, 118, 142, 0.14);
+    padding: 0.45rem 0.7rem;
+    background: rgba(255, 125, 143, 0.1);
     color: var(--mdc-error);
     font-family: var(--mdc-mono);
-    font-size: 0.78rem;
+    font-size: 0.72rem;
+    border-bottom: 1px solid rgba(255, 125, 143, 0.2);
   }
   .app-error button {
     color: inherit;
     background: transparent;
     border: 1px solid currentColor;
-    border-radius: 3px;
+    border-radius: var(--mdc-radius-sm);
     cursor: pointer;
   }
   .layout {
     flex: 1;
     display: flex;
     flex-direction: row;
-    gap: 0.5rem;
-    padding: 0.5rem;
+    gap: 0.75rem;
+    padding: 0.75rem;
     overflow: hidden;
     min-height: 0;
   }
@@ -611,21 +758,25 @@
     flex: 1;
     display: flex;
     flex-direction: row;
-    gap: 0.5rem;
-    padding: 0.5rem;
+    gap: 0.75rem;
+    padding: 0.75rem;
     overflow: hidden;
     min-height: 0;
   }
   .force-layout.hidden {
-    display: none;
+    position: absolute;
+    inset: 58px 0 0;
+    visibility: hidden;
+    pointer-events: none;
   }
   .force-canvas-wrap {
     flex: 5;
     min-width: 0;
     border: 1px solid var(--mdc-border);
-    border-radius: 6px;
+    border-radius: var(--mdc-radius-md);
     overflow: hidden;
     position: relative;
+    box-shadow: 0 10px 35px rgba(0, 0, 0, 0.16);
   }
   .force-canvas-wrap.full {
     flex: 1;
@@ -641,6 +792,34 @@
     color: var(--mdc-error);
     padding: 2rem;
     font-family: var(--mdc-mono);
+  }
+
+  @media (max-width: 1180px) {
+    .identity {
+      min-width: auto;
+    }
+    .brand-copy small,
+    .node-tools .tool span {
+      display: none;
+    }
+    .node-tools .tool {
+      width: 32px;
+      padding: 0;
+    }
+    .status {
+      max-width: 140px;
+    }
+  }
+
+  @media (max-width: 940px) {
+    .brand-copy,
+    .status,
+    .toolbar-divider.compact {
+      display: none;
+    }
+    .identity {
+      min-width: 32px;
+    }
   }
 
   /* View Transitions: node-switch animation.

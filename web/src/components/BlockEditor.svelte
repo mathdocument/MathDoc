@@ -1,5 +1,13 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
+  import {
+    AlertTriangle,
+    ChevronDown,
+    ChevronRight,
+    Save as SaveIcon,
+    Trash2,
+    Zap,
+  } from "@lucide/svelte";
   import { EditorState } from "@codemirror/state";
   import {
     EditorView,
@@ -243,18 +251,19 @@
 
 <article class="block">
   <header class="block-head">
-    <span class="srctype">@src: {block.srctype}</span>
+    <span class="srctype">{block.srctype}</span>
+    <span class="block-kind">Source block</span>
     <span class="spacer"></span>
-    {#if dirty}<span class="dirty" title="unsaved">●</span>{/if}
+    {#if dirty}<span class="dirty" title="Unsaved changes"><span></span>Unsaved</span>{/if}
     {#if saving}<span class="saving">saving…</span>{/if}
     {#if deleting}<span class="saving">deleting…</span>{/if}
-    {#if error}<span class="error" title={error}>⚠</span>{/if}
-    {#if shikiError}<span class="error" title={`highlight: ${shikiError}`}>⚡</span>{/if}
-    <button class="icon-btn expand" onclick={toggleExpand} title={expanded ? "collapse" : "expand"}>
-      {#if expanded}▾{:else}▸{/if}
+    {#if error}<span class="error" title={error}><AlertTriangle size={14} strokeWidth={1.9} /></span>{/if}
+    {#if shikiError}<span class="error" title={`highlight: ${shikiError}`}><Zap size={14} strokeWidth={1.9} /></span>{/if}
+    <button class="icon-btn expand" onclick={toggleExpand} title={expanded ? "Collapse" : "Expand"} aria-label={expanded ? "Collapse block" : "Expand block"}>
+      {#if expanded}<ChevronDown size={15} strokeWidth={1.9} />{:else}<ChevronRight size={15} strokeWidth={1.9} />{/if}
     </button>
-    <button class="save" onclick={save} disabled={!dirty || saving || deleting}>save</button>
-    <button class="delete" onclick={onDelete} disabled={saving || deleting} title="delete block">×</button>
+    <button class="save" onclick={save} disabled={!dirty || saving || deleting}><SaveIcon size={13} strokeWidth={1.9} />Save</button>
+    <button class="delete" onclick={onDelete} disabled={saving || deleting} title="Delete block" aria-label="Delete block"><Trash2 size={14} strokeWidth={1.8} /></button>
   </header>
   <div class="editor-host" class:expanded class:collapsed={!expanded} bind:this={host}>
     {#if loading}
@@ -267,64 +276,133 @@
 <style>
   .block {
     border: 1px solid var(--mdc-border);
-    border-radius: 4px;
+    border-radius: var(--mdc-radius-md);
     overflow: hidden;
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
+    background: var(--mdc-code-bg);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+    container-type: inline-size;
   }
   .block-head {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.4rem 0.6rem;
-    background: var(--mdc-panel);
-    font-family: var(--mdc-mono);
-    font-size: 0.8rem;
-    color: var(--mdc-dim);
+    gap: 0.48rem;
+    min-height: 42px;
+    padding: 0.4rem 0.55rem 0.4rem 0.68rem;
+    background: var(--mdc-panel-raised);
+    font-size: 0.72rem;
+    color: var(--mdc-muted);
     border-bottom: 1px solid var(--mdc-border);
   }
-  .srctype { color: var(--mdc-accent); font-weight: 600; }
+  .srctype {
+    min-width: 52px;
+    padding: 0.22rem 0.45rem;
+    color: var(--mdc-accent-strong);
+    background: rgba(124, 156, 255, 0.1);
+    border: 1px solid rgba(124, 156, 255, 0.18);
+    border-radius: 5px;
+    font-family: var(--mdc-mono);
+    font-size: 0.65rem;
+    font-weight: 650;
+    text-align: center;
+    text-transform: uppercase;
+  }
+  .block-kind {
+    color: var(--mdc-muted);
+    font-size: 0.68rem;
+  }
   .spacer { flex: 1; }
-  .dirty { color: var(--mdc-accent-down); font-size: 0.9rem; }
-  .saving { color: var(--mdc-dim); font-size: 0.72rem; }
-  .error { color: var(--mdc-error); cursor: help; }
+  .dirty {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    color: var(--mdc-accent-down);
+    font-size: 0.64rem;
+  }
+  .dirty span {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .saving { color: var(--mdc-muted); font-family: var(--mdc-mono); font-size: 0.64rem; }
+  .error { display: inline-flex; color: var(--mdc-error); cursor: help; }
   .save, .delete, .icon-btn {
-    background: var(--mdc-card);
-    color: var(--mdc-fg);
-    border: 1px solid var(--mdc-border);
-    border-radius: 3px;
-    padding: 0.15rem 0.5rem;
-    font-size: 0.72rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.32rem;
+    min-height: 27px;
+    background: transparent;
+    color: var(--mdc-fg-soft);
+    border: 1px solid transparent;
+    border-radius: var(--mdc-radius-sm);
+    padding: 0 0.5rem;
+    font-size: 0.66rem;
     cursor: pointer;
     font-family: inherit;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
   }
-  .save:disabled { opacity: 0.4; cursor: default; }
+  .icon-btn,
+  .delete {
+    width: 27px;
+    padding: 0;
+  }
+  .save:disabled { opacity: 0.32; cursor: default; }
   .save:not(:disabled):hover {
-    background: var(--mdc-accent); color: var(--mdc-bg); border-color: var(--mdc-accent);
+    background: rgba(124, 156, 255, 0.13); color: var(--mdc-accent-strong); border-color: rgba(124, 156, 255, 0.22);
   }
   .delete:hover {
-    background: var(--mdc-error); color: var(--mdc-bg); border-color: var(--mdc-error);
+    background: rgba(255, 125, 143, 0.12); color: var(--mdc-error); border-color: rgba(255, 125, 143, 0.2);
   }
-  .expand:hover { background: var(--mdc-card-hover); }
+  .expand:hover { background: var(--mdc-card-hover); border-color: var(--mdc-border); }
   .editor-host { background: var(--mdc-code-bg); }
   .editor-host.expanded { height: auto; }
   .editor-host.expanded :global(.cm-editor) { height: auto; }
   .editor-host.expanded :global(.cm-scroller) { overflow: hidden; }
   .editor-host.collapsed { display: none; }
   .editor-host :global(.cm-editor) {
-    font-family: var(--mdc-mono); font-size: 0.82rem;
+    font-family: var(--mdc-mono); font-size: 0.8rem;
   }
   .editor-host :global(.cm-editor .cm-scroller) { font-family: var(--mdc-mono); }
   .loading {
-    padding: 1rem; color: var(--mdc-dim); font-family: var(--mdc-mono); font-size: 0.8rem;
+    padding: 1rem; color: var(--mdc-muted); font-family: var(--mdc-mono); font-size: 0.72rem;
   }
   .error-bar {
     padding: 0.4rem 0.6rem;
-    background: rgba(247, 118, 142, 0.12);
+    background: rgba(255, 125, 143, 0.1);
     color: var(--mdc-error);
     font-family: var(--mdc-mono);
-    font-size: 0.78rem;
+    font-size: 0.7rem;
     border-top: 1px solid var(--mdc-border);
+  }
+
+  @container (max-width: 420px) {
+    .block-kind {
+      display: none;
+    }
+    .dirty {
+      gap: 0;
+      width: 9px;
+      overflow: hidden;
+      color: transparent;
+    }
+    .dirty span {
+      flex: 0 0 auto;
+      color: var(--mdc-accent-down);
+    }
+    .save {
+      width: 27px;
+      padding: 0;
+      overflow: hidden;
+      color: transparent;
+      gap: 0;
+    }
+    .save :global(svg) {
+      flex: 0 0 auto;
+      color: var(--mdc-fg-soft);
+    }
   }
 </style>

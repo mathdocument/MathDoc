@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
+  import { Maximize2 } from "@lucide/svelte";
   import {
     forceSimulation,
     forceManyBody,
@@ -45,6 +46,7 @@
   let rafId = 0;
   let running = true;
   let loadError: string | null = $state(null);
+  let graphLoading = $state(false);
   let hoveredNode: SimNode | null = null;
 
   // Pan / zoom. viewX/viewY are the screen position of world origin (0,0).
@@ -54,18 +56,28 @@
   let viewY = 0;
   let viewK = 1;
 
-  const NODE_COLOR = "#7aa2f7";
-  const ROOT_COLOR = "#e0af68";
-  const LEAF_COLOR = "#2ac3de";
+  const NODE_COLOR = "#7c9cff";
+  const ROOT_COLOR = "#e8b86d";
+  const LEAF_COLOR = "#63d8b2";
+  const LARGE_GRAPH_THRESHOLD = 800;
+  const LARGE_EDGE_THRESHOLD = 5_000;
+  const MAX_NODE_RADIUS = 24;
+  const SPATIAL_CELL_SIZE = 64;
+  const MIN_ZOOM = 0.0001;
+  const MAX_ZOOM = 5;
 
   let inDegreeMap = new Map<string, number>();
   let outDegreeMap = new Map<string, number>();
 
-  function nodeRadius(n: SimNode): number {
+  function baseNodeRadius(n: SimNode): number {
     const inDegree = inDegreeMap.get(n.id) ?? 0;
     const outDegree = outDegreeMap.get(n.id) ?? 0;
     const ior = Math.log1p(inDegree) - Math.log1p(outDegree);
-    const r = 6 * (Math.max(0, ior) + 1);
+    return Math.min(MAX_NODE_RADIUS, 6 * (Math.max(0, ior) + 1));
+  }
+
+  function nodeRadius(n: SimNode): number {
+    const r = baseNodeRadius(n);
     if (selectedFnode && n.id === selectedFnode) return r + 3;
     if (hoveredNode && n.id === hoveredNode.id) return r + 2;
     return r;
@@ -91,11 +103,16 @@
     }
   }
 
+  function useStaticLayout(): boolean {
+    return nodes.length > LARGE_GRAPH_THRESHOLD || links.length > LARGE_EDGE_THRESHOLD;
+  }
+
   // ── Data ────────────────────────────────────────────────────────────────────
   let graphRequest = 0;
 
   async function loadGraph(): Promise<boolean> {
     const request = ++graphRequest;
+    graphLoading = true;
     try {
       loadError = null;
       const data = await api.full();
@@ -119,6 +136,8 @@
       if (request !== graphRequest) return false;
       loadError = e instanceof Error ? e.message : String(e);
       return false;
+    } finally {
+      if (request === graphRequest) graphLoading = false;
     }
   }
 
@@ -164,10 +183,17 @@
 
       computeMetadata(newNodes, newLinks);
 
-      // Hot-swap nodes + links into the running simulation.
+      // Hot-swap smaller graphs; large graphs use the static layered layout.
       nodes = newNodes;
       links = newLinks;
-      if (sim) {
+      if (useStaticLayout()) {
+        const enteringStaticLayout = sim !== null;
+        sim?.stop();
+        sim = null;
+        if (enteringStaticLayout) applyLargeGraphLayout();
+        else resolveLinkNodes();
+        requestRender();
+      } else if (sim) {
         sim.nodes(nodes);
         const linkForce = sim.force("link") as any;
         if (linkForce) linkForce.links(links);
@@ -188,7 +214,60 @@
 
   // ── Simulation (org-roam-ui model) ──────────────────────────────────────────
 
+  function resolveLinkNodes() {
+    const nodesById = new Map(nodes.map((node) => [node.id, node]));
+    for (const link of links) {
+      if (typeof link.source === "string") link.source = nodesById.get(link.source)!;
+      if (typeof link.target === "string") link.target = nodesById.get(link.target)!;
+    }
+  }
+
+  function applyLargeGraphLayout() {
+    resolveLinkNodes();
+
+    const layers = new Map<number, SimNode[]>();
+    for (const node of nodes) {
+      const layer = layers.get(node.depth) ?? [];
+      layer.push(node);
+      layers.set(node.depth, layer);
+    }
+
+    const depths = [...layers.keys()].sort((a, b) => b - a);
+    const rowsPerColumn = Math.max(24, Math.ceil(Math.sqrt(nodes.length) * 1.5));
+    const spacing = 58;
+    let cursorX = 0;
+    for (const depth of depths) {
+      const layer = layers.get(depth)!;
+      layer.sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+      const columns = Math.ceil(layer.length / rowsPerColumn);
+      const rows = Math.min(rowsPerColumn, layer.length);
+      for (let index = 0; index < layer.length; index++) {
+        const node = layer[index]!;
+        const column = Math.floor(index / rowsPerColumn);
+        const row = index % rowsPerColumn;
+        node.x = cursorX + column * spacing;
+        node.y = (row - (rows - 1) / 2) * spacing;
+        node.vx = 0;
+        node.vy = 0;
+        node.fx = null;
+        node.fy = null;
+      }
+      cursorX += Math.max(140, columns * spacing + 90);
+    }
+
+    const offsetX = cursorX / 2;
+    for (const node of nodes) node.x = (node.x ?? 0) - offsetX;
+  }
+
   function buildSimulation() {
+    sim?.stop();
+    if (useStaticLayout()) {
+      sim = null;
+      applyLargeGraphLayout();
+      requestRender();
+      return;
+    }
+
     // org-roam-ui force model: strong charge + equal per-axis gravity
     // toward origin → isotropic equilibrium → circular disc layout.
     sim = forceSimulation<SimNode>(nodes)
@@ -201,7 +280,7 @@
           .distance(30),
       )
       .force("center", forceCenter(0, 0).strength(0.2))
-      .force("collide", forceCollide<SimNode>().radius(20))
+      .force("collide", forceCollide<SimNode>().radius((node) => baseNodeRadius(node) + 6))
       .force("x", forceX(0).strength(0.3))
       .force("y", forceY(0).strength(0.3))
       .alpha(1)
@@ -209,7 +288,10 @@
       .velocityDecay(0.25)
       .stop();
 
-    for (let i = 0; i < 300; i++) sim.tick();
+    // Warm up small graphs only. Larger simulations settle progressively in
+    // requestAnimationFrame instead of blocking a view switch for 300 ticks.
+    const warmupTicks = nodes.length < 200 ? 120 : 70;
+    for (let i = 0; i < warmupTicks; i++) sim.tick();
     requestRender();
   }
 
@@ -245,6 +327,19 @@
 
   // ── Rendering ───────────────────────────────────────────────────────────────
 
+  let spatialIndex = new Map<string, SimNode[]>();
+
+  function spatialKey(x: number, y: number): string {
+    return `${Math.floor(x / SPATIAL_CELL_SIZE)}:${Math.floor(y / SPATIAL_CELL_SIZE)}`;
+  }
+
+  function indexVisibleNode(node: SimNode) {
+    const key = spatialKey(node.x!, node.y!);
+    const bucket = spatialIndex.get(key);
+    if (bucket) bucket.push(node);
+    else spatialIndex.set(key, [node]);
+  }
+
   function render() {
     const canvas = canvasEl;
     if (!canvas) return;
@@ -260,52 +355,79 @@
     ctx.translate(viewX, viewY);
     ctx.scale(viewK, viewK);
 
+    const margin = 80 / viewK;
+    const minX = -viewX / viewK - margin;
+    const maxX = (w - viewX) / viewK + margin;
+    const minY = -viewY / viewK - margin;
+    const maxY = (h - viewY) / viewK + margin;
+
     // LOD thresholds.
     const showLabels = viewK > 0.6;
     const showShortFnode = viewK > 0.9;
     const labelAlpha = viewK > 0.9 ? 1 : Math.max(0, (viewK - 0.5) / 0.4);
 
-    // Edges — dim by default; highlight only the selected node's edges.
+    // Build a small number of paths instead of issuing one canvas stroke per
+    // edge. Cull links wholly outside the viewport and reduce opacity around
+    // high-degree selections so dense hubs remain legible.
+    const basePath = new Path2D();
+    const outgoingPath = new Path2D();
+    const incomingPath = new Path2D();
     for (const link of links) {
       const s = typeof link.source === "string" ? undefined : link.source;
       const t = typeof link.target === "string" ? undefined : link.target;
       if (!s || !t || s.x == null || s.y == null || t.x == null || t.y == null) continue;
-      // Highlight only edges connected to the selected node.
-      // Outgoing (selected → target) = green; Incoming (source → selected) = purple.
-      let stroke: string;
-      let lw: number;
+      if ((s.x < minX && t.x < minX) || (s.x > maxX && t.x > maxX) ||
+        (s.y < minY && t.y < minY) || (s.y > maxY && t.y > maxY)) continue;
+
+      let path = basePath;
       if (selectedFnode && s.id === selectedFnode) {
-        stroke = "rgba(158, 206, 106, 0.85)"; // green = outgoing (downstream)
-        lw = 2 / viewK;
+        path = outgoingPath;
       } else if (selectedFnode && t.id === selectedFnode) {
-        stroke = "rgba(187, 154, 247, 0.85)"; // purple = incoming (upstream)
-        lw = 2 / viewK;
-      } else if (selectedFnode) {
-        // Other edges: dim further when a node is selected.
-        stroke = "rgba(86, 95, 137, 0.12)";
-        lw = 1 / viewK;
-      } else {
-        stroke = "rgba(86, 95, 137, 0.3)";
-        lw = 1 / viewK;
+        path = incomingPath;
       }
-      ctx.strokeStyle = stroke;
-      ctx.lineWidth = lw;
-      ctx.beginPath();
-      ctx.moveTo(s.x, s.y);
-      ctx.lineTo(t.x, t.y);
-      ctx.stroke();
+      path.moveTo(s.x, s.y);
+      path.lineTo(t.x, t.y);
     }
 
-    // Nodes.
+    const baseAlpha = Math.max(0.035, 0.28 * Math.min(1, Math.sqrt(5_000 / Math.max(1, links.length))));
+    ctx.strokeStyle = `rgba(102, 115, 134, ${selectedFnode ? baseAlpha * 0.35 : baseAlpha})`;
+    ctx.lineWidth = 1 / viewK;
+    ctx.stroke(basePath);
+
+    if (selectedFnode) {
+      const selectedDegree = (inDegreeMap.get(selectedFnode) ?? 0) +
+        (outDegreeMap.get(selectedFnode) ?? 0);
+      const highlightAlpha = Math.max(0.16, Math.min(0.86, 12 / Math.sqrt(Math.max(1, selectedDegree))));
+      ctx.lineWidth = (selectedDegree > 1_000 ? 1.25 : 2) / viewK;
+      ctx.strokeStyle = `rgba(99, 216, 178, ${highlightAlpha})`;
+      ctx.stroke(outgoingPath);
+      ctx.strokeStyle = `rgba(182, 156, 255, ${highlightAlpha})`;
+      ctx.stroke(incomingPath);
+    }
+
+    // Keep only visible nodes for drawing, labels, and pointer hit testing.
+    const visibleNodes: SimNode[] = [];
+    spatialIndex = new Map();
     for (const n of nodes) {
       if (n.x == null || n.y == null) continue;
+      const r = nodeRadius(n);
+      if (n.x + r < minX || n.x - r > maxX || n.y + r < minY || n.y - r > maxY) continue;
+      visibleNodes.push(n);
+      indexVisibleNode(n);
+    }
+
+    const labelStride = Math.max(1, Math.ceil(visibleNodes.length / 500));
+    for (let index = 0; index < visibleNodes.length; index++) {
+      const n = visibleNodes[index]!;
+      const x = n.x!;
+      const y = n.y!;
       const r = nodeRadius(n);
       const isSelected = selectedFnode === n.id;
       const isHovered = hoveredNode?.id === n.id;
       ctx.beginPath();
-      ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
+      ctx.arc(x, y, r, 0, 2 * Math.PI);
       ctx.fillStyle = n.broken
-        ? "#f7768e"
+        ? "#ff7d8f"
         : n.isRoot
           ? ROOT_COLOR
           : n.isLeaf
@@ -313,30 +435,31 @@
             : NODE_COLOR;
       ctx.fill();
       if (isSelected) {
-        ctx.strokeStyle = "#c0caf5";
+        ctx.strokeStyle = "#e7edf6";
         ctx.lineWidth = 2.5 / viewK;
         ctx.stroke();
       } else if (isHovered) {
-        ctx.strokeStyle = "#c0caf5";
+        ctx.strokeStyle = "#e7edf6";
         ctx.lineWidth = 1.5 / viewK;
         ctx.stroke();
       }
 
-      if (!showLabels) continue;
+      const showNodeLabel = isSelected || isHovered || (showLabels && index % labelStride === 0);
+      if (!showNodeLabel) continue;
 
       if (showShortFnode) {
         ctx.font = `${10 / viewK}px monospace`;
-        ctx.fillStyle = `rgba(86, 95, 137, ${labelAlpha * 0.9})`;
+        ctx.fillStyle = `rgba(135, 147, 165, ${labelAlpha * 0.9})`;
         ctx.textAlign = "center";
-        ctx.fillText(shortFnode(n.id), n.x, n.y + r + 10 / viewK);
+        ctx.fillText(shortFnode(n.id), x, y + r + 10 / viewK);
       }
       ctx.font = `${11 / viewK}px sans-serif`;
-      ctx.fillStyle = isSelected
-        ? "#c0caf5"
-        : `rgba(192, 202, 245, ${labelAlpha * 0.8})`;
+      ctx.fillStyle = isSelected || isHovered
+        ? "#e7edf6"
+        : `rgba(192, 202, 216, ${labelAlpha * 0.82})`;
       ctx.textAlign = "left";
       const label = truncate(n.title, 20);
-      ctx.fillText(label, n.x + r + 3 / viewK, n.y + 3 / viewK);
+      ctx.fillText(label, x + r + 3 / viewK, y + 3 / viewK);
     }
   }
 
@@ -350,16 +473,22 @@
     const canvas = canvasEl;
     const container = containerEl;
     if (!canvas || !container) return;
+    if (!active) {
+      canvas.width = 1;
+      canvas.height = 1;
+      return;
+    }
     const rect = container.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
     canvas.width = rect.width * dpr;
     canvas.height = rect.height * dpr;
     canvas.style.width = `${rect.width}px`;
     canvas.style.height = `${rect.height}px`;
-    // Render synchronously — setting canvas.width clears it to transparent,
-    // so we must redraw before the browser paints. Using requestRender()
-    // (deferred to next RAF) would leave a blank frame.
-    render();
+    // Large static graphs redraw on the next frame so showing the view is not
+    // blocked by an O(nodes + edges) paint. The grid remains visible beneath
+    // the cleared canvas during that frame.
+    if (useStaticLayout()) requestRender();
+    else render();
   }
 
   // ── Interaction ─────────────────────────────────────────────────────────────
@@ -373,9 +502,21 @@
 
   function findNodeAt(canvasX: number, canvasY: number): SimNode | null {
     const { x: wx, y: wy } = screenToWorld(canvasX, canvasY);
+    let candidates = nodes;
+    if (nodes.length > 500 && spatialIndex.size > 0) {
+      candidates = [];
+      const cellX = Math.floor(wx / SPATIAL_CELL_SIZE);
+      const cellY = Math.floor(wy / SPATIAL_CELL_SIZE);
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const bucket = spatialIndex.get(`${cellX + dx}:${cellY + dy}`);
+          if (bucket) candidates.push(...bucket);
+        }
+      }
+    }
     // Search in reverse draw order so visually topmost nodes are hit first.
-    for (let i = nodes.length - 1; i >= 0; i--) {
-      const n = nodes[i]!;
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      const n = candidates[i]!;
       if (n.x == null || n.y == null) continue;
       const dx = n.x - wx;
       const dy = n.y - wy;
@@ -433,9 +574,15 @@
       const { x: wx, y: wy } = screenToWorld(x, y);
       dragNode.fx = wx;
       dragNode.fy = wy;
-      sim?.alphaTarget(0.3);
-      if (sim && sim.alpha() < 0.3) sim.alpha(0.3);
-      startRaf();
+      if (sim) {
+        sim.alphaTarget(0.3);
+        if (sim.alpha() < 0.3) sim.alpha(0.3);
+        startRaf();
+      } else {
+        dragNode.x = wx;
+        dragNode.y = wy;
+        requestRender();
+      }
     } else if (mouseMode === "pan" && panStart) {
       mouseMoved = Math.hypot(x - panStart.x, y - panStart.y) > 3;
       viewX = panStart.viewX + (x - panStart.x);
@@ -502,7 +649,7 @@
     // Mouse position in world coords before zoom.
     const worldBefore = screenToWorld(x, y);
     const factor = Math.exp(-e.deltaY * 0.0015);
-    viewK = Math.max(0.1, Math.min(5, viewK * factor));
+    viewK = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, viewK * factor));
 
     // Adjust viewX/viewY so the world point under the cursor stays fixed.
     viewX = x - worldBefore.x * viewK;
@@ -532,7 +679,7 @@
     const margin = 0.2;
     const scaleX = cw / (graphW + 2 * 20);
     const scaleY = ch / (graphH + 2 * 20);
-    viewK = Math.max(0.1, Math.min(5, Math.min(scaleX, scaleY) * (1 - margin)));
+    viewK = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.min(scaleX, scaleY) * (1 - margin)));
     viewX = cw / 2 - cx * viewK;
     viewY = ch / 2 - cy * viewK;
     render();
@@ -590,8 +737,7 @@
     if (containerEl) {
       resizeObserver = new ResizeObserver(() => {
         resizeCanvas();
-        // If the graph was loaded while the canvas was hidden (display:none),
-        // fit now that we have real dimensions.
+        // Fit after any layout change that gives the canvas usable dimensions.
         if (needsFit && canvasEl && canvasEl.clientWidth > 0) {
           needsFit = false;
           fitToNodes();
@@ -626,6 +772,10 @@
       finishPointer(null, true);
       stopRaf();
       sim?.stop();
+      if (canvasEl) {
+        canvasEl.width = 1;
+        canvasEl.height = 1;
+      }
     }
   });
 
@@ -650,6 +800,12 @@
 <svelte:window onblur={() => finishPointer(null, true)} />
 
 <div class="force-container" bind:this={containerEl}>
+  {#if graphLoading}
+    <div class="graph-loading" role="status">
+      <span class="spinner"></span>
+      <span>Loading graph</span>
+    </div>
+  {/if}
   {#if loadError}
     <div class="error">{loadError}</div>
   {/if}
@@ -660,7 +816,10 @@
     onpointerup={onPointerUp}
     onpointercancel={onPointerCancel}
   ></canvas>
-  <button class="ctrl-btn reset-btn" onclick={() => fitToNodes()} title="reset view">⤢</button>
+  <button class="ctrl-btn reset-btn" onclick={() => fitToNodes()} title="Fit graph to view">
+    <Maximize2 size={14} strokeWidth={1.8} />
+    <span>Fit graph</span>
+  </button>
 </div>
 
 <style>
@@ -668,7 +827,11 @@
     position: relative;
     width: 100%;
     height: 100%;
-    background: var(--mdc-bg);
+    background-color: var(--mdc-bg);
+    background-image:
+      linear-gradient(rgba(124, 156, 255, 0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(124, 156, 255, 0.025) 1px, transparent 1px);
+    background-size: 28px 28px;
     overflow: hidden;
   }
   canvas {
@@ -678,28 +841,58 @@
     cursor: grab;
     touch-action: none;
   }
+  .graph-loading {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.55rem;
+    color: var(--mdc-dim);
+    background: rgba(9, 13, 20, 0.3);
+    font-family: var(--mdc-mono);
+    font-size: 0.68rem;
+    pointer-events: none;
+  }
+  .spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--mdc-border-strong);
+    border-top-color: var(--mdc-accent);
+    border-radius: 50%;
+    animation: graph-spin 0.8s linear infinite;
+  }
+  @keyframes graph-spin {
+    to { transform: rotate(360deg); }
+  }
   .error {
     position: absolute;
-    top: 1rem;
-    left: 1rem;
+    top: 0.85rem;
+    left: 0.85rem;
     color: var(--mdc-error);
     font-family: var(--mdc-mono);
-    font-size: 0.85rem;
-    background: var(--mdc-panel);
-    padding: 0.5rem 0.8rem;
-    border-radius: 4px;
+    font-size: 0.72rem;
+    background: rgba(15, 21, 31, 0.94);
+    padding: 0.55rem 0.75rem;
+    border-radius: var(--mdc-radius-sm);
     border: 1px solid var(--mdc-error);
   }
   .ctrl-btn {
     position: absolute;
-    bottom: 1rem;
-    background: var(--mdc-card);
-    color: var(--mdc-fg);
+    bottom: 0.85rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    min-height: 32px;
+    background: rgba(20, 28, 40, 0.94);
+    color: var(--mdc-fg-soft);
     border: 1px solid var(--mdc-border);
-    border-radius: 4px;
-    width: 2rem;
-    height: 2rem;
-    font-size: 1rem;
+    border-radius: 7px;
+    padding: 0 0.65rem;
+    font-size: 0.68rem;
+    font-weight: 600;
     cursor: pointer;
     font-family: inherit;
     z-index: 5;
@@ -707,8 +900,9 @@
   .ctrl-btn:hover {
     background: var(--mdc-card-hover);
     border-color: var(--mdc-accent);
+    color: var(--mdc-fg);
   }
   .reset-btn {
-    right: 1rem;
+    right: 0.85rem;
   }
 </style>

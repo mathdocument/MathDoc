@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
+  import { Link2, Plus, X } from "@lucide/svelte";
   import { api } from "../lib/api";
   import { errMsg } from "../lib/format";
   import type { DependencyCandidatesEmpty, NodeInfo } from "../lib/types";
@@ -195,6 +196,8 @@
   }
 
   function onKey(e: KeyboardEvent) {
+    if ((e.key === "Enter" || e.key === " ") &&
+      e.target instanceof Element && e.target.closest(".close-btn")) return;
     switch (e.key) {
       case "Escape":
         e.preventDefault();
@@ -241,17 +244,22 @@
     use:modal
     onclick={(e) => e.stopPropagation()}
   >
-    <input
-      bind:this={inputEl}
-      bind:value={query}
-      placeholder="search dependency by title or fnode…"
-      autocomplete="off"
-      spellcheck="false"
-    />
+    <div class="search-field">
+      <Link2 size={18} strokeWidth={1.8} />
+      <input
+        bind:this={inputEl}
+        bind:value={query}
+        placeholder="Search for a dependency…"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      {#if loading}<span class="loading-label">Searching</span>{/if}
+      <button class="close-btn" onclick={close} title="Close" aria-label="Close add dependency"><X size={17} strokeWidth={1.8} /></button>
+    </div>
     <ul class="results">
       {#if createMode}
         <li class="create-form">
-          <div class="create-title">✦ Create new: {query}</div>
+          <div class="create-title"><Plus size={15} strokeWidth={2} />Create new: {query}</div>
           <input
             class="create-file-input"
             bind:value={creatingFile}
@@ -290,7 +298,7 @@
                 onclick={() => startCreate()}
                 disabled={saving}
               >
-                <span class="title create-label">✦ Create new: {query}</span>
+                <span class="title create-label"><Plus size={14} strokeWidth={2} />Create new: {query}</span>
               </button>
             </li>
           {:else if emptyMessage}
@@ -302,7 +310,7 @@
     {#if error}
       <div class="error-bar">{error}</div>
     {/if}
-    <div class="hint">↑↓ navigate · Enter add · Esc cancel</div>
+    <div class="hint"><span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span><span><kbd>Enter</kbd> Add</span><span><kbd>Esc</kbd> Cancel</span></div>
   </div>
 </div>
 
@@ -310,114 +318,159 @@
   .backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.4);
+    background: rgba(3, 6, 10, 0.7);
+    backdrop-filter: blur(6px);
     display: flex;
     align-items: flex-start;
     justify-content: center;
-    padding-top: 12vh;
+    padding-top: 10vh;
     z-index: 50;
   }
   .dialog {
-    width: min(820px, 92vw);
-    background: var(--mdc-panel);
+    width: min(860px, 92vw);
+    background: rgba(15, 21, 31, 0.98);
     border: 1px solid var(--mdc-border-strong);
-    border-radius: 6px;
+    border-radius: var(--mdc-radius-lg);
     overflow: hidden;
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+    box-shadow: var(--mdc-shadow-panel);
+  }
+  .search-field {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    min-height: 60px;
+    padding: 0 0.85rem 0 1rem;
+    color: var(--mdc-accent-down);
+    background: var(--mdc-panel-raised);
+    border-bottom: 1px solid var(--mdc-border);
   }
   input {
-    width: 100%;
-    box-sizing: border-box;
+    min-width: 0;
+    flex: 1;
     border: none;
-    border-bottom: 1px solid var(--mdc-border);
-    padding: 0.7rem 0.9rem;
-    font-size: 1rem;
-    background: var(--mdc-bg);
+    padding: 0;
+    font-size: 0.98rem;
+    background: transparent;
     color: var(--mdc-fg);
-    font-family: inherit;
   }
   input:focus {
     outline: none;
+  }
+  input::placeholder {
+    color: var(--mdc-muted);
+  }
+  .loading-label {
+    color: var(--mdc-muted);
+    font-family: var(--mdc-mono);
+    font-size: 0.62rem;
+  }
+  .close-btn {
+    display: grid;
+    place-items: center;
+    width: 31px;
+    height: 31px;
+    padding: 0;
+    color: var(--mdc-muted);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--mdc-radius-sm);
+    cursor: pointer;
+  }
+  .close-btn:hover {
+    color: var(--mdc-fg);
     background: var(--mdc-card-hover);
+    border-color: var(--mdc-border);
   }
   .results {
     list-style: none;
     margin: 0;
-    padding: 0.3rem;
-    max-height: 50vh;
+    padding: 0.45rem;
+    min-height: 70px;
+    max-height: 54vh;
     overflow-y: auto;
   }
   .row {
     width: 100%;
     text-align: left;
     display: grid;
-    grid-template-columns: 3rem 6rem 26rem minmax(0, 1fr);
-    gap: 0.7rem;
-    align-items: baseline;
-    padding: 0.4rem 0.5rem;
+    grid-template-columns: 3.5rem 6rem minmax(15rem, 1.5fr) minmax(8rem, 1fr);
+    gap: 0.75rem;
+    align-items: center;
+    min-height: 42px;
+    padding: 0.45rem 0.65rem;
     background: transparent;
-    border: none;
+    border: 1px solid transparent;
     color: var(--mdc-fg);
     cursor: pointer;
-    border-radius: 3px;
+    border-radius: 7px;
     font-family: inherit;
   }
   .row.selected {
     background: var(--mdc-card-selected);
+    border-color: var(--mdc-border);
   }
   .row:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
   .depth {
-    color: var(--mdc-dim);
-    font-size: 0.78rem;
+    color: var(--mdc-muted);
+    font-size: 0.66rem;
     font-variant-numeric: tabular-nums;
   }
   .fnode {
     color: var(--mdc-accent);
     font-family: var(--mdc-mono);
-    font-size: 0.78rem;
+    font-size: 0.68rem;
   }
   .title {
-    font-size: 0.92rem;
+    color: var(--mdc-fg-soft);
+    font-size: 0.8rem;
+    font-weight: 560;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .path {
-    color: var(--mdc-dim);
-    font-size: 0.78rem;
+    color: var(--mdc-muted);
+    font-size: 0.66rem;
     font-family: var(--mdc-mono);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .row.create .create-label {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
     color: var(--mdc-accent);
     font-weight: 600;
     grid-column: 1 / -1;
   }
   .create-form {
-    padding: 0.5rem;
+    padding: 0.9rem;
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
   }
   .create-title {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
     color: var(--mdc-accent);
     font-weight: 600;
-    font-size: 0.92rem;
+    font-size: 0.82rem;
   }
   .create-file-input {
     width: 100%;
     box-sizing: border-box;
-    background: var(--mdc-bg);
+    flex: initial;
+    background: var(--mdc-code-bg);
     color: var(--mdc-fg);
     border: 1px solid var(--mdc-border);
-    border-radius: 3px;
-    padding: 0.4rem 0.5rem;
-    font-size: 0.85rem;
+    border-radius: var(--mdc-radius-sm);
+    padding: 0.55rem 0.65rem;
+    font-size: 0.76rem;
     font-family: var(--mdc-mono);
   }
   .create-file-input:focus {
@@ -429,9 +482,9 @@
     background: var(--mdc-accent);
     color: var(--mdc-bg);
     border: none;
-    border-radius: 3px;
-    padding: 0.3rem 0.7rem;
-    font-size: 0.8rem;
+    border-radius: var(--mdc-radius-sm);
+    padding: 0.48rem 0.75rem;
+    font-size: 0.72rem;
     cursor: pointer;
     font-family: inherit;
   }
@@ -440,21 +493,42 @@
   }
   .empty {
     text-align: center;
-    color: var(--mdc-dim);
-    padding: 1.2rem;
+    color: var(--mdc-muted);
+    padding: 1.5rem;
+    font-size: 0.76rem;
   }
   .error-bar {
     padding: 0.5rem 0.7rem;
-    background: rgba(247, 118, 142, 0.12);
+    background: rgba(255, 125, 143, 0.1);
     color: var(--mdc-error);
     font-family: var(--mdc-mono);
-    font-size: 0.78rem;
+    font-size: 0.7rem;
     border-top: 1px solid var(--mdc-border);
   }
   .hint {
-    padding: 0.4rem 0.7rem;
-    font-size: 0.72rem;
-    color: var(--mdc-dim);
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.55rem 0.8rem;
+    font-size: 0.64rem;
+    color: var(--mdc-muted);
     border-top: 1px solid var(--mdc-border);
+    background: rgba(9, 13, 20, 0.42);
+  }
+  .hint span {
+    display: flex;
+    align-items: center;
+    gap: 0.28rem;
+  }
+  kbd {
+    min-width: 20px;
+    padding: 0.13rem 0.28rem;
+    color: var(--mdc-dim);
+    background: var(--mdc-card);
+    border: 1px solid var(--mdc-border);
+    border-radius: 4px;
+    font-family: var(--mdc-mono);
+    font-size: 0.58rem;
+    text-align: center;
   }
 </style>

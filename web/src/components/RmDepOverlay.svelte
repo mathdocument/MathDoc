@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
+  import { Unlink2, X } from "@lucide/svelte";
   import { api } from "../lib/api";
   import { errMsg } from "../lib/format";
   import type { NodeInfo } from "../lib/types";
@@ -54,6 +55,8 @@
   }
 
   function onKey(e: KeyboardEvent) {
+    if ((e.key === "Enter" || e.key === " ") &&
+      e.target instanceof Element && e.target.closest(".close-btn, .actions")) return;
     if (e.key === "Escape") {
       e.preventDefault();
       close();
@@ -117,7 +120,11 @@
     use:modal
     onclick={(e) => e.stopPropagation()}
   >
-    <h2>remove dependencies</h2>
+    <header class="dialog-head">
+      <span class="head-icon"><Unlink2 size={16} strokeWidth={1.8} /></span>
+      <span><small>Current node</small><h2>Remove dependencies</h2></span>
+      <button class="close-btn" onclick={close} title="Close" aria-label="Close remove dependencies"><X size={17} strokeWidth={1.8} /></button>
+    </header>
     {#if loading}
       <div class="empty">loading…</div>
     {:else if children.length === 0}
@@ -146,7 +153,13 @@
     {#if error}
       <div class="error-bar">{error}</div>
     {/if}
-    <div class="hint">Space toggle · Enter remove · Esc cancel</div>
+    <footer class="dialog-footer">
+      <div class="hint"><span><kbd>Space</kbd> Toggle</span><span><kbd>Enter</kbd> Remove</span><span><kbd>Esc</kbd> Cancel</span></div>
+      <div class="actions">
+        <button class="secondary" onclick={close} disabled={saving}>Cancel</button>
+        <button class="danger" onclick={() => void submit()} disabled={saving || selected.every((value) => !value)}>Remove selected</button>
+      </div>
+    </footer>
   </div>
 </div>
 
@@ -154,105 +167,223 @@
   .backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.4);
+    background: rgba(3, 6, 10, 0.7);
+    backdrop-filter: blur(6px);
     display: flex;
     align-items: flex-start;
     justify-content: center;
-    padding-top: 12vh;
+    padding-top: 10vh;
     z-index: 50;
   }
   .dialog {
-    width: min(820px, 92vw);
-    background: var(--mdc-panel);
+    width: min(860px, 92vw);
+    background: rgba(15, 21, 31, 0.98);
     border: 1px solid var(--mdc-border-strong);
-    border-radius: 6px;
+    border-radius: var(--mdc-radius-lg);
     overflow: hidden;
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
-    padding: 0.8rem 1rem;
+    box-shadow: var(--mdc-shadow-panel);
+  }
+  .dialog-head {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    min-height: 62px;
+    padding: 0 0.85rem 0 1rem;
+    background: var(--mdc-panel-raised);
+    border-bottom: 1px solid var(--mdc-border);
+  }
+  .head-icon {
+    display: grid;
+    place-items: center;
+    width: 31px;
+    height: 31px;
+    color: var(--mdc-error);
+    background: rgba(255, 125, 143, 0.1);
+    border-radius: 8px;
+  }
+  .dialog-head > span:nth-child(2) {
+    display: flex;
+    flex-direction: column;
+    gap: 0.12rem;
+  }
+  .dialog-head small {
+    color: var(--mdc-muted);
+    font-family: var(--mdc-mono);
+    font-size: 0.58rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
   h2 {
-    margin: 0 0 0.6rem;
-    font-size: 0.95rem;
-    color: var(--mdc-error);
-    font-family: var(--mdc-mono);
+    margin: 0;
+    color: var(--mdc-fg);
+    font-size: 0.9rem;
+    font-weight: 630;
+  }
+  .close-btn {
+    display: grid;
+    place-items: center;
+    width: 31px;
+    height: 31px;
+    margin-left: auto;
+    padding: 0;
+    color: var(--mdc-muted);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--mdc-radius-sm);
+    cursor: pointer;
+  }
+  .close-btn:hover {
+    color: var(--mdc-fg);
+    background: var(--mdc-card-hover);
+    border-color: var(--mdc-border);
   }
   .list {
     list-style: none;
     margin: 0;
-    padding: 0;
-    max-height: 50vh;
+    padding: 0.45rem;
+    max-height: 54vh;
     overflow-y: auto;
   }
   .row {
     width: 100%;
     text-align: left;
     display: grid;
-    grid-template-columns: 1.4rem 3rem 6rem 26rem minmax(0, 1fr);
-    gap: 0.7rem;
-    align-items: baseline;
-    padding: 0.4rem 0.5rem;
+    grid-template-columns: 1.4rem 3.5rem 6rem minmax(15rem, 1.5fr) minmax(8rem, 1fr);
+    gap: 0.75rem;
+    align-items: center;
+    min-height: 42px;
+    padding: 0.45rem 0.65rem;
     background: transparent;
-    border: none;
+    border: 1px solid transparent;
     color: var(--mdc-fg);
     cursor: pointer;
-    border-radius: 3px;
+    border-radius: 7px;
     font-family: inherit;
   }
   .row.cursor {
     background: var(--mdc-card-hover);
+    border-color: var(--mdc-border);
   }
   .row.checked {
-    color: var(--mdc-error);
+    color: var(--mdc-fg);
+    background: rgba(255, 125, 143, 0.07);
+    border-color: rgba(255, 125, 143, 0.18);
   }
   .row:disabled {
     opacity: 0.6;
     cursor: default;
   }
   .check {
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
     color: var(--mdc-error);
+    border: 1px solid var(--mdc-border-strong);
+    border-radius: 4px;
     font-weight: 700;
+    font-size: 0.65rem;
+  }
+  .row.checked .check {
+    color: #1a090d;
+    background: var(--mdc-error);
+    border-color: var(--mdc-error);
   }
   .depth {
-    color: var(--mdc-dim);
-    font-size: 0.78rem;
+    color: var(--mdc-muted);
+    font-size: 0.66rem;
     font-variant-numeric: tabular-nums;
   }
   .fnode {
     color: var(--mdc-accent);
     font-family: var(--mdc-mono);
-    font-size: 0.78rem;
+    font-size: 0.68rem;
   }
   .title {
-    font-size: 0.92rem;
+    color: var(--mdc-fg-soft);
+    font-size: 0.8rem;
+    font-weight: 560;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .path {
-    color: var(--mdc-dim);
-    font-size: 0.78rem;
+    color: var(--mdc-muted);
+    font-size: 0.66rem;
     font-family: var(--mdc-mono);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .empty {
-    color: var(--mdc-dim);
-    padding: 1rem;
+    color: var(--mdc-muted);
+    padding: 1.5rem;
     text-align: center;
+    font-size: 0.76rem;
   }
   .error-bar {
-    margin-top: 0.4rem;
-    padding: 0.4rem 0.6rem;
-    background: rgba(247, 118, 142, 0.12);
+    padding: 0.5rem 0.7rem;
+    background: rgba(255, 125, 143, 0.1);
     color: var(--mdc-error);
     font-family: var(--mdc-mono);
-    font-size: 0.78rem;
-    border-radius: 3px;
+    font-size: 0.7rem;
+    border-top: 1px solid rgba(255, 125, 143, 0.2);
+  }
+  .dialog-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    min-height: 58px;
+    padding: 0.65rem 0.8rem;
+    border-top: 1px solid var(--mdc-border);
+    background: rgba(9, 13, 20, 0.42);
   }
   .hint {
-    margin-top: 0.6rem;
-    font-size: 0.72rem;
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    font-size: 0.62rem;
+    color: var(--mdc-muted);
+  }
+  .hint span {
+    display: flex;
+    align-items: center;
+    gap: 0.28rem;
+  }
+  kbd {
+    padding: 0.13rem 0.3rem;
     color: var(--mdc-dim);
+    background: var(--mdc-card);
+    border: 1px solid var(--mdc-border);
+    border-radius: 4px;
+    font-family: var(--mdc-mono);
+    font-size: 0.57rem;
+  }
+  .actions {
+    display: flex;
+    gap: 0.45rem;
+  }
+  .actions button {
+    min-height: 32px;
+    padding: 0 0.72rem;
+    border-radius: var(--mdc-radius-sm);
+    font-size: 0.68rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .actions button:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+  .secondary {
+    color: var(--mdc-fg-soft);
+    background: transparent;
+    border: 1px solid var(--mdc-border);
+  }
+  .danger {
+    color: #19090c;
+    background: var(--mdc-error);
+    border: 1px solid var(--mdc-error);
   }
 </style>
