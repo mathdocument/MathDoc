@@ -17,7 +17,9 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: |
+            web/package-lock.json
+            docs/package-lock.json
 
       - name: Install frontend dependencies
         run: npm ci
@@ -35,6 +37,18 @@ jobs:
         run: |
           git diff --exit-code -- web/dist
           test -z "$(git status --porcelain --untracked-files=all -- web/dist)"
+
+      - name: Install documentation dependencies
+        run: npm ci
+        working-directory: docs
+
+      - name: Check documentation
+        run: npm run check
+        working-directory: docs
+
+      - name: Build documentation
+        run: npm run build
+        working-directory: docs
 
       - name: Install stable Rust
         run: rustup toolchain install stable --profile minimal --no-self-update

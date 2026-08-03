@@ -1,0 +1,100 @@
+:root {
+  --sl-font: 'Manrope Variable', system-ui, sans-serif;
+  --sl-content-width: 52rem;
+  --sl-sidebar-width: 19rem;
+  --sl-color-accent-low: #12304f;
+  --sl-color-accent: #64b5f1;
+  --sl-color-accent-high: #d7edff;
+  --sl-color-purple-low: #12304f;
+  --sl-color-purple: #64b5f1;
+  --sl-color-purple-high: #d7edff;
+  --sl-color-bg: #07111e;
+  --sl-color-bg-nav: color-mix(in srgb, #07111e 90%, transparent);
+  --sl-color-bg-sidebar: #0a1727;
+}
+
+:root[data-theme='light'] {
+  --sl-color-accent-low: #dceeff;
+  --sl-color-accent: #246da9;
+  --sl-color-accent-high: #0a385f;
+  --sl-color-purple-low: #dceeff;
+  --sl-color-purple: #246da9;
+  --sl-color-purple-high: #0a385f;
+  --sl-color-bg: #fbfdff;
+  --sl-color-bg-nav: color-mix(in srgb, #fbfdff 92%, transparent);
+  --sl-color-bg-sidebar: #f1f7fc;
+}
+
+body {
+  background:
+    radial-gradient(circle at 82% 0%, color-mix(in srgb, #3b82c4 14%, transparent), transparent 34rem),
+    var(--sl-color-bg);
+  letter-spacing: -0.008em;
+}
+
+::selection {
+  background: color-mix(in srgb, #3b82c4 35%, transparent);
+}
+
+header.header {
+  border-bottom-color: color-mix(in srgb, var(--sl-color-hairline) 75%, transparent);
+  backdrop-filter: blur(18px);
+}
+
+.site-title {
+  font-weight: 720;
+  letter-spacing: -0.035em;
+}
+
+.site-title img {
+  width: 2.1rem;
+  height: 2.1rem;
+}
+
+.hero h1 {
+  max-width: 12ch;
+  font-family: 'Newsreader Variable', Georgia, serif;
+  font-size: clamp(3.4rem, 10vw, 6.8rem);
+  font-weight: 520;
+  letter-spacing: -0.055em;
+  line-height: 0.92;
+}
+
+.hero .tagline {
+  max-width: 42rem;
+  font-size: clamp(1.05rem, 2vw, 1.3rem);
+  line-height: 1.65;
+}
+
+.hero img {
+  display: block;
+  width: min(21rem, 70vw);
+  height: auto;
+}
+
+.card {
+  border-color: color-mix(in srgb, var(--sl-color-accent) 26%, var(--sl-color-hairline));
+  background: linear-gradient(145deg, color-mix(in srgb, var(--sl-color-accent-low) 42%, var(--sl-color-bg)), var(--sl-color-bg));
+  border-radius: 1rem;
+  box-shadow: 0 1rem 3rem rgb(26 89 145 / 8%);
+}
+
+.sl-markdown-content h1,
+.sl-markdown-content h2 {
+  letter-spacing: -0.035em;
+}
+
+.sl-markdown-content h1 {
+  font-family: 'Newsreader Variable', Georgia, serif;
+  font-weight: 560;
+}
+
+code {
+  letter-spacing: 0;
+}
+
+@media (max-width: 50rem) {
+  .hero h1 {
+    font-size: clamp(3rem, 17vw, 4.8rem);
+  }
+}

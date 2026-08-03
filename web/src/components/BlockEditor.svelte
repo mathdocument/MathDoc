@@ -70,7 +70,15 @@
       crosshairCursor(),
       highlightActiveLineGutter(),
       history(),
-      keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+      keymap.of([
+        // Save with Ctrl/Cmd+S or Ctrl+Enter, and stop the browser's
+        // "save page" default while the editor has focus.
+        { key: "Mod-s", run: () => { void save(); return true; } },
+        { key: "Mod-Enter", run: () => { void save(); return true; } },
+        ...defaultKeymap,
+        ...historyKeymap,
+        indentWithTab,
+      ]),
       EditorState.tabSize.of(4),
       indentUnit.of("    "),
       EditorView.lineWrapping,
@@ -256,7 +264,7 @@
   });
 </script>
 
-<article class="block">
+<article class="block" data-srctype={block.srctype}>
   <header class="block-head">
     <span class="srctype">{block.srctype}</span>
     <span class="block-kind">Source block</span>
@@ -269,7 +277,7 @@
     <button class="icon-btn expand" onclick={toggleExpand} title={expanded ? "Collapse" : "Expand"} aria-label={expanded ? "Collapse block" : "Expand block"}>
       {#if expanded}<ChevronDown size={15} strokeWidth={1.9} />{:else}<ChevronRight size={15} strokeWidth={1.9} />{/if}
     </button>
-    <button class="save" onclick={save} disabled={!dirty || saving || deleting}><SaveIcon size={13} strokeWidth={1.9} />Save</button>
+    <button class="save" onclick={save} disabled={!dirty || saving || deleting} title="Save (Ctrl/⌘+S)"><SaveIcon size={13} strokeWidth={1.9} />Save</button>
     <button class="delete" onclick={onDelete} disabled={saving || deleting} title="Delete block" aria-label="Delete block"><Trash2 size={14} strokeWidth={1.8} /></button>
   </header>
   <div class="editor-host" class:expanded class:collapsed={!expanded} bind:this={host}>
@@ -279,6 +287,8 @@
 
 <style>
   .block {
+    --block-accent: var(--mdc-accent);
+    position: relative;
     border: 1px solid var(--mdc-border);
     border-radius: var(--mdc-radius-md);
     overflow: hidden;
@@ -289,13 +299,27 @@
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
     container-type: inline-size;
   }
+  /* Per-srctype accent so block kinds are scannable at a glance. */
+  .block[data-srctype="text"] { --block-accent: var(--mdc-accent); }
+  .block[data-srctype="latex"] { --block-accent: var(--mdc-accent-up); }
+  .block[data-srctype="python"] { --block-accent: var(--mdc-warning); }
+  .block[data-srctype="lean"] { --block-accent: #ff9e64; }
+  .block[data-srctype="rocq"] { --block-accent: var(--mdc-accent-down); }
+  .block::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+    background: var(--block-accent);
+    opacity: 0.85;
+  }
   .block-head {
     display: flex;
     align-items: center;
     gap: 0.48rem;
     min-height: 42px;
     padding: 0.4rem 0.55rem 0.4rem 0.68rem;
-    background: var(--mdc-panel-raised);
+    background: linear-gradient(180deg, var(--mdc-panel-raised), color-mix(in srgb, var(--mdc-panel-raised) 82%, var(--mdc-bg)));
     font-size: 0.72rem;
     color: var(--mdc-muted);
     border-bottom: 1px solid var(--mdc-border);
@@ -303,9 +327,9 @@
   .srctype {
     min-width: 52px;
     padding: 0.22rem 0.45rem;
-    color: var(--mdc-accent-strong);
-    background: rgba(124, 156, 255, 0.1);
-    border: 1px solid rgba(124, 156, 255, 0.18);
+    color: var(--block-accent);
+    background: color-mix(in srgb, var(--block-accent) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--block-accent) 26%, transparent);
     border-radius: 5px;
     font-family: var(--mdc-mono);
     font-size: 0.65rem;
@@ -355,8 +379,15 @@
     padding: 0;
   }
   .save:disabled { opacity: 0.32; cursor: default; }
+  .save:not(:disabled) {
+    color: var(--block-accent);
+    background: color-mix(in srgb, var(--block-accent) 10%, transparent);
+    border-color: color-mix(in srgb, var(--block-accent) 30%, transparent);
+  }
   .save:not(:disabled):hover {
-    background: rgba(124, 156, 255, 0.13); color: var(--mdc-accent-strong); border-color: rgba(124, 156, 255, 0.22);
+    background: color-mix(in srgb, var(--block-accent) 18%, transparent);
+    color: var(--block-accent);
+    border-color: color-mix(in srgb, var(--block-accent) 45%, transparent);
   }
   .delete:hover {
     background: rgba(255, 125, 143, 0.12); color: var(--mdc-error); border-color: rgba(255, 125, 143, 0.2);

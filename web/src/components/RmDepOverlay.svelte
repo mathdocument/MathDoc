@@ -174,6 +174,7 @@
     justify-content: center;
     padding-top: 10vh;
     z-index: 50;
+    animation: mdc-fade-in 150ms ease;
   }
   .dialog {
     width: min(860px, 92vw);
@@ -182,6 +183,7 @@
     border-radius: var(--mdc-radius-lg);
     overflow: hidden;
     box-shadow: var(--mdc-shadow-panel);
+    animation: mdc-pop-in 180ms cubic-bezier(0.2, 0.8, 0.3, 1);
   }
   .dialog-head {
     display: flex;

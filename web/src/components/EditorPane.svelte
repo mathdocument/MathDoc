@@ -144,7 +144,13 @@
   {#if load.kind === "idle"}
     <div class="placeholder">no node selected</div>
   {:else if load.kind === "loading"}
-    <div class="placeholder">loading…</div>
+    <div class="skeleton" aria-busy="true" aria-label="loading node">
+      <div class="sk sk-eyebrow"></div>
+      <div class="sk sk-title"></div>
+      <div class="sk sk-meta"></div>
+      <div class="sk sk-block"></div>
+      <div class="sk sk-block tall"></div>
+    </div>
   {:else if load.kind === "error"}
     <div class="placeholder error">{load.message}</div>
   {:else}
@@ -198,7 +204,11 @@
     {#key `${node.fnode}:${editorResetRevision}`}
     <div class="blocks">
       {#if node.blocks.length === 0}
-        <div class="placeholder">no source blocks</div>
+        <div class="empty-state">
+          <span class="empty-icon"><FileText size={20} strokeWidth={1.6} /></span>
+          <strong>No source blocks yet</strong>
+          <p>Attach code, LaTeX, or prose with “Add source block” below.</p>
+        </div>
       {:else}
         {#each node.blocks as block (block.srctype)}
           <BlockEditor
@@ -224,6 +234,7 @@
   .center {
     flex: 1;
     min-width: 0;
+    position: relative;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -231,6 +242,16 @@
     border: 1px solid var(--mdc-border);
     border-radius: var(--mdc-radius-md);
     box-shadow: 0 10px 35px rgba(0, 0, 0, 0.16);
+  }
+  .center::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto;
+    height: 2px;
+    background: linear-gradient(90deg, var(--mdc-accent) 0%, rgba(124, 156, 255, 0.12) 46%, transparent 78%);
+    border-radius: var(--mdc-radius-md) var(--mdc-radius-md) 0 0;
+    opacity: 0.9;
+    pointer-events: none;
   }
   .head {
     padding: 1.05rem 1.25rem 0.95rem;
@@ -376,5 +397,63 @@
   }
   .placeholder.error {
     color: var(--mdc-error);
+  }
+  /* Skeleton loading state (shown only while the very first node loads). */
+  .skeleton {
+    padding: 1.1rem 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+  }
+  .sk {
+    position: relative;
+    overflow: hidden;
+    border-radius: 6px;
+    background: var(--mdc-card);
+  }
+  .sk::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, rgba(124, 156, 255, 0.09), transparent);
+    animation: mdc-shimmer 1.4s infinite;
+  }
+  .sk-eyebrow { width: 4.5rem; height: 0.6rem; }
+  .sk-title { width: 55%; height: 1.45rem; border-radius: 8px; }
+  .sk-meta { width: 40%; height: 0.85rem; }
+  .sk-block { width: 100%; height: 7rem; border-radius: var(--mdc-radius-md); }
+  .sk-block.tall { height: 12rem; }
+  @keyframes mdc-shimmer {
+    to { transform: translateX(100%); }
+  }
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 2.4rem 1rem;
+    color: var(--mdc-muted);
+    text-align: center;
+  }
+  .empty-state strong {
+    color: var(--mdc-fg-soft);
+    font-size: 0.86rem;
+    font-weight: 600;
+  }
+  .empty-state p {
+    margin: 0;
+    font-size: 0.72rem;
+  }
+  .empty-icon {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    margin-bottom: 0.3rem;
+    color: var(--mdc-dim);
+    background: var(--mdc-card);
+    border: 1px solid var(--mdc-border);
+    border-radius: 12px;
   }
 </style>

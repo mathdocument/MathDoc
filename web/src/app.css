@@ -68,6 +68,17 @@ input:focus-visible,
   background: rgba(124, 156, 255, 0.28);
 }
 
+/* Shared entrance animations for overlay dialogs (used by modal components). */
+@keyframes mdc-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes mdc-pop-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--mdc-border-strong) transparent;

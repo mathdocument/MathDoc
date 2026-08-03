@@ -1,6 +1,8 @@
 .*
 !.gitignore
+!.github/
 
 # builds
 target/
-
+docs/dist/
+docs/node_modules/

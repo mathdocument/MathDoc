@@ -1,0 +1,61 @@
+---
+title: Overview
+description: A plain-text knowledge system for connected mathematics and native proof tools.
+template: splash
+hero:
+  title: Mathematics, connected.
+  tagline: MathDoc turns small plain-text documents into a navigable knowledge graph, while keeping LaTeX, Lean, Rocq, and Python available in their native tools.
+  image:
+    html: '<img src="/MathDoc/mdc-logo.svg" alt="MathDoc knowledge graph logo" width="400" height="400">'
+  actions:
+    - text: Start in five minutes
+      link: /MathDoc/getting-started/quick-start/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/mathdocument/MathDoc
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## One source of truth
+
+MathDoc stores each definition, result, or note in a readable `.mdoc` file. A stable
+identity and explicit dependency list connect those files into a graph; typed source
+blocks keep formal and computational work beside the mathematical idea they support.
+
+<CardGrid stagger>
+  <Card title="Plain text by design" icon="document">
+    Version, review, search, and refactor your knowledge with ordinary filesystem and
+    Git workflows. [Learn the format](concepts/mdoc-format/).
+  </Card>
+  <Card title="A graph you can inspect" icon="puzzle">
+    Traverse prerequisites and referrers, find roots and leaves, detect missing links,
+    and reject cycles before they enter the graph.
+  </Card>
+  <Card title="Native toolchains" icon="setting">
+    Edit stable mirrors with Lean, LaTeX, Rocq, or Python tooling, then reconcile those
+    changes safely with `.mdoc` source blocks.
+  </Card>
+  <Card title="CLI, TUI, and web" icon="open-book">
+    Use focused commands for automation, a terminal graph browser, or a local visual
+    workspace with editing and force-directed navigation.
+  </Card>
+</CardGrid>
+
+## The core loop
+
+```bash title="A complete MathDoc workflow"
+mdc init
+mdc new -t "Background Lemma" -f notes/background
+mdc new -t "Main Theorem" -f notes/theorem
+mdc dep add notes/theorem --target notes/background
+mdc sync
+mdc work notes/theorem
+mdc back
+mdc graph check
+```
+
+The `.mdoc` files remain authoritative. Generated mirrors under `.mdc/` provide the
+stable paths and project layouts expected by language-native editors and compilers.

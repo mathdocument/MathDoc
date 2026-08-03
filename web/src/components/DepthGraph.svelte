@@ -541,6 +541,19 @@
     render();
   }
 
+  /** Zoom by `factor` around the canvas center (used by the zoom buttons). */
+  function zoomBy(factor: number) {
+    const canvas = canvasEl;
+    if (!canvas) return;
+    const cw = canvas.clientWidth;
+    const ch = canvas.clientHeight;
+    const anchor = screenToWorld(cw / 2, ch / 2);
+    viewK = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, viewK * factor));
+    viewX = cw / 2 - anchor.x * viewK;
+    viewY = ch / 2 - anchor.y * viewK;
+    requestRender();
+  }
+
   // ── Lifecycle ───────────────────────────────────────────────────────────────
 
   let resizeObserver: ResizeObserver | null = null;
@@ -674,6 +687,10 @@
     <Maximize2 size={14} strokeWidth={1.8} />
     <span>Fit graph</span>
   </button>
+  <div class="zoom-cluster" role="group" aria-label="zoom controls">
+    <button class="ctrl-btn zoom-btn" onclick={() => zoomBy(1.35)} title="Zoom in" aria-label="Zoom in">+</button>
+    <button class="ctrl-btn zoom-btn" onclick={() => zoomBy(1 / 1.35)} title="Zoom out" aria-label="Zoom out">−</button>
+  </div>
 </div>
 
 <style>
@@ -758,5 +775,22 @@
   }
   .reset-btn {
     right: 0.85rem;
+  }
+  .zoom-cluster {
+    position: absolute;
+    bottom: 0.85rem;
+    left: 0.85rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    z-index: 5;
+  }
+  .zoom-btn {
+    position: static;
+    width: 32px;
+    padding: 0;
+    font-size: 1rem;
+    font-weight: 700;
+    line-height: 1;
   }
 </style>

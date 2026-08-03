@@ -54,6 +54,7 @@
   let initialLoad = $state(true);
   let initialError = $state<string | null>(null);
   let refreshError = $state<string | null>(null);
+  let refreshing = $state(false);
 
   // Top-level view state: three-column layout vs. full-screen force graph.
   let view = $state<"columns" | "force">("columns");
@@ -77,6 +78,24 @@
     };
     let restoringHistory = false;
     let popstateRequest = 0;
+    // Global shortcuts: "/" opens search, "g" toggles the workspace view.
+    // Ignored while typing (inputs, textareas, contenteditable e.g. CodeMirror).
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (overlay.kind !== "none") return;
+      const target = event.target;
+      if (target instanceof HTMLElement) {
+        const tag = target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable) return;
+      }
+      if (event.key === "/") {
+        event.preventDefault();
+        overlay = { kind: "search" };
+      } else if (event.key.toLowerCase() === "g" &&
+        !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+        event.preventDefault();
+        void toggleGraphView();
+      }
+    };
     const onPopState = async (event: PopStateEvent) => {
       const entry = browserHistoryEntry(event.state);
       if (!entry) return;
@@ -108,9 +127,11 @@
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     window.addEventListener("popstate", onPopState);
+    window.addEventListener("keydown", onKeyDown);
     return () => {
       window.removeEventListener("beforeunload", onBeforeUnload);
       window.removeEventListener("popstate", onPopState);
+      window.removeEventListener("keydown", onKeyDown);
     };
   });
 
@@ -155,15 +176,21 @@
   async function refreshView() {
     if (!confirmDiscardDrafts()) return;
     if (!await settlePendingMutations()) return;
+    if (refreshing) return;
     // Refresh both views so switching between them doesn't show stale data.
     refreshError = null;
+    refreshing = true;
     graphRevision++;
-    const [forceOk, columnOk] = await Promise.all([
-      refreshForceNodeRaw(true),
-      refreshCurrent(true),
-    ]);
-    if (!forceOk || !columnOk) {
-      refreshError = "one or more refresh requests failed";
+    try {
+      const [forceOk, columnOk] = await Promise.all([
+        refreshForceNodeRaw(true),
+        refreshCurrent(true),
+      ]);
+      if (!forceOk || !columnOk) {
+        refreshError = "one or more refresh requests failed";
+      }
+    } finally {
+      refreshing = false;
     }
   }
 
@@ -257,7 +284,7 @@
     }
   });
 
-  function statusLine(): string {
+  let statusText = $derived.by(() => {
     if (view === "force") {
       const s = forceNodeLoad;
       if (s.kind === "ready") return `${s.node.title}  ·  ${s.node.fnode.slice(0, 8)}`;
@@ -272,7 +299,7 @@
     if (s.kind === "loading") return "loading…";
     if (s.kind === "error") return `error: ${s.message}`;
     return "";
-  }
+  });
 
   async function onForceSelect(
     fnode: string | null,
@@ -417,9 +444,10 @@
         aria-label="Forward"
       ><ArrowRight size={16} strokeWidth={1.8} /></button>
     </div>
-    <button class="tool search-tool" onclick={() => (overlay = { kind: "search" })} title="Search nodes">
+    <button class="tool search-tool" onclick={() => (overlay = { kind: "search" })} title="Search nodes (/)">
       <Search size={15} strokeWidth={1.9} />
       <span>Search</span>
+      <kbd class="tool-kbd">/</kbd>
     </button>
     <span class="toolbar-divider compact"></span>
     <div class="node-tools" aria-label="node actions">
@@ -461,14 +489,16 @@
     </div>
     <button
       class="tool icon-only"
+      class:spinning={refreshing}
       onclick={refreshView}
+      disabled={refreshing}
       title="Refresh external file changes"
       aria-label="Refresh external file changes"
     ><RefreshCw size={16} strokeWidth={1.8} /></button>
     <span class="spacer"></span>
-    {#if statusLine()}
+    {#if statusText}
       <span class="toolbar-divider compact"></span>
-      <span class="status"><span class="status-dot"></span>{statusLine()}</span>
+      <span class="status"><span class="status-dot"></span>{statusText}</span>
     {/if}
   </header>
   {#if appState.navigationError || refreshError}
@@ -678,6 +708,24 @@
     background: var(--mdc-card);
     border-color: var(--mdc-border);
   }
+  .tool-kbd {
+    min-width: 17px;
+    padding: 0.1rem 0.28rem;
+    color: var(--mdc-muted);
+    background: var(--mdc-bg);
+    border: 1px solid var(--mdc-border);
+    border-radius: 4px;
+    font-family: var(--mdc-mono);
+    font-size: 0.6rem;
+    line-height: 1.1;
+    text-align: center;
+  }
+  .tool.spinning :global(svg) {
+    animation: mdc-spin 0.8s linear infinite;
+  }
+  @keyframes mdc-spin {
+    to { transform: rotate(360deg); }
+  }
   .view-switch {
     display: flex;
     align-items: center;
@@ -803,7 +851,8 @@
       min-width: auto;
     }
     .brand-copy small,
-    .node-tools .tool span {
+    .node-tools .tool span,
+    .search-tool .tool-kbd {
       display: none;
     }
     .node-tools .tool {
@@ -826,7 +875,8 @@
     }
   }
 
-  /* View Transitions: the new snapshot fades over the stable old snapshot. */
+  /* View Transitions: the new snapshot fades over the stable old snapshot.
+     Directional slides make up/down navigation feel spatial. */
   :global(html[data-vt-scope="force-editor"]) {
     view-transition-name: none;
   }

@@ -19,6 +19,8 @@
   let error: string | null = $state(null);
   const mutationId = Symbol("add block mutation");
   let alive = true;
+  let rootEl = $state<HTMLDivElement | null>(null);
+  let menuEl = $state<HTMLUListElement | null>(null);
 
   onDestroy(() => { alive = false; });
 
@@ -30,6 +32,30 @@
     if (available.length === 0) return;
     open = !open;
     error = null;
+  }
+
+  function close() {
+    if (adding) return;
+    open = false;
+    error = null;
+  }
+
+  // Close the menu on Escape or a click outside it.
+  function onKeyDown(event: KeyboardEvent) {
+    if (!open) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      close();
+    } else if (event.key === "ArrowDown" && menuEl) {
+      event.preventDefault();
+      (menuEl.querySelector<HTMLButtonElement>("button") ?? menuEl).focus();
+    }
+  }
+
+  function onPointerDown(event: PointerEvent) {
+    if (!open) return;
+    if (event.target instanceof Node && rootEl?.contains(event.target)) return;
+    close();
   }
 
   async function add(srctype: string) {
@@ -55,19 +81,25 @@
   }
 </script>
 
-<div class="add-block">
+<svelte:window onkeydown={onKeyDown} onpointerdown={onPointerDown} />
+
+<div class="add-block" bind:this={rootEl}>
   <button
     class="add-btn"
+    class:open
     onclick={toggle}
+    aria-expanded={open}
+    aria-haspopup="menu"
     disabled={available.length === 0}
     title={available.length === 0 ? "all srctypes already present" : "add source block"}
   ><Plus size={14} strokeWidth={2} />Add source block</button>
   {#if open}
-    <ul class="menu">
+    <ul class="menu" role="menu" bind:this={menuEl}>
       {#each available as s}
-        <li>
+        <li role="none">
           <button
             class="item"
+            role="menuitem"
             onclick={() => add(s)}
             disabled={adding !== null}
           >
@@ -105,6 +137,11 @@
     border-color: var(--mdc-accent);
     color: var(--mdc-accent);
   }
+  .add-btn.open {
+    background: var(--mdc-card-hover);
+    border-color: var(--mdc-accent);
+    color: var(--mdc-accent);
+  }
   .add-btn:disabled {
     opacity: 0.4;
     cursor: default;
@@ -120,6 +157,8 @@
     border-radius: 9px;
     box-shadow: var(--mdc-shadow-panel);
     min-width: 8rem;
+    transform-origin: top left;
+    animation: mdc-pop-in 150ms cubic-bezier(0.2, 0.8, 0.3, 1);
   }
   .item {
     display: flex;

@@ -1,0 +1,69 @@
+---
+title: Safe Mutations
+description: Path validation, snapshot checks, quarantine replacement, batching, and rollback limits.
+---
+
+MathDoc treats workspace writes as generation-sensitive mutations. The goal is to avoid
+silently replacing bytes when a path, ancestor, or file generation changed after it was
+observed.
+
+## Cache-owned creation
+
+`IndCache::create_node()` validates the output against the cache root and workspace
+mutation lock, renders the document, creates missing parents, revalidates the final
+path, and writes against `FileSnapshot::Missing`.
+
+On index failure it attempts file rollback and path-index repair. Either recovery can
+fail, and those failures remain part of the returned error. `MdocNode::render()` only
+validates and serializes bytes; production filesystem creation stays cache-owned.
+
+## Descriptor-relative replacement
+
+Safe writes bind the validated parent-directory inode, create temporary files relative
+to that descriptor, and use same-directory no-clobber quarantine renames before
+replacement or rollback.
+
+Ancestor identities and the quarantined generation are checked around persistence. If
+generation or directory identity becomes uncertain, MathDoc returns `FileConflict` and
+restores the quarantined name when safe. Otherwise it leaves the quarantine file in
+place rather than deleting or overwriting another writer's bytes.
+
+Replacement snapshots cover content, inode identity, permissions, ownership, and
+supported extended attributes. Writes reject symlink or nonregular targets and, where
+supported, read-only, hard-linked, ACL-bearing, or unsupported-flag files.
+
+Replacing a file quarantines its old generation before installing the new one, so the
+target pathname may be briefly absent.
+
+## Multi-file batches
+
+Workspace-wide source reconciliation uses an operation-scoped `FileSnapshotBatch`. It
+maintains a bounded cache of no-follow parent-directory descriptors, records every
+traversed directory identity, and verifies those generations before writes apply.
+
+Mdocs are processed in batches of 2,048 sources. Mdoc and mirror reads use at most eight
+scoped workers with deterministic result ordering. Read-only mirror snapshots omit
+replacement metadata; a selected write target is recaptured as a complete snapshot and
+its observed content is checked again.
+
+If reconciliation produces no writes, removals, renames, or manifest change, one
+lightweight batch read confirms every mdoc input still matches before returning.
+
+Completed operations are retained until the source-block manifest commits. If a later
+step fails, MathDoc attempts rollback in reverse order. Rollback is best-effort and can
+itself fail; multi-file batches are not crash-atomic.
+
+## Concurrency boundary
+
+The cooperative workspace mutation lock coordinates MathDoc processes, but cannot
+constrain arbitrary external editors or other non-cooperating processes.
+
+Unix does not provide a portable atomic content-compare-and-unlink operation. On macOS,
+for example, a process can continue writing through a descriptor opened before a file
+was quarantined. MathDoc verifies the quarantined inode immediately before unlink and
+preserves or restores it if such a write is observed.
+
+A write in the final interval between that verification and `unlinkat` cannot be
+detected atomically; the open descriptor retains the inode until closed. This remaining
+race is why the system reports best-effort safety rather than claiming arbitrary-writer
+or crash atomicity.

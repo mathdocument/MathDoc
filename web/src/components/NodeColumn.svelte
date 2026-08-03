@@ -271,7 +271,7 @@
     color: var(--mdc-fg);
     cursor: pointer;
     font-family: inherit;
-    transition: background 120ms ease, border-color 120ms ease;
+    transition: background 120ms ease, border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
   }
   .card::before {
     content: "";
@@ -291,6 +291,8 @@
   .card:hover:not(:disabled) {
     background: var(--mdc-card-hover);
     border-color: var(--mdc-border);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
   }
   .card.selected {
     background: var(--mdc-card-selected);
