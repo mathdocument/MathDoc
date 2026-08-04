@@ -150,7 +150,9 @@
       .then((hl) => {
         if (!alive || !editorView) return;
         const lang = srctypeToLang(block.srctype);
-        syntaxExtension = shikiHighlight(hl, lang, SHIKI_THEME);
+        syntaxExtension = shikiHighlight(hl, lang, SHIKI_THEME, (error) => {
+          if (alive) shikiError = errMsg(error);
+        });
         editorExtensions = buildEditorExtensions();
         editorView.dispatch({
           effects: syntaxCompartment.reconfigure(syntaxExtension),
