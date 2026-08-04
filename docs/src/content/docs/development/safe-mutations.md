@@ -37,17 +37,19 @@ target pathname may be briefly absent.
 
 ## Multi-file batches
 
-Workspace-wide source reconciliation uses an operation-scoped `FileSnapshotBatch`. It
-maintains a bounded cache of no-follow parent-directory descriptors, records every
-traversed directory identity, and verifies those generations before writes apply.
+`sync` uses operation-scoped `FileSnapshotBatch` instances. Each maintains a bounded
+cache of no-follow parent-directory descriptors, records every traversed directory
+identity, and verifies those generations before writes apply.
 
-Mdocs are processed in batches of 2,048 sources. Mdoc and mirror reads use at most eight
-scoped workers with deterministic result ordering. Read-only mirror snapshots omit
-replacement metadata; a selected write target is recaptured as a complete snapshot and
-its observed content is checked again.
+During `sync`, mdocs are processed in batches of 2,048 sources. Mdoc and mirror reads use
+at most eight scoped workers with deterministic result ordering. Read-only mirror
+snapshots omit replacement metadata; a selected write target is recaptured as a
+complete snapshot and its observed content is checked again. `back` instead walks the
+tracked manifest sources serially and captures complete mdoc and mirror snapshots.
 
-If reconciliation produces no writes, removals, renames, or manifest change, one
-lightweight batch read confirms every mdoc input still matches before returning.
+If `sync` produces no writes, removals, renames, or manifest change, it recaptures every
+mdoc input as a complete snapshot in chunks of 2,048 and verifies the manifest before
+returning.
 
 Completed operations are retained until the source-block manifest commits. If a later
 step fails, MathDoc attempts rollback in reverse order. Rollback is best-effort and can

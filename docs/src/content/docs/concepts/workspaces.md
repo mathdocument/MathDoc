@@ -26,6 +26,7 @@ and do not enter `.mdc/` or a nested workspace.
 .mdc/
   config.toml                 # compiler settings
   index.db                    # managed SQLite index
+  mutation.lock               # cooperative workspace mutation lock
   source-blocks.json          # mirror synchronization baseline
   text/
     Lib/notes/theorem.txt
@@ -48,6 +49,9 @@ and do not enter `.mdc/` or a nested workspace.
     _CoqProject
 ```
 
+This is a representative layout. SQLite sidecars, compiler state, temporary files, and
+other managed or ephemeral artifacts may also appear.
+
 The `Lib/` directories are editable working trees. They preserve the relative path of
 each source `.mdoc` and keep editable content separate from compiler artifacts.
 
@@ -69,8 +73,10 @@ Most commands accept a `<ref>` that identifies a node in one of three ways:
 | Unique fnode prefix | `550e8400` or any other unambiguous case-insensitive prefix |
 
 Paths may be absolute, relative to the current directory, or relative to the workspace
-root. The `.mdoc` suffix is optional in normal path references. There is no minimum
-length for a unique fnode prefix.
+root. If a supplied path has no extension, MathDoc appends `.mdoc`; dotted basenames
+such as `foo.bar.mdoc` must therefore retain the suffix. Extensionless bare values are
+also tried as paths before fnode resolution. There is no minimum length for a unique
+fnode prefix.
 
 `mdc serve [source]` and `mdc graph tui [source]` additionally accept a unique,
 case-insensitive exact title for their initial node. Other commands deliberately retain

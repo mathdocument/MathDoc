@@ -3,10 +3,11 @@ title: Index & Cache
 description: SQLite ownership, schemas, refresh paths, derived graph data, and command behavior.
 ---
 
-`IndCache` owns the SQLite database at `.mdc/index.db`, all transaction boundaries, and
-the conversion between filesystem state and indexed graph state. The current schema
-version is `16`; older managed schemas are discarded and rebuilt from `.mdoc` files,
-while newer schemas are rejected without mutation.
+`IndCache` owns the SQLite database at `.mdc/index.db`, operational indexing and
+materialization transaction boundaries, and the conversion between filesystem state
+and indexed graph state. The current schema version is `16`; older managed schemas are
+discarded and rebuilt from `.mdoc` files, while newer schemas are rejected without
+mutation.
 
 The connection enables WAL mode and foreign keys. It is opened without following
 symlinks, and multiply linked database files are rejected.
@@ -15,14 +16,17 @@ symlinks, and multiply linked database files are rejected.
 
 - `schema.rs` owns table DDL, indexes, views, and `PRAGMA user_version` handling.
 - `queries.rs` contains pure database reads and no materialization or invalidation.
-- `derived.rs` owns topological depth, in-degree, weak components, graph epochs, and
-  SCC/cycle cache maintenance.
-- `refresh.rs` owns file-backed row, edge, and issue upserts/deletes. Helpers borrow a
-  connection and do not own transactions.
-- `discovery.rs` enumerates workspaces and compares `(mtime_ns, size)` metadata.
+- `derived.rs` owns topological depth, weak components, graph epochs, SCC/cycle cache
+  maintenance, and incremental in-degree maintenance.
+- `refresh.rs` owns file-backed row, edge, and issue upserts/deletes, including the full
+  in-degree rebuild during strong refresh. Helpers borrow a connection and do not own
+  transactions.
+- `discovery.rs` enumerates workspace `.mdoc` files and compares `(mtime_ns, size)`
+  metadata.
 
-Multi-step mutations belong in a transaction created and committed by
-`src/indcache/mod.rs`.
+Operational multi-step mutations belong in a transaction created and committed by
+`src/indcache/mod.rs`. Schema initialization and rebuild are the exception:
+`schema.rs::apply_schema()` owns its DDL transaction.
 
 Reference resolution and pure queries do not delete cached rows when path validation
 fails; they ignore invalid candidates. Discovery, full or targeted refresh, explicit

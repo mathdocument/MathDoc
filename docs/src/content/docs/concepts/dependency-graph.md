@@ -36,13 +36,17 @@ finding the foundational material under a result.
 
 ## Integrity rules
 
-Dependency mutation commands reject:
+Dependency additions require valid, uniquely identified targets and reject:
 
-- self-dependencies
-- an already-present direct dependency
 - ambiguous or missing targets
 - invalid duplicate identities
 - any edge that would create a cycle
+
+Self-dependencies are prevented: `mdc dep add --target` and the Web API reject them,
+while the batch `DepGraph` API reports them in `skipped_self` without writing an edge.
+An already-present direct dependency is an idempotent success in the CLI. Dependency
+removal checks the current direct dependency tokens before resolving live nodes, so a
+dangling dependency can still be removed by its exact token or an unambiguous prefix.
 
 Direct file edits bypass those checks. Run:
 
@@ -62,5 +66,5 @@ missing-target diagnostic.
 
 `mdc graph tui` provides keyboard-driven navigation, search, source preview, editor
 launch, and dependency mutation in the terminal. `mdc serve` adds a three-column
-browser and a force-directed full graph while preserving the same index and mutation
-semantics.
+browser and a deterministic depth-layered full graph while preserving the same index
+and mutation semantics.

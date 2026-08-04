@@ -35,8 +35,10 @@ mdc graph roots
 
 Recoverable broken entries remain visible. Results are ordered by descending
 topological depth, then weak-component size, path, and fnode. The command discovers
-filesystem changes and reads persisted topological depths; it rebuilds weak-component
-data only when graph changes marked that cache dirty.
+filesystem changes using cached `(mtime, size)` metadata and reads persisted topological
+depths; it rebuilds weak-component data only when graph changes marked that cache dirty.
+An external same-size edit that retains its timestamp may remain stale until a strong
+refresh such as `mdc graph check` or `mdc sync`.
 
 ## `mdc graph tui`
 

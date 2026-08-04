@@ -36,9 +36,9 @@ Install only the native tools required by the source types you use.
 | Source type | Required command | What MathDoc runs |
 | --- | --- | --- |
 | `text` | None | No compiler |
+| `latex` | `latexmk`, `xelatex` | `latexmk -pdf -xelatex -interaction=nonstopmode -halt-on-error Main.tex` |
 | `python` | `python3` or `python` | The selected mirror with `-B` |
-| `latex` | `latexmk`, `xelatex` | `latexmk Main.tex` with XeLaTeX |
-| `lean` | `lake` | A standard Lake library build |
+| `lean` | `lake` | `lake --quiet --no-ansi build +Lib` |
 | `rocq` | `rocq` | The selected `.v` module |
 
 Missing optional compilers do not prevent use of the CLI, graph, editor, or other
@@ -47,8 +47,8 @@ that target.
 
 ## VS Code support
 
-The repository includes a packaged extension for syntax highlighting, folding, and
-embedded-language mapping in `.mdoc` files:
+The repository includes a packaged extension for VS Code 1.85 or newer. It provides
+syntax highlighting, folding, and embedded-language mapping in `.mdoc` files:
 
 ```bash
 code --install-extension editors/vscode/mdc-mdoc-0.1.0.vsix --force

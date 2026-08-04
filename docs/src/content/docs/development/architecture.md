@@ -85,11 +85,14 @@ Adding a metric requires a formula in `function.rs`, implementation and enum map
 
 ## Reference resolution
 
-`IndCache::resolve_ref(raw_ref, cwd)` classifies a value as path-like when it contains
-`/`, ends in `.mdoc`, or starts with `.`. Paths are resolved against both the current
-directory and workspace root. Nested `.mdc/` roots are rejected.
+`IndCache::resolve_ref(raw_ref, cwd)` probes paths against the current directory and
+workspace root. Values containing `/`, ending in `.mdoc`, or starting with `.` are
+explicitly path-like; extensionless bare values are also probed after appending `.mdoc`.
+A non-path-like value that already has another extension skips path probing. Explicitly
+path-like values are still probed and must ultimately resolve to a `.mdoc` path. Dotted
+`.mdoc` basenames must retain their suffix, and nested `.mdc/` roots are rejected.
 
-Non-path values resolve as exact fnodes, then unique fnode prefixes.
+Values not resolved as paths continue to exact fnode and then unique-prefix resolution.
 `resolve_start_ref()` adds a unique case-insensitive exact-title fallback for
 `mdc serve` and `mdc graph tui`. `resolve_edit_target_path()` is the path-returning form
 for edit and refresh commands and can resolve files not yet indexed.

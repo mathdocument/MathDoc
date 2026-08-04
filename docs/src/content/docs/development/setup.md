@@ -71,7 +71,7 @@ On pushes and pull requests, `.github/workflows/release-check.yml` performs:
 1. Reproducible frontend dependency installation, type checking, and build.
 2. Verification that `web/dist/` matches committed frontend source.
 3. Documentation dependency installation, Astro checking, and static build.
-4. `cargo +stable test --locked` for all Rust tests.
+4. `cargo +stable test --locked` for the default-feature Rust test suite.
 
 Documentation deployment is separate: pushes to `main` that touch `docs/` run the
 official Astro GitHub Pages action.

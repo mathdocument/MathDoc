@@ -33,6 +33,11 @@ Without `--file`, the output is `<fnode>.mdoc` at the workspace root. Absolute p
 escaping paths, `.mdc/` targets, symlinked paths, nested-workspace targets, and existing
 files are rejected.
 
+Workspace path validation is broader than compiler-specific path validation. LaTeX
+mirror paths must be UTF-8 and cannot contain `"`, `{`, `}`, `%`, carriage returns, or
+line feeds. Lean path components must be UTF-8 and cannot contain `«`, `»`, carriage
+returns, or line feeds.
+
 Creation strongly refreshes the index under the workspace mutation lock, checks
 identity uniqueness, creates missing parent directories safely, and indexes the new
 node. If index update fails after file creation, MathDoc attempts both file rollback
@@ -52,7 +57,7 @@ after the editor exits successfully.
 
 ## `mdc sync`
 
-Strongly refresh the workspace and reconcile every parseable `.mdoc` into all five
+Strongly refresh the workspace and reconcile every parseable `.mdoc` with its five
 language mirror trees:
 
 ```bash
@@ -82,7 +87,8 @@ mdc search <query> -n 20
 ```
 
 `-n, --max-results` sets the result limit and defaults to `200`. Results use the
-canonical ranked index search and return valid node summaries.
+canonical ranked index search. Invalid or duplicate nodes can appear when their
+identity is recoverable; those summaries are marked broken.
 
 Before searching, MathDoc discovers workspace additions, removals, renames, and
 metadata-changed files. An external same-size edit that retains the same timestamp may

@@ -13,12 +13,14 @@ mdc work <source>
 
 `work` first performs workspace-wide mirror reconciliation. It may commit unrelated
 clean mirror and manifest changes even if another pair conflicts. Any remaining
-conflict skips every compiler and returns `1`; dirty-mirror warnings alone do not stop
-compilation.
+conflict skips every compiler and returns `1`. Existing dirty mirrors are compiled
+as-is, but a selected source block whose mirror was deleted makes target construction
+fail with `source mirror is missing`; run `mdc back` to import an intentional deletion.
 
-Each source type represented by a block or a nonempty mirror is compiled in built-in
-type order. A selected node with no targets is a successful no-op. There is no MathDoc
-dependency depth: native imports and includes determine compiler dependencies.
+Each source type represented by a block or a nonempty mirror is compiled in this order:
+`text`, `latex`, `python`, `lean`, `rocq`. A selected node with no targets is a successful
+no-op. There is no MathDoc dependency depth: native imports and includes determine
+compiler dependencies.
 
 Dirty mirror content is compiled as-is without an implicit `back` operation.
 
@@ -27,8 +29,8 @@ Dirty mirror content is compiled as-is without an implicit `back` operation.
 | Type | Required command | Behavior |
 | --- | --- | --- |
 | `text` | None | Successful no-op |
-| `python` | `python3` or `python` | Runs the selected `Lib/` file directly with `-B` |
 | `latex` | `latexmk`, `xelatex` | Builds `Main.tex` with XeLaTeX |
+| `python` | `python3` or `python` | Runs the selected `Lib/` file directly with `-B` |
 | `lean` | `lake` | Validates and builds the standard `Lib` Lake library |
 | `rocq` | `rocq` | Compiles only the selected `.v` mirror |
 
@@ -41,7 +43,7 @@ files are preserved. `lakefile.lean` is unsupported.
 MathDoc writes one `import Lib.<selected-module>` line to `.mdc/lean/Lib.lean` and runs:
 
 ```bash
-lake build +Lib
+lake --quiet --no-ansi build +Lib
 ```
 
 The conventional `lakefile.toml` owns dependencies and must retain:
@@ -66,9 +68,15 @@ MathDoc does not clean `.olean` files.
 ### LaTeX
 
 MathDoc writes the selected mirror as an `\input` in `.mdc/latex/Lib.tex`, then runs
-`latexmk Main.tex` inside `.mdc/latex/`. A minimal `Main.tex` is created whenever it is
-absent and is otherwise left untouched. MathDoc does not restore the `Lib.tex` input if
-the user removes it from `Main.tex`.
+`latexmk -pdf -xelatex -interaction=nonstopmode -halt-on-error Main.tex` inside
+`.mdc/latex/`. A minimal `Main.tex` is created whenever it is absent and is otherwise
+left untouched. MathDoc does not restore the `Lib.tex` input if the user removes it from
+`Main.tex`.
+
+LaTeX mirror paths must be UTF-8 and cannot contain `"`, `{`, `}`, `%`, carriage
+returns, or line feeds. Lean module path components must be UTF-8 and cannot contain
+`«`, `»`, carriage returns, or line feeds. These restrictions are enforced when the
+compiler driver is generated, not by `mdc new`.
 
 ### Python
 

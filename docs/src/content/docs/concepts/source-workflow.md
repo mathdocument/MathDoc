@@ -13,9 +13,9 @@ ordinary source files. MathDoc bridges the two representations with `sync`, `wor
 mdc sync
 ```
 
-`sync` strongly refreshes the complete index, then exports every structurally parseable
-document into five mirrors under `.mdc/<srctype>/Lib/`. Relative paths are preserved;
-for example, `data/A.mdoc` produces:
+`sync` strongly refreshes the complete index. On initial synchronization it exports
+every structurally parseable document into five mirrors under `.mdc/<srctype>/Lib/`.
+Relative paths are preserved; for example, `data/A.mdoc` produces:
 
 ```text
 .mdc/text/Lib/data/A.txt
@@ -25,9 +25,11 @@ for example, `data/A.mdoc` produces:
 .mdc/rocq/Lib/data/A.v
 ```
 
-Missing source blocks produce empty mirrors. Duplicate-fnode files remain exportable
-because duplication is an index issue, while structurally unparseable files retain
-their previous mirrors.
+Missing source blocks produce empty mirrors. On later runs, a clean mirror follows mdoc
+changes, while a modified or deleted mirror is preserved and reported as dirty. A
+pre-existing mirror that differs before any baseline exists is preserved as a conflict.
+Duplicate-fnode files remain exportable because duplication is an index issue, while
+structurally unparseable files retain their previous mirrors.
 
 ## Edit with native tools
 
@@ -47,7 +49,8 @@ node. Compilation follows built-in source type order; language imports and inclu
 not the MathDoc dependency graph, determine compiler dependencies.
 
 Dirty mirror content is compiled without being written back implicitly. A node with no
-compiler targets is a successful no-op.
+compiler targets is a successful no-op. If a selected source block has a deleted mirror,
+target construction fails; run `mdc back` to import the deletion before compiling.
 
 ## Import with back
 
@@ -62,16 +65,17 @@ Imported nonempty content is normalized to end with a newline and must be UTF-8.
 
 ## Conflict behavior
 
-`.mdc/source-blocks.json` records the last synchronized content and block-presence
-baseline for every source/type pair.
+`.mdc/source-blocks.json` records a SHA-256 content digest and block-presence bit for
+every source/type pair. It does not store baseline source text.
 
 | Change since baseline | `sync` result | `back` result |
 | --- | --- | --- |
-| Only mdoc changed | Update clean mirror | Keep mdoc |
+| Only mdoc changed | Update clean mirror | Preserve both; report that `mdc sync` is required |
 | Only mirror changed | Preserve dirty mirror | Update mdoc |
 | Both changed identically | Reconcile baseline | Reconcile baseline |
 | Both changed differently | Preserve both; report conflict | Preserve both; report conflict |
 
 Conflicts are isolated per source/type pair, so unrelated clean changes may still be
-committed. `sync` and `back` exit with status `1` while dirty mirrors or conflicts remain;
-`work` skips all compilers if reconciliation reports a conflict.
+committed. `sync` exits with status `1` while dirty mirrors or conflicts remain; `back`
+exits with status `1` while conflicts remain. `work` skips all compilers if
+reconciliation reports a conflict.

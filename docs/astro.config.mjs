@@ -12,7 +12,7 @@ export default defineConfig({
         src: './src/assets/mdc-logo.svg',
         alt: 'MathDoc',
       },
-      favicon: '/mdc-logo.svg',
+      favicon: '/favicon.png',
       customCss: [
         '@fontsource-variable/manrope',
         '@fontsource-variable/newsreader',
@@ -29,6 +29,23 @@ export default defineConfig({
         baseUrl: 'https://github.com/mathdocument/MathDoc/edit/main/docs/',
       },
       head: [
+        {
+          tag: 'link',
+          attrs: {
+            rel: 'icon',
+            type: 'image/png',
+            sizes: '64x64',
+            href: '/MathDoc/favicon.png',
+          },
+        },
+        {
+          tag: 'link',
+          attrs: {
+            rel: 'apple-touch-icon',
+            sizes: '400x400',
+            href: '/MathDoc/mdc-logo.png?v=2',
+          },
+        },
         {
           tag: 'meta',
           attrs: {

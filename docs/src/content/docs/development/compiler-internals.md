@@ -10,7 +10,9 @@ working trees while preserving independently edited generations on either side.
 
 `mdc work <source>` first runs workspace-wide `workdraft::sync()`. Clean changes can
 commit while another source/type pair reports a conflict. Any conflict prevents all
-selected compilation; dirty mirror warnings do not.
+selected compilation; existing dirty mirror warnings do not. A selected source block
+whose mirror remains missing after reconciliation fails target construction before
+compiler invocation; first-time missing mirrors are created by `sync`.
 
 `mdc back` applies the inverse mirror-to-mdoc direction. The manifest baseline stores
 both content digest and block presence. A deleted mirror removes a block, after which an
@@ -41,11 +43,13 @@ is zero; interruption is separate so CLI dispatch can skip later source types.
 
 Lean mirrors use the standard `Lib/` Lake library. Existing `lakefile.toml` and
 `lean-toolchain` are preserved; `lakefile.lean` is rejected. MathDoc rewrites
-`Lib.lean` to import one selected module and invokes `lake build +Lib`. Lake owns imports
-and reuses `.olean` artifacts.
+`Lib.lean` to import one selected module and invokes
+`lake --quiet --no-ansi build +Lib`. Lake owns imports and reuses `.olean` artifacts.
 
 LaTeX rewrites `Lib.tex` with the selected mirror input and compiles the user-editable
-`Main.tex` directly inside `.mdc/latex/`. `Main.tex` is created only while absent.
+`Main.tex` inside `.mdc/latex/` with
+`latexmk -pdf -xelatex -interaction=nonstopmode -halt-on-error Main.tex`. `Main.tex` is
+created only while absent.
 
 Python executes the selected mirror directly. Rocq stores `.vo` outputs in a parallel
 `build/` tree. Its successful `Lib/**/*.v` inventory digest controls complete build-tree

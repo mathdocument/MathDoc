@@ -34,6 +34,9 @@ All timeout values are positive integer seconds.
 Configuration loading reports malformed values with their source section. Defaults and
 overrides are merged into typed positive durations before a compiler request is built;
 individual compiler implementations do not read TOML or apply defaults themselves.
+Unknown `[src.<type>]` names are rejected, but unknown top-level and per-source setting
+names are currently ignored. Check setting names carefully: a typo can leave the
+built-in default active without an error.
 
 ## Inclusive profiling
 
@@ -48,9 +51,10 @@ Profiling writes an inclusive elapsed-time tree to standard error while preservi
 command's normal standard output. This is particularly useful for full refresh, graph,
 and synchronization costs.
 
-The current scopes separate CLI dispatch, cache open/bootstrap, workspace scan, digest
-comparison, issue construction, bulk row replacement, in-degree rebuild, derived graph
-algorithms, and SQLite commits. Worker threads receive separate trees where needed.
+The current scopes cover CLI dispatch, cache open/bootstrap, workspace scans, digest
+calculation, issue construction, bulk row replacement, in-degree rebuild, derived graph
+algorithms, selected SQLite commits, and parent-level parallel read phases. Parallel
+scan workers do not currently emit separate profiling trees.
 
 :::note
 Scopes are inclusive: a parent's duration contains all reported child durations. Do not

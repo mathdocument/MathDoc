@@ -83,7 +83,7 @@ mdc serve notes/theorem
 ```
 
 The browser interface can navigate and edit nodes, manage dependencies, create new
-nodes, and display the full force-directed graph.
+nodes, and display the full graph in a deterministic depth-layered layout.
 
 :::tip
 Run `mdc graph check` in continuous integration to catch malformed files, duplicate
