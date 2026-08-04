@@ -3,7 +3,6 @@
   import {
     ArrowLeft,
     ArrowRight,
-    BookOpenText,
     Columns3,
     Link2,
     Network,
@@ -421,10 +420,9 @@
 <div class="app" inert={overlay.kind !== "none"}>
   <header class="toolbar">
     <div class="identity" aria-label="MathDoc">
-      <span class="brand-mark"><BookOpenText size={17} strokeWidth={1.8} /></span>
+      <img class="brand-mark" src="/mdc-logo.svg" alt="" />
       <span class="brand-copy">
         <strong>MathDoc</strong>
-        <small>DAG workspace</small>
       </span>
     </div>
     <span class="toolbar-divider"></span>
@@ -628,35 +626,24 @@
   .identity {
     display: flex;
     align-items: center;
-    gap: 0.65rem;
-    min-width: 148px;
+    gap: 0.55rem;
+    min-width: 124px;
   }
   .brand-mark {
-    display: grid;
-    place-items: center;
-    width: 32px;
-    height: 32px;
-    color: #101722;
-    background: linear-gradient(145deg, var(--mdc-accent-strong), #6fd4c3);
-    border-radius: 9px;
-    box-shadow: 0 5px 18px rgba(89, 124, 224, 0.22);
+    display: block;
+    width: 2.1rem;
+    height: 2.1rem;
+    flex: 0 0 auto;
   }
   .brand-copy {
-    display: flex;
-    flex-direction: column;
-    line-height: 1.05;
+    display: block;
+    line-height: 1;
   }
   .brand-copy strong {
     color: var(--mdc-fg);
-    font-size: 0.9rem;
-    letter-spacing: -0.01em;
-  }
-  .brand-copy small {
-    margin-top: 0.25rem;
-    color: var(--mdc-muted);
-    font-family: var(--mdc-mono);
-    font-size: 0.62rem;
-    letter-spacing: 0.02em;
+    font-size: 0.95rem;
+    font-weight: 720;
+    letter-spacing: -0.025em;
   }
   .toolbar-divider {
     width: 1px;
@@ -850,7 +837,6 @@
     .identity {
       min-width: auto;
     }
-    .brand-copy small,
     .node-tools .tool span,
     .search-tool .tool-kbd {
       display: none;
