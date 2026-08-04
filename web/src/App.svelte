@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import {
     ArrowLeft,
     ArrowRight,
@@ -58,6 +58,10 @@
   // Top-level view state: three-column layout vs. full-screen force graph.
   let view = $state<"columns" | "force">("columns");
   let viewSwitching = $state(false);
+  let columnsMounted = $state(true);
+  let forceEditorMounted = $state(false);
+  let resolveColumnsEditorReady: (() => void) | null = null;
+  let resolveForceEditorReady: (() => void) | null = null;
   // Selected fnode in the force graph (drives the side editor panel).
   let forceSelectedFnode = $state<string | null>(null);
   // Increment after dependency mutations to refresh the graph data.
@@ -68,6 +72,18 @@
   // NodeDetail for the force-graph side panel (fetched on selection).
   let forceNodeLoad = $state<LoadState>({ kind: "idle" });
   let forceEditorRevision = $state(0);
+
+  function markColumnsEditorReady() {
+    const resolve = resolveColumnsEditorReady;
+    resolveColumnsEditorReady = null;
+    resolve?.();
+  }
+
+  function markForceEditorReady() {
+    const resolve = resolveForceEditorReady;
+    resolveForceEditorReady = null;
+    resolve?.();
+  }
 
   onMount(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -128,6 +144,8 @@
     window.addEventListener("popstate", onPopState);
     window.addEventListener("keydown", onKeyDown);
     return () => {
+      resolveColumnsEditorReady?.();
+      resolveForceEditorReady?.();
       window.removeEventListener("beforeunload", onBeforeUnload);
       window.removeEventListener("popstate", onPopState);
       window.removeEventListener("keydown", onKeyDown);
@@ -378,14 +396,23 @@
           forceSelectedFnode = node.fnode;
           forceNodeLoad = { kind: "ready", node };
           commitFocusedHistory(node.fnode, { pushHistory: false });
-          void refreshReusedForceNode(node.fnode, forceRequest, draftRevision);
+          await refreshReusedForceNode(node.fnode, forceRequest, draftRevision);
         } else {
           forceSelectedFnode = null;
           forceNodeLoad = { kind: "idle" };
         }
         forceRelationsDirty = false;
         if (request !== viewRequest) return;
+        const editorReady = new Promise<void>((resolve) => {
+          resolveForceEditorReady = resolve;
+        });
+        forceEditorMounted = true;
+        await tick();
+        await editorReady;
+        if (request !== viewRequest) return;
         view = "force";
+        await tick();
+        columnsMounted = false;
       } else {
         // Keep the complete graph view visible until the column data is ready.
         const target = forceSelectedFnode;
@@ -403,7 +430,16 @@
           });
         }
         if (request !== viewRequest) return;
+        const editorReady = new Promise<void>((resolve) => {
+          resolveColumnsEditorReady = resolve;
+        });
+        columnsMounted = true;
+        await tick();
+        await editorReady;
+        if (request !== viewRequest) return;
         view = "columns";
+        await tick();
+        forceEditorMounted = false;
         forceSelectedFnode = null;
         forceLoadRequest++;
         forceNodeLoad = { kind: "idle" };
@@ -514,7 +550,12 @@
   {/if}
 
   <!-- Force graph view: always mounted, hidden via CSS when in columns mode. -->
-  <main class="force-layout" class:hidden={view !== "force"}>
+  <main
+    class="force-layout"
+    class:hidden={view !== "force"}
+    inert={view !== "force"}
+    aria-hidden={view !== "force"}
+  >
     <div class="force-canvas-wrap">
         <DepthGraph
           active={view === "force"}
@@ -524,17 +565,26 @@
         />
     </div>
     <div class="force-editor-wrap">
-      {#if view === "force"}
+      {#if forceEditorMounted}
         {#key forceEditorRevision}
-          <EditorPane load={forceNodeLoad} onRefresh={refreshForceNode} />
+          <EditorPane
+            load={forceNodeLoad}
+            onRefresh={refreshForceNode}
+            onReady={markForceEditorReady}
+          />
         {/key}
       {/if}
     </div>
   </main>
 
-  <!-- Unmount editors after a confirmed view switch so hidden drafts cannot linger. -->
-  {#if view === "columns"}
-  <main class="layout">
+  <!-- Pre-mount the destination editor while transparent, then discard the source. -->
+  {#if columnsMounted}
+  <main
+    class="layout"
+    class:hidden={view !== "columns"}
+    inert={view !== "columns"}
+    aria-hidden={view !== "columns"}
+  >
     {#if initialError}
       <div class="full-error">{initialError}</div>
     {:else}
@@ -548,7 +598,11 @@
         onHover={(i) => (appState.referrers.selected = i)}
       />
       {#key appState.editorRevision}
-        <EditorPane load={appState.load} onRefresh={refreshColumnNode} />
+        <EditorPane
+          load={appState.load}
+          onRefresh={refreshColumnNode}
+          onReady={markColumnsEditorReady}
+        />
       {/key}
       <NodeColumn
         title="Dependencies"
@@ -805,10 +859,11 @@
     overflow: hidden;
     min-height: 0;
   }
-  .force-layout.hidden {
+  .force-layout.hidden,
+  .layout.hidden {
     position: absolute;
     inset: 58px 0 0;
-    visibility: hidden;
+    opacity: 0;
     pointer-events: none;
   }
   .force-canvas-wrap {

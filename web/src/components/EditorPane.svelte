@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { Check, FileText, Hash, Layers3, X } from "@lucide/svelte";
   import type { NodeDetail } from "../lib/types";
   import type { LoadState } from "../lib/state.svelte";
@@ -19,8 +19,9 @@
   interface Props {
     load: LoadState;
     onRefresh?: (node: NodeDetail) => void;
+    onReady?: () => void;
   }
-  let { load, onRefresh }: Props = $props();
+  let { load, onRefresh, onReady }: Props = $props();
 
   // Inline title editing.
   let editingTitle = $state(false);
@@ -35,6 +36,24 @@
   let titleRequest = 0;
   let refreshRequest = 0;
   let editorResetRevision = $state(0);
+  let readyReported = false;
+  const readyBlocks = new Set<string>();
+
+  function reportReady() {
+    if (readyReported) return;
+    readyReported = true;
+    onReady?.();
+  }
+
+  function reportBlockReady(srctype: string) {
+    if (load.kind !== "ready" || readyReported) return;
+    readyBlocks.add(srctype);
+    if (readyBlocks.size === load.node.blocks.length) reportReady();
+  }
+
+  onMount(() => {
+    if (load.kind !== "ready" || load.node.blocks.length === 0) reportReady();
+  });
 
   // Reset title editing state when the displayed node changes.
   $effect(() => {
@@ -215,6 +234,7 @@
             fnode={node.fnode}
             {block}
             onDeleted={refreshNode}
+            onReady={() => reportBlockReady(block.srctype)}
           />
         {/each}
       {/if}

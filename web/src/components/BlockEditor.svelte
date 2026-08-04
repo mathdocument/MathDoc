@@ -34,8 +34,9 @@
     fnode: string;
     block: SrcBlock;
     onDeleted?: (srctype: string) => void;
+    onReady?: () => void;
   }
-  let { fnode, block, onDeleted }: Props = $props();
+  let { fnode, block, onDeleted, onReady }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
   let editorView: EditorView | null = null;
@@ -57,6 +58,7 @@
   let pendingSaveContent: string | null = null;
   const syntaxCompartment = new Compartment();
   let syntaxExtension: Extension = [];
+  let readyReported = false;
 
   const SHIKI_THEME = "tokyo-night";
 
@@ -112,6 +114,17 @@
     return [...buildBaseExtensions(), syntaxCompartment.of(syntaxExtension)];
   }
 
+  function reportReadyAfterMeasure(view: EditorView) {
+    view.requestMeasure({
+      read: () => null,
+      write: () => {
+        if (!alive || editorView !== view || readyReported) return;
+        readyReported = true;
+        onReady?.();
+      },
+    });
+  }
+
   function setDirty(value: boolean) {
     dirty = value;
     setDraftDirty(draftId, value);
@@ -131,6 +144,7 @@
       extensions: editorExtensions,
       parent: host!,
     });
+    reportReadyAfterMeasure(editorView);
 
     getHighlighter()
       .then((hl) => {
