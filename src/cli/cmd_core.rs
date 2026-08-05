@@ -73,6 +73,7 @@ pub(super) fn cmd_sync() -> Result<i32> {
     cache.refresh_all()?;
     let total = cache.count()?;
     let draft = crate::workdraft::sync(&mutation_lock)?;
+    cache.refresh_formal_statuses()?;
     println!("synced  {BLD}{total}{RST} mdocs");
     println!(
         "exported {BLD}{}{RST} source files from {} valid mdocs ({} updated, {} removed)",

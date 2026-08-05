@@ -1,13 +1,15 @@
 use anyhow::{bail, Context};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use super::{
-    process_error_result, require_tool, run_process, CompilerReq, CompilerRes, CompilerWorkspace,
-    SrcCompiler,
+    ensure_complete_machine_output, process_error_result, require_tool, run_process, CompilerReq,
+    CompilerRes, CompilerWorkspace, FormalCompilationReceipt, SrcCompiler,
 };
+use crate::workspace::FileSnapshot;
 
 pub(super) struct CompilerRocq;
 
@@ -19,37 +21,74 @@ impl SrcCompiler for CompilerRocq {
     }
 
     fn compile(&self, req: &CompilerReq) -> CompilerRes {
+        self.compile_with_receipt(req).0
+    }
+
+    fn compile_with_receipt(
+        &self,
+        req: &CompilerReq,
+    ) -> (CompilerRes, Option<FormalCompilationReceipt>) {
         let timeout_sec = match req.timeout_sec() {
             Ok(timeout) => timeout,
-            Err(error) => return CompilerRes::err(error.to_string()),
+            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
         };
 
         let rocq = match require_tool("rocq") {
             Ok(p) => p,
-            Err(e) => return CompilerRes::err_code(e.to_string(), 127),
+            Err(e) => return without_receipt(CompilerRes::err_code(e.to_string(), 127)),
         };
 
         let workspace = match CompilerWorkspace::open(req, "rocq") {
             Ok(workspace) => workspace,
-            Err(error) => return CompilerRes::err(error.to_string()),
+            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
         };
         let (_, relative) = match workspace.lib_source(req) {
             Ok(source) => source,
-            Err(error) => return CompilerRes::err(error.to_string()),
+            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
         };
         let (inventory, inventory_snapshot) = match ensure_workspace(&workspace) {
             Ok(inventory) => inventory,
-            Err(e) => return CompilerRes::err(e.to_string()),
+            Err(e) => return without_receipt(CompilerRes::err(e.to_string())),
         };
         let source = Path::new("Lib").join(relative);
         let output = Path::new("build")
             .join(source.strip_prefix("Lib").unwrap())
             .with_extension("vo");
         if let Err(error) = ensure_build_parent(&workspace, &output) {
-            return CompilerRes::err(error.to_string());
+            return without_receipt(CompilerRes::err(error.to_string()));
         }
+        let source_path = workspace.root().join(&source);
+        let source_snapshot = match workspace.snapshot(&source_path) {
+            Ok(snapshot) => snapshot,
+            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+        };
+        let Some(source_content) = source_snapshot.content() else {
+            return without_receipt(CompilerRes::err(
+                "Rocq source disappeared before compilation",
+            ));
+        };
+        let source_sha256 = crate::formal_status::content_digest(source_content);
+        let compiler_identity = match crate::formal_status::capture_compiler_identity(&rocq) {
+            Ok(identity) => identity,
+            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+        };
+        let library_roots = match rocq_library_roots(&workspace, &rocq, timeout_sec) {
+            Ok(roots) => roots,
+            Err(error) => return without_receipt(process_error_result(error, 1)),
+        };
+        let dependency_evidence = match rocq_dependency_evidence(
+            workspace.root(),
+            &rocq,
+            &library_roots,
+            &source,
+            timeout_sec,
+        ) {
+            Ok(evidence) => evidence,
+            Err(error) => return without_receipt(process_error_result(error, 1)),
+        };
         let args = vec![
             OsStr::new("compile").to_os_string(),
+            OsStr::new("-q").to_os_string(),
             OsStr::new("-Q").to_os_string(),
             OsStr::new("build").to_os_string(),
             std::ffi::OsString::new(),
@@ -74,19 +113,305 @@ impl SrcCompiler for CompilerRocq {
                     if let Err(error) =
                         record_module_inventory(&workspace, &inventory, &inventory_snapshot)
                     {
-                        return CompilerRes::err(error.to_string());
+                        return without_receipt(CompilerRes::err(error.to_string()));
                     }
                 }
-                CompilerRes {
-                    stdout: stdout.trim().to_string(),
-                    stderr: stderr.trim().to_string(),
-                    rtcode,
-                    interrupted: false,
-                }
+                let formal_receipt = if rtcode == 0 {
+                    match collect_formal_receipt(
+                        req,
+                        &workspace,
+                        &rocq,
+                        &library_roots,
+                        &source,
+                        &output,
+                        timeout_sec,
+                        &source_snapshot,
+                        source_sha256,
+                        compiler_identity,
+                        dependency_evidence,
+                    ) {
+                        Ok(receipt) => Some(receipt),
+                        Err(error) => return without_receipt(process_error_result(error, 1)),
+                    }
+                } else {
+                    None
+                };
+                (
+                    CompilerRes {
+                        stdout: stdout.trim().to_string(),
+                        stderr: stderr.trim().to_string(),
+                        rtcode,
+                        interrupted: false,
+                    },
+                    formal_receipt,
+                )
             }
-            Err(e) => process_error_result(e, 1),
+            Err(e) => without_receipt(process_error_result(e, 1)),
         }
     }
+}
+
+fn without_receipt(result: CompilerRes) -> (CompilerRes, Option<FormalCompilationReceipt>) {
+    (result, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_formal_receipt(
+    req: &CompilerReq,
+    workspace: &CompilerWorkspace,
+    rocq: &Path,
+    library_roots: &RocqLibraryRoots,
+    source: &Path,
+    output: &Path,
+    timeout_sec: u64,
+    source_snapshot: &crate::workspace::FileSnapshot,
+    source_sha256: String,
+    compiler_identity: crate::formal_status::CompilerIdentityEvidence,
+    dependency_evidence: DependencyEvidence,
+) -> anyhow::Result<FormalCompilationReceipt> {
+    let current_dependencies =
+        rocq_dependency_evidence(workspace.root(), rocq, library_roots, source, timeout_sec)
+            .context("revalidating Rocq dependencies")?;
+    dependency_evidence.ensure_matches(&current_dependencies)?;
+    if !workspace.snapshot_unchanged(source_snapshot, &workspace.root().join(source))? {
+        anyhow::bail!("Rocq source changed during compilation");
+    }
+    let environment = crate::formal_status::capture_environment(workspace.mdcroot(), "rocq")
+        .context("capturing Rocq compiler environment")?
+        .ok_or_else(|| anyhow::anyhow!("Rocq compiler environment is incomplete"))?;
+    compiler_identity.ensure_current()?;
+    environment.ensure_current()?;
+    let target_module = crate::formal_status::module_key(source.strip_prefix("Lib")?)?;
+    Ok(FormalCompilationReceipt {
+        language: "rocq".to_string(),
+        target_module,
+        source_sha256,
+        artifact_sha256: crate::formal_status::file_digest(
+            &req.mdcroot,
+            &workspace.root().join(output),
+        )
+        .context("hashing selected Rocq artifact")?,
+        environment_sha256: environment.digest().to_string(),
+        compiler_path: compiler_identity.path().to_string(),
+        compiler_sha256: compiler_identity.digest().to_string(),
+        direct_dependencies: dependency_evidence.direct_dependencies,
+        external_dependencies: dependency_evidence.external_dependencies,
+    })
+}
+
+struct DependencyEvidence {
+    direct_dependencies: BTreeMap<String, String>,
+    external_dependencies: BTreeMap<String, String>,
+    guards: Vec<(PathBuf, FileSnapshot)>,
+}
+
+struct RocqLibraryRoots {
+    core: PathBuf,
+    user_contrib: PathBuf,
+    prelude: PathBuf,
+}
+
+fn rocq_library_roots(
+    workspace: &CompilerWorkspace,
+    rocq: &Path,
+    timeout_sec: u64,
+) -> anyhow::Result<RocqLibraryRoots> {
+    let (rtcode, stdout, stderr) = run_process(
+        rocq,
+        ["compile", "-where"],
+        "rocq compile -where",
+        timeout_sec,
+        Some(workspace.root()),
+    )?;
+    if rtcode != 0 {
+        anyhow::bail!(
+            "failed to locate the Rocq library: {}",
+            [stdout.trim(), stderr.trim()]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+    ensure_complete_machine_output(&stdout, &stderr)?;
+    let lines = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if lines.len() != 1 {
+        anyhow::bail!("Rocq library query returned unexpected output");
+    }
+    let root = Path::new(lines[0])
+        .canonicalize()
+        .with_context(|| format!("resolving Rocq library directory {}", lines[0]))?;
+    let core = root.join("theories");
+    let user_contrib = root.join("user-contrib");
+    let prelude = core.join("Init/Prelude.vo");
+    if !core.is_dir() || !user_contrib.is_dir() || !prelude.is_file() {
+        anyhow::bail!("Rocq library layout is incomplete under {}", root.display());
+    }
+    Ok(RocqLibraryRoots {
+        core,
+        user_contrib,
+        prelude,
+    })
+}
+
+impl DependencyEvidence {
+    fn ensure_matches(&self, current: &Self) -> anyhow::Result<()> {
+        if self.direct_dependencies != current.direct_dependencies
+            || self.external_dependencies != current.external_dependencies
+        {
+            anyhow::bail!("Rocq dependencies changed during compilation");
+        }
+        for (path, snapshot) in &self.guards {
+            if !snapshot.file_generation_unchanged(path)? {
+                anyhow::bail!(
+                    "Rocq dependency changed during compilation: {}",
+                    path.display()
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+fn rocq_dependency_evidence(
+    workspace_root: &Path,
+    rocq: &Path,
+    library_roots: &RocqLibraryRoots,
+    source: &Path,
+    timeout_sec: u64,
+) -> anyhow::Result<DependencyEvidence> {
+    let args = vec![
+        OsStr::new("dep").to_os_string(),
+        OsStr::new("-dyndep").to_os_string(),
+        OsStr::new("both").to_os_string(),
+        OsStr::new("-Q").to_os_string(),
+        library_roots.core.as_os_str().to_os_string(),
+        OsStr::new("Corelib").to_os_string(),
+        OsStr::new("-Q").to_os_string(),
+        library_roots.user_contrib.as_os_str().to_os_string(),
+        std::ffi::OsString::new(),
+        OsStr::new("-Q").to_os_string(),
+        OsStr::new("build").to_os_string(),
+        std::ffi::OsString::new(),
+        OsStr::new("-Q").to_os_string(),
+        OsStr::new("Lib").to_os_string(),
+        std::ffi::OsString::new(),
+        OsStr::new("-noglob").to_os_string(),
+        source.as_os_str().to_os_string(),
+    ];
+    let (rtcode, stdout, stderr) =
+        run_process(rocq, args, "rocq dep", timeout_sec, Some(workspace_root))?;
+    if rtcode != 0 {
+        anyhow::bail!(
+            "failed to inspect Rocq dependencies: {}",
+            [stdout.trim(), stderr.trim()]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+    ensure_complete_machine_output(&stdout, &stderr)?;
+    if stderr.contains("[module-not-found") || stderr.contains("has not been found in the loadpath")
+    {
+        anyhow::bail!(
+            "Rocq dependency inspection left a module unresolved: {}",
+            stderr.trim()
+        );
+    }
+    let build_root = workspace_root.join("build");
+    let source_root = workspace_root.join("Lib");
+    let selected_source = workspace_root.join(source);
+    let mut direct_dependencies = BTreeMap::new();
+    let mut external_dependencies = BTreeMap::new();
+    let mut guards = Vec::new();
+    let prelude = library_roots.prelude.canonicalize()?;
+    external_dependencies.insert(
+        prelude
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Rocq Prelude path is not valid UTF-8"))?
+            .to_string(),
+        guarded_digest(&prelude, &mut guards)?,
+    );
+    for token in stdout
+        .split_once(':')
+        .map(|(_, dependencies)| dependencies)
+        .unwrap_or_default()
+        .split_whitespace()
+    {
+        let path = PathBuf::from(token.trim_end_matches('\\'));
+        let path = if path.is_absolute() {
+            path
+        } else {
+            workspace_root.join(path)
+        };
+        if path.extension().and_then(|value| value.to_str()) == Some("v") {
+            if path != selected_source {
+                anyhow::bail!(
+                    "Rocq Load dependencies are unsupported; use Require for {}",
+                    path.display()
+                );
+            }
+            continue;
+        }
+        let (relative, artifact) = if let Ok(relative) = path.strip_prefix(&build_root) {
+            (relative, path.clone())
+        } else if let Ok(relative) = path.strip_prefix(&source_root) {
+            (relative, build_root.join(relative))
+        } else if path.is_absolute() && path.is_file() {
+            let canonical = path.canonicalize().with_context(|| {
+                format!("resolving Rocq dependency artifact {}", path.display())
+            })?;
+            let key = canonical
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Rocq dependency path is not valid UTF-8"))?
+                .to_string();
+            external_dependencies.insert(key, guarded_digest(&canonical, &mut guards)?);
+            continue;
+        } else {
+            continue;
+        };
+        if relative.extension().and_then(|value| value.to_str()) != Some("vo") {
+            continue;
+        }
+        let module = crate::formal_status::module_key(relative)?;
+        let digest = guarded_digest(&artifact, &mut guards)?;
+        if let Some(existing) = direct_dependencies.get(&module) {
+            if existing != &digest {
+                anyhow::bail!("Rocq dependency inspection returned ambiguous module {module}");
+            }
+        } else {
+            direct_dependencies.insert(module, digest);
+        }
+    }
+    Ok(DependencyEvidence {
+        direct_dependencies,
+        external_dependencies,
+        guards,
+    })
+}
+
+fn guarded_digest(
+    path: &Path,
+    guards: &mut Vec<(PathBuf, FileSnapshot)>,
+) -> anyhow::Result<String> {
+    let snapshot = FileSnapshot::capture(path)?;
+    let content = snapshot.content().ok_or_else(|| {
+        anyhow::anyhow!("Rocq dependency artifact is missing: {}", path.display())
+    })?;
+    let digest = crate::formal_status::content_digest(content);
+    if !snapshot.file_generation_unchanged(path)? {
+        anyhow::bail!(
+            "Rocq dependency artifact changed while reading: {}",
+            path.display()
+        );
+    }
+    guards.push((path.to_path_buf(), snapshot));
+    Ok(digest)
 }
 
 fn ensure_workspace(

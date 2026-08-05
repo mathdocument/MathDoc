@@ -28,6 +28,7 @@ and do not enter `.mdc/` or a nested workspace.
   index.db                    # managed SQLite index
   mutation.lock               # cooperative workspace mutation lock
   source-blocks.json          # mirror synchronization baseline
+  formal-attestations.json    # successful Lean/Rocq compilation receipts
   text/
     Lib/notes/theorem.txt
   latex/

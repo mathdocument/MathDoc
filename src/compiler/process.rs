@@ -20,6 +20,15 @@ const OUTPUT_CAPTURE_TAIL_BYTES: usize = OUTPUT_CAPTURE_LIMIT_BYTES - OUTPUT_CAP
 const PIPE_READ_SIZE: usize = 16 * 1024;
 const DRAIN_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
+pub(super) fn ensure_complete_machine_output(stdout: &str, stderr: &str) -> Result<()> {
+    if stdout.contains("\n[stdout truncated: omitted ")
+        || stderr.contains("\n[stderr truncated: omitted ")
+    {
+        bail!("compiler dependency output exceeded the capture limit");
+    }
+    Ok(())
+}
+
 #[derive(Debug, thiserror::Error)]
 enum ProcessControlError {
     #[error("{tool} timed out after {timeout_sec} seconds{diagnostics}")]
@@ -634,7 +643,7 @@ pub(super) fn process_error_result(error: anyhow::Error, fallback: i32) -> Compi
     };
     CompilerRes {
         stdout: String::new(),
-        stderr: error.to_string(),
+        stderr: format!("{error:#}"),
         rtcode,
         interrupted,
     }

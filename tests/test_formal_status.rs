@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::time::{Duration, SystemTime};
 
 use mathdoc::core::{FormalCodeStatus, FormalizationStatus};
 use mathdoc::indcache::IndCache;
@@ -12,16 +11,6 @@ fn write(path: &Path, content: &str) {
         fs::create_dir_all(parent).unwrap();
     }
     fs::write(path, content).unwrap();
-}
-
-fn write_newer_than(path: &Path, content: &str, older: SystemTime) {
-    loop {
-        write(path, content);
-        if fs::metadata(path).unwrap().modified().unwrap() > older {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
 }
 
 fn formal_node(root: &Path, relative: &str) -> MdocNode {
@@ -54,7 +43,7 @@ fn cache_reports_no_code_without_formal_blocks() {
 }
 
 #[test]
-fn full_refresh_tracks_verified_and_stale_artifacts() {
+fn artifacts_without_work_attestations_stay_unverified() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     fs::create_dir(root.join(".mdc")).unwrap();
@@ -75,35 +64,8 @@ fn full_refresh_tracks_verified_and_stale_artifacts() {
 
     let lean_artifact = root.join(".mdc/lean/.lake/build/lib/lean/Lib/notes/card.olean");
     let rocq_artifact = root.join(".mdc/rocq/build/notes/card.vo");
-    write_newer_than(
-        &lean_artifact,
-        "olean",
-        fs::metadata(&lean_source).unwrap().modified().unwrap(),
-    );
-    write_newer_than(
-        &rocq_artifact,
-        "vo",
-        fs::metadata(&rocq_source).unwrap().modified().unwrap(),
-    );
-    cache.refresh_all().unwrap();
-    assert_eq!(
-        cache.formalization_status(&node.fnode).unwrap(),
-        FormalizationStatus {
-            lean: FormalCodeStatus::Verified,
-            rocq: FormalCodeStatus::Verified,
-        }
-    );
-
-    write_newer_than(
-        &lean_source,
-        "changed lean source",
-        fs::metadata(&lean_artifact).unwrap().modified().unwrap(),
-    );
-    write_newer_than(
-        &rocq_source,
-        "changed rocq source",
-        fs::metadata(&rocq_artifact).unwrap().modified().unwrap(),
-    );
+    write(&lean_artifact, "olean");
+    write(&rocq_artifact, "vo");
     cache.refresh_all().unwrap();
     assert_eq!(
         cache.formalization_status(&node.fnode).unwrap(),
@@ -115,7 +77,7 @@ fn full_refresh_tracks_verified_and_stale_artifacts() {
 }
 
 #[test]
-fn focused_upsert_refreshes_artifact_status() {
+fn focused_upsert_never_promotes_unattested_artifacts() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     fs::create_dir(root.join(".mdc")).unwrap();
@@ -129,16 +91,15 @@ fn focused_upsert_refreshes_artifact_status() {
         FormalCodeStatus::Unverified
     );
 
-    write_newer_than(
+    write(
         &root.join(".mdc/lean/.lake/build/lib/lean/Lib/card.olean"),
         "olean",
-        fs::metadata(&lean_source).unwrap().modified().unwrap(),
     );
     cache.upsert_path(&node.path).unwrap();
 
     assert_eq!(
         cache.formalization_status(&node.fnode).unwrap().lean,
-        FormalCodeStatus::Verified
+        FormalCodeStatus::Unverified
     );
 
     let mut edited = MdocNode::load(&node.path).unwrap();
@@ -165,6 +126,6 @@ fn focused_upsert_refreshes_artifact_status() {
     cache.upsert_path(&edited.path).unwrap();
     assert_eq!(
         cache.formalization_status(&node.fnode).unwrap().lean,
-        FormalCodeStatus::Verified
+        FormalCodeStatus::Unverified
     );
 }

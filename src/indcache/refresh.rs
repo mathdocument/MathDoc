@@ -53,6 +53,7 @@ pub fn refresh_search_index(conn: &Connection, root: &Path) -> Result<()> {
         super::derived::bump_graph_epoch(conn)?;
         super::derived::refresh_all_derived_data(conn)?;
     }
+    crate::formal_status::refresh_index_statuses(conn, root)?;
     conn.execute(
         "UPDATE mdoc_index_state SET bootstrapped = 1, index_digest = ? WHERE id = 1",
         [&digest],
@@ -135,7 +136,6 @@ fn scan_workspace_batch(root: &Path, paths: &[PathBuf]) -> Result<Vec<ScannedMdo
                         path,
                         snapshot.content(),
                         snapshot.metadata(),
-                        &mut snapshots,
                     )?);
                 }
                 snapshots.finish()?;
@@ -167,17 +167,8 @@ fn scan_workspace_batch(root: &Path, paths: &[PathBuf]) -> Result<Vec<ScannedMdo
     })
 }
 
-fn scan_mdoc(
-    root: &Path,
-    path: &Path,
-    content: &[u8],
-    metadata: &Metadata,
-    snapshots: &mut FileSnapshotBatch,
-) -> Result<ScannedMdoc> {
+fn scan_mdoc(root: &Path, path: &Path, content: &[u8], metadata: &Metadata) -> Result<ScannedMdoc> {
     let path_string = to_rel_path(root, path);
-    let relative = path
-        .strip_prefix(root)
-        .with_context(|| format!("relativizing {}", path.display()))?;
     let (mtime_ns, size) = metadata_state(metadata)?;
 
     match MdocNode::load_bytes(path, content) {
@@ -185,7 +176,7 @@ fn scan_mdoc(
             path: path_string,
             mtime_ns,
             size,
-            formal_status: crate::formal_status::evaluate_node(root, relative, &node, snapshots)?,
+            formal_status: block_presence_status(&node),
             node: Some(ScannedNode {
                 fnode: node.fnode,
                 title_lc: node.title.to_lowercase(),
@@ -614,17 +605,7 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
     // captured byte generation.
     let parse_result = MdocNode::load_bytes(&file_path, content);
     let formal_status = match &parse_result {
-        Ok(node) => {
-            let mut snapshots = FileSnapshotBatch::new(&root_resolved)?;
-            let status = crate::formal_status::evaluate_node(
-                &root_resolved,
-                Path::new(&rel_path),
-                node,
-                &mut snapshots,
-            )?;
-            snapshots.finish()?;
-            status
-        }
+        Ok(node) => block_presence_status(node),
         Err(_) => FormalizationStatus::default(),
     };
     conn.execute(
@@ -786,6 +767,21 @@ fn invalidate_index_digest(conn: &Connection) -> Result<()> {
         [],
     )?;
     Ok(())
+}
+
+fn block_presence_status(node: &MdocNode) -> FormalizationStatus {
+    FormalizationStatus {
+        lean: if node.source_block("lean").is_some() {
+            FormalCodeStatus::Unverified
+        } else {
+            FormalCodeStatus::NoCode
+        },
+        rocq: if node.source_block("rocq").is_some() {
+            FormalCodeStatus::Unverified
+        } else {
+            FormalCodeStatus::NoCode
+        },
+    }
 }
 
 fn indexed_file_semantics(conn: &Connection, rel_path: &str) -> Result<IndexedFileSemantics> {

@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
 
 use axum::body::Body;
 #[cfg(not(feature = "dev-web"))]
@@ -33,19 +32,6 @@ fn write_node(node: &MdocNode) {
         std::fs::create_dir_all(parent).unwrap();
     }
     std::fs::write(&node.path, node.render().unwrap()).unwrap();
-}
-
-fn write_newer_than(path: &Path, content: &str, older: SystemTime) {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).unwrap();
-    }
-    loop {
-        std::fs::write(path, content).unwrap();
-        if std::fs::metadata(path).unwrap().modified().unwrap() > older {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
 }
 
 fn make_node_with_block(root: &Path, title: &str, srctype: &str, content: &str) -> MdocNode {
@@ -919,7 +905,7 @@ async fn put_formal_block_returns_refreshed_status() {
 }
 
 #[tokio::test]
-async fn restoring_formal_block_content_restores_verified_status() {
+async fn fabricated_artifacts_never_restore_verified_status() {
     let dir = TempDir::new().unwrap();
     let root = init_workspace(&dir);
     let node = make_node_with_block(&root, "Round trip", "lean", "#check Nat\n");
@@ -935,16 +921,15 @@ async fn restoring_formal_block_content_restores_verified_status() {
     let artifact = root
         .join(".mdc/lean/.lake/build/lib/lean/Lib")
         .join(relative.with_extension("olean"));
-    write_newer_than(
-        &artifact,
-        "compiled",
-        std::fs::metadata(&source).unwrap().modified().unwrap(),
-    );
+    if let Some(parent) = artifact.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(&artifact, "compiled").unwrap();
     let cache = IndCache::open(root).unwrap();
     let app = build_router(web::AppState::new(cache));
 
     let (_, initial) = get_json(&app, &format!("/api/node/{}", node.fnode)).await;
-    assert_eq!(initial["formalization"]["lean"], "verified");
+    assert_eq!(initial["formalization"]["lean"], "unverified");
 
     let (status, changed) = send_json(
         &app,
@@ -964,7 +949,7 @@ async fn restoring_formal_block_content_restores_verified_status() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "restored={restored}");
-    assert_eq!(restored["formalization"]["lean"], "verified");
+    assert_eq!(restored["formalization"]["lean"], "unverified");
 }
 
 #[tokio::test]

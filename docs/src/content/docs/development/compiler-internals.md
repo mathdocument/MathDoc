@@ -55,6 +55,20 @@ Python executes the selected mirror directly. Rocq stores `.vo` outputs in a par
 `build/` tree. Its successful `Lib/**/*.v` inventory digest controls complete build-tree
 cleanup, but compilation itself targets only the selected module.
 
+Successful Lean and Rocq results carry a typed formal compilation receipt. Dependency
+sets come from `lean --src-deps`/`--deps` and `rocq dep`, not source-text scanning. The
+compiler records the selected module and artifact, the canonical compiler binary,
+managed direct dependency artifacts, and external direct dependency artifacts. Inputs
+that existed before compilation are generation-checked again afterward; machine-readable
+dependency output must be complete and untruncated.
+
+`src/formal_attestation.rs` persists versioned receipts, while `src/formal_status.rs`
+revalidates them against authoritative `.mdoc` blocks, mirrors, artifacts, environments,
+compiler inputs, and dependency tokens. Verification propagates with a linear graph
+walk. Snapshot guards cover the complete evaluation and the manifest generation captured
+before compilation. Evidence failures downgrade status; SQLite failures still propagate
+as infrastructure errors.
+
 ## Subprocess control
 
 `src/compiler/process.rs` owns synchronous execution, exit mapping, signal interception,

@@ -66,6 +66,10 @@ without one safe starting node.
 Same-metadata external edits are intentionally deferred to strong refresh paths. File
 time is stored as `secs * 1_000_000_000 + subsec_nanos`.
 
+Receipt-backed formal status is revalidated on cache open, strong refresh, focused node
+upsert, and explicit formal-status refresh. No-change metadata discovery remains a graph
+fast path; callers that monitor compiler artifacts directly must request formal refresh.
+
 ## Strong refresh
 
 `refresh_all()` descriptor-relatively rereads and reparses every discovered document.

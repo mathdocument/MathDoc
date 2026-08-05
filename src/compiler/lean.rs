@@ -1,10 +1,13 @@
-use anyhow::{bail, Result};
-use std::path::{Component, Path};
+use anyhow::{bail, Context, Result};
+use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
+use std::path::{Component, Path, PathBuf};
 
 use super::{
-    process_error_result, require_tool, run_process, CompilerReq, CompilerRes, CompilerWorkspace,
-    ProgressCallback, SrcCompiler,
+    ensure_complete_machine_output, process_error_result, require_tool, run_process, CompilerReq,
+    CompilerRes, CompilerWorkspace, FormalCompilationReceipt, ProgressCallback, SrcCompiler,
 };
+use crate::workspace::FileSnapshot;
 
 pub(super) struct CompilerLean;
 
@@ -17,38 +20,82 @@ impl SrcCompiler for CompilerLean {
     }
 
     fn compile(&self, req: &CompilerReq) -> CompilerRes {
+        self.compile_with_receipt(req).0
+    }
+
+    fn compile_with_receipt(
+        &self,
+        req: &CompilerReq,
+    ) -> (CompilerRes, Option<FormalCompilationReceipt>) {
         let timeout_sec = match req.timeout_sec() {
             Ok(timeout) => timeout,
-            Err(error) => return CompilerRes::err(error.to_string()),
+            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
         };
         let setup_timeout_sec = match req.setup_timeout_sec() {
             Ok(timeout) => timeout,
-            Err(error) => return CompilerRes::err(error.to_string()),
+            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
         };
 
         let lake = match require_tool("lake") {
             Ok(p) => p,
-            Err(e) => return CompilerRes::err_code(e.to_string(), 127),
+            Err(e) => return without_receipt(CompilerRes::err_code(e.to_string(), 127)),
         };
 
         let workspace = match CompilerWorkspace::open(req, "lean") {
             Ok(workspace) => workspace,
-            Err(error) => return CompilerRes::err(error.to_string()),
+            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
         };
         let (_, relative) = match workspace.lib_source(req) {
             Ok(source) => source,
-            Err(error) => return CompilerRes::err(error.to_string()),
+            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
         };
         if let Err(error) = ensure_workspace(&workspace, &lake, setup_timeout_sec, &req.progress) {
-            return process_error_result(error, 1);
+            return without_receipt(process_error_result(error, 1));
         }
         let module = match module_name_from_relative(&relative) {
             Ok(module) => module,
-            Err(error) => return CompilerRes::err(error.to_string()),
+            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
         };
-        if let Err(error) = write_driver(&workspace, &module) {
-            return CompilerRes::err(error.to_string());
-        }
+        let driver_snapshot = match write_driver(&workspace, &module) {
+            Ok(snapshot) => snapshot,
+            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+        };
+        let source_path = workspace.lib_root().join(&relative);
+        let source_snapshot = match workspace.snapshot(&source_path) {
+            Ok(snapshot) => snapshot,
+            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+        };
+        let Some(source_content) = source_snapshot.content() else {
+            return without_receipt(CompilerRes::err(
+                "Lean source disappeared before compilation",
+            ));
+        };
+        let source_sha256 = crate::formal_status::content_digest(source_content);
+        let environment =
+            match crate::formal_status::capture_environment(workspace.mdcroot(), "lean") {
+                Ok(Some(evidence)) => evidence,
+                Ok(None) => {
+                    return without_receipt(CompilerRes::err(
+                        "Lean compiler environment is incomplete",
+                    ))
+                }
+                Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+            };
+        let compiler_identity = match lean_compiler_identity(&workspace, &lake, timeout_sec) {
+            Ok(identity) => identity,
+            Err(error) => return without_receipt(process_error_result(error, 1)),
+        };
+        let dependency_evidence = match collect_dependency_evidence(
+            req,
+            &workspace,
+            &lake,
+            &Path::new("Lib").join(&relative),
+            timeout_sec,
+            false,
+        ) {
+            Ok(evidence) => evidence,
+            Err(error) => return without_receipt(process_error_result(error, 1)),
+        };
 
         req.emit_progress(&format!("building `{DRIVER_MODULE}` importing `{module}`"));
         match run_process(
@@ -60,16 +107,348 @@ impl SrcCompiler for CompilerLean {
         ) {
             Ok((rtcode, stdout, stderr)) => {
                 let (out, err) = classify_build_output(&stdout, &stderr, rtcode == 0);
-                CompilerRes {
-                    stdout: out,
-                    stderr: err,
-                    rtcode,
-                    interrupted: false,
-                }
+                let formal_receipt = if rtcode == 0 {
+                    match collect_formal_receipt(
+                        req,
+                        &workspace,
+                        &lake,
+                        &relative,
+                        timeout_sec,
+                        &source_snapshot,
+                        &driver_snapshot,
+                        source_sha256,
+                        environment,
+                        match crate::formal_status::module_key(&relative) {
+                            Ok(module) => module,
+                            Err(error) => {
+                                return without_receipt(CompilerRes::err(error.to_string()))
+                            }
+                        },
+                        compiler_identity,
+                        dependency_evidence,
+                    ) {
+                        Ok(receipt) => Some(receipt),
+                        Err(error) => return without_receipt(process_error_result(error, 1)),
+                    }
+                } else {
+                    None
+                };
+                (
+                    CompilerRes {
+                        stdout: out,
+                        stderr: err,
+                        rtcode,
+                        interrupted: false,
+                    },
+                    formal_receipt,
+                )
             }
-            Err(e) => process_error_result(e, 1),
+            Err(e) => without_receipt(process_error_result(e, 1)),
         }
     }
+}
+
+fn without_receipt(result: CompilerRes) -> (CompilerRes, Option<FormalCompilationReceipt>) {
+    (result, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_formal_receipt(
+    req: &CompilerReq,
+    workspace: &CompilerWorkspace,
+    lake: &Path,
+    relative: &Path,
+    timeout_sec: u64,
+    source_snapshot: &crate::workspace::FileSnapshot,
+    driver_snapshot: &crate::workspace::FileSnapshot,
+    source_sha256: String,
+    environment: crate::formal_status::FormalEnvironmentEvidence,
+    target_module: String,
+    compiler_identity: crate::formal_status::CompilerIdentityEvidence,
+    dependency_evidence: DependencyEvidence,
+) -> Result<FormalCompilationReceipt> {
+    let source = Path::new("Lib").join(relative);
+    let current_dependencies =
+        collect_dependency_evidence(req, workspace, lake, &source, timeout_sec, true)
+            .context("revalidating Lean dependencies")?;
+    dependency_evidence.ensure_matches(&current_dependencies)?;
+    if !workspace.snapshot_unchanged(source_snapshot, &workspace.lib_root().join(relative))? {
+        bail!("Lean source changed during compilation");
+    }
+    if !workspace.snapshot_unchanged(driver_snapshot, &workspace.root().join(DRIVER_FILE))? {
+        bail!("Lean build driver changed during compilation");
+    }
+    if environment.ensure_current().is_err() {
+        bail!("Lean compiler environment changed during compilation");
+    }
+    compiler_identity.ensure_current()?;
+    let artifact_root = workspace.root().join(".lake/build/lib/lean/Lib");
+    let artifact = artifact_root.join(relative.with_extension("olean"));
+    Ok(FormalCompilationReceipt {
+        language: "lean".to_string(),
+        target_module,
+        source_sha256,
+        artifact_sha256: crate::formal_status::file_digest(&req.mdcroot, &artifact)
+            .context("hashing selected Lean artifact")?,
+        environment_sha256: environment.digest().to_string(),
+        compiler_path: compiler_identity.path().to_string(),
+        compiler_sha256: compiler_identity.digest().to_string(),
+        direct_dependencies: current_dependencies.direct_dependencies,
+        external_dependencies: current_dependencies.external_dependencies,
+    })
+}
+
+struct LeanDependencyPaths {
+    workspace: BTreeMap<String, PathBuf>,
+    external: BTreeSet<PathBuf>,
+}
+
+struct DependencyEvidence {
+    artifact_set_complete: bool,
+    workspace_modules: BTreeSet<String>,
+    external_paths: BTreeSet<String>,
+    direct_dependencies: BTreeMap<String, String>,
+    external_dependencies: BTreeMap<String, String>,
+    guards: Vec<(PathBuf, FileSnapshot)>,
+}
+
+impl DependencyEvidence {
+    fn ensure_matches(&self, current: &Self) -> Result<()> {
+        if self.workspace_modules != current.workspace_modules
+            || (self.artifact_set_complete && self.external_paths != current.external_paths)
+            || (!self.artifact_set_complete
+                && !self.external_paths.is_subset(&current.external_paths))
+            || current.workspace_modules.len() != current.direct_dependencies.len()
+            || current.external_paths.len() != current.external_dependencies.len()
+            || self
+                .direct_dependencies
+                .iter()
+                .any(|(module, digest)| current.direct_dependencies.get(module) != Some(digest))
+            || self
+                .external_dependencies
+                .iter()
+                .any(|(path, digest)| current.external_dependencies.get(path) != Some(digest))
+        {
+            bail!("Lean dependencies changed during compilation");
+        }
+        for (path, snapshot) in &self.guards {
+            if !snapshot.file_generation_unchanged(path)? {
+                bail!(
+                    "Lean dependency changed during compilation: {}",
+                    path.display()
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+fn lean_compiler_identity(
+    workspace: &CompilerWorkspace,
+    lake: &Path,
+    timeout_sec: u64,
+) -> Result<crate::formal_status::CompilerIdentityEvidence> {
+    let (rtcode, stdout, stderr) = run_process(
+        lake,
+        ["env", "lean", "--print-prefix"],
+        "lake env lean --print-prefix",
+        timeout_sec,
+        Some(workspace.root()),
+    )?;
+    if rtcode != 0 {
+        bail!(
+            "failed to locate the Lean compiler: {}",
+            combine_output(&stdout, &stderr)
+        );
+    }
+    ensure_complete_machine_output(&stdout, &stderr)?;
+    let lines = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if lines.len() != 1 {
+        bail!("Lean compiler prefix query returned unexpected output");
+    }
+    crate::formal_status::capture_compiler_identity(&Path::new(lines[0]).join("bin/lean"))
+}
+
+fn collect_dependency_evidence(
+    _req: &CompilerReq,
+    workspace: &CompilerWorkspace,
+    lake: &Path,
+    source: &Path,
+    timeout_sec: u64,
+    inspect_artifacts: bool,
+) -> Result<DependencyEvidence> {
+    let source_dependencies = lean_dependency_paths(
+        workspace,
+        lake,
+        "--src-deps",
+        source,
+        timeout_sec,
+        &workspace.lib_root(),
+        "lean",
+    )
+    .context("collecting Lean dependency sources")?;
+    let artifact_root = workspace.root().join(".lake/build/lib/lean/Lib");
+    let derived_workspace_artifacts = source_dependencies
+        .workspace
+        .keys()
+        .map(|module| {
+            (
+                module.clone(),
+                artifact_root.join(format!("{module}.olean")),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let all_workspace_artifacts_exist = derived_workspace_artifacts
+        .values()
+        .try_fold(true, |all_exist, artifact| {
+            Ok::<_, std::io::Error>(all_exist && artifact.try_exists()?)
+        })?;
+    let artifact_set_complete = inspect_artifacts || all_workspace_artifacts_exist;
+    let artifact_dependencies = if artifact_set_complete {
+        let dependencies = lean_dependency_paths(
+            workspace,
+            lake,
+            "--deps",
+            source,
+            timeout_sec,
+            &artifact_root,
+            "olean",
+        )
+        .context("collecting Lean dependency artifacts")?;
+        if source_dependencies.workspace.keys().collect::<Vec<_>>()
+            != dependencies.workspace.keys().collect::<Vec<_>>()
+        {
+            bail!("Lean dependency source and artifact sets do not match");
+        }
+        dependencies
+    } else {
+        LeanDependencyPaths {
+            workspace: derived_workspace_artifacts,
+            external: BTreeSet::new(),
+        }
+    };
+
+    let mut direct_dependencies = BTreeMap::new();
+    let mut external_dependencies = BTreeMap::new();
+    let mut guards = Vec::new();
+    for (module, artifact) in artifact_dependencies.workspace {
+        if let Some(digest) = guarded_digest(&artifact, &mut guards)? {
+            direct_dependencies.insert(module, digest);
+        }
+    }
+    let workspace_modules = source_dependencies.workspace.keys().cloned().collect();
+    let mut external_paths = BTreeSet::new();
+    for artifact in artifact_dependencies.external {
+        let canonical = artifact.canonicalize().with_context(|| {
+            format!("resolving Lean dependency artifact {}", artifact.display())
+        })?;
+        let key = canonical
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Lean dependency path is not valid UTF-8"))?
+            .to_string();
+        external_paths.insert(key.clone());
+        if let Some(digest) = guarded_digest(&canonical, &mut guards)? {
+            external_dependencies.insert(key, digest);
+        }
+    }
+    Ok(DependencyEvidence {
+        artifact_set_complete,
+        workspace_modules,
+        external_paths,
+        direct_dependencies,
+        external_dependencies,
+        guards,
+    })
+}
+
+fn guarded_digest(
+    path: &Path,
+    guards: &mut Vec<(PathBuf, FileSnapshot)>,
+) -> Result<Option<String>> {
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    let snapshot = FileSnapshot::capture(path)?;
+    let Some(content) = snapshot.content() else {
+        return Ok(None);
+    };
+    let digest = crate::formal_status::content_digest(content);
+    if !snapshot.file_generation_unchanged(path)? {
+        bail!(
+            "Lean dependency artifact changed while reading: {}",
+            path.display()
+        );
+    }
+    guards.push((path.to_path_buf(), snapshot));
+    Ok(Some(digest))
+}
+
+fn lean_dependency_paths(
+    workspace: &CompilerWorkspace,
+    lake: &Path,
+    mode: &str,
+    source: &Path,
+    timeout_sec: u64,
+    managed_root: &Path,
+    extension: &str,
+) -> Result<LeanDependencyPaths> {
+    let args = vec![
+        OsString::from("env"),
+        OsString::from("lean"),
+        OsString::from(mode),
+        source.as_os_str().to_os_string(),
+    ];
+    let (rtcode, stdout, stderr) = run_process(
+        lake,
+        args,
+        &format!("lake env lean {mode}"),
+        timeout_sec,
+        Some(workspace.root()),
+    )?;
+    if rtcode != 0 {
+        bail!(
+            "failed to inspect Lean dependencies: {}",
+            combine_output(&stdout, &stderr)
+        );
+    }
+    ensure_complete_machine_output(&stdout, &stderr)?;
+    let mut workspace_dependencies = BTreeMap::new();
+    let mut external_dependencies = BTreeSet::new();
+    for line in stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let path = PathBuf::from(line);
+        let path = if path.is_absolute() {
+            path
+        } else {
+            workspace.root().join(path)
+        };
+        if path.extension().and_then(|value| value.to_str()) != Some(extension) {
+            continue;
+        }
+        let Ok(relative) = path.strip_prefix(managed_root) else {
+            external_dependencies.insert(path);
+            continue;
+        };
+        let module = crate::formal_status::module_key(relative)?;
+        if let Some(existing) = workspace_dependencies.get(&module) {
+            if existing != &path {
+                bail!("Lean dependency inspection returned ambiguous module {module}");
+            }
+        } else {
+            workspace_dependencies.insert(module, path);
+        }
+    }
+    Ok(LeanDependencyPaths {
+        workspace: workspace_dependencies,
+        external: external_dependencies,
+    })
 }
 
 fn ensure_workspace(
@@ -185,6 +564,16 @@ fn validate_lakefile(content: &[u8]) -> Result<()> {
     {
         bail!("lakefile.toml must use `.lake/build` as its buildDir");
     }
+    for field in [
+        "moreLeanArgs",
+        "weakLeanArgs",
+        "moreLinkArgs",
+        "moreLeancArgs",
+    ] {
+        if library.get(field).is_some() {
+            bail!("the `Lib` lean library cannot set `{field}` for formal compilation");
+        }
+    }
     Ok(())
 }
 
@@ -209,14 +598,21 @@ fn module_name_from_relative(relative: &Path) -> Result<String> {
     Ok(components.join("."))
 }
 
-fn write_driver(workspace: &CompilerWorkspace, module: &str) -> Result<()> {
+fn write_driver(
+    workspace: &CompilerWorkspace,
+    module: &str,
+) -> Result<crate::workspace::FileSnapshot> {
     let path = workspace.root().join(DRIVER_FILE);
     let snapshot = workspace.snapshot(&path)?;
     let content = format!("import {module}\n");
     if snapshot.content() != Some(content.as_bytes()) {
         workspace.replace_generated(&path, &snapshot, content.as_bytes())?;
     }
-    Ok(())
+    let snapshot = workspace.snapshot(&path)?;
+    if snapshot.content() != Some(content.as_bytes()) {
+        bail!("Lean build driver changed while it was being written");
+    }
+    Ok(snapshot)
 }
 
 fn rollback_setup_changes(changes: Vec<crate::workspace::AppliedWrite>) -> Result<()> {

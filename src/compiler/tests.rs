@@ -234,18 +234,26 @@ fn test_lean_builds_imports_from_lib_tree() {
     let mdcroot = tmp.path();
     let lib = mdcroot.join(".mdc/lean/Lib");
     std::fs::create_dir_all(lib.join("data")).unwrap();
-    std::fs::write(lib.join("data/B.lean"), "def answer : Nat := 42\n").unwrap();
     std::fs::write(
-        lib.join("data/A.lean"),
-        "import Lib.data.B\n#check answer\n",
+        lib.join("data/B.lean"),
+        "module\npublic def answer : Nat := 42\n",
     )
     .unwrap();
-    std::fs::write(lib.join("data/C.lean"), "def independent : Nat := 7\n").unwrap();
+    std::fs::write(
+        lib.join("data/A.lean"),
+        "module\nimport Lib.data.B\npublic import Lib.data.B\n-- import Lib.data.C\n#check answer\n",
+    )
+    .unwrap();
+    std::fs::write(
+        lib.join("data/C.lean"),
+        "module\npublic def independent : Nat := 7\n",
+    )
+    .unwrap();
 
     let mut req = make_req(mdcroot, "lean");
     req.source = lib.join("data/A.lean");
     let registry = CompilerRegistry::default_registry();
-    let result = registry.resolve("lean").unwrap().compile(&req);
+    let (result, formal_receipt) = registry.resolve("lean").unwrap().compile_with_receipt(&req);
 
     assert!(
         result.is_success(),
@@ -258,6 +266,16 @@ fn test_lean_builds_imports_from_lib_tree() {
     assert!(mdcroot
         .join(".mdc/lean/.lake/build/lib/lean/Lib/data/B.olean")
         .is_file());
+    assert_eq!(
+        formal_receipt
+            .as_ref()
+            .unwrap()
+            .direct_dependencies
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec!["data/B"]
+    );
     assert!(!mdcroot
         .join(".mdc/lean/.lake/build/lib/lean/Lib/data/C.olean")
         .exists());
@@ -285,7 +303,7 @@ fn test_lean_builds_imports_from_lib_tree() {
     std::thread::sleep(std::time::Duration::from_millis(20));
     std::fs::write(
         lib.join("data/A.lean"),
-        "import Lib.data.B\n#check answer\n#check Nat\n",
+        "module\nimport Lib.data.B\npublic import Lib.data.B\n-- import Lib.data.C\n#check answer\n#check Nat\n",
     )
     .unwrap();
     let incremental = registry.resolve("lean").unwrap().compile(&req);
@@ -367,13 +385,24 @@ fn test_rocq_compiles_hello_world() {
     write_source(
         mdcroot,
         "rocq",
-        "Theorem trivial : True.\nProof. exact I. Qed.\n",
+        "Require Import Corelib.Init.Logic.\nTheorem trivial : True.\nProof. exact I. Qed.\n",
     );
     let req = make_req(mdcroot, "rocq");
     let registry = CompilerRegistry::default_registry();
     let compiler = registry.resolve("rocq").unwrap();
-    let res = compiler.compile(&req);
+    let (res, receipt) = compiler.compile_with_receipt(&req);
     assert!(res.is_success(), "rocq compilation failed: {}", res.stderr);
+    assert!(receipt
+        .as_ref()
+        .unwrap()
+        .external_dependencies
+        .keys()
+        .any(|path| path.ends_with("/theories/Init/Prelude.vo")));
+    assert!(receipt
+        .unwrap()
+        .external_dependencies
+        .keys()
+        .any(|path| path.ends_with("/theories/Init/Logic.vo")));
     assert!(mdcroot.join(".mdc/rocq/build/node.vo").is_file());
     assert!(!mdcroot.join(".mdc/rocq/Lib/node.vo").exists());
     assert!(!mdcroot.join(".mdc/rocq/Lib/node.glob").exists());
@@ -392,7 +421,7 @@ fn test_rocq_imports_previous_lib_build_artifacts() {
     std::fs::write(lib.join("B.v"), "Definition answer : nat := 42.\n").unwrap();
     std::fs::write(
         lib.join("A.v"),
-        "From Data Require Import B.\nCheck answer.\n",
+        "Require Data.B.\nFrom Data Require Import B.\nCheck Data.B.answer.\n",
     )
     .unwrap();
 
@@ -407,7 +436,7 @@ fn test_rocq_imports_previous_lib_build_artifacts() {
         dependency.stderr
     );
     req.source = lib.join("A.v");
-    let result = compiler.compile(&req);
+    let (result, formal_receipt) = compiler.compile_with_receipt(&req);
     assert!(
         result.is_success(),
         "Rocq compilation failed: {}",
@@ -415,6 +444,16 @@ fn test_rocq_imports_previous_lib_build_artifacts() {
     );
     assert!(mdcroot.join(".mdc/rocq/build/Data/A.vo").is_file());
     assert!(mdcroot.join(".mdc/rocq/build/Data/B.vo").is_file());
+    assert_eq!(
+        formal_receipt
+            .as_ref()
+            .unwrap()
+            .direct_dependencies
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec!["Data/B"]
+    );
 
     std::fs::write(lib.join("B.v"), "this is not valid Rocq\n").unwrap();
     let stale_import = compiler.compile(&req);
@@ -423,4 +462,27 @@ fn test_rocq_imports_previous_lib_build_artifacts() {
         "stale Rocq import remained available"
     );
     assert!(!mdcroot.join(".mdc/rocq/build/Data/B.vo").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_rocq_rejects_load_dependencies() {
+    if which::which("rocq").is_err() {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let mdcroot = tmp.path();
+    let lib = mdcroot.join(".mdc/rocq/Lib/Data");
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::write(lib.join("B.v"), "Definition answer : nat := 42.\n").unwrap();
+    std::fs::write(lib.join("A.v"), "Load \"Lib/Data/B\".\nCheck answer.\n").unwrap();
+
+    let mut req = make_req(mdcroot, "rocq");
+    req.source = lib.join("A.v");
+    let result = CompilerRegistry::default_registry()
+        .resolve("rocq")
+        .unwrap()
+        .compile(&req);
+    assert!(!result.is_success());
+    assert!(result.stderr.contains("Load dependencies are unsupported"));
 }

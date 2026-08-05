@@ -8,12 +8,12 @@ mod tests;
 mod text;
 
 use anyhow::{bail, Context, Result};
-use process::{process_error_result, require_tool, run_process};
-use std::collections::HashMap;
+use process::{ensure_complete_machine_output, process_error_result, require_tool, run_process};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-const ROCQ_CLEAN_MARKER_FILENAME: &str = ".mdc-clean-needed";
-const ROCQ_CLEAN_MARKER_CONTENT: &[u8] = b"Lib tree changed\n";
+pub(crate) const ROCQ_CLEAN_MARKER_FILENAME: &str = ".mdc-clean-needed";
+pub(crate) const ROCQ_CLEAN_MARKER_CONTENT: &[u8] = b"Lib tree changed\n";
 
 // ── Public types ───────────────────────────────────────────────────────────────
 
@@ -54,6 +54,22 @@ pub struct CompilerRes {
     pub interrupted: bool,
 }
 
+#[derive(Clone, Debug)]
+#[doc(hidden)]
+pub struct FormalCompilationReceipt {
+    pub(crate) language: String,
+    pub(crate) target_module: String,
+    pub(crate) source_sha256: String,
+    pub(crate) artifact_sha256: String,
+    pub(crate) environment_sha256: String,
+    pub(crate) compiler_path: String,
+    pub(crate) compiler_sha256: String,
+    /// Direct workspace module key to the artifact digest consumed by the build.
+    pub(crate) direct_dependencies: BTreeMap<String, String>,
+    /// Canonical external artifact path to the digest consumed by the build.
+    pub(crate) external_dependencies: BTreeMap<String, String>,
+}
+
 impl CompilerRes {
     pub fn err(stderr: impl Into<String>) -> Self {
         CompilerRes {
@@ -90,6 +106,14 @@ impl CompilerRes {
 pub trait SrcCompiler: Send + Sync {
     fn srctype(&self) -> &str;
     fn compile(&self, req: &CompilerReq) -> CompilerRes;
+
+    #[doc(hidden)]
+    fn compile_with_receipt(
+        &self,
+        req: &CompilerReq,
+    ) -> (CompilerRes, Option<FormalCompilationReceipt>) {
+        (self.compile(req), None)
+    }
 }
 
 // ── Registry ──────────────────────────────────────────────────────────────────
@@ -152,6 +176,10 @@ impl CompilerWorkspace {
         &self.root
     }
 
+    fn mdcroot(&self) -> &Path {
+        &self.mdcroot
+    }
+
     fn lib_root(&self) -> PathBuf {
         self.root.join("Lib")
     }
@@ -159,6 +187,15 @@ impl CompilerWorkspace {
     fn snapshot(&self, path: &Path) -> Result<crate::workspace::FileSnapshot> {
         self.require_workspace_path(path)?;
         crate::workspace::FileSnapshot::capture_beneath(&self.mdcroot, path)
+    }
+
+    fn snapshot_unchanged(
+        &self,
+        snapshot: &crate::workspace::FileSnapshot,
+        path: &Path,
+    ) -> Result<bool> {
+        self.require_workspace_path(path)?;
+        snapshot.unchanged_beneath(&self.mdcroot, path)
     }
 
     fn ensure_directory_tree(&self, directory: &Path) -> Result<bool> {

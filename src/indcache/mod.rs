@@ -85,6 +85,8 @@ impl IndCache {
             refresh::refresh_search_index(&tx, &self.root)?;
             let _commit = crate::profile::scope("sqlite::bootstrap_commit");
             tx.commit()?;
+        } else {
+            self.refresh_formal_statuses()?;
         }
         Ok(())
     }
@@ -118,6 +120,7 @@ impl IndCache {
                 derived::refresh_topo_depth_upward_from(&tx, fnode)?;
             }
         }
+        crate::formal_status::refresh_index_statuses(&tx, &self.root)?;
         tx.commit()?;
         Ok(())
     }
@@ -140,6 +143,7 @@ impl IndCache {
                 (None, None) => derived::backfill_all_topo_depths(&tx)?,
             }
         }
+        crate::formal_status::refresh_index_statuses(&tx, &self.root)?;
 
         tx.commit()?;
         Ok(())
@@ -226,6 +230,7 @@ impl IndCache {
                 derived::refresh_topo_depth_upward_from(&tx, fnode)?;
             }
         }
+        crate::formal_status::refresh_index_statuses(&tx, &self.root)?;
         let _commit = crate::profile::scope("sqlite::refresh_reachable_commit");
         tx.commit()?;
         Ok(())
@@ -268,6 +273,124 @@ impl IndCache {
 
     pub fn formalization_status(&self, fnode: &str) -> Result<FormalizationStatus> {
         queries::formalization_status(&self.conn, fnode)
+    }
+
+    pub(crate) fn refresh_formal_statuses(&mut self) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        crate::formal_status::refresh_index_statuses(&tx, &self.root)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn invalidate_formal_attestations(
+        &mut self,
+        mutation_lock: &crate::workspace::WorkspaceMutationLock,
+        fnode: &str,
+        languages: &[String],
+    ) -> Result<()> {
+        self.validate_mutation_lock(mutation_lock)?;
+        let mut loaded = crate::formal_attestation::load(&self.root)?;
+        for language in languages {
+            loaded.manifest.remove(fnode, language)?;
+        }
+        crate::formal_attestation::save(&self.root, loaded)?;
+        // Revocation is fail-safe: never restore a credential because the derived
+        // SQLite status could not be refreshed.
+        self.refresh_formal_statuses()
+    }
+
+    pub(crate) fn publish_formal_attestations(
+        &mut self,
+        mutation_lock: &crate::workspace::WorkspaceMutationLock,
+        expected_manifest: &crate::workspace::FileSnapshot,
+        fnode: &str,
+        outcomes: &[(
+            String,
+            bool,
+            Option<crate::compiler::FormalCompilationReceipt>,
+        )],
+    ) -> Result<Vec<(String, String)>> {
+        self.validate_mutation_lock(mutation_lock)?;
+        crate::formal_attestation::require_snapshot_current(&self.root, expected_manifest)?;
+        let mut loaded = crate::formal_attestation::load(&self.root)?;
+        crate::formal_attestation::require_snapshot_current(&self.root, expected_manifest)?;
+        let mut errors = Vec::new();
+        let mut prepared = Vec::new();
+        for (language, succeeded, receipt) in outcomes {
+            loaded.manifest.remove(fnode, language)?;
+            if !succeeded {
+                continue;
+            }
+            let Some(receipt) = receipt else {
+                errors.push((
+                    language.clone(),
+                    "successful formal compiler returned no compilation receipt".to_string(),
+                ));
+                continue;
+            };
+            match crate::formal_status::prepare_attestation(
+                &self.conn,
+                &self.root,
+                &loaded.manifest,
+                fnode,
+                language,
+                receipt,
+            ) {
+                Ok(attestation) => {
+                    loaded.manifest.set(fnode, language, attestation)?;
+                    prepared.push(language.clone());
+                }
+                Err(error) => errors.push((language.clone(), error.to_string())),
+            }
+        }
+        self.commit_formal_manifest(loaded)?;
+        let status = match self.formalization_status(fnode) {
+            Ok(status) => status,
+            Err(error) => {
+                self.invalidate_formal_attestations(mutation_lock, fnode, &prepared)
+                    .context("removing attestations after status validation failed")?;
+                return Err(error);
+            }
+        };
+        let mut failed_prepared = Vec::new();
+        for language in &prepared {
+            let verified = match language.as_str() {
+                "lean" => status.lean == crate::core::FormalCodeStatus::Verified,
+                "rocq" => status.rocq == crate::core::FormalCodeStatus::Verified,
+                _ => false,
+            };
+            if !verified {
+                errors.push((
+                    language.clone(),
+                    "published attestation did not produce a verified status".to_string(),
+                ));
+                failed_prepared.push(language.clone());
+            }
+        }
+        if !failed_prepared.is_empty() {
+            self.invalidate_formal_attestations(mutation_lock, fnode, &failed_prepared)?;
+        }
+        Ok(errors)
+    }
+
+    fn commit_formal_manifest(
+        &mut self,
+        loaded: crate::formal_attestation::LoadedManifest,
+    ) -> Result<()> {
+        let applied = crate::formal_attestation::save(&self.root, loaded)?;
+        let Err(error) = self.refresh_formal_statuses() else {
+            return Ok(());
+        };
+        let Some(applied) = applied else {
+            return Err(error);
+        };
+        Err(crate::workspace::PersistenceRecoveryError::from_attempts(
+            error,
+            applied.rollback(),
+            self.refresh_formal_statuses(),
+            "restore the formal attestation manifest",
+            "repair formal statuses",
+        ))
     }
 
     #[cfg(test)]

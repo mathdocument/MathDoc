@@ -11,7 +11,7 @@ use super::{cwd, print_workdraft_issues, require_mdcroot, BLD, DIM, GRN, RED, RS
 pub(super) fn cmd_work(source: String) -> Result<i32> {
     let mdcroot = require_mdcroot()?;
     let work_lock = crate::workspace::WorkspaceWorkLock::acquire(&mdcroot)?;
-    let (targets, sync_conflicted, source_fnode) = {
+    let (targets, sync_conflicted, source_fnode, formal_languages, manifest_snapshot) = {
         let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&mdcroot)?;
         let mut cache = IndCache::open_under_mutation_lock(&mutation_lock)?;
         cache.discover_workspace_changes()?;
@@ -21,15 +21,35 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
         print_workdraft_issues(&sync.dirty);
         print_workdraft_issues(&sync.conflicts);
         let sync_conflicted = !sync.conflicts.is_empty();
-        if sync_conflicted {
-            (Vec::new(), true, source_fnode)
+        let targets = if sync_conflicted {
+            Vec::new()
         } else {
-            (
-                crate::workdraft::targets(&mdcroot, &source_path)?,
-                false,
-                source_fnode,
-            )
-        }
+            cache.invalidate_formal_attestations(
+                &mutation_lock,
+                &source_fnode,
+                &crate::formal_status::FORMAL_LANGUAGES.map(str::to_string),
+            )?;
+            crate::workdraft::targets(&mdcroot, &source_path)?
+        };
+        cache.refresh_formal_statuses()?;
+        let node = crate::mdocnode::MdocNode::load(&source_path)?;
+        let formal_languages = targets
+            .iter()
+            .map(|(srctype, _)| srctype)
+            .filter(|srctype| {
+                crate::formal_status::FORMAL_LANGUAGES.contains(&srctype.as_str())
+                    && node.source_block(srctype).is_some()
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let manifest_snapshot = crate::formal_attestation::snapshot(&mdcroot)?;
+        (
+            targets,
+            sync_conflicted,
+            source_fnode,
+            formal_languages,
+            manifest_snapshot,
+        )
     };
 
     if sync_conflicted {
@@ -45,6 +65,10 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
     let total = targets.len();
     let mut failure_codes = Vec::new();
     let mut interrupted_code = None;
+    let mut formal_outcomes = formal_languages
+        .iter()
+        .map(|language| (language.clone(), false, None))
+        .collect::<Vec<_>>();
     for (index, (srctype, path)) in targets.iter().enumerate() {
         work_lock.require_current()?;
         println!(
@@ -65,11 +89,21 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
             config: config.src_config(srctype),
             progress: Some(Box::new(compile_progress)),
         };
-        let result = match registry.resolve(srctype) {
-            Some(compiler) => compiler.compile(&req),
-            None => CompilerRes::err(format!("unknown srctype: {srctype}")),
+        let (result, formal_receipt) = match registry.resolve(srctype) {
+            Some(compiler) => compiler.compile_with_receipt(&req),
+            None => (
+                CompilerRes::err(format!("unknown srctype: {srctype}")),
+                None,
+            ),
         };
         print_compile_result(&result);
+        if let Some((_, succeeded, receipt)) = formal_outcomes
+            .iter_mut()
+            .find(|(language, _, _)| language == srctype)
+        {
+            *succeeded = result.is_success();
+            *receipt = formal_receipt;
+        }
         if !result.is_success() {
             failure_codes.push(result.rtcode);
         }
@@ -85,6 +119,21 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
     cache.discover_workspace_changes()?;
     let (_, _, source_path) = cache.resolve_ref(&source_fnode, Some(&mdcroot))?;
     cache.upsert_path(&source_path)?;
+    let attestation_errors = cache.publish_formal_attestations(
+        &mutation_lock,
+        &manifest_snapshot,
+        &source_fnode,
+        &formal_outcomes,
+    )?;
+    for (language, error) in &attestation_errors {
+        eprintln!(
+            "  {RED}{}{RST}",
+            escape_terminal(&format!("{language} attestation failed: {error}"))
+        );
+    }
+    if !attestation_errors.is_empty() {
+        failure_codes.push(1);
+    }
     work_lock.require_current()?;
     Ok(interrupted_code.unwrap_or_else(|| aggregate_compile_exit(&failure_codes)))
 }
@@ -99,6 +148,8 @@ pub(super) fn cmd_back() -> Result<i32> {
         let report = crate::workdraft::back(&mutation_lock)?;
         if report.updated_mdocs != 0 {
             cache.refresh_all()?;
+        } else {
+            cache.refresh_formal_statuses()?;
         }
         report
     };

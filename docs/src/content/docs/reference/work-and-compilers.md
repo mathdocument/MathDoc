@@ -53,6 +53,9 @@ The conventional `lakefile.toml` owns dependencies and must retain:
 name = "Lib"
 ```
 
+The `Lib` declaration cannot override `moreLeanArgs`, `weakLeanArgs`, `moreLinkArgs`,
+or `moreLeancArgs`; those options can inject compiler inputs outside receipt tracking.
+
 For example, add mathlib using ordinary Lake TOML:
 
 ```toml
@@ -64,6 +67,11 @@ rev = "<tag-compatible-with-your-lean-toolchain>"
 
 Lake follows the selected module's import closure and reuses `.lake/build` artifacts.
 MathDoc does not clean `.olean` files.
+
+For formal status, MathDoc asks Lean for the selected source's direct `--src-deps` and
+`--deps`. Direct imports of managed `Lib.*` modules must match the node's `@dep` entries
+exactly in both directions. External imports remain allowed and their resolved artifacts
+are included in the compilation receipt.
 
 ### LaTeX
 
@@ -90,6 +98,33 @@ does not follow an import closure. MathDoc digests the inventory of `Lib/**/*.v`
 Compared with the last successful inventory, an addition, removal, rename, or content
 change removes the existing build tree before the next selected compile. Non-`.v` and
 directory-only changes are not part of that digest.
+
+MathDoc uses `rocq dep` to resolve direct `Require`, `Require Import`, `Require Export`,
+and `From ... Require ...` dependencies. Managed modules must match `@dep` exactly.
+`Load` is rejected because it consumes source text rather than an independently checked
+module artifact. Compilation uses `-q`, so user rcfiles cannot add hidden dependencies.
+
+## Formal verification status
+
+Lean and Rocq blocks start `Unverified`. A language becomes `Verified` only after a
+successful `mdc work` publishes a matching compilation receipt. The receipt binds the
+node's archive and mirror content, target module, selected artifact, compiler binary,
+formal environment, direct managed dependency artifacts, and direct external dependency
+artifacts. `.mdc/formal-attestations.json` persists these receipts as managed state.
+
+Every managed direct import must have a matching `@dep`, and every `@dep` must be a
+direct managed import in the same language. A dependency without a verified block in
+that language keeps its referrers unverified. Changes propagate through all transitive
+referrers; dependency cycles do not bootstrap themselves into verified status.
+
+`mdc work` revokes the selected node's previous Lean and Rocq attestations before target
+construction. Languages publish independently, so one formal compiler may verify even
+when another target fails. Malformed or inaccessible attestation state never grants
+verification and does not prevent ordinary indexing and editing.
+
+Workspaces created before receipt-backed status was introduced have no attestations, so
+their formal blocks become `Unverified` on upgrade. Run `mdc work` on dependencies before
+their referrers to establish new verified status.
 
 ## Process results
 

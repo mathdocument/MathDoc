@@ -1,60 +1,914 @@
-use anyhow::Result;
-use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
+use anyhow::{bail, Context, Result};
+use rusqlite::Connection;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::{Component, Path, PathBuf};
 
-use crate::core::{FormalCodeStatus, FormalizationStatus};
+use crate::compiler::FormalCompilationReceipt;
+use crate::core::FormalCodeStatus;
+use crate::formal_attestation::{self, FormalAttestation, FormalAttestationManifest};
 use crate::mdocnode::MdocNode;
-use crate::workspace::FileSnapshotBatch;
+use crate::workspace::FileSnapshot;
 
-pub(crate) fn evaluate_node(
+pub(crate) const FORMAL_LANGUAGES: [&str; 2] = ["lean", "rocq"];
+
+struct IndexedNode {
+    fnode: String,
+    rel_path: String,
+    node: MdocNode,
+}
+
+struct CurrentEvidence {
+    source_sha256: String,
+    artifact_sha256: String,
+    environment_sha256: String,
+    dependencies: BTreeSet<String>,
+}
+
+struct Candidate {
+    token: String,
+    artifact_sha256: String,
+    dependencies: BTreeMap<String, String>,
+}
+
+struct LanguageState {
+    status: FormalCodeStatus,
+    candidate: Option<Candidate>,
+}
+
+struct EvaluatedNode {
+    lean: LanguageState,
+    rocq: LanguageState,
+}
+
+struct WorkspaceEvaluation {
+    root: PathBuf,
+    nodes: Vec<IndexedNode>,
+    states: Vec<EvaluatedNode>,
+    index_by_fnode: HashMap<String, usize>,
+    module_by_fnode: HashMap<String, String>,
+    guards: Vec<InputGuard>,
+}
+
+enum InputGuard {
+    Workspace {
+        path: PathBuf,
+        snapshot: FileSnapshot,
+    },
+    External {
+        path: PathBuf,
+        snapshot: FileSnapshot,
+    },
+}
+
+pub(crate) struct FormalEnvironmentEvidence {
+    root: PathBuf,
+    digest: String,
+    guards: Vec<InputGuard>,
+}
+
+impl FormalEnvironmentEvidence {
+    pub(crate) fn digest(&self) -> &str {
+        &self.digest
+    }
+
+    pub(crate) fn ensure_current(&self) -> Result<()> {
+        ensure_guards(&self.root, &self.guards)
+    }
+}
+
+pub(crate) struct CompilerIdentityEvidence {
+    path: PathBuf,
+    path_string: String,
+    digest: String,
+    snapshot: FileSnapshot,
+}
+
+impl CompilerIdentityEvidence {
+    pub(crate) fn path(&self) -> &str {
+        &self.path_string
+    }
+
+    pub(crate) fn digest(&self) -> &str {
+        &self.digest
+    }
+
+    pub(crate) fn ensure_current(&self) -> Result<()> {
+        if self.snapshot.file_generation_unchanged(&self.path)? {
+            Ok(())
+        } else {
+            bail!("formal compiler changed during compilation")
+        }
+    }
+}
+
+impl WorkspaceEvaluation {
+    fn ensure_current(&self) -> Result<()> {
+        ensure_guards(&self.root, &self.guards)
+    }
+}
+
+pub(crate) fn refresh_index_statuses(conn: &Connection, root: &Path) -> Result<()> {
+    let loaded = match formal_attestation::load_for_status(root) {
+        Ok(loaded) => loaded,
+        Err(_) => return downgrade_verified_statuses(conn),
+    };
+    if loaded.manifest.nodes.is_empty() {
+        return downgrade_verified_statuses(conn);
+    }
+    let evaluation = match evaluate_workspace(conn, root, &loaded.manifest).and_then(|evaluation| {
+        evaluation.ensure_current()?;
+        ensure_unchanged_beneath(&loaded.snapshot, root, &loaded.path)?;
+        Ok(evaluation)
+    }) {
+        Ok(evaluation) => evaluation,
+        Err(error) if error.chain().any(|cause| cause.is::<rusqlite::Error>()) => {
+            return Err(error)
+        }
+        Err(_) => return downgrade_verified_statuses(conn),
+    };
+
+    let mut update = conn.prepare(
+        "UPDATE mdoc_files SET lean_status = ?, rocq_status = ?
+         WHERE path = ? AND (lean_status <> ? OR rocq_status <> ?)",
+    )?;
+    for (node, state) in evaluation.nodes.iter().zip(&evaluation.states) {
+        let lean = status_value(state.lean.status);
+        let rocq = status_value(state.rocq.status);
+        update.execute(rusqlite::params![lean, rocq, node.rel_path, lean, rocq,])?;
+    }
+    Ok(())
+}
+
+fn downgrade_verified_statuses(conn: &Connection) -> Result<()> {
+    // Keep the index usable without retaining any previously verified state.
+    conn.execute(
+        "UPDATE mdoc_files SET
+            lean_status = CASE WHEN lean_status = 0 THEN 0 ELSE 1 END,
+            rocq_status = CASE WHEN rocq_status = 0 THEN 0 ELSE 1 END
+         WHERE lean_status = 2 OR rocq_status = 2",
+        [],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn prepare_attestation(
+    conn: &Connection,
     root: &Path,
-    relative: &Path,
-    node: &MdocNode,
-    snapshots: &mut FileSnapshotBatch,
-) -> Result<FormalizationStatus> {
-    Ok(FormalizationStatus {
-        lean: evaluate_language(
-            node.source_block("lean")
-                .map(|block| block.content.as_bytes()),
-            &lean_source_path(root, relative),
-            &lean_artifact_path(root, relative),
-            snapshots,
-        )?,
-        rocq: evaluate_language(
-            node.source_block("rocq")
-                .map(|block| block.content.as_bytes()),
-            &rocq_source_path(root, relative),
-            &rocq_artifact_path(root, relative),
-            snapshots,
-        )?,
+    manifest: &FormalAttestationManifest,
+    fnode: &str,
+    language: &str,
+    receipt: &FormalCompilationReceipt,
+) -> Result<FormalAttestation> {
+    let evaluation = evaluate_workspace(conn, root, manifest)?;
+    let index = evaluation
+        .index_by_fnode
+        .get(fnode)
+        .copied()
+        .ok_or_else(|| anyhow::anyhow!("formal source is not one valid indexed node: {fnode}"))?;
+    let node = &evaluation.nodes[index];
+    if node.node.source_block(language).is_none() {
+        bail!("node has no archived {language} source block");
+    }
+    let mut guards = Vec::new();
+    let evidence =
+        current_evidence(root, node, language, &mut guards)?.map_err(anyhow::Error::msg)?;
+    let target_module = module_key(Path::new(&node.rel_path))?;
+    if receipt.language != language
+        || receipt.target_module != target_module
+        || receipt.source_sha256 != evidence.source_sha256
+        || receipt.artifact_sha256 != evidence.artifact_sha256
+        || receipt.environment_sha256 != evidence.environment_sha256
+    {
+        bail!("{language} compiler receipt does not match the current formal generation");
+    }
+    if !receipt_inputs_current(receipt, &mut guards)? {
+        bail!("{language} compiler or external dependency changed after compilation");
+    }
+    let workspace_modules = expected_workspace_modules(
+        &evidence.dependencies,
+        &evaluation.module_by_fnode,
+        language,
+    )?;
+    if receipt
+        .direct_dependencies
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        != workspace_modules
+    {
+        bail!("{language} workspace imports must exactly match direct @dep entries");
+    }
+    let mut dependencies = BTreeMap::new();
+    for dependency in &evidence.dependencies {
+        let dependency_index = evaluation
+            .index_by_fnode
+            .get(dependency)
+            .copied()
+            .ok_or_else(|| {
+                anyhow::anyhow!("formal dependency is missing or invalid: {dependency}")
+            })?;
+        let dependency_state = language_state(&evaluation.states[dependency_index], language)?;
+        if dependency_state.status != FormalCodeStatus::Verified {
+            bail!("formal dependency is not verified for {language}: {dependency}");
+        }
+        let token = dependency_state
+            .candidate
+            .as_ref()
+            .map(|candidate| candidate.token.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!("verified dependency has no attestation: {dependency}")
+            })?;
+        let module = evaluation.module_by_fnode.get(dependency).ok_or_else(|| {
+            anyhow::anyhow!("formal dependency has no workspace module: {dependency}")
+        })?;
+        let compiled_artifact = receipt.direct_dependencies.get(module).ok_or_else(|| {
+            anyhow::anyhow!("compiler receipt omitted formal dependency: {dependency}")
+        })?;
+        let attested_artifact = dependency_state
+            .candidate
+            .as_ref()
+            .map(|candidate| candidate.artifact_sha256.as_str())
+            .ok_or_else(|| anyhow::anyhow!("verified dependency has no artifact: {dependency}"))?;
+        if compiled_artifact != attested_artifact {
+            bail!("compiled dependency artifact changed for {language}: {dependency}");
+        }
+        dependencies.insert(dependency.clone(), token);
+    }
+    let attestation = FormalAttestation {
+        fnode: node.fnode.clone(),
+        rel_path: node.rel_path.clone(),
+        target_module,
+        source_sha256: evidence.source_sha256,
+        artifact_sha256: evidence.artifact_sha256,
+        environment_sha256: evidence.environment_sha256,
+        compiler_path: receipt.compiler_path.clone(),
+        compiler_sha256: receipt.compiler_sha256.clone(),
+        workspace_modules,
+        dependencies,
+        external_dependencies: receipt.external_dependencies.clone(),
+    };
+    evaluation.ensure_current()?;
+    ensure_guards(root, &guards)?;
+    Ok(attestation)
+}
+
+fn evaluate_workspace(
+    conn: &Connection,
+    root: &Path,
+    manifest: &FormalAttestationManifest,
+) -> Result<WorkspaceEvaluation> {
+    let mut guards = Vec::new();
+    let nodes = load_indexed_nodes(conn, root, &mut guards)?;
+    let module_by_fnode = module_by_fnode(&nodes)?;
+    let mut states = Vec::with_capacity(nodes.len());
+    let mut external_input_digests = HashMap::new();
+    for node in &nodes {
+        states.push(EvaluatedNode {
+            lean: evaluate_language(
+                root,
+                node,
+                "lean",
+                &module_by_fnode,
+                manifest,
+                &mut external_input_digests,
+                &mut guards,
+            )?,
+            rocq: evaluate_language(
+                root,
+                node,
+                "rocq",
+                &module_by_fnode,
+                manifest,
+                &mut external_input_digests,
+                &mut guards,
+            )?,
+        });
+    }
+    let index_by_fnode = nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| (node.fnode.clone(), index))
+        .collect::<HashMap<_, _>>();
+    propagate_verified(&mut states, &index_by_fnode, "lean")?;
+    propagate_verified(&mut states, &index_by_fnode, "rocq")?;
+    Ok(WorkspaceEvaluation {
+        root: root.to_path_buf(),
+        nodes,
+        states,
+        index_by_fnode,
+        module_by_fnode,
+        guards,
     })
 }
 
-fn evaluate_language(
-    block_content: Option<&[u8]>,
-    source: &Path,
-    artifact: &Path,
-    snapshots: &mut FileSnapshotBatch,
-) -> Result<FormalCodeStatus> {
-    let Some(block_content) = block_content else {
-        return Ok(FormalCodeStatus::NoCode);
-    };
-    let Some(source) = snapshots.capture_read(source)? else {
-        return Ok(FormalCodeStatus::Unverified);
-    };
-    if source.content() != block_content {
-        return Ok(FormalCodeStatus::Unverified);
+fn load_indexed_nodes(
+    conn: &Connection,
+    root: &Path,
+    guards: &mut Vec<InputGuard>,
+) -> Result<Vec<IndexedNode>> {
+    let mut stmt = conn.prepare(
+        "SELECT m.path, m.fnode
+         FROM mdocs m
+         WHERE NOT EXISTS (
+             SELECT 1 FROM mdoc_issues i
+             WHERE i.path = m.path AND i.kind IN ('invalid', 'duplicate')
+         )
+         ORDER BY m.path",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut nodes = Vec::with_capacity(rows.len());
+    for (rel_path, expected_fnode) in rows {
+        let path = crate::workspace::resolve_mdoc_path(root, Path::new(&rel_path))?;
+        let snapshot = FileSnapshot::capture_beneath(root, &path)?;
+        let Some(content) = snapshot.content() else {
+            ensure_unchanged(&snapshot, &path)?;
+            bail!("indexed mdoc disappeared during formal status evaluation: {rel_path}");
+        };
+        let node = MdocNode::load_bytes(&path, content)?;
+        ensure_unchanged(&snapshot, &path)?;
+        if node.fnode != expected_fnode {
+            bail!(
+                "indexed mdoc identity changed: expected {expected_fnode}, found {}",
+                node.fnode
+            );
+        }
+        guards.push(InputGuard::Workspace {
+            path: path.clone(),
+            snapshot,
+        });
+        nodes.push(IndexedNode {
+            fnode: expected_fnode,
+            rel_path,
+            node,
+        });
     }
-    let Some(artifact) = snapshots.capture_metadata(artifact)? else {
-        return Ok(FormalCodeStatus::Unverified);
+    Ok(nodes)
+}
+
+fn evaluate_language(
+    root: &Path,
+    node: &IndexedNode,
+    language: &str,
+    module_by_fnode: &HashMap<String, String>,
+    manifest: &FormalAttestationManifest,
+    external_input_digests: &mut HashMap<String, String>,
+    guards: &mut Vec<InputGuard>,
+) -> Result<LanguageState> {
+    if node.node.source_block(language).is_none() {
+        return Ok(LanguageState {
+            status: FormalCodeStatus::NoCode,
+            candidate: None,
+        });
+    }
+    let Some(attestation) = manifest.get(&node.fnode, language) else {
+        return Ok(LanguageState {
+            status: FormalCodeStatus::Unverified,
+            candidate: None,
+        });
     };
-    let source_time = (source.metadata().mtime(), source.metadata().mtime_nsec());
-    let artifact_time = (artifact.mtime(), artifact.mtime_nsec());
-    Ok(if artifact_time > source_time {
-        FormalCodeStatus::Verified
-    } else {
-        FormalCodeStatus::Unverified
+    let evidence = match current_evidence(root, node, language, guards) {
+        Ok(Ok(evidence)) => evidence,
+        Ok(Err(_)) | Err(_) => {
+            return Ok(LanguageState {
+                status: FormalCodeStatus::Unverified,
+                candidate: None,
+            })
+        }
+    };
+    let inputs_current =
+        attested_inputs_current(attestation, external_input_digests, guards).unwrap_or_default();
+    if !inputs_current {
+        return Ok(LanguageState {
+            status: FormalCodeStatus::Unverified,
+            candidate: None,
+        });
+    }
+    let attested_dependencies = attestation
+        .dependencies
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let workspace_modules =
+        match expected_workspace_modules(&evidence.dependencies, module_by_fnode, language) {
+            Ok(modules) => modules,
+            Err(_) => {
+                return Ok(LanguageState {
+                    status: FormalCodeStatus::Unverified,
+                    candidate: None,
+                })
+            }
+        };
+    if attestation.fnode != node.fnode
+        || attestation.rel_path != node.rel_path
+        || attestation.target_module != module_key(Path::new(&node.rel_path))?
+        || attestation.source_sha256 != evidence.source_sha256
+        || attestation.artifact_sha256 != evidence.artifact_sha256
+        || attestation.environment_sha256 != evidence.environment_sha256
+        || attestation.workspace_modules != workspace_modules
+        || attested_dependencies != evidence.dependencies
+    {
+        return Ok(LanguageState {
+            status: FormalCodeStatus::Unverified,
+            candidate: None,
+        });
+    }
+    Ok(LanguageState {
+        status: FormalCodeStatus::Unverified,
+        candidate: Some(Candidate {
+            token: formal_attestation::token(language, attestation)?,
+            artifact_sha256: attestation.artifact_sha256.clone(),
+            dependencies: attestation.dependencies.clone(),
+        }),
     })
+}
+
+fn current_evidence(
+    root: &Path,
+    node: &IndexedNode,
+    language: &str,
+    guards: &mut Vec<InputGuard>,
+) -> Result<std::result::Result<CurrentEvidence, String>> {
+    let block = node
+        .node
+        .source_block(language)
+        .expect("caller checked source block presence");
+    let relative = Path::new(&node.rel_path);
+    let source_path = source_path(root, relative, language)?;
+    let Some(source) = guarded_content(root, &source_path, guards)? else {
+        return Ok(Err(format!("{language} source mirror is missing")));
+    };
+    if source != block.content.as_bytes() {
+        return Ok(Err(format!(
+            "{language} source mirror differs from the archived .mdoc block"
+        )));
+    }
+    let expected_dependencies = node.node.depens.iter().cloned().collect::<BTreeSet<_>>();
+    let artifact_path = artifact_path(root, relative, language)?;
+    let Some(artifact) = guarded_content(root, &artifact_path, guards)? else {
+        return Ok(Err(format!("{language} compiler artifact is missing")));
+    };
+    let Some(environment_sha256) = environment_digest_internal(root, language, Some(guards))?
+    else {
+        return Ok(Err(format!(
+            "{language} compiler environment is incomplete or stale"
+        )));
+    };
+    Ok(Ok(CurrentEvidence {
+        source_sha256: digest(&source),
+        artifact_sha256: digest(&artifact),
+        environment_sha256,
+        dependencies: expected_dependencies,
+    }))
+}
+
+fn propagate_verified(
+    states: &mut [EvaluatedNode],
+    index_by_fnode: &HashMap<String, usize>,
+    language: &str,
+) -> Result<()> {
+    let mut remaining = vec![None; states.len()];
+    let mut referrers = vec![Vec::new(); states.len()];
+    for (index, state) in states.iter().enumerate() {
+        let Some(candidate) = language_state(state, language)?.candidate.as_ref() else {
+            continue;
+        };
+        let mut dependencies = Vec::with_capacity(candidate.dependencies.len());
+        let valid = candidate.dependencies.iter().all(|(fnode, token)| {
+            let Some(dependency_index) = index_by_fnode.get(fnode).copied() else {
+                return false;
+            };
+            let token_matches = language_state(&states[dependency_index], language)
+                .ok()
+                .and_then(|state| state.candidate.as_ref())
+                .is_some_and(|dependency| dependency.token == *token);
+            if token_matches {
+                dependencies.push(dependency_index);
+            }
+            token_matches
+        });
+        if valid {
+            remaining[index] = Some(dependencies.len());
+            for dependency in dependencies {
+                referrers[dependency].push(index);
+            }
+        }
+    }
+
+    let mut queue = std::collections::VecDeque::new();
+    for (index, count) in remaining.iter().enumerate() {
+        if *count == Some(0) {
+            queue.push_back(index);
+        }
+    }
+    while let Some(index) = queue.pop_front() {
+        language_state_mut(&mut states[index], language)?.status = FormalCodeStatus::Verified;
+        for &referrer in &referrers[index] {
+            let Some(count) = &mut remaining[referrer] else {
+                continue;
+            };
+            *count -= 1;
+            if *count == 0 {
+                queue.push_back(referrer);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn language_state<'a>(state: &'a EvaluatedNode, language: &str) -> Result<&'a LanguageState> {
+    match language {
+        "lean" => Ok(&state.lean),
+        "rocq" => Ok(&state.rocq),
+        _ => bail!("unsupported formal language: {language}"),
+    }
+}
+
+fn language_state_mut<'a>(
+    state: &'a mut EvaluatedNode,
+    language: &str,
+) -> Result<&'a mut LanguageState> {
+    match language {
+        "lean" => Ok(&mut state.lean),
+        "rocq" => Ok(&mut state.rocq),
+        _ => bail!("unsupported formal language: {language}"),
+    }
+}
+
+fn module_by_fnode(nodes: &[IndexedNode]) -> Result<HashMap<String, String>> {
+    nodes
+        .iter()
+        .map(|node| Ok((node.fnode.clone(), module_key(Path::new(&node.rel_path))?)))
+        .collect()
+}
+
+fn expected_workspace_modules(
+    dependencies: &BTreeSet<String>,
+    module_by_fnode: &HashMap<String, String>,
+    language: &str,
+) -> Result<BTreeSet<String>> {
+    dependencies
+        .iter()
+        .map(|dependency| {
+            module_by_fnode.get(dependency).cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "formal dependency is missing or invalid for {language}: {dependency}"
+                )
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn module_key(relative: &Path) -> Result<String> {
+    let source = relative.with_extension("");
+    let mut components = Vec::new();
+    for component in source.components() {
+        let Component::Normal(component) = component else {
+            bail!("invalid formal module path: {}", relative.display());
+        };
+        components.push(
+            component
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("formal module path is not valid UTF-8"))?,
+        );
+    }
+    if components.is_empty() {
+        bail!("empty formal module path");
+    }
+    Ok(components.join("/"))
+}
+
+#[cfg(test)]
+pub(crate) fn environment_digest(root: &Path, language: &str) -> Result<Option<String>> {
+    environment_digest_internal(root, language, None)
+}
+
+pub(crate) fn capture_environment(
+    root: &Path,
+    language: &str,
+) -> Result<Option<FormalEnvironmentEvidence>> {
+    let mut guards = Vec::new();
+    let Some(digest) = environment_digest_internal(root, language, Some(&mut guards))? else {
+        return Ok(None);
+    };
+    Ok(Some(FormalEnvironmentEvidence {
+        root: root.to_path_buf(),
+        digest,
+        guards,
+    }))
+}
+
+fn environment_digest_internal(
+    root: &Path,
+    language: &str,
+    mut guards: Option<&mut Vec<InputGuard>>,
+) -> Result<Option<String>> {
+    let language_root = root.join(".mdc").join(language);
+    let (required, optional): (&[&str], &[&str]) = match language {
+        "lean" => (
+            &["lakefile.toml", "lean-toolchain"],
+            &["lake-manifest.json", "lakefile.lean"],
+        ),
+        "rocq" => (&[".mdc-module-inventory"], &[]),
+        _ => bail!("unsupported formal language: {language}"),
+    };
+    if language == "rocq" {
+        let marker = language_root.join(crate::compiler::ROCQ_CLEAN_MARKER_FILENAME);
+        if guarded_or_stable_content(root, &marker, guards.as_deref_mut())?.is_some() {
+            return Ok(None);
+        }
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"mathdoc-formal-environment-v1\0");
+    digest.update(language.as_bytes());
+    for name in required {
+        let path = language_root.join(name);
+        let Some(content) = guarded_or_stable_content(root, &path, guards.as_deref_mut())? else {
+            return Ok(None);
+        };
+        hash_value(&mut digest, name.as_bytes());
+        hash_value(&mut digest, b"present");
+        hash_value(&mut digest, &content);
+    }
+    for name in optional {
+        let path = language_root.join(name);
+        hash_value(&mut digest, name.as_bytes());
+        match guarded_or_stable_content(root, &path, guards.as_deref_mut())? {
+            Some(content) => {
+                hash_value(&mut digest, b"present");
+                hash_value(&mut digest, &content);
+            }
+            None => hash_value(&mut digest, b"missing"),
+        }
+    }
+    Ok(Some(format!("{:x}", digest.finalize())))
+}
+
+fn guarded_or_stable_content(
+    root: &Path,
+    path: &Path,
+    guards: Option<&mut Vec<InputGuard>>,
+) -> Result<Option<Vec<u8>>> {
+    match guards {
+        Some(guards) => guarded_content(root, path, guards),
+        None => stable_content(root, path),
+    }
+}
+
+fn guarded_content(
+    root: &Path,
+    path: &Path,
+    guards: &mut Vec<InputGuard>,
+) -> Result<Option<Vec<u8>>> {
+    let snapshot = FileSnapshot::capture_beneath(root, path)?;
+    let content = snapshot.content().map(ToOwned::to_owned);
+    ensure_unchanged_beneath(&snapshot, root, path)?;
+    guards.push(InputGuard::Workspace {
+        path: path.to_path_buf(),
+        snapshot,
+    });
+    Ok(content)
+}
+
+#[cfg(test)]
+pub(crate) fn compiler_identity(path: &Path) -> Result<(String, String)> {
+    let evidence = capture_compiler_identity(path)?;
+    Ok((evidence.path_string, evidence.digest))
+}
+
+pub(crate) fn capture_compiler_identity(path: &Path) -> Result<CompilerIdentityEvidence> {
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("resolving formal compiler {}", path.display()))?;
+    let snapshot = FileSnapshot::capture(&canonical)?;
+    let content = snapshot
+        .content()
+        .ok_or_else(|| anyhow::anyhow!("formal compiler is missing: {}", canonical.display()))?;
+    let path_string = canonical
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("formal compiler path is not valid UTF-8"))?
+        .to_string();
+    let digest = digest(content);
+    if !snapshot.file_generation_unchanged(&canonical)? {
+        bail!(
+            "formal compiler changed while reading: {}",
+            canonical.display()
+        );
+    }
+    Ok(CompilerIdentityEvidence {
+        path: canonical,
+        path_string,
+        digest,
+        snapshot,
+    })
+}
+
+fn receipt_inputs_current(
+    receipt: &FormalCompilationReceipt,
+    guards: &mut Vec<InputGuard>,
+) -> Result<bool> {
+    let mut digests = HashMap::new();
+    external_inputs_current(
+        &receipt.compiler_path,
+        &receipt.compiler_sha256,
+        &receipt.external_dependencies,
+        &mut digests,
+        guards,
+    )
+}
+
+fn attested_inputs_current(
+    attestation: &FormalAttestation,
+    digests: &mut HashMap<String, String>,
+    guards: &mut Vec<InputGuard>,
+) -> Result<bool> {
+    external_inputs_current(
+        &attestation.compiler_path,
+        &attestation.compiler_sha256,
+        &attestation.external_dependencies,
+        digests,
+        guards,
+    )
+}
+
+fn external_inputs_current(
+    compiler_path: &str,
+    compiler_sha256: &str,
+    external_dependencies: &BTreeMap<String, String>,
+    digests: &mut HashMap<String, String>,
+    guards: &mut Vec<InputGuard>,
+) -> Result<bool> {
+    if external_input_digest(compiler_path, digests, guards)?.as_deref() != Some(compiler_sha256) {
+        return Ok(false);
+    }
+    for (path, expected_digest) in external_dependencies {
+        if external_input_digest(path, digests, guards)?.as_ref() != Some(expected_digest) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn external_input_digest(
+    path: &str,
+    digests: &mut HashMap<String, String>,
+    guards: &mut Vec<InputGuard>,
+) -> Result<Option<String>> {
+    if let Some(digest) = digests.get(path) {
+        return Ok(Some(digest.clone()));
+    }
+    let Some(content) = guarded_external_content(Path::new(path), guards)? else {
+        return Ok(None);
+    };
+    let value = digest(&content);
+    digests.insert(path.to_string(), value.clone());
+    Ok(Some(value))
+}
+
+fn guarded_external_content(path: &Path, guards: &mut Vec<InputGuard>) -> Result<Option<Vec<u8>>> {
+    if !path.is_absolute() {
+        bail!(
+            "formal compiler input path is not absolute: {}",
+            path.display()
+        );
+    }
+    let snapshot = FileSnapshot::capture(path)?;
+    let content = snapshot.content().map(ToOwned::to_owned);
+    if !snapshot.file_generation_unchanged(path)? {
+        bail!(
+            "formal compiler input changed while reading: {}",
+            path.display()
+        );
+    }
+    guards.push(InputGuard::External {
+        path: path.to_path_buf(),
+        snapshot,
+    });
+    Ok(content)
+}
+
+fn stable_content(root: &Path, path: &Path) -> Result<Option<Vec<u8>>> {
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let resolved_path = path
+        .strip_prefix(root)
+        .map(|relative| canonical_root.join(relative))
+        .unwrap_or_else(|_| path.to_path_buf());
+    let path = resolved_path.as_path();
+    if !path.starts_with(&canonical_root) {
+        bail!(
+            "formal verification path is outside the workspace: {}",
+            path.display()
+        );
+    }
+    let snapshot = match FileSnapshot::capture(path) {
+        Ok(snapshot) => snapshot,
+        Err(error)
+            if error.chain().any(|cause| {
+                cause
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            }) =>
+        {
+            return Ok(None)
+        }
+        Err(error) => return Err(error),
+    };
+    let content = snapshot.content().map(ToOwned::to_owned);
+    if !snapshot.file_generation_unchanged(path)? {
+        bail!(
+            "formal verification input changed while reading: {}",
+            path.display()
+        );
+    }
+    Ok(content)
+}
+
+fn ensure_unchanged(snapshot: &FileSnapshot, path: &Path) -> Result<()> {
+    if snapshot.unchanged(path)? {
+        Ok(())
+    } else {
+        bail!(
+            "formal verification input changed while reading: {}",
+            path.display()
+        )
+    }
+}
+
+fn ensure_unchanged_beneath(snapshot: &FileSnapshot, root: &Path, path: &Path) -> Result<()> {
+    if snapshot.unchanged_beneath(root, path)? {
+        Ok(())
+    } else {
+        bail!(
+            "formal verification input changed while reading: {}",
+            path.display()
+        )
+    }
+}
+
+fn ensure_guards(root: &Path, guards: &[InputGuard]) -> Result<()> {
+    for guard in guards {
+        match guard {
+            InputGuard::Workspace { path, snapshot } => {
+                ensure_unchanged_beneath(snapshot, root, path)?;
+            }
+            InputGuard::External { path, snapshot } => {
+                if !snapshot.file_generation_unchanged(path)? {
+                    bail!(
+                        "formal compiler input changed while reading: {}",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn source_path(root: &Path, relative: &Path, language: &str) -> Result<PathBuf> {
+    match language {
+        "lean" => Ok(lean_source_path(root, relative)),
+        "rocq" => Ok(rocq_source_path(root, relative)),
+        _ => bail!("unsupported formal language: {language}"),
+    }
+}
+
+fn artifact_path(root: &Path, relative: &Path, language: &str) -> Result<PathBuf> {
+    match language {
+        "lean" => Ok(lean_artifact_path(root, relative)),
+        "rocq" => Ok(rocq_artifact_path(root, relative)),
+        _ => bail!("unsupported formal language: {language}"),
+    }
+}
+
+fn digest(content: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(content))
+}
+
+pub(crate) fn content_digest(content: &[u8]) -> String {
+    digest(content)
+}
+
+pub(crate) fn file_digest(root: &Path, path: &Path) -> Result<String> {
+    let content = stable_content(root, path)?
+        .ok_or_else(|| anyhow::anyhow!("formal compiler output is missing: {}", path.display()))?;
+    Ok(digest(&content))
+}
+
+fn hash_value(digest: &mut Sha256, value: &[u8]) {
+    digest.update((value.len() as u64).to_le_bytes());
+    digest.update(value);
+}
+
+fn status_value(status: FormalCodeStatus) -> i64 {
+    match status {
+        FormalCodeStatus::NoCode => 0,
+        FormalCodeStatus::Unverified => 1,
+        FormalCodeStatus::Verified => 2,
+    }
 }
 
 pub(crate) fn lean_source_path(root: &Path, relative: &Path) -> PathBuf {
@@ -88,6 +942,101 @@ pub(crate) fn rocq_artifact_path(root: &Path, relative: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::indcache::IndCache;
+    use crate::mdocnode::SrcBlock;
+    use std::collections::HashMap;
+
+    fn write(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, content).unwrap();
+    }
+
+    fn lean_node(
+        root: &Path,
+        relative: &str,
+        title: &str,
+        dependencies: &[String],
+        content: &str,
+    ) -> MdocNode {
+        let mut node = MdocNode::new_at_path(&root.join(relative), title);
+        node.depens = dependencies.to_vec();
+        node.blocks.push(SrcBlock {
+            srctype: "lean".to_string(),
+            content: content.to_string(),
+            metadata: HashMap::new(),
+        });
+        write(&node.path, &node.render().unwrap());
+        write(&lean_source_path(root, Path::new(relative)), content);
+        write(
+            &lean_artifact_path(root, Path::new(relative)),
+            &format!("artifact for {relative}"),
+        );
+        node
+    }
+
+    fn lean_environment(root: &Path) {
+        write(
+            &root.join(".mdc/lean/lakefile.toml"),
+            "name = \"Lib\"\n[[lean_lib]]\nname = \"Lib\"\n",
+        );
+        write(
+            &root.join(".mdc/lean/lean-toolchain"),
+            "leanprover/lean4:stable\n",
+        );
+    }
+
+    fn lean_receipt(cache: &mut IndCache, root: &Path, fnode: &str) -> FormalCompilationReceipt {
+        let (_, _, path) = cache.resolve_ref(fnode, Some(root)).unwrap();
+        let node = MdocNode::load(&path).unwrap();
+        let relative = path.strip_prefix(cache.root()).unwrap();
+        let mut direct_dependencies = BTreeMap::new();
+        for dependency in &node.depens {
+            let (_, _, dependency_path) = cache.resolve_ref(dependency, Some(root)).unwrap();
+            let dependency_relative = dependency_path.strip_prefix(cache.root()).unwrap();
+            direct_dependencies.insert(
+                module_key(dependency_relative).unwrap(),
+                file_digest(root, &lean_artifact_path(root, dependency_relative)).unwrap(),
+            );
+        }
+        let compiler = std::env::current_exe().unwrap();
+        let (compiler_path, compiler_sha256) = compiler_identity(&compiler).unwrap();
+        FormalCompilationReceipt {
+            language: "lean".to_string(),
+            target_module: module_key(relative).unwrap(),
+            source_sha256: file_digest(root, &lean_source_path(root, relative)).unwrap(),
+            artifact_sha256: file_digest(root, &lean_artifact_path(root, relative)).unwrap(),
+            environment_sha256: environment_digest(root, "lean").unwrap().unwrap(),
+            compiler_path,
+            compiler_sha256,
+            direct_dependencies,
+            external_dependencies: BTreeMap::new(),
+        }
+    }
+
+    fn publish(cache: &mut IndCache, root: &Path, fnode: &str) -> Vec<(String, String)> {
+        let receipt = lean_receipt(cache, root, fnode);
+        publish_receipt(cache, root, fnode, receipt)
+    }
+
+    fn publish_receipt(
+        cache: &mut IndCache,
+        root: &Path,
+        fnode: &str,
+        receipt: FormalCompilationReceipt,
+    ) -> Vec<(String, String)> {
+        let lock = crate::workspace::WorkspaceMutationLock::acquire(root).unwrap();
+        let manifest_snapshot = formal_attestation::snapshot(root).unwrap();
+        cache
+            .publish_formal_attestations(
+                &lock,
+                &manifest_snapshot,
+                fnode,
+                &[("lean".to_string(), true, Some(receipt))],
+            )
+            .unwrap()
+    }
 
     #[test]
     fn artifact_paths_follow_compiler_layouts() {
@@ -109,5 +1058,342 @@ mod tests {
             rocq_artifact_path(root, source),
             Path::new("/workspace/.mdc/rocq/build/nested/node.vo")
         );
+    }
+
+    #[test]
+    fn artifacts_require_a_matching_work_attestation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        lean_environment(root);
+        let node = lean_node(root, "leaf.mdoc", "Leaf", &[], "def leaf : Nat := 1\n");
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+
+        assert_eq!(
+            cache.formalization_status(&node.fnode).unwrap().lean,
+            FormalCodeStatus::Unverified
+        );
+        assert!(publish(&mut cache, root, &node.fnode).is_empty());
+        assert_eq!(
+            cache.formalization_status(&node.fnode).unwrap().lean,
+            FormalCodeStatus::Verified
+        );
+
+        let artifact = lean_artifact_path(root, Path::new("leaf.mdoc"));
+        write(&artifact, "replaced artifact");
+        cache.upsert_path(&node.path).unwrap();
+        assert_eq!(
+            cache.formalization_status(&node.fnode).unwrap().lean,
+            FormalCodeStatus::Unverified
+        );
+    }
+
+    #[test]
+    fn malformed_attestation_manifest_is_fail_closed_and_does_not_block_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        lean_environment(root);
+        let node = lean_node(root, "leaf.mdoc", "Leaf", &[], "def leaf : Nat := 1\n");
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+        assert!(publish(&mut cache, root, &node.fnode).is_empty());
+        assert_eq!(
+            cache.formalization_status(&node.fnode).unwrap().lean,
+            FormalCodeStatus::Verified
+        );
+
+        write(
+            &root.join(".mdc/formal-attestations.json"),
+            "{ this is not valid json }\n",
+        );
+        drop(cache);
+
+        let mut reopened = IndCache::open(root.to_path_buf()).unwrap();
+        assert_eq!(
+            reopened.formalization_status(&node.fnode).unwrap().lean,
+            FormalCodeStatus::Unverified
+        );
+        reopened.discover_workspace_changes().unwrap();
+        assert_eq!(
+            reopened.formalization_status(&node.fnode).unwrap().lean,
+            FormalCodeStatus::Unverified
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inaccessible_attestation_manifest_downgrades_cached_verification() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        lean_environment(root);
+        let node = lean_node(root, "leaf.mdoc", "Leaf", &[], "def leaf : Nat := 1\n");
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+        assert!(publish(&mut cache, root, &node.fnode).is_empty());
+        let manifest = root.join(".mdc/formal-attestations.json");
+        let unrelated = root.join("unrelated.json");
+        write(&unrelated, "{}\n");
+        std::fs::remove_file(&manifest).unwrap();
+        symlink(&unrelated, &manifest).unwrap();
+
+        cache.refresh_formal_statuses().unwrap();
+        assert_eq!(
+            cache.formalization_status(&node.fnode).unwrap().lean,
+            FormalCodeStatus::Unverified
+        );
+    }
+
+    #[test]
+    fn compiler_and_external_dependency_changes_invalidate_attestations() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        lean_environment(root);
+        let node = lean_node(root, "leaf.mdoc", "Leaf", &[], "def leaf : Nat := 1\n");
+        let compiler = root.join("formal-compiler");
+        let external = root.join("external.olean");
+        write(&compiler, "compiler generation one");
+        write(&external, "external generation one");
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+        let mut receipt = lean_receipt(&mut cache, root, &node.fnode);
+        (receipt.compiler_path, receipt.compiler_sha256) = compiler_identity(&compiler).unwrap();
+        receipt.external_dependencies.insert(
+            external
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            content_digest(b"external generation one"),
+        );
+        assert!(publish_receipt(&mut cache, root, &node.fnode, receipt).is_empty());
+        assert_eq!(
+            cache.formalization_status(&node.fnode).unwrap().lean,
+            FormalCodeStatus::Verified
+        );
+
+        write(&external, "external generation two");
+        cache.refresh_formal_statuses().unwrap();
+        assert_eq!(
+            cache.formalization_status(&node.fnode).unwrap().lean,
+            FormalCodeStatus::Unverified
+        );
+
+        let mut receipt = lean_receipt(&mut cache, root, &node.fnode);
+        (receipt.compiler_path, receipt.compiler_sha256) = compiler_identity(&compiler).unwrap();
+        receipt.external_dependencies.insert(
+            external
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            content_digest(b"external generation two"),
+        );
+        assert!(publish_receipt(&mut cache, root, &node.fnode, receipt).is_empty());
+        write(&compiler, "compiler generation two");
+        cache.refresh_formal_statuses().unwrap();
+        assert_eq!(
+            cache.formalization_status(&node.fnode).unwrap().lean,
+            FormalCodeStatus::Unverified
+        );
+    }
+
+    #[test]
+    fn failed_publication_does_not_leave_a_latent_attestation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        lean_environment(root);
+        let node = lean_node(root, "leaf.mdoc", "Leaf", &[], "def leaf : Nat := 1\n");
+        let artifact = lean_artifact_path(root, Path::new("leaf.mdoc"));
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+        let receipt = lean_receipt(&mut cache, root, &node.fnode);
+        let changed_artifact = artifact.clone();
+        crate::workspace::set_test_hook(
+            crate::workspace::TestHookPoint::WriteAfterPersistence,
+            move || write(&changed_artifact, "raced artifact"),
+        );
+
+        let errors = publish_receipt(&mut cache, root, &node.fnode, receipt);
+        assert_eq!(errors.len(), 1);
+        write(&artifact, "artifact for leaf.mdoc");
+        cache.refresh_formal_statuses().unwrap();
+        assert_eq!(
+            cache.formalization_status(&node.fnode).unwrap().lean,
+            FormalCodeStatus::Unverified
+        );
+    }
+
+    #[test]
+    fn publication_rejects_manifest_changes_during_compilation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        lean_environment(root);
+        let node = lean_node(root, "leaf.mdoc", "Leaf", &[], "def leaf : Nat := 1\n");
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+        let receipt = lean_receipt(&mut cache, root, &node.fnode);
+        let lock = crate::workspace::WorkspaceMutationLock::acquire(root).unwrap();
+        let expected_manifest = formal_attestation::snapshot(root).unwrap();
+        write(
+            &root.join(".mdc/formal-attestations.json"),
+            "{\"version\":1,\"nodes\":{}}\n",
+        );
+
+        let error = cache
+            .publish_formal_attestations(
+                &lock,
+                &expected_manifest,
+                &node.fnode,
+                &[("lean".to_string(), true, Some(receipt))],
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("changed during compilation"));
+        assert_eq!(
+            cache.formalization_status(&node.fnode).unwrap().lean,
+            FormalCodeStatus::Unverified
+        );
+    }
+
+    #[test]
+    fn a_missing_indexed_mdoc_cannot_retain_verified_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        lean_environment(root);
+        let node = lean_node(root, "leaf.mdoc", "Leaf", &[], "def leaf : Nat := 1\n");
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+        assert!(publish(&mut cache, root, &node.fnode).is_empty());
+        std::fs::remove_file(&node.path).unwrap();
+
+        cache.refresh_formal_statuses().unwrap();
+        assert_eq!(
+            cache.formalization_status(&node.fnode).unwrap().lean,
+            FormalCodeStatus::Unverified
+        );
+    }
+
+    #[test]
+    fn dependency_changes_invalidate_every_attested_referrer() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        lean_environment(root);
+        let dependency = lean_node(
+            root,
+            "dep.mdoc",
+            "Dependency",
+            &[],
+            "def value : Nat := 1\n",
+        );
+        let parent = lean_node(
+            root,
+            "parent.mdoc",
+            "Parent",
+            std::slice::from_ref(&dependency.fnode),
+            "import Lib.dep\n#check value\n",
+        );
+        let grandparent = lean_node(
+            root,
+            "grandparent.mdoc",
+            "Grandparent",
+            std::slice::from_ref(&parent.fnode),
+            "import Lib.parent\n#check value\n",
+        );
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+        assert!(publish(&mut cache, root, &dependency.fnode).is_empty());
+        assert!(publish(&mut cache, root, &parent.fnode).is_empty());
+        assert!(publish(&mut cache, root, &grandparent.fnode).is_empty());
+
+        let mut edited = MdocNode::load(&dependency.path).unwrap();
+        edited.blocks[0].content = "def value : Nat := 2\n".to_string();
+        write(&edited.path, &edited.render().unwrap());
+        write(
+            &lean_source_path(root, Path::new("dep.mdoc")),
+            "def value : Nat := 2\n",
+        );
+        cache.upsert_path(&edited.path).unwrap();
+
+        for fnode in [&dependency.fnode, &parent.fnode, &grandparent.fnode] {
+            assert_eq!(
+                cache.formalization_status(fnode).unwrap().lean,
+                FormalCodeStatus::Unverified
+            );
+        }
+
+        write(
+            &lean_artifact_path(root, Path::new("dep.mdoc")),
+            "new dependency artifact",
+        );
+        assert!(publish(&mut cache, root, &dependency.fnode).is_empty());
+        assert_eq!(
+            cache.formalization_status(&dependency.fnode).unwrap().lean,
+            FormalCodeStatus::Verified
+        );
+        assert_eq!(
+            cache.formalization_status(&parent.fnode).unwrap().lean,
+            FormalCodeStatus::Unverified
+        );
+
+        assert!(publish(&mut cache, root, &parent.fnode).is_empty());
+        assert!(publish(&mut cache, root, &grandparent.fnode).is_empty());
+        assert_eq!(
+            cache.formalization_status(&grandparent.fnode).unwrap().lean,
+            FormalCodeStatus::Verified
+        );
+    }
+
+    #[test]
+    fn strict_imports_reject_extra_and_unformalized_dependencies() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        lean_environment(root);
+        let dependency = lean_node(root, "dep.mdoc", "Dependency", &[], "def dep : Nat := 1\n");
+        let extra = lean_node(root, "extra.mdoc", "Extra", &[], "def extra : Nat := 2\n");
+        let parent = lean_node(
+            root,
+            "parent.mdoc",
+            "Parent",
+            std::slice::from_ref(&dependency.fnode),
+            "import Lib.dep\nimport Lib.extra\n#check dep\n",
+        );
+        let plain = MdocNode::new_at_path(&root.join("plain.mdoc"), "Plain");
+        write(&plain.path, &plain.render().unwrap());
+        write(
+            &lean_artifact_path(root, Path::new("plain.mdoc")),
+            "untrusted plain artifact",
+        );
+        let missing_formal = lean_node(
+            root,
+            "missing-formal.mdoc",
+            "Missing formal dependency",
+            std::slice::from_ref(&plain.fnode),
+            "import Lib.plain\n#check Nat\n",
+        );
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+        assert!(publish(&mut cache, root, &dependency.fnode).is_empty());
+        assert!(publish(&mut cache, root, &extra.fnode).is_empty());
+
+        let mut receipt = lean_receipt(&mut cache, root, &parent.fnode);
+        receipt.direct_dependencies.insert(
+            module_key(Path::new("extra.mdoc")).unwrap(),
+            file_digest(root, &lean_artifact_path(root, Path::new("extra.mdoc"))).unwrap(),
+        );
+        let lock = crate::workspace::WorkspaceMutationLock::acquire(root).unwrap();
+        let manifest_snapshot = formal_attestation::snapshot(root).unwrap();
+        let errors = cache
+            .publish_formal_attestations(
+                &lock,
+                &manifest_snapshot,
+                &parent.fnode,
+                &[("lean".to_string(), true, Some(receipt))],
+            )
+            .unwrap();
+        drop(lock);
+        assert!(errors[0].1.contains("exactly match"));
+        let errors = publish(&mut cache, root, &missing_formal.fnode);
+        assert!(errors[0].1.contains("not verified"));
     }
 }

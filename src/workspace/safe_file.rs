@@ -576,7 +576,6 @@ fn open_directory(path: &Path) -> Result<std::fs::File> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TestHookPoint {
     ReadAfterContent,
-    MetadataAfterInspection,
     WriteBeforeDirectoryBinding,
     RemoveBeforeDirectoryBinding,
     RemoveTreeBeforeDirectoryBinding,
@@ -667,6 +666,66 @@ impl FileSnapshot {
         let binding = DirectoryBinding::open(path)?;
         let unchanged = self.unchanged_at(&binding, binding.target_name())?;
         Ok(unchanged && binding.is_current()?)
+    }
+
+    /// Compare only the target file generation. This is used around compiler
+    /// processes that legitimately mutate sibling build directories.
+    pub(crate) fn file_generation_unchanged(&self, path: &Path) -> Result<bool> {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut file = match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .open(path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(matches!(self, Self::Missing))
+            }
+            Err(error) => return Err(error).with_context(|| format!("opening {}", path.display())),
+        };
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.nlink() > 1 {
+            return Ok(false);
+        }
+        let mut content = Vec::new();
+        file.read_to_end(&mut content)?;
+        let final_metadata = file.metadata()?;
+        if file_identity(&metadata) != file_identity(&final_metadata)
+            || ReadGeneration::capture(&metadata) != ReadGeneration::capture(&final_metadata)
+        {
+            return Ok(false);
+        }
+        let current = match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .open(path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error).with_context(|| format!("opening {}", path.display())),
+        };
+        let current_metadata = current.metadata()?;
+        if !current_metadata.is_file()
+            || current_metadata.nlink() > 1
+            || file_identity(&final_metadata) != file_identity(&current_metadata)
+            || ReadGeneration::capture(&final_metadata)
+                != ReadGeneration::capture(&current_metadata)
+        {
+            return Ok(false);
+        }
+        Ok(match self {
+            Self::Missing => false,
+            Self::File {
+                content: expected_content,
+                metadata: expected_metadata,
+                identity,
+            } => {
+                *identity == file_identity(&metadata)
+                    && expected_metadata.generation == ReadGeneration::capture(&metadata)
+                    && *expected_content == content
+            }
+        })
     }
 
     pub(crate) fn unchanged_beneath(&self, root: &Path, path: &Path) -> Result<bool> {
@@ -908,63 +967,6 @@ impl FileSnapshotBatch {
             identity: file_identity(&final_metadata),
             metadata: final_metadata,
         }))
-    }
-
-    pub(crate) fn capture_metadata(&mut self, path: &Path) -> Result<Option<std::fs::Metadata>> {
-        let Some((directory_fd, file_name)) = self.bind_file_if_parent_exists(path)? else {
-            return Ok(None);
-        };
-        let fd = unsafe {
-            libc::openat(
-                directory_fd,
-                file_name.as_ptr(),
-                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-            )
-        };
-        if fd < 0 {
-            let error = std::io::Error::last_os_error();
-            return match error.raw_os_error() {
-                Some(libc::ENOENT) => Ok(None),
-                Some(libc::ELOOP) => bail!("refusing to access symlink {}", path.display()),
-                _ => Err(error).with_context(|| format!("opening {}", path.display())),
-            };
-        }
-        let file = unsafe { std::fs::File::from_raw_fd(fd) };
-        let metadata = file
-            .metadata()
-            .with_context(|| format!("inspecting {}", path.display()))?;
-        if !metadata.is_file() {
-            bail!("refusing to access non-regular file {}", path.display());
-        }
-        if metadata.nlink() > 1 {
-            bail!(
-                "refusing to access hard-linked file {} ({} links)",
-                path.display(),
-                metadata.nlink()
-            );
-        }
-        run_test_hook(TestHookPoint::MetadataAfterInspection);
-        let current_fd = unsafe {
-            libc::openat(
-                directory_fd,
-                file_name.as_ptr(),
-                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-            )
-        };
-        if current_fd < 0 {
-            return Err(FileConflict::new(path).into());
-        }
-        let current = unsafe { std::fs::File::from_raw_fd(current_fd) };
-        let current_metadata = current
-            .metadata()
-            .with_context(|| format!("verifying {}", path.display()))?;
-        if !current_metadata.is_file()
-            || current_metadata.nlink() > 1
-            || !same_read_generation(&metadata, &current_metadata)
-        {
-            return Err(FileConflict::new(path).into());
-        }
-        Ok(Some(metadata))
     }
 
     fn bind_file(&mut self, path: &Path) -> Result<(RawFd, CString)> {
@@ -2673,53 +2675,6 @@ mod tests {
         assert_eq!(snapshot.content(), Some(b"content".as_slice()));
         assert!(matches!(missing, FileSnapshot::Missing));
         assert_eq!(read.content(), b"content");
-    }
-
-    #[test]
-    fn snapshot_batch_captures_metadata_without_reading_content() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
-        let existing = root.join("artifact.bin");
-        std::fs::write(&existing, "compiled").unwrap();
-
-        let mut batch = FileSnapshotBatch::new(&root).unwrap();
-        let metadata = batch.capture_metadata(&existing).unwrap().unwrap();
-        let missing = batch.capture_metadata(&root.join("missing.bin")).unwrap();
-        batch.finish().unwrap();
-
-        assert_eq!(metadata.len(), 8);
-        assert!(missing.is_none());
-    }
-
-    #[test]
-    fn snapshot_batch_metadata_detects_a_concurrent_mutation() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
-        let path = root.join("artifact.bin");
-        std::fs::write(&path, "before").unwrap();
-
-        let hook_path = path.clone();
-        set_test_hook(TestHookPoint::MetadataAfterInspection, move || {
-            std::fs::write(hook_path, "after with a different size").unwrap();
-        });
-
-        let mut batch = FileSnapshotBatch::new(&root).unwrap();
-        let error = batch.capture_metadata(&path).unwrap_err();
-        assert_file_conflict(&error);
-    }
-
-    #[test]
-    fn snapshot_batch_metadata_rejects_hard_links() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
-        let path = root.join("artifact.bin");
-        std::fs::write(&path, "compiled").unwrap();
-        std::fs::hard_link(&path, root.join("artifact-alias.bin")).unwrap();
-
-        let mut batch = FileSnapshotBatch::new(&root).unwrap();
-        let error = batch.capture_metadata(&path).unwrap_err();
-
-        assert!(error.to_string().contains("hard-linked file"));
     }
 
     #[test]
