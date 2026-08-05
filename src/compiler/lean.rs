@@ -98,12 +98,16 @@ impl SrcCompiler for CompilerLean {
         };
 
         req.emit_progress(&format!("building `{DRIVER_MODULE}` importing `{module}`"));
+        let process_cwd = match workspace.process_cwd() {
+            Ok(cwd) => cwd,
+            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+        };
         match run_process(
             &lake,
             ["--quiet", "--no-ansi", "build", "+Lib"],
             "lake build +Lib",
             timeout_sec,
-            Some(workspace.root()),
+            Some(process_cwd),
         ) {
             Ok((rtcode, stdout, stderr)) => {
                 let (out, err) = classify_build_output(&stdout, &stderr, rtcode == 0);
@@ -253,7 +257,7 @@ fn lean_compiler_identity(
         ["env", "lean", "--print-prefix"],
         "lake env lean --print-prefix",
         timeout_sec,
-        Some(workspace.root()),
+        Some(workspace.process_cwd()?),
     )?;
     if rtcode != 0 {
         bail!(
@@ -407,7 +411,7 @@ fn lean_dependency_paths(
         args,
         &format!("lake env lean {mode}"),
         timeout_sec,
-        Some(workspace.root()),
+        Some(workspace.process_cwd()?),
     )?;
     if rtcode != 0 {
         bail!(
@@ -492,12 +496,18 @@ fn ensure_workspace(
     let staging = tempfile::Builder::new()
         .prefix("mdc-lean-init-")
         .tempdir()?;
+    let staging_path = staging.path().canonicalize()?;
+    let staging_parent = staging_path
+        .parent()
+        .expect("a temporary directory has a parent");
+    let staging_generation =
+        crate::workspace::DirectoryGeneration::open_beneath(staging_parent, &staging_path)?;
     let (rtcode, stdout, stderr) = run_process(
         lake_path,
         ["init", "Lib", "lib"],
         "lake init Lib lib",
         timeout_sec,
-        Some(staging.path()),
+        Some(&staging_generation),
     )?;
     if rtcode != 0 {
         bail!("lake init failed:\n{}", combine_output(&stdout, &stderr));
@@ -521,7 +531,7 @@ fn ensure_workspace(
             .ok_or_else(|| anyhow::anyhow!("lake init did not generate lakefile.toml"))?
             .to_vec();
         validate_lakefile(&content)?;
-        validate_workspace(root, lake_path, timeout_sec)
+        validate_workspace(workspace, lake_path, timeout_sec)
     })();
     match setup_result {
         Ok(()) => Ok(()),
@@ -629,13 +639,17 @@ fn rollback_setup_changes(changes: Vec<crate::workspace::AppliedWrite>) -> Resul
     }
 }
 
-fn validate_workspace(root: &Path, lake_path: &Path, timeout_sec: u64) -> Result<()> {
+fn validate_workspace(
+    workspace: &CompilerWorkspace,
+    lake_path: &Path,
+    timeout_sec: u64,
+) -> Result<()> {
     let (rtcode, stdout, stderr) = run_process(
         lake_path,
         ["env", "lean", "--version"],
         "lake env lean --version",
         timeout_sec,
-        Some(root),
+        Some(workspace.process_cwd()?),
     )?;
     if rtcode != 0 {
         bail!(
@@ -736,10 +750,13 @@ mod tests {
         let mdcroot = directory.path().canonicalize().unwrap();
         let root = mdcroot.join(".mdc/lean");
         std::fs::create_dir_all(&root).unwrap();
+        let root_generation =
+            crate::workspace::DirectoryGeneration::open_beneath(&mdcroot, &root).unwrap();
         CompilerWorkspace {
             mdcroot,
             root,
             srctype: "lean".to_string(),
+            root_generation,
         }
     }
 

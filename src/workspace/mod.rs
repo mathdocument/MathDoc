@@ -3,6 +3,16 @@ use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
 
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub(crate) struct WorkspaceGenerationError(String);
+
+impl WorkspaceGenerationError {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
 mod mutation_lock;
 mod safe_file;
 
@@ -10,12 +20,12 @@ pub(crate) use mutation_lock::{WorkspaceMutationLock, WorkspaceWorkLock};
 pub(crate) use safe_file::{
     atomic_create_if_missing_beneath, ensure_regular_directory_tree, ensure_regular_file_beneath,
     error_has_file_conflict, error_has_infrastructure_failure, regular_directory_exists_beneath,
-    remove_directory_tree_beneath, remove_empty_directory_beneath, remove_empty_files_beneath,
-    AppliedRename, AppliedWrite, FileSnapshot, FileSnapshotBatch, PersistenceRecoveryError,
-    ReadFileSnapshot,
+    remove_directory_tree_beneath, remove_empty_directory_beneath, run_test_hook, AppliedRename,
+    AppliedWrite, DirectoryGeneration, FileSnapshot, FileSnapshotBatch, PersistenceRecoveryError,
+    ReadFileSnapshot, TestHookPoint,
 };
 #[cfg(test)]
-pub(crate) use safe_file::{set_test_hook, FileConflict, TestHookPoint};
+pub(crate) use safe_file::{set_test_hook, FileConflict};
 
 /// Initialize the workspace control directory and its default configuration.
 pub fn initialize(root: &Path) -> Result<bool> {

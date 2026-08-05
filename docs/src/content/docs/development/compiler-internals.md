@@ -20,7 +20,8 @@ empty placeholder restores the five-file layout.
 
 `src/workdraft/` owns manifest parsing, safe layout, shared change classification,
 snapshot-checked batch application, and reverse-order rollback attempts. Rollback is
-best-effort and batches are not crash-atomic.
+best-effort and batches are not crash-atomic. Work and mutation lock generations are
+revalidated at their handoff and at every applied filesystem boundary.
 
 ## Compiler boundary
 
@@ -51,9 +52,15 @@ LaTeX rewrites `Lib.tex` with the selected mirror input and compiles the user-ed
 `latexmk -pdf -xelatex -interaction=nonstopmode -halt-on-error Main.tex`. `Main.tex` is
 created only while absent.
 
-Python executes the selected mirror directly. Rocq stores `.vo` outputs in a parallel
-`build/` tree. Its successful `Lib/**/*.v` inventory digest controls complete build-tree
-cleanup, but compilation itself targets only the selected module.
+Python executes captured bytes from the selected mirror through an inherited read-only,
+unlinked file descriptor. The wrapper preserves direct-script `__main__`, `sys.argv`,
+`sys.orig_argv`, `__file__`, loader, and sibling-import behavior while preventing a
+pathname replacement from changing the executed source. The original source generation
+is checked again after execution.
+
+Rocq stores `.vo` outputs in a parallel `build/` tree. Its successful `Lib/**/*.v`
+inventory digest controls complete build-tree cleanup, but compilation itself targets
+only the selected module.
 
 Successful Lean and Rocq results carry a typed formal compilation receipt. Dependency
 sets come from `lean --src-deps`/`--deps` and `rocq dep`, not source-text scanning. The
@@ -78,6 +85,13 @@ Every command starts in a new Unix process group. Completion, timeout, interrupt
 and I/O cleanup terminate ordinary descendants. Deliberately escaped process groups are
 outside the containment boundary. Output is continuously drained to avoid deadlock,
 while each stream retains only a bounded head and tail.
+
+The compiler workspace root generation is captured before language setup. Working
+directories are that root or descendants opened descriptor-relatively from it. The
+child uses `fchdir` on the retained descriptor immediately before `exec`, and the
+complete ancestor and target generation is checked before and after execution. A
+replacement can therefore fail the target but cannot redirect the child through a new
+real directory or symlinked workspace ancestor.
 
 ## Configuration flow
 

@@ -24,10 +24,13 @@ pub(super) fn launch_editor_with(editor: &OsStr, path: &Path) -> Result<()> {
 
 pub(super) fn cmd_edit(source: String) -> Result<i32> {
     let mdcroot = require_mdcroot()?;
-    let mut cache = IndCache::open(mdcroot)?;
+    let mut cache = IndCache::open(mdcroot.clone())?;
     cache.discover_workspace_changes()?;
     let path = cache.resolve_edit_target_path(&source, Some(&cwd()))?;
+    drop(cache);
     launch_editor(&path)?;
+    let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&mdcroot)?;
+    let mut cache = IndCache::open_under_mutation_lock(&mutation_lock)?;
     cache.upsert_path(&path)?;
     Ok(0)
 }
@@ -36,7 +39,15 @@ pub(super) fn cmd_edit(source: String) -> Result<i32> {
 
 pub(super) fn cmd_init() -> Result<i32> {
     let mdcroot = std::env::current_dir()?;
+    let ancestor_lock = mdcroot
+        .parent()
+        .and_then(crate::workspace::find_mdcroot)
+        .map(|root| crate::workspace::WorkspaceMutationLock::acquire(&root))
+        .transpose()?;
     let changed = crate::workspace::initialize(&mdcroot)?;
+    if let Some(lock) = &ancestor_lock {
+        lock.root()?;
+    }
     if changed {
         println!("mdoc folder initialized");
     } else {
@@ -67,13 +78,14 @@ pub(super) fn cmd_new(title: String, file: String) -> Result<i32> {
 pub(super) fn cmd_sync() -> Result<i32> {
     let _profile = crate::profile::scope("cli::cmd_sync");
     let mdcroot = require_mdcroot()?;
-    let _work_lock = crate::workspace::WorkspaceWorkLock::acquire(&mdcroot)?;
-    let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&mdcroot)?;
+    let work_lock = crate::workspace::WorkspaceWorkLock::acquire(&mdcroot)?;
+    let mutation_lock = work_lock.acquire_mutation_lock()?;
     let mut cache = IndCache::open_under_mutation_lock(&mutation_lock)?;
     cache.refresh_all()?;
     let total = cache.count()?;
     let draft = crate::workdraft::sync(&mutation_lock)?;
     cache.refresh_formal_statuses()?;
+    work_lock.require_current()?;
     println!("synced  {BLD}{total}{RST} mdocs");
     println!(
         "exported {BLD}{}{RST} source files from {} valid mdocs ({} updated, {} removed)",

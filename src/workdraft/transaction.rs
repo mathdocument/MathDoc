@@ -34,6 +34,7 @@ pub(super) struct PreparedManifest<'a> {
 
 pub(super) fn apply_changes(
     allowed_root: &Path,
+    validate_workspace: impl Fn() -> Result<()>,
     manifest: PreparedManifest<'_>,
     inputs: &[(PathBuf, FileSnapshot)],
     writes: Vec<PreparedWrite>,
@@ -44,6 +45,7 @@ pub(super) fn apply_changes(
     let mut manifest_content = serde_json::to_vec_pretty(manifest.content)?;
     manifest_content.push(b'\n');
     let manifest_changed = manifest.snapshot.content() != Some(manifest_content.as_slice());
+    validate_workspace()?;
     if writes.is_empty() && removals.is_empty() && renames.is_empty() && !manifest_changed {
         let _phase = crate::profile::scope("workdraft::validate_noop_inputs");
         for chunk in inputs.chunks(2048) {
@@ -56,6 +58,7 @@ pub(super) fn apply_changes(
             }
         }
         ensure_unchanged(allowed_root, manifest.path, manifest.snapshot)?;
+        validate_workspace()?;
         return Ok(());
     }
 
@@ -75,18 +78,28 @@ pub(super) fn apply_changes(
         ensure_unchanged(allowed_root, &rename.from, &rename.snapshot)?;
     }
     ensure_unchanged(allowed_root, manifest.path, manifest.snapshot)?;
-    let recoverable_removals = removals
-        .iter()
-        .filter(|removal| removal.recoverable)
-        .map(|removal| (removal.path.as_path(), &removal.snapshot))
-        .collect::<Vec<_>>();
-    crate::workspace::remove_empty_files_beneath(allowed_root, &recoverable_removals)?;
     drop(validate_profile);
 
     let write_paths: HashSet<&Path> = writes.iter().map(|write| write.path.as_path()).collect();
     let mut applied = Vec::new();
     let result = (|| -> Result<()> {
+        for removal in removals.iter().filter(|removal| removal.recoverable) {
+            validate_workspace()?;
+            if removal.snapshot.content() != Some(&[]) {
+                bail!(
+                    "refusing to remove nonempty sparse mirror {}",
+                    removal.path.display()
+                );
+            }
+            if let Some(write) = removal
+                .snapshot
+                .remove_beneath(allowed_root, &removal.path)?
+            {
+                applied.push(AppliedChange::Write(write));
+            }
+        }
         for rename in &renames {
+            validate_workspace()?;
             applied.push(AppliedChange::Rename(rename.snapshot.case_rename_beneath(
                 allowed_root,
                 &rename.from,
@@ -94,6 +107,7 @@ pub(super) fn apply_changes(
             )?));
         }
         for write in &writes {
+            validate_workspace()?;
             applied.push(AppliedChange::Write(write.snapshot.replace_beneath(
                 allowed_root,
                 &write.path,
@@ -104,6 +118,7 @@ pub(super) fn apply_changes(
             if removal.recoverable {
                 continue;
             }
+            validate_workspace()?;
             if let Some(write) = removal
                 .snapshot
                 .remove_beneath(allowed_root, &removal.path)?
@@ -125,12 +140,14 @@ pub(super) fn apply_changes(
         }
         drop(validate_profile);
         if manifest_changed {
+            validate_workspace()?;
             applied.push(AppliedChange::Write(manifest.snapshot.replace_beneath(
                 allowed_root,
                 manifest.path,
                 &manifest_content,
             )?));
         }
+        validate_workspace()?;
         Ok(())
     })();
     if let Err(error) = result {
@@ -209,6 +226,7 @@ mod tests {
 
         let error = apply_changes(
             &root,
+            || Ok(()),
             PreparedManifest {
                 path: &manifest_path,
                 snapshot: &manifest_snapshot,
@@ -239,6 +257,57 @@ mod tests {
     }
 
     #[test]
+    fn lock_validation_failure_restores_a_sparse_placeholder_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let manifest_path = root.join("source-blocks.json");
+        std::fs::write(&manifest_path, b"{\"version\":2,\"sources\":{}}\n").unwrap();
+        let manifest_snapshot = FileSnapshot::capture(&manifest_path).unwrap();
+        let manifest = super::super::manifest::parse_manifest(&manifest_snapshot, &manifest_path)
+            .unwrap()
+            .manifest;
+        let sparse_path = root.join("sparse.lean");
+        std::fs::write(&sparse_path, []).unwrap();
+        let sparse_snapshot = FileSnapshot::capture(&sparse_path).unwrap();
+        let write_path = root.join("later.lean");
+        let validations = std::cell::Cell::new(0);
+
+        let error = apply_changes(
+            &root,
+            || {
+                validations.set(validations.get() + 1);
+                if validations.get() == 3 {
+                    bail!("workspace lock generation changed");
+                }
+                Ok(())
+            },
+            PreparedManifest {
+                path: &manifest_path,
+                snapshot: &manifest_snapshot,
+                content: &manifest,
+            },
+            &[],
+            vec![PreparedWrite {
+                path: write_path.clone(),
+                snapshot: FileSnapshot::Missing,
+                content: b"later\n".to_vec(),
+            }],
+            vec![PreparedRemoval {
+                path: sparse_path.clone(),
+                type_root: root.clone(),
+                snapshot: sparse_snapshot,
+                recoverable: true,
+            }],
+            Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("lock generation changed"));
+        assert_eq!(std::fs::read(&sparse_path).unwrap(), b"");
+        assert!(!write_path.exists());
+    }
+
+    #[test]
     fn noop_reconciliation_rejects_a_changed_input() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
@@ -260,6 +329,7 @@ mod tests {
 
         let error = apply_changes(
             &root,
+            || Ok(()),
             PreparedManifest {
                 path: &manifest_path,
                 snapshot: &manifest_snapshot,
@@ -307,6 +377,7 @@ mod tests {
 
         let error = apply_changes(
             &root,
+            || Ok(()),
             PreparedManifest {
                 path: &manifest_path,
                 snapshot: &manifest_snapshot,
@@ -361,6 +432,7 @@ mod tests {
 
         let error = apply_changes(
             &root,
+            || Ok(()),
             PreparedManifest {
                 path: &manifest_path,
                 snapshot: &manifest_snapshot,
@@ -423,6 +495,7 @@ mod tests {
 
         let error = apply_changes(
             &root,
+            || Ok(()),
             PreparedManifest {
                 path: &manifest_path,
                 snapshot: &manifest_snapshot,

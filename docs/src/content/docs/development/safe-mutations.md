@@ -53,12 +53,24 @@ returning.
 
 Completed operations are retained until the source-block manifest commits. If a later
 step fails, MathDoc attempts rollback in reverse order. Rollback is best-effort and can
-itself fail; multi-file batches are not crash-atomic.
+itself fail; multi-file batches are not crash-atomic. Reconciliation revalidates the
+workspace lock generation before each write, removal, rename, and manifest update.
+Sparse-placeholder removals retain rollback receipts like other transaction changes.
+
+Directory-tree cleanup first renames the selected generation to a same-parent
+quarantine. Recursive removal stays descriptor-relative to that quarantined directory.
+A replacement that appears at the original pathname is preserved and reported as a
+conflict rather than traversed or removed. An initially absent target is also accepted
+only after its bound parent and missing generation are revalidated.
 
 ## Concurrency boundary
 
-The cooperative workspace mutation lock coordinates MathDoc processes, but cannot
-constrain arbitrary external editors or other non-cooperating processes.
+The cooperative workspace mutation and work locks coordinate MathDoc processes, but
+cannot constrain arbitrary external editors or other non-cooperating processes. A held
+lock is accepted only while its opened descriptor, pathname generation, and `.mdc`
+directory identity still match. The work-to-mutation handoff acquires the mutation lock
+before revalidating the work lock, so reconciliation state cannot silently cross a
+replaced lock generation.
 
 Unix does not provide a portable atomic content-compare-and-unlink operation. On macOS,
 for example, a process can continue writing through a descriptor opened before a file

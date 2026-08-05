@@ -10,7 +10,13 @@ discarded and rebuilt from `.mdoc` files, while newer schemas are rejected witho
 mutation.
 
 The connection enables WAL mode and foreign keys. It is opened without following
-symlinks, and multiply linked database files are rejected.
+symlinks, and multiply linked database files are rejected. `IndCache` also keeps an open
+guard descriptor for the accepted `index.db` inode. Public operations and mutation
+boundaries reject a pathname replacement instead of continuing against a detached
+SQLite generation. SQLite's `SQLITE_FCNTL_HAS_MOVED` check also verifies that its own
+connection did not open a different inode during a swap-and-restore race. Pure reads
+check the generation before and after querying. The cached `.mdc` directory identity is
+part of the same check, and cache opening revalidates the mutation lock around bootstrap.
 
 ## Internal boundaries
 
@@ -26,7 +32,11 @@ symlinks, and multiply linked database files are rejected.
 
 Operational multi-step mutations belong in a transaction created and committed by
 `src/indcache/mod.rs`. Schema initialization and rebuild are the exception:
-`schema.rs::apply_schema()` owns its DDL transaction.
+`schema.rs::apply_schema()` owns its DDL transaction. Database generation checks bracket
+commits, and cache-owned file writes validate both the workspace mutation lock and the
+database generation before reporting success or attempting recovery. If the file and
+index commit but only the final lock-generation check fails, MathDoc reports uncertainty
+without rolling the file back and creating file/index disagreement.
 
 Reference resolution and pure queries do not delete cached rows when path validation
 fails; they ignore invalid candidates. Discovery, full or targeted refresh, explicit

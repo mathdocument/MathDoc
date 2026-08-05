@@ -87,6 +87,7 @@ impl PersistenceRecoveryError {
             || self.errors().any(|error| {
                 error_chain_has::<std::io::Error>(error)
                     || error_chain_has::<rusqlite::Error>(error)
+                    || error_chain_has::<super::WorkspaceGenerationError>(error)
             })
     }
 }
@@ -121,6 +122,7 @@ pub(crate) fn error_has_file_conflict(error: &anyhow::Error) -> bool {
 pub(crate) fn error_has_infrastructure_failure(error: &anyhow::Error) -> bool {
     error_chain_has::<std::io::Error>(error)
         || error_chain_has::<rusqlite::Error>(error)
+        || error_chain_has::<super::WorkspaceGenerationError>(error)
         || error.chain().any(|cause| {
             cause
                 .downcast_ref::<PersistenceRecoveryError>()
@@ -310,6 +312,80 @@ struct DirectoryBindingSnapshot {
     parent: PathBuf,
     target: CString,
     identities: Vec<(PathBuf, FileIdentity)>,
+}
+
+#[derive(Debug)]
+pub(crate) struct DirectoryGeneration {
+    path: PathBuf,
+    binding: DirectoryBinding,
+    directory: std::fs::File,
+    identity: FileIdentity,
+}
+
+impl DirectoryGeneration {
+    pub(crate) fn open_beneath(root: &Path, path: &Path) -> Result<Self> {
+        let binding = DirectoryBinding::open_beneath(root, path)?;
+        let directory =
+            open_directory_entry(binding.raw_fd(), binding.target_name()).map_err(|error| {
+                anyhow::Error::from(FileConflict::new(path)).context(format!(
+                    "opening directory generation {}: {error}",
+                    path.display()
+                ))
+            })?;
+        let identity = file_identity(&directory.metadata()?);
+        let generation = Self {
+            path: path.to_path_buf(),
+            binding,
+            directory,
+            identity,
+        };
+        generation.require_current()?;
+        Ok(generation)
+    }
+
+    pub(crate) fn open_descendant(&self, root: &Path, path: &Path) -> Result<Self> {
+        self.require_current()?;
+        if !path.starts_with(&self.path) || path == self.path {
+            bail!(
+                "directory {} is not beneath generation {}",
+                path.display(),
+                self.path.display()
+            );
+        }
+        let descendant = Self::open_beneath(root, path)?;
+        self.require_current()?;
+        if !descendant
+            .binding
+            .identities
+            .iter()
+            .any(|(path, identity)| path == &self.path && identity == &self.identity)
+        {
+            return Err(FileConflict::new(path).into());
+        }
+        Ok(descendant)
+    }
+
+    pub(crate) fn raw_fd(&self) -> RawFd {
+        self.directory.as_raw_fd()
+    }
+
+    pub(crate) fn require_current(&self) -> Result<()> {
+        self.binding.require_current(&self.path)?;
+        if file_identity(&self.directory.metadata()?) != self.identity {
+            return Err(FileConflict::new(&self.path).into());
+        }
+        let current = open_directory_entry(self.binding.raw_fd(), self.binding.target_name())
+            .map_err(|error| {
+                anyhow::Error::from(FileConflict::new(&self.path)).context(format!(
+                    "revalidating directory generation {}: {error}",
+                    self.path.display()
+                ))
+            })?;
+        if file_identity(&current.metadata()?) != self.identity {
+            return Err(FileConflict::new(&self.path).into());
+        }
+        Ok(())
+    }
 }
 
 impl DirectoryBinding {
@@ -575,11 +651,20 @@ fn open_directory(path: &Path) -> Result<std::fs::File> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TestHookPoint {
+    MutationLockAfterFlock,
+    WorkLockAfterFlock,
+    ProcessAfterCwdOpen,
+    IndexBeforeConnectionOpen,
+    IndexAfterConnectionOpen,
+    IndexAfterNodeUpsert,
     ReadAfterContent,
     WriteBeforeDirectoryBinding,
     RemoveBeforeDirectoryBinding,
     RemoveTreeBeforeDirectoryBinding,
     RemoveTreeAfterDirectoryBinding,
+    RemoveTreeBeforeTargetOpen,
+    RemoveTreeAfterTargetOpen,
+    RemoveTreeBeforeQuarantineDiscard,
     CaseRenameBeforeDirectoryBinding,
     RollbackAfterInitialVerification,
     RollbackAfterQuarantineVerification,
@@ -609,7 +694,7 @@ pub(crate) fn set_test_hook(point: TestHookPoint, hook: impl FnOnce() + 'static)
     });
 }
 
-fn run_test_hook(point: TestHookPoint) {
+pub(crate) fn run_test_hook(point: TestHookPoint) {
     #[cfg(test)]
     TEST_HOOK.with(|slot| {
         let hook = {
@@ -1382,53 +1467,6 @@ fn atomic_remove_beneath(
     atomic_remove_inner(path, expected, binding)
 }
 
-pub(crate) fn remove_empty_files_beneath(
-    root: &Path,
-    files: &[(&Path, &FileSnapshot)],
-) -> Result<()> {
-    let mut files = files.to_vec();
-    files.sort_by_key(|(path, _)| *path);
-    let mut start = 0;
-    while start < files.len() {
-        let parent = files[start]
-            .0
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("path has no parent: {}", files[start].0.display()))?;
-        let mut end = start + 1;
-        while end < files.len() && files[end].0.parent() == Some(parent) {
-            end += 1;
-        }
-
-        let binding = DirectoryBinding::open_beneath(root, files[start].0)?;
-        for (path, expected) in &files[start..end] {
-            if expected.content() != Some(&[]) {
-                bail!(
-                    "refusing to remove nonempty sparse mirror {}",
-                    path.display()
-                );
-            }
-            let file_name = path
-                .file_name()
-                .ok_or_else(|| anyhow::anyhow!("path has no file name: {}", path.display()))?;
-            let file_name = CString::new(file_name.as_bytes())
-                .with_context(|| format!("path contains a null byte: {}", path.display()))?;
-            require_generation(path, &binding, &file_name, expected)?;
-            let mut quarantine = QuarantinedEntry::take(&binding, &file_name)?;
-            require_quarantined_generation(path, &binding, &mut quarantine, expected)?;
-            if require_generation(path, &binding, &file_name, &FileSnapshot::Missing).is_err()
-                || !binding.is_current()?
-            {
-                return conflict_with_restoration(path, &binding, &mut quarantine);
-            }
-            discard_quarantine(path, &binding, &mut quarantine, expected, false)?;
-        }
-        binding.require_current(files[start].0)?;
-        binding.sync();
-        start = end;
-    }
-    Ok(())
-}
-
 fn atomic_remove_inner(
     path: &Path,
     expected: &FileSnapshot,
@@ -1650,6 +1688,7 @@ fn discard_quarantine(
         run_test_hook(TestHookPoint::RollbackAfterQuarantineVerification);
     }
     require_quarantined_generation(path, binding, quarantine, expected)?;
+    binding.require_current(path)?;
     // Unix has no content-CAS unlink. This final descriptor-relative check
     // catches observable open-fd edits; any uncertainty preserves quarantine.
     quarantine
@@ -2158,10 +2197,20 @@ pub(crate) fn remove_directory_tree_beneath(root: &Path, directory: &Path) -> Re
     let binding = DirectoryBinding::open_beneath(root, directory)?;
     run_test_hook(TestHookPoint::RemoveTreeAfterDirectoryBinding);
     binding.require_current(directory)?;
+    run_test_hook(TestHookPoint::RemoveTreeBeforeTargetOpen);
 
     let tree = match open_directory_entry(binding.raw_fd(), binding.target_name()) {
         Ok(tree) => tree,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            binding.require_current(directory)?;
+            require_generation(
+                directory,
+                &binding,
+                binding.target_name(),
+                &FileSnapshot::Missing,
+            )?;
+            return Ok(false);
+        }
         Err(error)
             if matches!(
                 error.raw_os_error(),
@@ -2179,13 +2228,12 @@ pub(crate) fn remove_directory_tree_beneath(root: &Path, directory: &Path) -> Re
         }
     };
     let identity = file_identity(&tree.metadata()?);
-    remove_directory_contents(&tree, directory)?;
+    run_test_hook(TestHookPoint::RemoveTreeAfterTargetOpen);
     binding.require_current(directory)?;
-
     let current =
         open_directory_entry(binding.raw_fd(), binding.target_name()).map_err(|error| {
             anyhow::Error::from(FileConflict::new(directory)).context(format!(
-                "could not verify directory tree {} before removal: {error}",
+                "could not verify directory tree {} before cleanup: {error}",
                 directory.display()
             ))
         })?;
@@ -2193,18 +2241,62 @@ pub(crate) fn remove_directory_tree_beneath(root: &Path, directory: &Path) -> Re
         return Err(FileConflict::new(directory).into());
     }
     drop(current);
-    if unsafe {
-        libc::unlinkat(
-            binding.raw_fd(),
-            binding.target_name().as_ptr(),
-            libc::AT_REMOVEDIR,
+    let quarantine = unique_name(".mdc-tree-quarantine-")?;
+    rename_noreplace(binding.raw_fd(), binding.target_name(), &quarantine)
+        .with_context(|| format!("quarantining directory tree {}", directory.display()))?;
+    let quarantined = open_directory_entry(binding.raw_fd(), &quarantine).map_err(|error| {
+        anyhow::Error::from(FileConflict::new(directory)).context(format!(
+            "could not verify quarantined directory tree {}: {error}",
+            directory.display()
+        ))
+    })?;
+    if file_identity(&quarantined.metadata()?) != identity || !binding.is_current()? {
+        let restore = rename_noreplace(binding.raw_fd(), &quarantine, binding.target_name());
+        return match restore {
+            Ok(()) => Err(FileConflict::new(directory).into()),
+            Err(error) => Err(
+                anyhow::Error::from(FileConflict::new(directory)).context(format!(
+                    "uncertain directory generation preserved at {}: {error}",
+                    binding.display_path(&quarantine)
+                )),
+            ),
+        };
+    }
+    require_generation(
+        directory,
+        &binding,
+        binding.target_name(),
+        &FileSnapshot::Missing,
+    )?;
+    remove_directory_contents(&quarantined, directory).with_context(|| {
+        format!(
+            "partially cleaned directory generation preserved at {}",
+            binding.display_path(&quarantine)
         )
-    } != 0
-    {
+    })?;
+    run_test_hook(TestHookPoint::RemoveTreeBeforeQuarantineDiscard);
+    binding.require_current(directory)?;
+    let current = open_directory_entry(binding.raw_fd(), &quarantine).map_err(|error| {
+        anyhow::Error::from(FileConflict::new(directory)).context(format!(
+            "could not verify quarantined directory tree {} before removal: {error}",
+            directory.display()
+        ))
+    })?;
+    if file_identity(&current.metadata()?) != identity {
+        return Err(FileConflict::new(directory).into());
+    }
+    drop(current);
+    if unsafe { libc::unlinkat(binding.raw_fd(), quarantine.as_ptr(), libc::AT_REMOVEDIR) } != 0 {
         return Err(std::io::Error::last_os_error())
             .with_context(|| format!("removing directory tree {}", directory.display()));
     }
     binding.require_current(directory)?;
+    require_generation(
+        directory,
+        &binding,
+        binding.target_name(),
+        &FileSnapshot::Missing,
+    )?;
     binding.sync();
     Ok(true)
 }
@@ -2878,6 +2970,118 @@ mod tests {
 
         assert_file_conflict(&error);
         assert_eq!(std::fs::read(&path).unwrap(), b"descriptor edit");
+    }
+
+    #[test]
+    fn rollback_preserves_quarantine_when_parent_generation_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let parent = root.join("parent");
+        let displaced = root.join("displaced");
+        std::fs::create_dir(&parent).unwrap();
+        let path = parent.join("generated.lean");
+        let receipt = FileSnapshot::Missing
+            .replace_beneath(&root, &path, b"generated")
+            .unwrap();
+        let hook_parent = parent.clone();
+        let hook_displaced = displaced.clone();
+        set_test_hook(
+            TestHookPoint::RollbackAfterQuarantineVerification,
+            move || {
+                std::fs::rename(&hook_parent, &hook_displaced).unwrap();
+                std::fs::create_dir(&hook_parent).unwrap();
+            },
+        );
+
+        let error = receipt.rollback().unwrap_err();
+
+        assert_file_conflict(&error);
+        let preserved = std::fs::read_dir(&displaced)
+            .unwrap()
+            .map(|entry| std::fs::read(entry.unwrap().path()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(preserved, vec![b"generated".to_vec()]);
+        assert!(std::fs::read_dir(&parent).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn directory_tree_cleanup_preserves_a_displaced_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let tree = root.join("build");
+        let displaced = root.join("displaced-build");
+        std::fs::create_dir(&tree).unwrap();
+        std::fs::write(tree.join("old.vo"), b"old generation").unwrap();
+        let hook_tree = tree.clone();
+        let hook_displaced = displaced.clone();
+        set_test_hook(TestHookPoint::RemoveTreeAfterTargetOpen, move || {
+            std::fs::rename(&hook_tree, &hook_displaced).unwrap();
+            std::fs::create_dir(&hook_tree).unwrap();
+            std::fs::write(hook_tree.join("new.vo"), b"new generation").unwrap();
+        });
+
+        let error = remove_directory_tree_beneath(&root, &tree).unwrap_err();
+
+        assert_file_conflict(&error);
+        assert_eq!(
+            std::fs::read(displaced.join("old.vo")).unwrap(),
+            b"old generation"
+        );
+        assert_eq!(
+            std::fs::read(tree.join("new.vo")).unwrap(),
+            b"new generation"
+        );
+    }
+
+    #[test]
+    fn absent_directory_cleanup_rejects_a_replaced_parent_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let parent = root.join("compiler");
+        let displaced = root.join("displaced-compiler");
+        let tree = parent.join("build");
+        std::fs::create_dir(&parent).unwrap();
+        let hook_parent = parent.clone();
+        let hook_tree = tree.clone();
+        set_test_hook(TestHookPoint::RemoveTreeBeforeTargetOpen, move || {
+            std::fs::rename(&hook_parent, displaced).unwrap();
+            std::fs::create_dir(&hook_parent).unwrap();
+            std::fs::create_dir(&hook_tree).unwrap();
+            std::fs::write(hook_tree.join("new.vo"), b"new generation").unwrap();
+        });
+
+        let error = remove_directory_tree_beneath(&root, &tree).unwrap_err();
+
+        assert_file_conflict(&error);
+        assert_eq!(
+            std::fs::read(tree.join("new.vo")).unwrap(),
+            b"new generation"
+        );
+    }
+
+    #[test]
+    fn directory_tree_cleanup_rejects_a_replacement_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let tree = root.join("build");
+        std::fs::create_dir(&tree).unwrap();
+        std::fs::write(tree.join("old.vo"), b"old generation").unwrap();
+        let hook_tree = tree.clone();
+        set_test_hook(
+            TestHookPoint::RemoveTreeBeforeQuarantineDiscard,
+            move || {
+                std::fs::create_dir(&hook_tree).unwrap();
+                std::fs::write(hook_tree.join("new.vo"), b"new generation").unwrap();
+            },
+        );
+
+        let error = remove_directory_tree_beneath(&root, &tree).unwrap_err();
+
+        assert_file_conflict(&error);
+        assert_eq!(
+            std::fs::read(tree.join("new.vo")).unwrap(),
+            b"new generation"
+        );
     }
 
     #[test]

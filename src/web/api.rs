@@ -187,6 +187,14 @@ impl ApiError {
             None => Self::from(detail),
         }
     }
+
+    fn blocking_task_failed(error: tokio::task::JoinError) -> Self {
+        Self::new(
+            ApiErrorKind::Internal,
+            "internal server error",
+            anyhow::anyhow!("web API blocking task failed: {error}"),
+        )
+    }
 }
 
 impl From<anyhow::Error> for ApiError {
@@ -264,26 +272,68 @@ fn json_error_response(status: StatusCode, message: &str) -> Response {
 
 // ── Cache helpers ─────────────────────────────────────────────────────────────
 
+async fn spawn_blocking_api<R>(
+    operation: impl FnOnce() -> ApiResult<R> + Send + 'static,
+) -> ApiResult<R>
+where
+    R: Send + 'static,
+{
+    match tokio::task::spawn_blocking(operation).await {
+        Ok(result) => result,
+        Err(error) => Err(ApiError::blocking_task_failed(error)),
+    }
+}
+
 /// Lock the cache, run a closure, return the result.
 fn with_cache<R>(
     state: &AppState,
     f: impl FnOnce(&mut IndCache) -> anyhow::Result<R>,
 ) -> ApiResult<R> {
-    let mut cache = state.cache.lock().expect("cache mutex poisoned");
+    let mut cache = state
+        .cache
+        .lock()
+        .map_err(|_| anyhow::anyhow!("cache mutex poisoned"))?;
     Ok(f(&mut cache)?)
+}
+
+fn lock_until<'a, T>(
+    mutex: &'a std::sync::Mutex<T>,
+    deadline: std::time::Instant,
+    name: &str,
+) -> ApiResult<std::sync::MutexGuard<'a, T>> {
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Err(anyhow::anyhow!("timed out waiting for {name} mutex").into());
+        }
+        match mutex.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(anyhow::anyhow!("{name} mutex poisoned").into())
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
 }
 
 fn with_workspace_mutation<R>(
     state: &AppState,
+    deadline: std::time::Instant,
     f: impl FnOnce(&mut IndCache, &crate::workspace::WorkspaceMutationLock) -> ApiResult<R>,
 ) -> ApiResult<R> {
-    let _process_guard = state.mutation_lock.lock().expect("mutation mutex poisoned");
+    let _process_guard = lock_until(&state.mutation_lock, deadline, "mutation")?;
     let root = {
-        let cache = state.cache.lock().expect("cache mutex poisoned");
+        let cache = lock_until(&state.cache, deadline, "cache")?;
         cache.root().to_path_buf()
     };
-    let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&root)?;
-    let mut cache = state.cache.lock().expect("cache mutex poisoned");
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    if remaining.is_zero() {
+        return Err(anyhow::anyhow!("timed out waiting for workspace mutation lock").into());
+    }
+    let mutation_lock =
+        crate::workspace::WorkspaceMutationLock::acquire_with_timeout(&root, remaining)?;
+    let mut cache = lock_until(&state.cache, deadline, "cache")?;
     cache.validate_mutation_lock(&mutation_lock)?;
     f(&mut cache, &mutation_lock)
 }
@@ -299,56 +349,68 @@ fn resolve_with_cache(
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 pub async fn graph_roots(State(state): State<AppState>) -> ApiResult<Json<Vec<GraphRootItem>>> {
-    let _profile = crate::profile::scope("web::api::graph_roots");
-    let roots = with_cache(&state, |c| {
-        c.discover_workspace_changes()?;
-        c.global_root_items()
-    })?;
-    Ok(Json(roots))
+    spawn_blocking_api(move || {
+        let _profile = crate::profile::scope("web::api::graph_roots");
+        let roots = with_cache(&state, |c| {
+            c.discover_workspace_changes()?;
+            c.global_root_items()
+        })?;
+        Ok(Json(roots))
+    })
+    .await
 }
 
 pub async fn graph_check(State(state): State<AppState>) -> ApiResult<Json<GraphCheckReport>> {
-    let report = with_cache(&state, |c| {
-        c.refresh_all()?;
-        c.graph_check_report()
-    })?;
-    Ok(Json(report))
+    spawn_blocking_api(move || {
+        let report = with_cache(&state, |c| {
+            c.refresh_all()?;
+            c.graph_check_report()
+        })?;
+        Ok(Json(report))
+    })
+    .await
 }
 
 /// Full workspace graph for the force-directed view: all valid nodes + edges.
 pub async fn graph_full(State(state): State<AppState>) -> ApiResult<Json<GraphFull>> {
-    let _profile = crate::profile::scope("web::api::graph_full");
-    let (nodes, edges) = with_cache(&state, |c| {
-        c.discover_workspace_changes()?;
-        let nodes: Vec<NodeSummary> = c
-            .all_node_summaries()?
-            .into_iter()
-            .filter(|item| !item.broken)
-            .collect();
-        let edges_raw = c.all_valid_edges()?;
-        // Filter edges to only those whose both endpoints are in the node set.
-        let known: std::collections::HashSet<&str> =
-            nodes.iter().map(|n| n.fnode.as_str()).collect();
-        let edges: Vec<GraphEdge> = edges_raw
-            .into_iter()
-            .filter(|(s, d)| known.contains(s.as_str()) && known.contains(d.as_str()))
-            .map(|(source, target)| GraphEdge { source, target })
-            .collect();
-        Ok::<_, anyhow::Error>((nodes, edges))
-    })?;
-    Ok(Json(GraphFull { nodes, edges }))
+    spawn_blocking_api(move || {
+        let _profile = crate::profile::scope("web::api::graph_full");
+        let (nodes, edges) = with_cache(&state, |c| {
+            c.discover_workspace_changes()?;
+            let nodes: Vec<NodeSummary> = c
+                .all_node_summaries()?
+                .into_iter()
+                .filter(|item| !item.broken)
+                .collect();
+            let edges_raw = c.all_valid_edges()?;
+            // Filter edges to only those whose both endpoints are in the node set.
+            let known: std::collections::HashSet<&str> =
+                nodes.iter().map(|n| n.fnode.as_str()).collect();
+            let edges: Vec<GraphEdge> = edges_raw
+                .into_iter()
+                .filter(|(s, d)| known.contains(s.as_str()) && known.contains(d.as_str()))
+                .map(|(source, target)| GraphEdge { source, target })
+                .collect();
+            Ok::<_, anyhow::Error>((nodes, edges))
+        })?;
+        Ok(Json(GraphFull { nodes, edges }))
+    })
+    .await
 }
 
 pub async fn search(
     State(state): State<AppState>,
     Query(q): Query<SearchQuery>,
 ) -> ApiResult<Json<Vec<NodeSummary>>> {
-    let limit = q.n.min(MAX_SEARCH_RESULTS);
-    let out = with_cache(&state, |c| {
-        c.discover_workspace_changes()?;
-        c.search(&q.q, limit)
-    })?;
-    Ok(Json(out))
+    spawn_blocking_api(move || {
+        let limit = q.n.min(MAX_SEARCH_RESULTS);
+        let out = with_cache(&state, |c| {
+            c.discover_workspace_changes()?;
+            c.search(&q.q, limit)
+        })?;
+        Ok(Json(out))
+    })
+    .await
 }
 
 #[derive(Debug, Deserialize)]
@@ -360,80 +422,105 @@ pub async fn resolve_ref(
     State(state): State<AppState>,
     Query(q): Query<ResolveQuery>,
 ) -> ApiResult<Json<ResolveResponse>> {
-    let mut cache = state.cache.lock().expect("cache mutex poisoned");
-    let (fnode, title, abs_path) =
-        resolve_with_cache(&mut cache, &q.r#ref).map_err(ApiError::from_resolve)?;
-    let rel_path = to_rel_path(cache.root(), &abs_path);
-    Ok(Json(ResolveResponse {
-        fnode,
-        title,
-        rel_path,
-    }))
+    spawn_blocking_api(move || {
+        let mut cache = state
+            .cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("cache mutex poisoned"))?;
+        let (fnode, title, abs_path) =
+            resolve_with_cache(&mut cache, &q.r#ref).map_err(ApiError::from_resolve)?;
+        let rel_path = to_rel_path(cache.root(), &abs_path);
+        Ok(Json(ResolveResponse {
+            fnode,
+            title,
+            rel_path,
+        }))
+    })
+    .await
 }
 
 pub async fn node_detail(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
 ) -> ApiResult<Json<NodeDetail>> {
-    let mut cache = state.cache.lock().expect("cache mutex poisoned");
-    let (fnode, _, abs_path) =
-        resolve_with_cache(&mut cache, &fnode).map_err(ApiError::from_resolve)?;
-    let (snapshot, node) = load_node_generation(&mut cache, &fnode, &abs_path)?;
-    let cache_fields = (|| {
-        Ok::<_, anyhow::Error>((
-            cache.node_summary(&fnode)?,
-            cache.formalization_status(&fnode)?,
-        ))
-    })();
-    ensure_snapshot_unchanged(&snapshot, &abs_path)?;
-    let (summary, formalization) = cache_fields?;
-    Ok(Json(node_detail_from_generation(
-        summary,
-        node,
-        formalization,
-        snapshot_revision(&snapshot),
-    )))
+    spawn_blocking_api(move || {
+        let mut cache = state
+            .cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("cache mutex poisoned"))?;
+        let (fnode, _, abs_path) =
+            resolve_with_cache(&mut cache, &fnode).map_err(ApiError::from_resolve)?;
+        let (snapshot, node) = load_node_generation(&mut cache, &fnode, &abs_path)?;
+        let cache_fields = (|| {
+            Ok::<_, anyhow::Error>((
+                cache.node_summary(&fnode)?,
+                cache.formalization_status(&fnode)?,
+            ))
+        })();
+        ensure_snapshot_unchanged(&snapshot, &abs_path)?;
+        let (summary, formalization) = cache_fields?;
+        Ok(Json(node_detail_from_generation(
+            summary,
+            node,
+            formalization,
+            snapshot_revision(&snapshot),
+        )))
+    })
+    .await
 }
 
 pub async fn node_view(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
 ) -> ApiResult<Json<NodeView>> {
-    let _profile = crate::profile::scope("web::api::node_view");
-    let mut cache = state.cache.lock().expect("cache mutex poisoned");
-    let (fnode, _, abs_path) =
-        resolve_with_cache(&mut cache, &fnode).map_err(ApiError::from_resolve)?;
-    let (snapshot, node) = load_node_generation(&mut cache, &fnode, &abs_path)?;
-    let cache_fields = (|| {
-        Ok::<_, anyhow::Error>((
-            cache.node_summary(&fnode)?,
-            cache.formalization_status(&fnode)?,
-            cache.direct_referrer_summaries(&fnode)?,
-            cache.direct_dependency_summaries(&fnode)?,
-        ))
-    })();
-    ensure_snapshot_unchanged(&snapshot, &abs_path)?;
-    let (summary, formalization, referrers, children) = cache_fields?;
-    Ok(Json(NodeView {
-        node: node_detail_from_generation(
-            summary,
-            node,
-            formalization,
-            snapshot_revision(&snapshot),
-        ),
-        referrers,
-        children,
-    }))
+    spawn_blocking_api(move || {
+        let _profile = crate::profile::scope("web::api::node_view");
+        let mut cache = state
+            .cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("cache mutex poisoned"))?;
+        let (fnode, _, abs_path) =
+            resolve_with_cache(&mut cache, &fnode).map_err(ApiError::from_resolve)?;
+        let (snapshot, node) = load_node_generation(&mut cache, &fnode, &abs_path)?;
+        let cache_fields = (|| {
+            Ok::<_, anyhow::Error>((
+                cache.node_summary(&fnode)?,
+                cache.formalization_status(&fnode)?,
+                cache.direct_referrer_summaries(&fnode)?,
+                cache.direct_dependency_summaries(&fnode)?,
+            ))
+        })();
+        ensure_snapshot_unchanged(&snapshot, &abs_path)?;
+        let (summary, formalization, referrers, children) = cache_fields?;
+        Ok(Json(NodeView {
+            node: node_detail_from_generation(
+                summary,
+                node,
+                formalization,
+                snapshot_revision(&snapshot),
+            ),
+            referrers,
+            children,
+        }))
+    })
+    .await
 }
 
 pub async fn node_children(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
 ) -> ApiResult<Json<Vec<NodeSummary>>> {
-    let mut cache = state.cache.lock().expect("cache mutex poisoned");
-    let (fnode, _, _) = resolve_with_cache(&mut cache, &fnode).map_err(ApiError::from_resolve)?;
-    let out = cache.direct_dependency_summaries(&fnode)?;
-    Ok(Json(out))
+    spawn_blocking_api(move || {
+        let mut cache = state
+            .cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("cache mutex poisoned"))?;
+        let (fnode, _, _) =
+            resolve_with_cache(&mut cache, &fnode).map_err(ApiError::from_resolve)?;
+        let out = cache.direct_dependency_summaries(&fnode)?;
+        Ok(Json(out))
+    })
+    .await
 }
 
 fn load_node_generation(
@@ -491,14 +578,20 @@ pub async fn node_dependency_candidates(
     Path(fnode): Path<String>,
     Query(q): Query<SearchQuery>,
 ) -> ApiResult<Json<DependencyCandidates>> {
-    let limit = q.n.min(MAX_SEARCH_RESULTS);
-    let mut cache = state.cache.lock().expect("cache mutex poisoned");
-    cache.discover_workspace_changes()?;
-    let (fnode, _, _) = cache
-        .resolve_ref(&fnode, Some(cache.root()))
-        .map_err(ApiError::from_resolve)?;
-    let out = cache.dependency_candidates(&fnode, &q.q, limit)?;
-    Ok(Json(out))
+    spawn_blocking_api(move || {
+        let limit = q.n.min(MAX_SEARCH_RESULTS);
+        let mut cache = state
+            .cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("cache mutex poisoned"))?;
+        cache.discover_workspace_changes()?;
+        let (fnode, _, _) = cache
+            .resolve_ref(&fnode, Some(cache.root()))
+            .map_err(ApiError::from_resolve)?;
+        let out = cache.dependency_candidates(&fnode, &q.q, limit)?;
+        Ok(Json(out))
+    })
+    .await
 }
 
 // ── Write handlers ────────────────────────────────────────────────────────────
@@ -510,15 +603,25 @@ pub async fn node_put_block(
     Path((fnode, srctype)): Path<(String, String)>,
     Json(body): Json<BlockBody>,
 ) -> ApiResult<Json<NodeDetail>> {
-    let srctype = validate_srctype(&srctype)?;
-    let BlockBody {
-        content,
-        expected_revision,
-    } = body;
-    mutate_node(&state, &fnode, expected_revision.as_deref(), move |node| {
-        node.upsert_source_block(srctype, content)?;
-        Ok(())
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    spawn_blocking_api(move || {
+        let srctype = validate_srctype(&srctype)?;
+        let BlockBody {
+            content,
+            expected_revision,
+        } = body;
+        mutate_node(
+            &state,
+            deadline,
+            &fnode,
+            expected_revision.as_deref(),
+            move |node| {
+                node.upsert_source_block(srctype, content)?;
+                Ok(())
+            },
+        )
     })
+    .await
 }
 
 /// Delete a single srctype block from the focused node.
@@ -528,38 +631,43 @@ pub async fn node_delete_block(
     headers: HeaderMap,
     body: Bytes,
 ) -> ApiResult<Json<NodeDetail>> {
-    let srctype = validate_srctype(&srctype)?;
-    let body = if body.is_empty() {
-        None
-    } else {
-        let is_json = headers
-            .get(header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.split(';').next())
-            .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"));
-        if !is_json {
-            return Err(ApiError::bad_request(
-                "non-empty DELETE body must use application/json",
-            ));
-        }
-        Some(
-            serde_json::from_slice::<RevisionBody>(&body).map_err(|error| {
-                ApiError::bad_request(format!("invalid DELETE request body: {error}"))
-            })?,
-        )
-    };
-    mutate_node(
-        &state,
-        &fnode,
-        body.as_ref()
-            .and_then(|body| body.expected_revision.as_deref()),
-        |node| {
-            if !node.remove_source_block(srctype) {
-                bail!("no '@src: {srctype}' block on this node");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    spawn_blocking_api(move || {
+        let srctype = validate_srctype(&srctype)?;
+        let body = if body.is_empty() {
+            None
+        } else {
+            let is_json = headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.split(';').next())
+                .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"));
+            if !is_json {
+                return Err(ApiError::bad_request(
+                    "non-empty DELETE body must use application/json",
+                ));
             }
-            Ok(())
-        },
-    )
+            Some(
+                serde_json::from_slice::<RevisionBody>(&body).map_err(|error| {
+                    ApiError::bad_request(format!("invalid DELETE request body: {error}"))
+                })?,
+            )
+        };
+        mutate_node(
+            &state,
+            deadline,
+            &fnode,
+            body.as_ref()
+                .and_then(|body| body.expected_revision.as_deref()),
+            move |node| {
+                if !node.remove_source_block(srctype) {
+                    bail!("no '@src: {srctype}' block on this node");
+                }
+                Ok(())
+            },
+        )
+    })
+    .await
 }
 
 /// Update the @title of the focused node.
@@ -568,20 +676,25 @@ pub async fn node_put_title(
     Path(fnode): Path<String>,
     Json(body): Json<TitleBody>,
 ) -> ApiResult<Json<NodeDetail>> {
-    let title = body.title.trim();
-    if title.is_empty() {
-        bail!("@title must be non-empty");
-    }
-    let title = title.to_string();
-    mutate_node(
-        &state,
-        &fnode,
-        body.expected_revision.as_deref(),
-        move |node| {
-            node.set_title(title);
-            Ok(())
-        },
-    )
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    spawn_blocking_api(move || {
+        let title = body.title.trim();
+        if title.is_empty() {
+            bail!("@title must be non-empty");
+        }
+        let title = title.to_string();
+        mutate_node(
+            &state,
+            deadline,
+            &fnode,
+            body.expected_revision.as_deref(),
+            move |node| {
+                node.set_title(title);
+                Ok(())
+            },
+        )
+    })
+    .await
 }
 
 // ── Write helpers ─────────────────────────────────────────────────────────────
@@ -614,11 +727,12 @@ fn validate_srctype(srctype: &str) -> ApiResult<&'static str> {
 
 fn mutate_node(
     state: &AppState,
+    deadline: std::time::Instant,
     raw_ref: &str,
     expected_revision: Option<&str>,
     mutate: impl FnOnce(&mut MdocNode) -> ApiResult<()>,
 ) -> ApiResult<Json<NodeDetail>> {
-    with_workspace_mutation(state, |cache, mutation_lock| {
+    with_workspace_mutation(state, deadline, |cache, mutation_lock| {
         let (fnode, _, abs_path) =
             resolve_with_cache(cache, raw_ref).map_err(ApiError::from_resolve)?;
         let (snapshot, mut node) = snapshot_node(&abs_path)?;
@@ -726,28 +840,33 @@ pub async fn node_add_dep(
     Path(fnode): Path<String>,
     Json(body): Json<AddDepBody>,
 ) -> ApiResult<Json<NodeDetail>> {
-    with_workspace_mutation(&state, |cache, mutation_lock| {
-        let (fnode, _, _) = resolve_with_cache(cache, &fnode).map_err(ApiError::from_resolve)?;
-        let mut graph =
-            crate::depgraph::DepGraph::from_ref_under_lock(cache, mutation_lock, &fnode, None)?;
-        let (added, skipped_existing, skipped_self) = graph
-            .add_direct_dependency_ref_under_lock(mutation_lock, &body.dep_fnode, None)
-            .map_err(ApiError::rejected)?;
-        if !skipped_self.is_empty() {
-            bail!("a node cannot depend on itself");
-        }
-        if added.is_empty() && skipped_existing.is_empty() {
-            bail!("dependency was not added");
-        }
-        let unchanged = added.is_empty();
-        let node = graph.root_node().clone();
-        drop(graph);
-        if unchanged {
-            current_node_detail(cache, &node.fnode, &node.path)
-        } else {
-            Ok(committed_node_detail(cache, &node))
-        }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    spawn_blocking_api(move || {
+        with_workspace_mutation(&state, deadline, |cache, mutation_lock| {
+            let (fnode, _, _) =
+                resolve_with_cache(cache, &fnode).map_err(ApiError::from_resolve)?;
+            let mut graph =
+                crate::depgraph::DepGraph::from_ref_under_lock(cache, mutation_lock, &fnode, None)?;
+            let (added, skipped_existing, skipped_self) = graph
+                .add_direct_dependency_ref_under_lock(mutation_lock, &body.dep_fnode, None)
+                .map_err(ApiError::rejected)?;
+            if !skipped_self.is_empty() {
+                bail!("a node cannot depend on itself");
+            }
+            if added.is_empty() && skipped_existing.is_empty() {
+                bail!("dependency was not added");
+            }
+            let unchanged = added.is_empty();
+            let node = graph.root_node().clone();
+            drop(graph);
+            if unchanged {
+                current_node_detail(cache, &node.fnode, &node.path)
+            } else {
+                Ok(committed_node_detail(cache, &node))
+            }
+        })
     })
+    .await
 }
 
 #[derive(Debug, Deserialize)]
@@ -761,23 +880,28 @@ pub async fn node_rm_deps(
     Path(fnode): Path<String>,
     Json(body): Json<RmDepBody>,
 ) -> ApiResult<Json<NodeDetail>> {
-    with_workspace_mutation(&state, |cache, mutation_lock| {
-        if body.dep_fnodes.is_empty() {
-            bail!("dep_fnodes must be non-empty");
-        }
-        let (fnode, _, _) = resolve_with_cache(cache, &fnode).map_err(ApiError::from_resolve)?;
-        let mut graph =
-            crate::depgraph::DepGraph::from_ref_under_lock(cache, mutation_lock, &fnode, None)?;
-        let removed = graph
-            .remove_direct_dependencies_under_lock(mutation_lock, body.dep_fnodes)
-            .map_err(ApiError::rejected)?;
-        if removed.is_empty() {
-            bail!("none of the given fnodes are direct dependencies");
-        }
-        let node = graph.root_node().clone();
-        drop(graph);
-        Ok(committed_node_detail(cache, &node))
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    spawn_blocking_api(move || {
+        with_workspace_mutation(&state, deadline, |cache, mutation_lock| {
+            if body.dep_fnodes.is_empty() {
+                bail!("dep_fnodes must be non-empty");
+            }
+            let (fnode, _, _) =
+                resolve_with_cache(cache, &fnode).map_err(ApiError::from_resolve)?;
+            let mut graph =
+                crate::depgraph::DepGraph::from_ref_under_lock(cache, mutation_lock, &fnode, None)?;
+            let removed = graph
+                .remove_direct_dependencies_under_lock(mutation_lock, body.dep_fnodes)
+                .map_err(ApiError::rejected)?;
+            if removed.is_empty() {
+                bail!("none of the given fnodes are direct dependencies");
+            }
+            let node = graph.root_node().clone();
+            drop(graph);
+            Ok(committed_node_detail(cache, &node))
+        })
     })
+    .await
 }
 
 #[derive(Debug, Deserialize)]
@@ -795,49 +919,53 @@ pub async fn node_new(
     State(state): State<AppState>,
     Json(body): Json<NewNodeBody>,
 ) -> ApiResult<Json<NodeDetail>> {
-    with_workspace_mutation(&state, |cache, mutation_lock| {
-        let title = body.title.trim();
-        if title.is_empty() {
-            bail!("title must be non-empty");
-        }
-        let file_path = body.file.as_deref().unwrap_or(".").trim();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    spawn_blocking_api(move || {
+        with_workspace_mutation(&state, deadline, |cache, mutation_lock| {
+            let title = body.title.trim();
+            if title.is_empty() {
+                bail!("title must be non-empty");
+            }
+            let file_path = body.file.as_deref().unwrap_or(".").trim();
 
-        if let Some(parent) = &body.parent_fnode {
-            // Resolve parent first so we can produce a clear error before write.
-            let (parent_fnode, _, _) =
-                resolve_with_cache(cache, parent).map_err(ApiError::from_resolve)?;
-            let mut graph = crate::depgraph::DepGraph::from_ref_under_lock(
-                cache,
-                mutation_lock,
-                &parent_fnode,
-                None,
-            )?;
-            let new_node = graph
-                .prepare_new_dependency_node(file_path, title, None)
+            if let Some(parent) = &body.parent_fnode {
+                // Resolve parent first so we can produce a clear error before write.
+                let (parent_fnode, _, _) =
+                    resolve_with_cache(cache, parent).map_err(ApiError::from_resolve)?;
+                let mut graph = crate::depgraph::DepGraph::from_ref_under_lock(
+                    cache,
+                    mutation_lock,
+                    &parent_fnode,
+                    None,
+                )?;
+                let new_node = graph
+                    .prepare_new_dependency_node(file_path, title, None)
+                    .map_err(ApiError::rejected)?;
+                graph
+                    .create_and_add_dependency_under_lock(mutation_lock, new_node)
+                    .map_err(ApiError::rejected)?;
+                // Return the parent (the user is editing the parent and just added a
+                // dep — they want to see it appear in the children column).
+                let node = graph.root_node().clone();
+                drop(graph);
+                Ok(committed_node_detail(cache, &node))
+            } else {
+                // Standalone new node, no parent.
+                let graph = crate::depgraph::DepGraph::create_root_under_lock(
+                    cache,
+                    mutation_lock,
+                    file_path,
+                    title,
+                    None,
+                )
                 .map_err(ApiError::rejected)?;
-            graph
-                .create_and_add_dependency_under_lock(mutation_lock, new_node)
-                .map_err(ApiError::rejected)?;
-            // Return the parent (the user is editing the parent and just added a
-            // dep — they want to see it appear in the children column).
-            let node = graph.root_node().clone();
-            drop(graph);
-            Ok(committed_node_detail(cache, &node))
-        } else {
-            // Standalone new node, no parent.
-            let graph = crate::depgraph::DepGraph::create_root_under_lock(
-                cache,
-                mutation_lock,
-                file_path,
-                title,
-                None,
-            )
-            .map_err(ApiError::rejected)?;
-            let node = graph.root_node().clone();
-            drop(graph);
-            Ok(committed_node_detail(cache, &node))
-        }
+                let node = graph.root_node().clone();
+                drop(graph);
+                Ok(committed_node_detail(cache, &node))
+            }
+        })
     })
+    .await
 }
 
 #[cfg(test)]
@@ -960,6 +1088,124 @@ mod tests {
                 .status(),
             StatusCode::UNPROCESSABLE_ENTITY
         );
+        assert_eq!(
+            ApiError::rejected(
+                crate::workspace::WorkspaceGenerationError::new("workspace generation changed")
+                    .into(),
+            )
+            .into_response()
+            .status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[tokio::test]
+    async fn blocking_task_panics_map_to_internal_error() {
+        let error = spawn_blocking_api(|| -> ApiResult<()> {
+            panic!("blocking operation panic");
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            error.into_response().status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[tokio::test]
+    async fn poisoned_cache_mutex_returns_internal_error_without_panicking() {
+        let (_dir, state, _path, _fnode) = setup_state();
+        let cache = state.cache.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = cache.lock().unwrap();
+            panic!("poison cache mutex");
+        })
+        .join();
+
+        let error = graph_roots(State(state)).await.unwrap_err();
+
+        assert_eq!(
+            error.into_response().status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cache_contention_does_not_stall_single_worker_heartbeat() {
+        use std::future::Future;
+        use std::task::Poll;
+        use std::time::{Duration, Instant};
+
+        let (_dir, state, _path, _fnode) = setup_state();
+        let holder_state = state.clone();
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _guard = holder_state.cache.lock().unwrap();
+            locked_tx.send(()).unwrap();
+            let _ = release_rx.recv_timeout(Duration::from_secs(2));
+        });
+        locked_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        let started = Instant::now();
+        let mut operation = Box::pin(graph_roots(State(state)));
+        std::future::poll_fn(|cx| match operation.as_mut().poll(cx) {
+            Poll::Pending => Poll::Ready(()),
+            Poll::Ready(_) => panic!("contended cache operation completed on its first poll"),
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let heartbeat_elapsed = started.elapsed();
+
+        release_tx.send(()).unwrap();
+        let _ = operation.await.unwrap();
+        holder.join().unwrap();
+        assert!(
+            heartbeat_elapsed < Duration::from_secs(1),
+            "Tokio heartbeat was stalled for {heartbeat_elapsed:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn workspace_flock_contention_does_not_stall_single_worker_heartbeat() {
+        use std::future::Future;
+        use std::task::Poll;
+        use std::time::{Duration, Instant};
+
+        let (_dir, state, _path, fnode) = setup_state();
+        let root = state.cache.lock().unwrap().root().to_path_buf();
+        let external_lock = crate::workspace::WorkspaceMutationLock::acquire(&root).unwrap();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _external_lock = external_lock;
+            let _ = release_rx.recv_timeout(Duration::from_secs(2));
+        });
+
+        let started = Instant::now();
+        let mut operation = Box::pin(node_put_title(
+            State(state),
+            Path(fnode),
+            Json(TitleBody {
+                title: "Updated title".to_string(),
+                expected_revision: None,
+            }),
+        ));
+        std::future::poll_fn(|cx| match operation.as_mut().poll(cx) {
+            Poll::Pending => Poll::Ready(()),
+            Poll::Ready(_) => panic!("contended flock operation completed on its first poll"),
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let heartbeat_elapsed = started.elapsed();
+
+        release_tx.send(()).unwrap();
+        let _ = operation.await.unwrap();
+        holder.join().unwrap();
+        assert!(
+            heartbeat_elapsed < Duration::from_secs(1),
+            "Tokio heartbeat was stalled for {heartbeat_elapsed:?}"
+        );
     }
 
     #[test]
@@ -969,7 +1215,11 @@ mod tests {
         let external_lock = crate::workspace::WorkspaceMutationLock::acquire(&root).unwrap();
         let worker_state = state.clone();
         let worker = std::thread::spawn(move || {
-            with_workspace_mutation(&worker_state, |_cache, _mutation_lock| Ok(()))
+            with_workspace_mutation(
+                &worker_state,
+                std::time::Instant::now() + std::time::Duration::from_secs(5),
+                |_cache, _mutation_lock| Ok(()),
+            )
         });
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);

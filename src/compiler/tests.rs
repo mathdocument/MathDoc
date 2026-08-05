@@ -157,6 +157,98 @@ fn test_python_treats_leading_hyphen_source_as_a_file() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn test_python_rejects_a_replaced_working_tree_generation() {
+    if which::which("python3").is_err() && which::which("python").is_err() {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let lib = root.join(".mdc/python/Lib");
+    let displaced = root.join("displaced-lib");
+    let marker = root.join("executed-generation");
+    std::fs::create_dir_all(&lib).unwrap();
+    let source = lib.join("node.py");
+    std::fs::write(
+        &source,
+        format!(
+            "from pathlib import Path\nPath({:?}).write_text('original')\n",
+            marker
+        ),
+    )
+    .unwrap();
+    let hook_lib = lib.clone();
+    let hook_displaced = displaced.clone();
+    let replacement_source = source.clone();
+    let replacement_marker = marker.clone();
+    crate::workspace::set_test_hook(
+        crate::workspace::TestHookPoint::ProcessAfterCwdOpen,
+        move || {
+            std::fs::rename(&hook_lib, &hook_displaced).unwrap();
+            std::fs::create_dir(&hook_lib).unwrap();
+            std::fs::write(
+                replacement_source,
+                format!(
+                    "from pathlib import Path\nPath({:?}).write_text('replacement')\n",
+                    replacement_marker
+                ),
+            )
+            .unwrap();
+        },
+    );
+    let req = make_req(&root, "python");
+
+    let result = CompilerRegistry::default_registry()
+        .resolve("python")
+        .unwrap()
+        .compile(&req);
+
+    assert!(!result.is_success());
+    assert!(result.stderr.contains("source changed during execution"));
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "original");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_python_preserves_nested_script_import_and_main_semantics() {
+    if which::which("python3").is_err() && which::which("python").is_err() {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let package = root.join(".mdc/python/Lib/pkg");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(package.join("helper.py"), "value = 42\n").unwrap();
+    let source = package.join("main.py");
+    std::fs::write(
+        &source,
+        "import __main__, helper, pathlib, sys\n\
+         value = helper.value\n\
+         assert __main__.value == 42\n\
+         assert pathlib.Path(__file__).name == 'main.py'\n\
+         assert sys.argv == ['pkg/main.py']\n\
+         assert sys.orig_argv[1:] == ['-B', '--', 'pkg/main.py']\n\
+         assert __loader__.name == '__main__'\n\
+         assert pathlib.Path(__loader__.path).is_absolute()\n\
+         pathlib.Path('nested-marker').write_text(str(value))\n",
+    )
+    .unwrap();
+    let mut req = make_req(root, "python");
+    req.source = source;
+
+    let result = CompilerRegistry::default_registry()
+        .resolve("python")
+        .unwrap()
+        .compile(&req);
+
+    assert!(result.is_success(), "{}", result.stderr);
+    assert_eq!(
+        std::fs::read_to_string(root.join(".mdc/python/Lib/nested-marker")).unwrap(),
+        "42"
+    );
+}
+
 #[test]
 fn timed_compilers_reject_unresolved_configuration_without_panicking() {
     let tmp = tempfile::tempdir().unwrap();

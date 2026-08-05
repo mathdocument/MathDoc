@@ -88,8 +88,11 @@ compiler driver is generated, not by `mdc new`.
 
 ### Python
 
-Python runs the selected mirror directly from the `Lib` tree with bytecode generation
-disabled. MathDoc does not infer or install Python dependencies.
+Python captures the selected mirror and executes those bytes from an inherited
+read-only, unlinked file descriptor with bytecode generation disabled. It retains normal
+direct-script `__main__`, `sys.argv`, `__file__`, and sibling-import behavior. A source or
+working-tree generation change during execution makes the target fail. MathDoc does not
+infer or install Python dependencies.
 
 ### Rocq
 

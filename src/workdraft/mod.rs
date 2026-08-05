@@ -442,6 +442,7 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
         let _phase = crate::profile::scope("workdraft::apply_changes");
         apply_changes(
             &mdcroot,
+            || mutation_lock.root().map(|_| ()),
             PreparedManifest {
                 path: &manifest_path,
                 snapshot: &manifest_snapshot,
@@ -728,6 +729,7 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
     node_writes.append(&mut raw_writes);
     apply_changes(
         &mdcroot,
+        || mutation_lock.root().map(|_| ()),
         PreparedManifest {
             path: &manifest_path,
             snapshot: &manifest_snapshot,

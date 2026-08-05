@@ -51,8 +51,12 @@ impl SrcCompiler for CompilerLatex {
             "-halt-on-error",
             MAIN_FILE,
         ];
+        let process_cwd = match workspace.process_cwd() {
+            Ok(cwd) => cwd,
+            Err(error) => return CompilerRes::err(error.to_string()),
+        };
 
-        match run_process(&latexmk, args, "latexmk", timeout_sec, Some(workspace_root)) {
+        match run_process(&latexmk, args, "latexmk", timeout_sec, Some(process_cwd)) {
             Ok((rtcode, stdout, stderr)) => {
                 if rtcode != 0 {
                     return CompilerRes {
@@ -136,10 +140,13 @@ mod tests {
         let mdcroot = directory.path().canonicalize().unwrap();
         let root = mdcroot.join(".mdc/latex");
         std::fs::create_dir_all(&root).unwrap();
+        let root_generation =
+            crate::workspace::DirectoryGeneration::open_beneath(&mdcroot, &root).unwrap();
         CompilerWorkspace {
             mdcroot,
             root,
             srctype: "latex".to_string(),
+            root_generation,
         }
     }
 

@@ -2,7 +2,7 @@ use super::CompilerRes;
 use anyhow::{bail, Result};
 use std::collections::VecDeque;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -471,7 +471,46 @@ pub(super) fn run_process<P, I, S>(
     args: I,
     tool_name: &str,
     timeout_sec: u64,
-    cwd: Option<&Path>,
+    cwd: Option<&crate::workspace::DirectoryGeneration>,
+) -> Result<(i32, String, String)>
+where
+    P: AsRef<std::ffi::OsStr>,
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    run_process_inner(program, args, tool_name, timeout_sec, cwd, None)
+}
+
+pub(super) fn run_process_with_inherited_fd<P, I, S>(
+    program: P,
+    args: I,
+    tool_name: &str,
+    timeout_sec: u64,
+    cwd: &crate::workspace::DirectoryGeneration,
+    inherited_fd: std::os::fd::RawFd,
+) -> Result<(i32, String, String)>
+where
+    P: AsRef<std::ffi::OsStr>,
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    run_process_inner(
+        program,
+        args,
+        tool_name,
+        timeout_sec,
+        Some(cwd),
+        Some(inherited_fd),
+    )
+}
+
+fn run_process_inner<P, I, S>(
+    program: P,
+    args: I,
+    tool_name: &str,
+    timeout_sec: u64,
+    cwd: Option<&crate::workspace::DirectoryGeneration>,
+    inherited_fd: Option<std::os::fd::RawFd>,
 ) -> Result<(i32, String, String)>
 where
     P: AsRef<std::ffi::OsStr>,
@@ -486,6 +525,14 @@ where
         let started = Instant::now();
         let timeout = Duration::from_secs(timeout_sec);
 
+        #[cfg(unix)]
+        if let Some(cwd) = cwd {
+            cwd.require_current()?;
+            crate::workspace::run_test_hook(crate::workspace::TestHookPoint::ProcessAfterCwdOpen);
+        }
+        #[cfg(unix)]
+        let process_cwd_fd = cwd.map(crate::workspace::DirectoryGeneration::raw_fd);
+
         let mut cmd = std::process::Command::new(program);
         cmd.args(args)
             .stdin(Stdio::null())
@@ -495,10 +542,25 @@ where
         {
             use std::os::unix::process::CommandExt;
             let child_signal_mask = signal_listener.child_mask();
+            let cwd_fd = process_cwd_fd;
             cmd.process_group(0);
-            // SAFETY: pre_exec runs after fork and only resets the inherited signal mask.
+            // SAFETY: pre_exec uses async-signal-safe operations before exec. The
+            // directory descriptor remains alive in the parent through spawn.
             unsafe {
                 cmd.pre_exec(move || {
+                    if let Some(fd) = inherited_fd {
+                        let flags = libc::fcntl(fd, libc::F_GETFD);
+                        if flags < 0
+                            || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0
+                        {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
+                    if let Some(cwd_fd) = cwd_fd {
+                        if libc::fchdir(cwd_fd) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
                     let result = libc::pthread_sigmask(
                         libc::SIG_SETMASK,
                         &child_signal_mask,
@@ -512,9 +574,8 @@ where
                 });
             }
         }
-        if let Some(dir) = cwd {
-            cmd.current_dir(dir);
-        }
+        #[cfg(not(unix))]
+        let _ = cwd;
         let mut child = cmd
             .spawn()
             .map_err(|e| anyhow::anyhow!("failed to run {tool_name}: {e}"))?;
@@ -620,6 +681,20 @@ where
     })();
 
     #[cfg(unix)]
+    let result = match (
+        result,
+        cwd.map(crate::workspace::DirectoryGeneration::require_current),
+    ) {
+        (Err(process_error), Some(Err(cwd_error))) => Err(process_error.context(format!(
+            "compiler working directory validation also failed: {cwd_error:#}"
+        ))),
+        (Ok((code, _, _)), Some(Err(cwd_error))) => {
+            Err(cwd_error.context(format!("process exited with code {code}")))
+        }
+        (result, _) => result,
+    };
+
+    #[cfg(unix)]
     if let Some(signal) = signal_listener.shutdown() {
         let diagnostics = match &result {
             Ok((_, stdout, stderr)) => output_diagnostics(stdout, stderr),
@@ -700,6 +775,133 @@ mod tests {
         assert_eq!(code, 0);
         assert!(stdout.contains("valid-before:\u{fffd}:valid-after"));
         assert!(stderr.contains("error-before:\u{fffd}:error-after"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_stale_working_directory_is_rejected_before_execution() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let cwd = root.join("cwd");
+        let displaced = root.join("displaced-cwd");
+        std::fs::create_dir(&cwd).unwrap();
+        let generation = crate::workspace::DirectoryGeneration::open_beneath(&root, &cwd).unwrap();
+        std::fs::rename(&cwd, &displaced).unwrap();
+        std::fs::create_dir(&cwd).unwrap();
+
+        let error = run_process(
+            "/bin/sh",
+            ["-c", "printf executed > marker"],
+            "cwd helper",
+            5,
+            Some(&generation),
+        )
+        .unwrap_err();
+
+        assert!(crate::workspace::error_has_file_conflict(&error));
+        assert!(!cwd.join("marker").exists());
+        assert!(!displaced.join("marker").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_replaced_working_directory_generation_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let cwd = root.join("cwd");
+        let displaced = root.join("displaced-cwd");
+        std::fs::create_dir(&cwd).unwrap();
+        let generation = crate::workspace::DirectoryGeneration::open_beneath(&root, &cwd).unwrap();
+        crate::workspace::set_test_hook(crate::workspace::TestHookPoint::ProcessAfterCwdOpen, {
+            let cwd = cwd.clone();
+            move || {
+                std::fs::rename(&cwd, displaced).unwrap();
+                std::fs::create_dir(&cwd).unwrap();
+            }
+        });
+
+        let error = run_process(
+            "/bin/sh",
+            ["-c", "exit 0"],
+            "cwd helper",
+            5,
+            Some(&generation),
+        )
+        .unwrap_err();
+
+        assert!(
+            crate::workspace::error_has_file_conflict(&error),
+            "{error:#}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_symlinked_working_directory_ancestor_cannot_redirect_execution() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let managed = root.join("managed");
+        let cwd = managed.join("cwd");
+        let displaced = root.join("displaced-managed");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let generation = crate::workspace::DirectoryGeneration::open_beneath(&root, &cwd).unwrap();
+        let outside_path = outside.path().canonicalize().unwrap();
+        std::fs::create_dir(outside_path.join("cwd")).unwrap();
+        crate::workspace::set_test_hook(crate::workspace::TestHookPoint::ProcessAfterCwdOpen, {
+            let managed = managed.clone();
+            let outside_path = outside_path.clone();
+            move || {
+                std::fs::rename(&managed, displaced).unwrap();
+                symlink(outside_path, managed).unwrap();
+            }
+        });
+
+        let error = run_process(
+            "/bin/sh",
+            ["-c", "printf executed > marker"],
+            "cwd helper",
+            5,
+            Some(&generation),
+        )
+        .unwrap_err();
+
+        assert!(crate::workspace::error_has_file_conflict(&error));
+        assert!(!outside.path().join("cwd/marker").exists());
+        assert_eq!(
+            std::fs::read(root.join("displaced-managed/cwd/marker")).unwrap(),
+            b"executed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_cwd_conflict_does_not_hide_a_process_timeout() {
+        if which::which("sleep").is_err() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let cwd = root.join("cwd");
+        let displaced = root.join("displaced-cwd");
+        std::fs::create_dir(&cwd).unwrap();
+        let generation = crate::workspace::DirectoryGeneration::open_beneath(&root, &cwd).unwrap();
+        crate::workspace::set_test_hook(crate::workspace::TestHookPoint::ProcessAfterCwdOpen, {
+            let cwd = cwd.clone();
+            move || {
+                std::fs::rename(&cwd, displaced).unwrap();
+                std::fs::create_dir(&cwd).unwrap();
+            }
+        });
+
+        let error = run_process("sleep", ["60"], "sleep", 1, Some(&generation)).unwrap_err();
+        let result = process_error_result(error, 1);
+
+        assert_eq!(result.rtcode, 124);
+        assert!(!result.interrupted);
+        assert!(result.stderr.contains("working directory validation"));
     }
 
     /// Regression: a genuinely slow process must still be killed and reported as timed out.

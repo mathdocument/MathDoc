@@ -8,7 +8,10 @@ mod tests;
 mod text;
 
 use anyhow::{bail, Context, Result};
-use process::{ensure_complete_machine_output, process_error_result, require_tool, run_process};
+use process::{
+    ensure_complete_machine_output, process_error_result, require_tool, run_process,
+    run_process_with_inherited_fd,
+};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
@@ -158,6 +161,7 @@ struct CompilerWorkspace {
     mdcroot: PathBuf,
     root: PathBuf,
     srctype: String,
+    root_generation: crate::workspace::DirectoryGeneration,
 }
 
 impl CompilerWorkspace {
@@ -165,10 +169,12 @@ impl CompilerWorkspace {
         let mdcroot = crate::workspace::validate_mdcroot(&req.mdcroot)?;
         let root = mdcroot.join(".mdc").join(srctype);
         crate::workspace::ensure_regular_directory_tree(&mdcroot, &root)?;
+        let root_generation = crate::workspace::DirectoryGeneration::open_beneath(&mdcroot, &root)?;
         Ok(Self {
             mdcroot,
             root,
             srctype: srctype.to_string(),
+            root_generation,
         })
     }
 
@@ -180,13 +186,26 @@ impl CompilerWorkspace {
         &self.mdcroot
     }
 
+    fn process_cwd(&self) -> Result<&crate::workspace::DirectoryGeneration> {
+        self.root_generation.require_current()?;
+        Ok(&self.root_generation)
+    }
+
+    fn process_cwd_beneath(&self, path: &Path) -> Result<crate::workspace::DirectoryGeneration> {
+        self.require_workspace_path(path)?;
+        self.root_generation.open_descendant(&self.mdcroot, path)
+    }
+
     fn lib_root(&self) -> PathBuf {
         self.root.join("Lib")
     }
 
     fn snapshot(&self, path: &Path) -> Result<crate::workspace::FileSnapshot> {
         self.require_workspace_path(path)?;
-        crate::workspace::FileSnapshot::capture_beneath(&self.mdcroot, path)
+        self.root_generation.require_current()?;
+        let snapshot = crate::workspace::FileSnapshot::capture_beneath(&self.mdcroot, path)?;
+        self.root_generation.require_current()?;
+        Ok(snapshot)
     }
 
     fn snapshot_unchanged(
@@ -195,17 +214,26 @@ impl CompilerWorkspace {
         path: &Path,
     ) -> Result<bool> {
         self.require_workspace_path(path)?;
-        snapshot.unchanged_beneath(&self.mdcroot, path)
+        self.root_generation.require_current()?;
+        let unchanged = snapshot.unchanged_beneath(&self.mdcroot, path)?;
+        self.root_generation.require_current()?;
+        Ok(unchanged)
     }
 
     fn ensure_directory_tree(&self, directory: &Path) -> Result<bool> {
         self.require_workspace_path(directory)?;
-        crate::workspace::ensure_regular_directory_tree(&self.mdcroot, directory)
+        self.root_generation.require_current()?;
+        let changed = crate::workspace::ensure_regular_directory_tree(&self.mdcroot, directory)?;
+        self.root_generation.require_current()?;
+        Ok(changed)
     }
 
     fn remove_directory_tree(&self, directory: &Path) -> Result<bool> {
         self.require_workspace_path(directory)?;
-        crate::workspace::remove_directory_tree_beneath(&self.mdcroot, directory)
+        self.root_generation.require_current()?;
+        let changed = crate::workspace::remove_directory_tree_beneath(&self.mdcroot, directory)?;
+        self.root_generation.require_current()?;
+        Ok(changed)
     }
 
     fn remove_file(
@@ -214,10 +242,14 @@ impl CompilerWorkspace {
         snapshot: &crate::workspace::FileSnapshot,
     ) -> Result<Option<crate::workspace::AppliedWrite>> {
         self.require_workspace_path(path)?;
-        snapshot.remove_beneath(&self.mdcroot, path)
+        self.root_generation.require_current()?;
+        let applied = snapshot.remove_beneath(&self.mdcroot, path)?;
+        self.root_generation.require_current()?;
+        Ok(applied)
     }
 
     fn lib_source(&self, req: &CompilerReq) -> Result<(PathBuf, PathBuf)> {
+        self.root_generation.require_current()?;
         let lib_root = self.lib_root();
         let source = absolute_path(&req.source)?;
         let requested_root = absolute_path(&req.mdcroot)?;
@@ -238,6 +270,7 @@ impl CompilerWorkspace {
         }
         crate::workspace::ensure_regular_file_beneath(&self.mdcroot, &source)
             .with_context(|| format!("validating compiler source {}", source.display()))?;
+        self.root_generation.require_current()?;
         Ok((lib_root, relative))
     }
 
@@ -248,7 +281,10 @@ impl CompilerWorkspace {
         content: &[u8],
     ) -> Result<crate::workspace::AppliedWrite> {
         self.require_workspace_path(path)?;
-        snapshot.replace_beneath(&self.mdcroot, path, content)
+        self.root_generation.require_current()?;
+        let applied = snapshot.replace_beneath(&self.mdcroot, path, content)?;
+        self.root_generation.require_current()?;
+        Ok(applied)
     }
 
     fn require_workspace_path(&self, path: &Path) -> Result<()> {

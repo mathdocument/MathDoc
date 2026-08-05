@@ -10,8 +10,8 @@ a Svelte 5 single-page application embedded in the Rust binary.
 
 - `src/web/mod.rs` defines `AppState`, holding `Arc<Mutex<IndCache>>` and a separate
   `AppState`-scoped mutation mutex shared by handlers on the router.
-- `src/web/api.rs` implements handlers. No handler holds the synchronous cache lock
-  across `.await`.
+- `src/web/api.rs` implements handlers. Synchronous cache and filesystem work runs on
+  Tokio's blocking pool, and no handler holds the cache lock across `.await`.
 - `src/web/server.rs` builds the router, binds a loopback port, opens the browser, and
   handles graceful SIGINT/SIGTERM shutdown.
 - `src/web/assets.rs` embeds and serves `web/dist` with `rust-embed` in normal builds.
@@ -132,6 +132,12 @@ check returns plain-text `421` before API normalization.
 separate `AppState` mutex covers each write's mutation critical section for handlers on
 that router. The flock-based workspace mutation lock coordinates across application
 states and other `mdc` processes.
+
+One five-second deadline, created before dispatch to the blocking pool, bounds the
+complete wait to enter a Web mutation: blocking-pool queue time, the local mutation
+mutex, cache mutex, and workspace flock consume the same budget. Cache and flock
+contention therefore do not block Tokio worker threads indefinitely. A poisoned local
+mutex or a panicking blocking task becomes a structured `500` response.
 
 Direct title and block writes hold both mutation boundaries across resolve, source
 snapshot and parse, fnode recheck, mutation, conflict-aware replacement, index update,

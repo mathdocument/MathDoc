@@ -27,10 +27,86 @@ pub enum ResolveRefError {
     Invalid(String),
 }
 
+fn regular_file_identity(path: &Path, name: &str) -> Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("inspecting {name} {}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.nlink() != 1 {
+        bail!(
+            "{name} is not one regular single-link file: {}",
+            path.display()
+        );
+    }
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+fn regular_directory_identity(path: &Path, name: &str) -> Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("inspecting {name} {}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(crate::workspace::WorkspaceGenerationError::new(format!(
+            "{name} is not a real directory: {}",
+            path.display()
+        ))
+        .into());
+    }
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+fn open_database_guard(path: &Path) -> Result<(std::fs::File, (u64, u64))> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(path)
+        .with_context(|| format!("opening index database guard {}", path.display()))?;
+    let metadata = file.metadata()?;
+    let identity = regular_file_identity(path, "index database")?;
+    use std::os::unix::fs::MetadataExt;
+    if (metadata.dev(), metadata.ino()) != identity {
+        bail!(
+            "index database changed while it was being opened: {}",
+            path.display()
+        );
+    }
+    Ok((file, identity))
+}
+
+fn connection_database_has_moved(connection: &Connection) -> Result<bool> {
+    let mut moved = 0_i32;
+    // SAFETY: `connection` owns a live SQLite handle, the database name is
+    // NUL-terminated, and SQLite writes an integer to `moved` synchronously.
+    let code = unsafe {
+        rusqlite::ffi::sqlite3_file_control(
+            connection.handle(),
+            c"main".as_ptr(),
+            rusqlite::ffi::SQLITE_FCNTL_HAS_MOVED,
+            std::ptr::from_mut(&mut moved).cast(),
+        )
+    };
+    if code != rusqlite::ffi::SQLITE_OK {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            Some("checking whether the index database moved".to_string()),
+        )
+        .into());
+    }
+    Ok(moved != 0)
+}
+
 /// SQLite-backed index of a MathDoc workspace.
 pub struct IndCache {
     root: PathBuf,
     control_identity: (u64, u64),
+    db_path: PathBuf,
+    db_identity: (u64, u64),
+    db_file: std::fs::File,
     conn: Connection,
 }
 
@@ -48,18 +124,89 @@ impl IndCache {
         let root = mutation_lock.root()?.to_path_buf();
         let control_identity = mutation_lock.control_identity()?;
         let db_path = root.join(".mdc").join("index.db");
+        let (db_file, db_identity) = open_database_guard(&db_path)?;
+        crate::workspace::run_test_hook(crate::workspace::TestHookPoint::IndexBeforeConnectionOpen);
         let conn = schema::open_db(&db_path)?;
+        crate::workspace::run_test_hook(crate::workspace::TestHookPoint::IndexAfterConnectionOpen);
+        if regular_file_identity(&db_path, "index database")? != db_identity {
+            return Err(crate::workspace::WorkspaceGenerationError::new(format!(
+                "index database changed while SQLite opened it: {}",
+                db_path.display()
+            ))
+            .into());
+        }
+        if connection_database_has_moved(&conn)? {
+            return Err(crate::workspace::WorkspaceGenerationError::new(format!(
+                "SQLite opened a displaced index database generation: {}",
+                db_path.display()
+            ))
+            .into());
+        }
         let mut cache = IndCache {
             root,
             control_identity,
+            db_path,
+            db_identity,
+            db_file,
             conn,
         };
+        cache.validate_mutation_lock(mutation_lock)?;
         cache.bootstrap_if_needed()?;
+        cache.validate_mutation_lock(mutation_lock)?;
         Ok(cache)
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    fn require_current_database(&self) -> Result<()> {
+        use std::os::unix::fs::MetadataExt;
+
+        let control_path = self.root.join(".mdc");
+        let current_control = regular_directory_identity(&control_path, "workspace control path")
+            .map_err(|error| {
+            crate::workspace::WorkspaceGenerationError::new(format!(
+                "workspace control directory generation is uncertain at {}: {error}",
+                control_path.display()
+            ))
+        })?;
+        if current_control != self.control_identity {
+            return Err(crate::workspace::WorkspaceGenerationError::new(format!(
+                "workspace control directory changed while the cache was open: {}",
+                control_path.display()
+            ))
+            .into());
+        }
+        let opened = self.db_file.metadata()?;
+        let current = regular_file_identity(&self.db_path, "index database").map_err(|error| {
+            crate::workspace::WorkspaceGenerationError::new(format!(
+                "workspace index database generation is uncertain at {}: {error}",
+                self.db_path.display()
+            ))
+        })?;
+        if (opened.dev(), opened.ino()) == self.db_identity
+            && current == self.db_identity
+            && !connection_database_has_moved(&self.conn)?
+        {
+            Ok(())
+        } else {
+            Err(crate::workspace::WorkspaceGenerationError::new(format!(
+                "workspace index database changed while the cache was open: {}",
+                self.db_path.display()
+            ))
+            .into())
+        }
+    }
+
+    fn with_current_database<T>(
+        &self,
+        operation: impl FnOnce(&Connection) -> Result<T>,
+    ) -> Result<T> {
+        self.require_current_database()?;
+        let result = operation(&self.conn);
+        self.require_current_database()?;
+        result
     }
 
     pub(crate) fn acquire_mutation_lock(&self) -> Result<crate::workspace::WorkspaceMutationLock> {
@@ -72,7 +219,8 @@ impl IndCache {
         &self,
         mutation_lock: &crate::workspace::WorkspaceMutationLock,
     ) -> Result<()> {
-        mutation_lock.validate_identity(&self.root, self.control_identity)
+        mutation_lock.validate_identity(&self.root, self.control_identity)?;
+        self.require_current_database()
     }
 
     // ── Bootstrap / refresh ──────────────────────────────────────────────────
@@ -80,11 +228,13 @@ impl IndCache {
     /// Bootstrap the index on first use; no-op if already bootstrapped.
     fn bootstrap_if_needed(&mut self) -> Result<()> {
         let _profile = crate::profile::scope("IndCache::bootstrap_if_needed");
+        self.require_current_database()?;
         if !queries::is_bootstrapped(&self.conn)? {
             let tx = self.conn.transaction()?;
             refresh::refresh_search_index(&tx, &self.root)?;
             let _commit = crate::profile::scope("sqlite::bootstrap_commit");
             tx.commit()?;
+            self.require_current_database()?;
         } else {
             self.refresh_formal_statuses()?;
         }
@@ -94,18 +244,22 @@ impl IndCache {
     /// Full workspace rescan; rebuilds the entire index.
     pub fn refresh_all(&mut self) -> Result<()> {
         let _profile = crate::profile::scope("IndCache::refresh_all");
+        self.require_current_database()?;
         let tx = self.conn.transaction()?;
         refresh::refresh_search_index(&tx, &self.root)?;
         let _commit = crate::profile::scope("sqlite::refresh_all_commit");
         tx.commit()?;
+        self.require_current_database()?;
         Ok(())
     }
 
     /// Discover additions, deletions, and metadata changes using the metadata fast path.
     pub fn discover_workspace_changes(&mut self) -> Result<()> {
         let _profile = crate::profile::scope("IndCache::discover_workspace_changes");
+        self.require_current_database()?;
         let changes = discovery::discover_workspace_changes(&self.conn, &self.root)?;
         if changes.is_empty() {
+            self.require_current_database()?;
             return Ok(());
         }
         let tx = self.conn.transaction()?;
@@ -122,11 +276,13 @@ impl IndCache {
         }
         crate::formal_status::refresh_index_statuses(&tx, &self.root)?;
         tx.commit()?;
+        self.require_current_database()?;
         Ok(())
     }
 
     /// Upsert a single file path and update its topo depths.
     pub fn upsert_path(&mut self, file_path: &Path) -> Result<()> {
+        self.require_current_database()?;
         let file_path = crate::workspace::resolve_mdoc_path(&self.root, file_path)?;
         let tx = self.conn.transaction()?;
         let outcome = refresh::upsert_mdoc_row(&tx, &self.root, &file_path)?;
@@ -146,6 +302,7 @@ impl IndCache {
         crate::formal_status::refresh_index_statuses(&tx, &self.root)?;
 
         tx.commit()?;
+        self.require_current_database()?;
         Ok(())
     }
 
@@ -166,6 +323,7 @@ impl IndCache {
         self.validate_mutation_lock(mutation_lock)?;
         let path = self.validate_node_path(node)?;
         self.write_and_index_node(
+            mutation_lock,
             &path,
             payload.as_bytes(),
             &crate::workspace::FileSnapshot::Missing,
@@ -182,7 +340,7 @@ impl IndCache {
         self.validate_mutation_lock(mutation_lock)?;
         let path = self.validate_node_path(node)?;
         let payload = node.render()?;
-        self.write_and_index_node(&path, payload.as_bytes(), snapshot)?;
+        self.write_and_index_node(mutation_lock, &path, payload.as_bytes(), snapshot)?;
         Ok(())
     }
 
@@ -192,18 +350,44 @@ impl IndCache {
 
     fn write_and_index_node(
         &mut self,
+        mutation_lock: &crate::workspace::WorkspaceMutationLock,
         path: &Path,
         payload: &[u8],
         snapshot: &crate::workspace::FileSnapshot,
     ) -> Result<crate::workspace::AppliedWrite> {
+        self.validate_mutation_lock(mutation_lock)?;
         let created = matches!(snapshot, crate::workspace::FileSnapshot::Missing);
         let applied = snapshot.replace_beneath(&self.root, path, payload)?;
-        let Err(index_error) = self.upsert_path(path) else {
-            return Ok(applied);
+        let index_error = match self.upsert_path(path) {
+            Ok(()) => {
+                crate::workspace::run_test_hook(
+                    crate::workspace::TestHookPoint::IndexAfterNodeUpsert,
+                );
+                self.validate_mutation_lock(mutation_lock)
+                    .with_context(|| {
+                        format!(
+                            "node write and index committed under an uncertain lock: {}",
+                            path.display()
+                        )
+                    })?;
+                return Ok(applied);
+            }
+            Err(error) => error,
         };
 
+        let lock_validation = self.validate_mutation_lock(mutation_lock).with_context(|| {
+            format!(
+                "index update failed after the mutation lock changed: {}",
+                path.display()
+            )
+        });
         let rollback_result = applied.rollback();
-        let restore_index_result = self.upsert_path(path);
+        let restore_index_result = match lock_validation {
+            Ok(()) => self
+                .upsert_path(path)
+                .and_then(|_| self.validate_mutation_lock(mutation_lock)),
+            Err(error) => Err(error),
+        };
         let rollback_action = if created { "remove" } else { "restore" };
         Err(crate::workspace::PersistenceRecoveryError::from_attempts(
             index_error,
@@ -217,6 +401,7 @@ impl IndCache {
     /// Upsert all dependencies reachable from `root_path` up to `depth` hops (-1 = infinite).
     pub fn refresh_reachable_from_path(&mut self, root_path: &Path, depth: i32) -> Result<()> {
         let _profile = crate::profile::scope("IndCache::refresh_reachable_from_path");
+        self.require_current_database()?;
         let tx = self.conn.transaction()?;
         let upserted_fnodes = {
             let _phase = crate::profile::scope("refresh::reachable_upserts");
@@ -233,25 +418,28 @@ impl IndCache {
         crate::formal_status::refresh_index_statuses(&tx, &self.root)?;
         let _commit = crate::profile::scope("sqlite::refresh_reachable_commit");
         tx.commit()?;
+        self.require_current_database()?;
         Ok(())
     }
 
     // ── Read queries ─────────────────────────────────────────────────────────
 
     pub fn count(&self) -> Result<u32> {
-        queries::mdoc_count(&self.conn)
+        self.with_current_database(queries::mdoc_count)
     }
 
     pub fn path_has_blocking_issue(&self, rel_path: &str) -> Result<bool> {
-        queries::path_has_blocking_issue(&self.conn, rel_path)
+        self.with_current_database(|connection| {
+            queries::path_has_blocking_issue(connection, rel_path)
+        })
     }
 
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<NodeSummary>> {
-        queries::search(&self.conn, query, limit)
+        self.with_current_database(|connection| queries::search(connection, query, limit))
     }
 
     pub fn all_node_summaries(&self) -> Result<Vec<NodeSummary>> {
-        queries::all_node_summaries(&self.conn)
+        self.with_current_database(queries::all_node_summaries)
     }
 
     pub fn dependency_candidates(
@@ -260,25 +448,29 @@ impl IndCache {
         query: &str,
         limit: usize,
     ) -> Result<DependencyCandidates> {
-        queries::dependency_candidates(&self.conn, source_fnode, query, limit)
+        self.with_current_database(|connection| {
+            queries::dependency_candidates(connection, source_fnode, query, limit)
+        })
     }
 
     pub fn node_summary(&self, fnode: &str) -> Result<NodeSummary> {
-        queries::node_summary(&self.conn, fnode)
+        self.with_current_database(|connection| queries::node_summary(connection, fnode))
     }
 
     pub fn node_degrees(&self, fnode: &str) -> Result<NodeDegrees> {
-        queries::node_degrees(&self.conn, fnode)
+        self.with_current_database(|connection| queries::node_degrees(connection, fnode))
     }
 
     pub fn formalization_status(&self, fnode: &str) -> Result<FormalizationStatus> {
-        queries::formalization_status(&self.conn, fnode)
+        self.with_current_database(|connection| queries::formalization_status(connection, fnode))
     }
 
     pub(crate) fn refresh_formal_statuses(&mut self) -> Result<()> {
+        self.require_current_database()?;
         let tx = self.conn.transaction()?;
         crate::formal_status::refresh_index_statuses(&tx, &self.root)?;
         tx.commit()?;
+        self.require_current_database()?;
         Ok(())
     }
 
@@ -395,10 +587,11 @@ impl IndCache {
 
     #[cfg(test)]
     fn exact_fnode_rows(&self, fnode: &str) -> Result<Vec<(String, String, String)>> {
-        queries::exact_fnode_rows(&self.conn, fnode)
+        self.with_current_database(|connection| queries::exact_fnode_rows(connection, fnode))
     }
 
     pub fn reconcile_fnode_paths(&mut self, fnode: &str) -> Result<Vec<PathBuf>> {
+        self.require_current_database()?;
         let tx = self.conn.transaction()?;
         let rows = queries::exact_fnode_rows(&tx, fnode)?;
         let mut paths = Vec::new();
@@ -415,19 +608,22 @@ impl IndCache {
             derived::refresh_topo_depth_upward_from(&tx, fnode)?;
         }
         tx.commit()?;
+        self.require_current_database()?;
         Ok(paths)
     }
 
     pub fn lookup_by_fnode(&self, fnodes: &[&str]) -> Result<HashMap<String, (String, String)>> {
-        queries::lookup_by_fnode(&self.conn, fnodes)
+        self.with_current_database(|connection| queries::lookup_by_fnode(connection, fnodes))
     }
 
     pub fn issue_for_fnode(&self, fnode: &str) -> Result<Option<GraphIssue>> {
-        queries::issue_for_fnode(&self.conn, fnode)
+        self.with_current_database(|connection| queries::issue_for_fnode(connection, fnode))
     }
 
     pub fn ref_item_for_fnode(&self, fnode: &str, depth: u32) -> Result<DependencyItem> {
-        queries::ref_item_for_fnode(&self.conn, fnode, depth)
+        self.with_current_database(|connection| {
+            queries::ref_item_for_fnode(connection, fnode, depth)
+        })
     }
 
     pub(crate) fn ref_items_for_fnodes(
@@ -436,28 +632,38 @@ impl IndCache {
         depth: u32,
     ) -> Result<Vec<DependencyItem>> {
         let fnodes: Vec<&str> = fnodes.iter().map(String::as_str).collect();
-        queries::ref_items_for_fnodes(&self.conn, &fnodes, depth)
+        self.with_current_database(|connection| {
+            queries::ref_items_for_fnodes(connection, &fnodes, depth)
+        })
     }
 
     pub fn referrer_items(&self, target_fnode: &str, depth: i32) -> Result<Vec<DependencyItem>> {
-        queries::referrer_items(&self.conn, target_fnode, depth)
+        self.with_current_database(|connection| {
+            queries::referrer_items(connection, target_fnode, depth)
+        })
     }
 
     pub fn direct_referrer_summaries(&self, fnode: &str) -> Result<Vec<NodeSummary>> {
-        queries::direct_referrer_summaries(&self.conn, fnode)
+        self.with_current_database(|connection| {
+            queries::direct_referrer_summaries(connection, fnode)
+        })
     }
 
     pub fn direct_dependency_summaries(&self, fnode: &str) -> Result<Vec<NodeSummary>> {
-        queries::direct_dependency_summaries(&self.conn, fnode)
+        self.with_current_database(|connection| {
+            queries::direct_dependency_summaries(connection, fnode)
+        })
     }
 
     /// All dependency edges whose source document has no blocking issue.
     pub fn all_valid_edges(&self) -> Result<Vec<(String, String)>> {
-        queries::all_valid_edges(&self.conn)
+        self.with_current_database(queries::all_valid_edges)
     }
 
     pub fn is_reachable(&self, from_fnode: &str, to_fnode: &str) -> Result<bool> {
-        queries::is_reachable(&self.conn, from_fnode, to_fnode)
+        self.with_current_database(|connection| {
+            queries::is_reachable(connection, from_fnode, to_fnode)
+        })
     }
 
     pub fn dependency_report(
@@ -465,29 +671,37 @@ impl IndCache {
         root_fnode: &str,
         depth: i32,
     ) -> Result<DependencyTraversalReport> {
-        queries::dependency_report(&self.conn, root_fnode, depth)
+        self.with_current_database(|connection| {
+            queries::dependency_report(connection, root_fnode, depth)
+        })
     }
 
     pub fn leaf_dependency_report(&self, root_fnode: &str) -> Result<DependencyTraversalReport> {
-        queries::leaf_dependency_report(&self.conn, root_fnode)
+        self.with_current_database(|connection| {
+            queries::leaf_dependency_report(connection, root_fnode)
+        })
     }
 
     // ── Write-then-read (need &mut for transaction) ───────────────────────────
 
     pub fn global_root_items(&mut self) -> Result<Vec<GraphRootItem>> {
+        self.require_current_database()?;
         let tx = self.conn.transaction()?;
         derived::ensure_weak_components(&tx)?;
         let result = queries::global_root_items(&tx)?;
         tx.commit()?;
+        self.require_current_database()?;
         Ok(result)
     }
 
     pub fn graph_check_report(&mut self) -> Result<GraphCheckReport> {
         let _profile = crate::profile::scope("IndCache::graph_check_report");
+        self.require_current_database()?;
         let tx = self.conn.transaction()?;
         let cycles = derived::ensure_scc_cache(&tx)?;
         let result = queries::graph_check_report(&tx, cycles)?;
         tx.commit()?;
+        self.require_current_database()?;
         Ok(result)
     }
 
@@ -499,6 +713,14 @@ impl IndCache {
     /// - A path-like string (contains `/`, ends in `.mdoc`, or starts with `.`)
     /// - An fnode or fnode prefix
     pub fn resolve_ref(
+        &self,
+        raw_ref: &str,
+        cwd: Option<&Path>,
+    ) -> Result<(String, String, PathBuf)> {
+        self.with_current_database(|_| self.resolve_ref_inner(raw_ref, cwd))
+    }
+
+    fn resolve_ref_inner(
         &self,
         raw_ref: &str,
         cwd: Option<&Path>,
@@ -588,43 +810,47 @@ impl IndCache {
         ) {
             return Err(ref_error);
         }
-        let raw_ref = raw_ref.trim();
-        if raw_ref.is_empty() {
-            return Err(ref_error);
-        }
+        self.with_current_database(|connection| {
+            let raw_ref = raw_ref.trim();
+            if raw_ref.is_empty() {
+                return Err(ref_error);
+            }
 
-        let mut rows = Vec::new();
-        for (fnode, title, rel_path) in queries::exact_title_rows(&self.conn, raw_ref)? {
-            if let Some(path) = self.valid_cached_path(&rel_path) {
-                rows.push((fnode, title, rel_path, path));
+            let mut rows = Vec::new();
+            for (fnode, title, rel_path) in queries::exact_title_rows(connection, raw_ref)? {
+                if let Some(path) = self.valid_cached_path(&rel_path) {
+                    rows.push((fnode, title, rel_path, path));
+                }
             }
-        }
-        match rows.as_slice() {
-            [(fnode, title, _, path)] => Ok((fnode.clone(), title.clone(), path.clone())),
-            [] => Err(ref_error),
-            _ => Err(ResolveRefError::Ambiguous {
-                reference: raw_ref.to_string(),
-                matches: format_ref_preview(&rows.iter().collect::<Vec<_>>()),
+            match rows.as_slice() {
+                [(fnode, title, _, path)] => Ok((fnode.clone(), title.clone(), path.clone())),
+                [] => Err(ref_error),
+                _ => Err(ResolveRefError::Ambiguous {
+                    reference: raw_ref.to_string(),
+                    matches: format_ref_preview(&rows.iter().collect::<Vec<_>>()),
+                }
+                .into()),
             }
-            .into()),
-        }
+        })
     }
 
     /// Like `resolve_ref` but returns only the path (also accepts refs that aren't indexed).
     pub fn resolve_edit_target_path(&self, raw_ref: &str, cwd: Option<&Path>) -> Result<PathBuf> {
-        let raw_ref = raw_ref.trim();
-        if raw_ref.is_empty() {
-            return Err(ResolveRefError::Empty.into());
-        }
-        let base_cwd = cwd
-            .map(|c| c.to_path_buf())
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        let base_cwd = base_cwd.canonicalize().unwrap_or(base_cwd);
-        if let Some((candidate, _)) = self.resolve_existing_path(raw_ref, &base_cwd)? {
-            return Ok(candidate);
-        }
-        let (_, _, path) = self.resolve_ref(raw_ref, Some(&base_cwd))?;
-        Ok(path)
+        self.with_current_database(|_| {
+            let raw_ref = raw_ref.trim();
+            if raw_ref.is_empty() {
+                return Err(ResolveRefError::Empty.into());
+            }
+            let base_cwd = cwd
+                .map(|c| c.to_path_buf())
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+            let base_cwd = base_cwd.canonicalize().unwrap_or(base_cwd);
+            if let Some((candidate, _)) = self.resolve_existing_path(raw_ref, &base_cwd)? {
+                return Ok(candidate);
+            }
+            let (_, _, path) = self.resolve_ref_inner(raw_ref, Some(&base_cwd))?;
+            Ok(path)
+        })
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────
@@ -720,6 +946,133 @@ mod mutation_boundary_tests {
 
         assert!(error.to_string().contains("does not match cache root"));
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn create_rejects_a_replaced_index_database_generation() {
+        let workspace = workspace();
+        let root = workspace.path();
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+        let db_path = root.join(".mdc/index.db");
+        std::fs::rename(&db_path, root.join("detached-index.db")).unwrap();
+        std::fs::write(&db_path, []).unwrap();
+        let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(root).unwrap();
+        let path = root.join("node.mdoc");
+        let node = MdocNode::new_at_path(&path, "Node");
+
+        let error = cache.create_node(&mutation_lock, &node).unwrap_err();
+
+        assert!(error.to_string().contains("index database changed"));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn create_rolls_back_after_index_replacement_during_persistence() {
+        let workspace = workspace();
+        let root = workspace.path();
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+        let mutation_lock = cache.acquire_mutation_lock().unwrap();
+        let db_path = root.join(".mdc/index.db");
+        let detached = root.join("detached-index.db");
+        crate::workspace::set_test_hook(crate::workspace::TestHookPoint::WriteAfterPersistence, {
+            let db_path = db_path.clone();
+            move || {
+                std::fs::rename(&db_path, detached).unwrap();
+                std::fs::write(&db_path, []).unwrap();
+            }
+        });
+        let path = root.join("node.mdoc");
+        let node = MdocNode::new_at_path(&path, "Node");
+
+        let error = cache.create_node(&mutation_lock, &node).unwrap_err();
+
+        assert!(error.to_string().contains("index database changed"));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn lock_replacement_after_index_commit_preserves_file_index_agreement() {
+        let workspace = workspace();
+        let root = workspace.path();
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+        let mutation_lock = cache.acquire_mutation_lock().unwrap();
+        let lock_path = root.join(".mdc/mutation.lock");
+        let displaced_lock = root.join("displaced-mutation.lock");
+        crate::workspace::set_test_hook(crate::workspace::TestHookPoint::IndexAfterNodeUpsert, {
+            let lock_path = lock_path.clone();
+            move || {
+                std::fs::rename(&lock_path, displaced_lock).unwrap();
+                std::fs::write(&lock_path, []).unwrap();
+            }
+        });
+        let path = root.join("node.mdoc");
+        let mut node = MdocNode::new_at_path(&path, "Node");
+        node.fnode = "committed-node".to_string();
+
+        let error = cache.create_node(&mutation_lock, &node).unwrap_err();
+
+        assert!(error.to_string().contains("uncertain lock"));
+        assert_eq!(MdocNode::load(&path).unwrap().fnode, "committed-node");
+        assert_eq!(cache.exact_fnode_rows("committed-node").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn open_rejects_a_restored_guard_around_a_displaced_sqlite_connection() {
+        let workspace = workspace();
+        let root = workspace.path();
+        drop(IndCache::open(root.to_path_buf()).unwrap());
+        let db_path = root.join(".mdc/index.db");
+        let guarded = root.join("guarded-index.db");
+        let connected = root.join("connected-index.db");
+        crate::workspace::set_test_hook(
+            crate::workspace::TestHookPoint::IndexBeforeConnectionOpen,
+            {
+                let db_path = db_path.clone();
+                let guarded = guarded.clone();
+                let connected = connected.clone();
+                move || {
+                    std::fs::rename(&db_path, &guarded).unwrap();
+                    std::fs::write(&db_path, []).unwrap();
+                    crate::workspace::set_test_hook(
+                        crate::workspace::TestHookPoint::IndexAfterConnectionOpen,
+                        move || {
+                            std::fs::rename(&db_path, connected).unwrap();
+                            std::fs::rename(guarded, &db_path).unwrap();
+                        },
+                    );
+                }
+            },
+        );
+
+        let error = IndCache::open(root.to_path_buf())
+            .err()
+            .expect("displaced SQLite connection must be rejected");
+
+        assert!(error.to_string().contains("displaced index database"));
+    }
+
+    #[test]
+    fn open_revalidates_the_mutation_lock_after_sqlite_open() {
+        let workspace = workspace();
+        let root = workspace.path();
+        let lock_path = root.join(".mdc/mutation.lock");
+        let displaced = root.join("displaced-mutation.lock");
+        crate::workspace::set_test_hook(
+            crate::workspace::TestHookPoint::IndexAfterConnectionOpen,
+            {
+                let lock_path = lock_path.clone();
+                move || {
+                    std::fs::rename(&lock_path, displaced).unwrap();
+                    std::fs::write(&lock_path, []).unwrap();
+                }
+            },
+        );
+
+        let error = IndCache::open(root.to_path_buf())
+            .err()
+            .expect("replaced mutation lock must invalidate cache open");
+
+        assert!(format!("{error:#}").contains("workspace mutation lock"));
     }
 
     #[test]
@@ -1016,6 +1369,14 @@ mod mutation_boundary_tests {
         )
         .unwrap();
         std::fs::create_dir(workspace.path().join(".mdc")).unwrap();
+        std::fs::rename(
+            workspace.path().join("old-mdc/index.db"),
+            workspace.path().join(".mdc/index.db"),
+        )
+        .unwrap();
+
+        let read_error = cache.count().unwrap_err();
+        assert!(read_error.to_string().contains("control directory changed"));
 
         let error = match cache.acquire_mutation_lock() {
             Err(error) => error,

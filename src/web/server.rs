@@ -60,7 +60,7 @@ pub async fn serve(
         // Spawn so the server still starts even if the browser open fails.
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            let _ = open::that(&browser_url);
+            let _ = tokio::task::spawn_blocking(move || open::that(browser_url)).await;
         });
     }
 
@@ -205,7 +205,7 @@ fn with_dev_web(app: Router, web_dir: std::path::PathBuf) -> Router {
     let fallback_dir = dist_dir.clone();
     let serve = ServeDir::new(dist_dir).fallback(get(move |uri: axum::http::Uri| {
         let fallback_dir = fallback_dir.clone();
-        async move { assets_spa_fallback(uri, &fallback_dir) }
+        async move { assets_spa_fallback(uri, fallback_dir).await }
     }));
     app.route(
         "/assets",
@@ -216,7 +216,7 @@ fn with_dev_web(app: Router, web_dir: std::path::PathBuf) -> Router {
 
 /// SPA fallback for dev-web ServeDir — reads dist/index.html (or a stub).
 #[cfg(feature = "dev-web")]
-fn assets_spa_fallback(uri: axum::http::Uri, dist_dir: &std::path::Path) -> Response {
+async fn assets_spa_fallback(uri: axum::http::Uri, dist_dir: std::path::PathBuf) -> Response {
     use axum::http::header;
     use axum::http::HeaderValue;
     let request_path = uri.path().trim_start_matches('/');
@@ -230,8 +230,8 @@ fn assets_spa_fallback(uri: axum::http::Uri, dist_dir: &std::path::Path) -> Resp
         return (StatusCode::NOT_FOUND, "asset not found").into_response();
     }
     let path = dist_dir.join("index.html");
-    match std::fs::read_to_string(&path) {
-        Ok(body) => (
+    match tokio::task::spawn_blocking(move || std::fs::read_to_string(path)).await {
+        Ok(Ok(body)) => (
             StatusCode::OK,
             [
                 (
@@ -243,7 +243,7 @@ fn assets_spa_fallback(uri: axum::http::Uri, dist_dir: &std::path::Path) -> Resp
             body,
         )
             .into_response(),
-        Err(_) => (
+        Ok(Err(_)) | Err(_) => (
             StatusCode::NOT_FOUND,
             "dev-web: web/dist/index.html not found — run `npm run build` or use Vite",
         )

@@ -76,16 +76,12 @@ impl SrcCompiler for CompilerRocq {
             Ok(roots) => roots,
             Err(error) => return without_receipt(process_error_result(error, 1)),
         };
-        let dependency_evidence = match rocq_dependency_evidence(
-            workspace.root(),
-            &rocq,
-            &library_roots,
-            &source,
-            timeout_sec,
-        ) {
-            Ok(evidence) => evidence,
-            Err(error) => return without_receipt(process_error_result(error, 1)),
-        };
+        let dependency_evidence =
+            match rocq_dependency_evidence(&workspace, &rocq, &library_roots, &source, timeout_sec)
+            {
+                Ok(evidence) => evidence,
+                Err(error) => return without_receipt(process_error_result(error, 1)),
+            };
         let args = vec![
             OsStr::new("compile").to_os_string(),
             OsStr::new("-q").to_os_string(),
@@ -100,13 +96,17 @@ impl SrcCompiler for CompilerRocq {
             output.as_os_str().to_os_string(),
             source.as_os_str().to_os_string(),
         ];
+        let process_cwd = match workspace.process_cwd() {
+            Ok(cwd) => cwd,
+            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+        };
 
         match run_process(
             &rocq,
             args,
             &format!("rocq compile {}", source.display()),
             timeout_sec,
-            Some(workspace.root()),
+            Some(process_cwd),
         ) {
             Ok((rtcode, stdout, stderr)) => {
                 if rtcode == 0 {
@@ -170,7 +170,7 @@ fn collect_formal_receipt(
     dependency_evidence: DependencyEvidence,
 ) -> anyhow::Result<FormalCompilationReceipt> {
     let current_dependencies =
-        rocq_dependency_evidence(workspace.root(), rocq, library_roots, source, timeout_sec)
+        rocq_dependency_evidence(workspace, rocq, library_roots, source, timeout_sec)
             .context("revalidating Rocq dependencies")?;
     dependency_evidence.ensure_matches(&current_dependencies)?;
     if !workspace.snapshot_unchanged(source_snapshot, &workspace.root().join(source))? {
@@ -221,7 +221,7 @@ fn rocq_library_roots(
         ["compile", "-where"],
         "rocq compile -where",
         timeout_sec,
-        Some(workspace.root()),
+        Some(workspace.process_cwd()?),
     )?;
     if rtcode != 0 {
         anyhow::bail!(
@@ -278,12 +278,13 @@ impl DependencyEvidence {
 }
 
 fn rocq_dependency_evidence(
-    workspace_root: &Path,
+    workspace: &CompilerWorkspace,
     rocq: &Path,
     library_roots: &RocqLibraryRoots,
     source: &Path,
     timeout_sec: u64,
 ) -> anyhow::Result<DependencyEvidence> {
+    let workspace_root = workspace.root();
     let args = vec![
         OsStr::new("dep").to_os_string(),
         OsStr::new("-dyndep").to_os_string(),
@@ -303,8 +304,13 @@ fn rocq_dependency_evidence(
         OsStr::new("-noglob").to_os_string(),
         source.as_os_str().to_os_string(),
     ];
-    let (rtcode, stdout, stderr) =
-        run_process(rocq, args, "rocq dep", timeout_sec, Some(workspace_root))?;
+    let (rtcode, stdout, stderr) = run_process(
+        rocq,
+        args,
+        "rocq dep",
+        timeout_sec,
+        Some(workspace.process_cwd()?),
+    )?;
     if rtcode != 0 {
         anyhow::bail!(
             "failed to inspect Rocq dependencies: {}",
@@ -533,10 +539,13 @@ mod tests {
         let mdcroot = directory.path().canonicalize().unwrap();
         let root = mdcroot.join(".mdc/rocq");
         std::fs::create_dir_all(&root).unwrap();
+        let root_generation =
+            crate::workspace::DirectoryGeneration::open_beneath(&mdcroot, &root).unwrap();
         CompilerWorkspace {
             mdcroot,
             root,
             srctype: "rocq".to_string(),
+            root_generation,
         }
     }
 
