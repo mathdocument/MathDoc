@@ -126,24 +126,18 @@ impl IndCache {
     pub fn upsert_path(&mut self, file_path: &Path) -> Result<()> {
         let file_path = crate::workspace::resolve_mdoc_path(&self.root, file_path)?;
         let tx = self.conn.transaction()?;
-        let rel_path = crate::workspace::to_rel_path(&self.root, &file_path);
-
-        // Capture pre-upsert identity for incremental topo updates.
-        let old_fnode = queries::fnode_for_path(&tx, &rel_path)?;
-
-        refresh::upsert_mdoc_row(&tx, &self.root, &file_path)?;
-
-        // Post-upsert identity.
-        let new_fnode = queries::fnode_for_path(&tx, &rel_path)?;
+        let outcome = refresh::upsert_mdoc_row(&tx, &self.root, &file_path)?;
 
         // A rename affects both ancestors of the old token and the new node.
-        match (old_fnode.as_deref(), new_fnode.as_deref()) {
-            (Some(old), Some(new)) if old != new => {
-                derived::refresh_topo_depth_upward_from(&tx, old)?;
-                derived::refresh_topo_depth_upward_from(&tx, new)?;
+        if outcome.graph_changed {
+            match (outcome.old_fnode.as_deref(), outcome.new_fnode.as_deref()) {
+                (Some(old), Some(new)) if old != new => {
+                    derived::refresh_topo_depth_upward_from(&tx, old)?;
+                    derived::refresh_topo_depth_upward_from(&tx, new)?;
+                }
+                (_, Some(new)) => derived::refresh_topo_depth_upward_from(&tx, new)?,
+                (_, None) => derived::backfill_all_topo_depths(&tx)?,
             }
-            (_, Some(new)) => derived::refresh_topo_depth_upward_from(&tx, new)?,
-            (_, None) => derived::backfill_all_topo_depths(&tx)?,
         }
 
         tx.commit()?;
@@ -217,14 +211,21 @@ impl IndCache {
 
     /// Upsert all dependencies reachable from `root_path` up to `depth` hops (-1 = infinite).
     pub fn refresh_reachable_from_path(&mut self, root_path: &Path, depth: i32) -> Result<()> {
+        let _profile = crate::profile::scope("IndCache::refresh_reachable_from_path");
         let tx = self.conn.transaction()?;
-        let upserted_fnodes =
-            refresh::refresh_reachable_from_path(&tx, &self.root, root_path, depth)?;
+        let upserted_fnodes = {
+            let _phase = crate::profile::scope("refresh::reachable_upserts");
+            refresh::refresh_reachable_from_path(&tx, &self.root, root_path, depth)?
+        };
         // Incremental topo update for each upserted fnode. Weak components are
         // rebuilt lazily from the dirty flag when roots are queried.
-        for fnode in &upserted_fnodes {
-            derived::refresh_topo_depth_upward_from(&tx, fnode)?;
+        {
+            let _phase = crate::profile::scope("derived::refresh_reachable_topo");
+            for fnode in &upserted_fnodes {
+                derived::refresh_topo_depth_upward_from(&tx, fnode)?;
+            }
         }
+        let _commit = crate::profile::scope("sqlite::refresh_reachable_commit");
         tx.commit()?;
         Ok(())
     }

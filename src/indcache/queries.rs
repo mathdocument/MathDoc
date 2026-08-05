@@ -297,7 +297,11 @@ pub fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>> {
 
 pub fn graph_check_report(conn: &Connection, cycles: Vec<Vec<String>>) -> Result<GraphCheckReport> {
     let nodes: i64 = conn.query_row("SELECT COUNT(*) FROM mdoc_files", [], |r| r.get(0))?;
-    let edges: i64 = conn.query_row("SELECT COUNT(*) FROM mdoc_valid_edges", [], |r| r.get(0))?;
+    let edges: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(in_degree), 0) FROM mdoc_in_degree",
+        [],
+        |row| row.get(0),
+    )?;
 
     Ok(GraphCheckReport {
         nodes: nodes as u32,

@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
-use super::queries::fnode_for_path;
 use super::refresh::{delete_indexed_path, metadata_state, upsert_mdoc_row};
 
 type FileState = (i64, i64);
@@ -58,14 +57,11 @@ pub(super) fn apply_workspace_changes(
     let mut changed_fnodes = HashSet::new();
 
     for file_path in changes.changed_paths {
-        let rel_path = crate::workspace::to_rel_path(root, &file_path);
-        let old_fnode = fnode_for_path(conn, &rel_path)?;
-        upsert_mdoc_row(conn, root, &file_path)?;
-        let new_fnode = fnode_for_path(conn, &rel_path)?;
-        if old_fnode != new_fnode {
-            changed_fnodes.extend(old_fnode);
+        let outcome = upsert_mdoc_row(conn, root, &file_path)?;
+        if outcome.graph_changed {
+            changed_fnodes.extend(outcome.old_fnode);
+            changed_fnodes.extend(outcome.new_fnode);
         }
-        changed_fnodes.extend(new_fnode);
     }
 
     for stale_path in &changes.stale_paths {

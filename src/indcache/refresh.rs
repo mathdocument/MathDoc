@@ -85,6 +85,12 @@ struct IndexIssue {
     error: String,
 }
 
+pub(super) struct UpsertOutcome {
+    pub(super) old_fnode: Option<String>,
+    pub(super) new_fnode: Option<String>,
+    pub(super) graph_changed: bool,
+}
+
 fn scan_workspace(root: &Path) -> Result<Vec<ScannedMdoc>> {
     let mut paths = iter_mdoc_files(root).collect::<Result<Vec<_>>>()?;
     paths.sort();
@@ -473,12 +479,10 @@ pub fn refresh_reachable_from_path(
         if !seen.insert(rel_path.clone()) {
             continue;
         }
-        if let Some(old_fnode) = fnode_for_path(conn, &rel_path)? {
-            affected_fnodes.insert(old_fnode);
-        }
-        upsert_mdoc_row(conn, root, &file_path)?;
-        if let Some(fnode) = fnode_for_path(conn, &rel_path)? {
-            affected_fnodes.insert(fnode);
+        let outcome = upsert_mdoc_row(conn, root, &file_path)?;
+        if outcome.graph_changed {
+            affected_fnodes.extend(outcome.old_fnode);
+            affected_fnodes.extend(outcome.new_fnode);
         }
         if !file_path.exists() {
             continue;
@@ -515,7 +519,7 @@ pub(crate) fn validate_cached_mdoc_path(root: &Path, rel_path: &str) -> Result<P
 }
 
 /// Upsert a single .mdoc file: update metadata, parse, rebuild edges and issues.
-pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Result<()> {
+pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Result<UpsertOutcome> {
     let root_resolved = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let file_path = crate::workspace::resolve_mdoc_path(&root_resolved, file_path)?;
     let rel_path = to_rel_path(&root_resolved, &file_path);
@@ -527,7 +531,11 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
         Ok(_) => bail!("mdoc path is not a regular file: {}", file_path.display()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             delete_indexed_path(conn, &rel_path)?;
-            return Ok(());
+            return Ok(UpsertOutcome {
+                graph_changed: old_fnode.is_some() || old_had_blocking_issue,
+                old_fnode,
+                new_fnode: None,
+            });
         }
         Err(error) => {
             return Err(error)
@@ -537,7 +545,11 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
     let snapshot = crate::workspace::FileSnapshot::capture(&file_path)?;
     let Some(content) = snapshot.content() else {
         delete_indexed_path(conn, &rel_path)?;
-        return Ok(());
+        return Ok(UpsertOutcome {
+            graph_changed: old_fnode.is_some() || old_had_blocking_issue,
+            old_fnode,
+            new_fnode: None,
+        });
     };
 
     let (mtime_ns, size) = metadata_state(&meta)?;
@@ -637,15 +649,19 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
     // partial identity can make another claimant valid while this path remains
     // blocking and reports the same fallback fnode. Conservatively invalidate
     // graph-derived caches whenever a touched path is or was blocking.
-    if old_fnode != new_fnode
+    let graph_changed = old_fnode != new_fnode
         || old_dst_fnodes != new_dst_fnodes
         || old_had_blocking_issue
-        || new_has_blocking_issue
-    {
+        || new_has_blocking_issue;
+    if graph_changed {
         super::derived::bump_graph_epoch(conn)?;
     }
     invalidate_index_digest(conn)?;
-    Ok(())
+    Ok(UpsertOutcome {
+        old_fnode,
+        new_fnode,
+        graph_changed,
+    })
 }
 
 /// Remove all index entries for a path (file deleted or moved).
