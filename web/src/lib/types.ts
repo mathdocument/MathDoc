@@ -30,6 +30,13 @@ export interface SrcBlock {
   metadata: Record<string, string>;
 }
 
+export type FormalCodeStatus = "no_code" | "unverified" | "verified";
+
+export interface FormalizationStatus {
+  lean: FormalCodeStatus;
+  rocq: FormalCodeStatus;
+}
+
 export interface NodeDetail {
   fnode: string;
   title: string;
@@ -38,6 +45,7 @@ export interface NodeDetail {
   depth: number;
   depens: string[];
   blocks: SrcBlock[];
+  formalization: FormalizationStatus;
 }
 
 export interface NodeView {

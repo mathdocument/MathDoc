@@ -23,7 +23,7 @@
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
   import { indentUnit } from "@codemirror/language";
   import type { Extension } from "@codemirror/state";
-  import type { SrcBlock } from "../lib/types";
+  import type { NodeDetail, SrcBlock } from "../lib/types";
   import { api } from "../lib/api";
   import { errMsg } from "../lib/format";
   import { shikiHighlight } from "../lib/cm-shiki";
@@ -34,9 +34,10 @@
     fnode: string;
     block: SrcBlock;
     onDeleted?: (srctype: string) => void;
+    onSaved?: (node: NodeDetail) => void;
     onReady?: () => void;
   }
-  let { fnode, block, onDeleted, onReady }: Props = $props();
+  let { fnode, block, onDeleted, onSaved, onReady }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
   let editorView: EditorView | null = null;
@@ -186,6 +187,7 @@
         return;
       }
 
+      onSaved?.(node);
       lastSavedContent = updated.content;
       // A response may normalize the submitted text, but it must never replace
       // edits made while that request was in flight.

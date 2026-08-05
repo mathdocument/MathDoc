@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import { Check, FileText, Hash, Layers3, X } from "@lucide/svelte";
-  import type { NodeDetail } from "../lib/types";
+  import type { FormalCodeStatus, NodeDetail } from "../lib/types";
   import type { LoadState } from "../lib/state.svelte";
   import { shortFnode, errMsg } from "../lib/format";
   import BlockEditor from "./BlockEditor.svelte";
@@ -38,6 +38,17 @@
   let editorResetRevision = $state(0);
   let readyReported = false;
   const readyBlocks = new Set<string>();
+
+  const formalStatusLabels: Record<FormalCodeStatus, string> = {
+    no_code: "No code",
+    unverified: "Unverified",
+    verified: "Verified",
+  };
+
+  function applyFormalization(updated: NodeDetail) {
+    if (load.kind !== "ready" || load.node.fnode !== updated.fnode) return;
+    onRefresh?.({ ...load.node, formalization: updated.formalization });
+  }
 
   function reportReady() {
     if (readyReported) return;
@@ -219,6 +230,27 @@
         <span class="meta-item depth"><Layers3 size={12} strokeWidth={1.8} />Depth {node.depth}</span>
         {#if node.broken}<span class="meta-item broken"><X size={12} strokeWidth={2} />Broken</span>{/if}
       </div>
+      <div class="formalization" aria-label="formal verification status">
+        <span class="formalization-label">Formal</span>
+        <span
+          class="formal-status"
+          data-status={node.formalization.lean}
+          aria-label={`Lean: ${formalStatusLabels[node.formalization.lean]}`}
+        >
+          <span class="status-light" aria-hidden="true"></span>
+          <span class="formal-language">Lean</span>
+          <span class="status-text">{formalStatusLabels[node.formalization.lean]}</span>
+        </span>
+        <span
+          class="formal-status"
+          data-status={node.formalization.rocq}
+          aria-label={`Rocq: ${formalStatusLabels[node.formalization.rocq]}`}
+        >
+          <span class="status-light" aria-hidden="true"></span>
+          <span class="formal-language">Rocq</span>
+          <span class="status-text">{formalStatusLabels[node.formalization.rocq]}</span>
+        </span>
+      </div>
     </header>
     {#key `${node.fnode}:${editorResetRevision}`}
     <div class="blocks">
@@ -234,6 +266,7 @@
             fnode={node.fnode}
             {block}
             onDeleted={refreshNode}
+            onSaved={applyFormalization}
             onReady={() => reportBlockReady(block.srctype)}
           />
         {/each}
@@ -401,6 +434,59 @@
   .broken {
     color: var(--mdc-error);
     font-weight: 600;
+  }
+  .formalization {
+    margin-top: 0.5rem;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    color: var(--mdc-muted);
+    font-family: var(--mdc-mono);
+    font-size: 0.64rem;
+  }
+  .formalization-label {
+    margin-right: 0.08rem;
+    color: var(--mdc-dim);
+    font-size: 0.58rem;
+    font-weight: 650;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .formal-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    min-height: 22px;
+    padding: 0 0.48rem;
+    background: rgba(9, 13, 20, 0.3);
+    border: 1px solid var(--mdc-border);
+    border-radius: 999px;
+  }
+  .status-light {
+    width: 7px;
+    height: 7px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+  }
+  .formal-status[data-status="no_code"] .status-light {
+    background: var(--mdc-error);
+    box-shadow: 0 0 0 2px rgba(255, 125, 143, 0.12);
+  }
+  .formal-status[data-status="unverified"] .status-light {
+    background: var(--mdc-warning);
+    box-shadow: 0 0 0 2px rgba(232, 184, 109, 0.12);
+  }
+  .formal-status[data-status="verified"] .status-light {
+    background: var(--mdc-accent-down);
+    box-shadow: 0 0 0 2px rgba(99, 216, 178, 0.12);
+  }
+  .formal-language {
+    color: var(--mdc-fg-soft);
+    font-weight: 650;
+  }
+  .status-text {
+    color: var(--mdc-muted);
   }
   .blocks {
     flex: 1;
