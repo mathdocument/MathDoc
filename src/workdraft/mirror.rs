@@ -11,7 +11,7 @@ pub(super) struct MirrorState<'a> {
     pub(super) present: bool,
 }
 
-pub(super) fn back_state(raw: Option<&[u8]>, baseline_present: bool) -> MirrorState<'_> {
+pub(super) fn back_state(raw: Option<&[u8]>) -> MirrorState<'_> {
     match raw {
         None => MirrorState {
             content: Cow::Borrowed(&[]),
@@ -19,7 +19,7 @@ pub(super) fn back_state(raw: Option<&[u8]>, baseline_present: bool) -> MirrorSt
         },
         Some(content) if content.is_empty() || content.ends_with(b"\n") => MirrorState {
             content: Cow::Borrowed(content),
-            present: baseline_present || !content.is_empty(),
+            present: true,
         },
         Some(content) => {
             let mut normalized = Vec::with_capacity(content.len() + 1);

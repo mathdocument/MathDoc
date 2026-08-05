@@ -17,6 +17,7 @@ pub(super) struct PreparedRemoval {
     pub(super) path: PathBuf,
     pub(super) type_root: PathBuf,
     pub(super) snapshot: FileSnapshot,
+    pub(super) recoverable: bool,
 }
 
 pub(super) struct PreparedRename {
@@ -66,12 +67,20 @@ pub(super) fn apply_changes(
         ensure_unchanged(&write.path, &write.snapshot)?;
     }
     for removal in &removals {
-        ensure_unchanged(&removal.path, &removal.snapshot)?;
+        if !removal.recoverable {
+            ensure_unchanged(&removal.path, &removal.snapshot)?;
+        }
     }
     for rename in &renames {
         ensure_unchanged(&rename.from, &rename.snapshot)?;
     }
     ensure_unchanged(manifest.path, manifest.snapshot)?;
+    let recoverable_removals = removals
+        .iter()
+        .filter(|removal| removal.recoverable)
+        .map(|removal| (removal.path.as_path(), &removal.snapshot))
+        .collect::<Vec<_>>();
+    crate::workspace::remove_empty_files_beneath(allowed_root, &recoverable_removals)?;
     drop(validate_profile);
 
     let write_paths: HashSet<&Path> = writes.iter().map(|write| write.path.as_path()).collect();
@@ -92,6 +101,9 @@ pub(super) fn apply_changes(
             )?));
         }
         for removal in &removals {
+            if removal.recoverable {
+                continue;
+            }
             if let Some(write) = removal
                 .snapshot
                 .remove_beneath(allowed_root, &removal.path)?
@@ -130,6 +142,9 @@ pub(super) fn apply_changes(
         return Err(error);
     }
     for removal in removals {
+        if removal.recoverable {
+            continue;
+        }
         remove_empty_parents(allowed_root, &removal.path, &removal.type_root);
     }
     Ok(())
@@ -357,6 +372,7 @@ mod tests {
                 path,
                 type_root: root.join("generated"),
                 snapshot,
+                recoverable: false,
             }],
             Vec::new(),
         )

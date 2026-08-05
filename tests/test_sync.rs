@@ -38,7 +38,7 @@ fn write_node(node: &MdocNode) {
 }
 
 #[test]
-fn sync_exports_five_files_and_back_imports_mirror_edits() {
+fn sync_exports_present_blocks_and_back_imports_mirror_edits() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     std::fs::create_dir(root.join(".mdc")).unwrap();
@@ -65,7 +65,7 @@ fn sync_exports_five_files_and_back_imports_mirror_edits() {
         ".mdc/python/Lib/data/A.py",
         ".mdc/rocq/Lib/data/A.v",
     ] {
-        assert_eq!(std::fs::read(root.join(path)).unwrap(), b"");
+        assert!(!root.join(path).exists());
     }
     assert!(root.join(".mdc/source-blocks.json").is_file());
 
@@ -115,6 +115,8 @@ fn sync_and_back_preserve_present_empty_and_absent_blocks() {
     write_node(&node);
 
     assert!(run_mdc(root, &["sync"]).status.success());
+    assert!(root.join(".mdc/text/Lib/data/A.txt").is_file());
+    assert!(!root.join(".mdc/python/Lib/data/A.py").exists());
     let output = run_mdc(root, &["back"]);
     assert!(output.status.success());
     let saved = MdocNode::load(&node.path).unwrap();
@@ -134,17 +136,19 @@ fn sync_and_back_preserve_present_empty_and_absent_blocks() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("(0 updated, 0 removed)"));
-    assert_eq!(
-        std::fs::read(root.join(".mdc/text/Lib/data/A.txt")).unwrap(),
-        b""
-    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("(1 updated, 1 removed)"));
+    assert!(!root.join(".mdc/text/Lib/data/A.txt").exists());
     assert_eq!(
         std::fs::read(root.join(".mdc/python/Lib/data/A.py")).unwrap(),
         b""
     );
 
-    assert!(run_mdc(root, &["back"]).status.success());
+    let output = run_mdc(root, &["back"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let saved = MdocNode::load(&node.path).unwrap();
     assert!(saved.source_block("text").is_none());
     assert!(saved.source_block("python").is_some());
@@ -170,19 +174,20 @@ fn sync_removes_outputs_for_renamed_sources() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    for (srctype, extension) in [
-        ("text", "txt"),
-        ("latex", "tex"),
-        ("python", "py"),
-        ("lean", "lean"),
-        ("rocq", "v"),
-    ] {
+    for (srctype, extension) in [("latex", "tex"), ("lean", "lean")] {
         assert!(!root
             .join(format!(".mdc/{srctype}/Lib/data/A.{extension}"))
             .exists());
         assert!(root
             .join(format!(".mdc/{srctype}/Lib/renamed/B.{extension}"))
             .is_file());
+    }
+    for path in [
+        ".mdc/text/Lib/renamed/B.txt",
+        ".mdc/python/Lib/renamed/B.py",
+        ".mdc/rocq/Lib/renamed/B.v",
+    ] {
+        assert!(!root.join(path).exists());
     }
     assert_eq!(
         std::fs::read_to_string(unrelated).unwrap(),
@@ -250,6 +255,66 @@ fn sync_preserves_orphaned_v1_mirrors_without_a_baseline() {
     assert_eq!(
         std::fs::read_to_string(mirror).unwrap(),
         "uncommitted legacy edit\n"
+    );
+}
+
+#[test]
+fn sync_migrates_sparse_mirrors_without_losing_absent_block_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".mdc/python/Lib/data")).unwrap();
+    std::fs::create_dir_all(root.join(".mdc/rocq/Lib/data")).unwrap();
+    let node = make_node(root, "data/A.mdoc");
+    write_node(&node);
+    let empty_digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    std::fs::write(root.join(".mdc/python/Lib/data/A.py"), "").unwrap();
+    std::fs::write(root.join(".mdc/rocq/Lib/data/A.v"), "Check nat.\n").unwrap();
+    std::fs::write(
+        root.join(".mdc/source-blocks.json"),
+        format!(
+            r#"{{"version":2,"sources":{{"646174612f412e6d646f63":{{"blocks":{{"python":{{"digest":"{empty_digest}","present":false}},"rocq":{{"digest":"{empty_digest}","present":false}}}}}}}}}}"#
+        ),
+    )
+    .unwrap();
+
+    let output = run_mdc(root, &["sync"]);
+    assert!(!output.status.success());
+    assert!(!root.join(".mdc/python/Lib/data/A.py").exists());
+    assert_eq!(
+        std::fs::read_to_string(root.join(".mdc/rocq/Lib/data/A.v")).unwrap(),
+        "Check nat.\n"
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join(".mdc/source-blocks.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["version"], 3);
+
+    let output = run_mdc(root, &["back"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        MdocNode::load(&node.path)
+            .unwrap()
+            .source_block("rocq")
+            .unwrap()
+            .content,
+        "Check nat.\n"
+    );
+
+    let python = root.join(".mdc/python/Lib/data/A.py");
+    std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+    std::fs::write(&python, "").unwrap();
+    assert!(run_mdc(root, &["back"]).status.success());
+    assert_eq!(
+        MdocNode::load(&node.path)
+            .unwrap()
+            .source_block("python")
+            .unwrap()
+            .content,
+        ""
     );
 }
 
@@ -375,6 +440,7 @@ fn back_creates_and_deletes_blocks_from_mirrors() {
     assert!(run_mdc(root, &["sync"]).status.success());
 
     let python = root.join(".mdc/python/Lib/data/A.py");
+    std::fs::create_dir_all(python.parent().unwrap()).unwrap();
     std::fs::write(&python, "print('created')\n").unwrap();
     let lean = root.join(".mdc/lean/Lib/data/A.lean");
     std::fs::remove_file(&lean).unwrap();
@@ -396,7 +462,7 @@ fn back_creates_and_deletes_blocks_from_mirrors() {
         "print('created')\n"
     );
     assert!(saved.blocks.iter().all(|block| block.srctype != "lean"));
-    assert_eq!(std::fs::read(lean).unwrap(), b"");
+    assert!(!lean.exists());
     assert!(run_mdc(root, &["sync"]).status.success());
 }
 

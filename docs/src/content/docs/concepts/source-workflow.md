@@ -13,9 +13,9 @@ ordinary source files. MathDoc bridges the two representations with `sync`, `wor
 mdc sync
 ```
 
-`sync` strongly refreshes the complete index. On initial synchronization it exports
-every structurally parseable document into five mirrors under `.mdc/<srctype>/Lib/`.
-Relative paths are preserved; for example, `data/A.mdoc` produces:
+`sync` strongly refreshes the complete index. It exports every source block from each
+structurally parseable document under `.mdc/<srctype>/Lib/`. Relative paths are
+preserved; for example, a `data/A.mdoc` containing all five block types produces:
 
 ```text
 .mdc/text/Lib/data/A.txt
@@ -25,11 +25,13 @@ Relative paths are preserved; for example, `data/A.mdoc` produces:
 .mdc/rocq/Lib/data/A.v
 ```
 
-Missing source blocks produce empty mirrors. On later runs, a clean mirror follows mdoc
-changes, while a modified or deleted mirror is preserved and reported as dirty. A
-pre-existing mirror that differs before any baseline exists is preserved as a conflict.
-Duplicate-fnode files remain exportable because duplication is an index issue, while
-structurally unparseable files retain their previous mirrors.
+An absent source block has no mirror file; a present-empty block has an empty mirror.
+On later runs, a clean mirror follows mdoc changes, while a modified or deleted mirror
+is preserved and reported as dirty. A pre-existing mirror that differs before any
+baseline exists is preserved as a conflict. Duplicate-fnode files remain exportable
+because duplication is an index issue, while structurally unparseable files retain their
+previous mirrors. `sync` migrates older manifests by deleting only clean empty
+placeholders for absent blocks and preserving nonempty edits.
 
 ## Edit with native tools
 
@@ -44,9 +46,9 @@ mdc work notes/theorem
 ```
 
 `work` first runs workspace-wide mirror reconciliation. If no conflict remains, it
-compiles each source type represented by a block or a nonempty mirror on the selected
-node. Compilation follows built-in source type order; language imports and includes,
-not the MathDoc dependency graph, determine compiler dependencies.
+compiles each source type represented by a physical mirror on the selected node.
+Compilation follows built-in source type order; language imports and includes, not the
+MathDoc dependency graph, determine compiler dependencies.
 
 Dirty mirror content is compiled without being written back implicitly. A node with no
 compiler targets is a successful no-op. If a selected source block has a deleted mirror,
@@ -59,9 +61,9 @@ mdc back
 ```
 
 `back` writes changed mirror content into the matching source block only when the mdoc
-still matches the stored baseline. Deleting a mirror removes that block; an empty
-placeholder mirror is recreated afterward to retain the predictable five-file layout.
-Imported nonempty content is normalized to end with a newline and must be UTF-8.
+still matches the stored baseline. Deleting a mirror removes that block and keeps the
+mirror absent. Creating an empty mirror for an absent block creates a present-empty
+block. Imported nonempty content is normalized to end with a newline and must be UTF-8.
 
 ## Conflict behavior
 

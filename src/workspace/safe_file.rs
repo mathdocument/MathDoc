@@ -1193,6 +1193,53 @@ fn atomic_remove_beneath(
     atomic_remove_inner(path, expected, binding)
 }
 
+pub(crate) fn remove_empty_files_beneath(
+    root: &Path,
+    files: &[(&Path, &FileSnapshot)],
+) -> Result<()> {
+    let mut files = files.to_vec();
+    files.sort_by_key(|(path, _)| *path);
+    let mut start = 0;
+    while start < files.len() {
+        let parent = files[start]
+            .0
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("path has no parent: {}", files[start].0.display()))?;
+        let mut end = start + 1;
+        while end < files.len() && files[end].0.parent() == Some(parent) {
+            end += 1;
+        }
+
+        let binding = DirectoryBinding::open_beneath(root, files[start].0)?;
+        for (path, expected) in &files[start..end] {
+            if expected.content() != Some(&[]) {
+                bail!(
+                    "refusing to remove nonempty sparse mirror {}",
+                    path.display()
+                );
+            }
+            let file_name = path
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("path has no file name: {}", path.display()))?;
+            let file_name = CString::new(file_name.as_bytes())
+                .with_context(|| format!("path contains a null byte: {}", path.display()))?;
+            require_generation(path, &binding, &file_name, expected)?;
+            let mut quarantine = QuarantinedEntry::take(&binding, &file_name)?;
+            require_quarantined_generation(path, &binding, &mut quarantine, expected)?;
+            if require_generation(path, &binding, &file_name, &FileSnapshot::Missing).is_err()
+                || !binding.is_current()?
+            {
+                return conflict_with_restoration(path, &binding, &mut quarantine);
+            }
+            discard_quarantine(path, &binding, &mut quarantine, expected, false)?;
+        }
+        binding.require_current(files[start].0)?;
+        binding.sync();
+        start = end;
+    }
+    Ok(())
+}
+
 fn atomic_remove_inner(
     path: &Path,
     expected: &FileSnapshot,

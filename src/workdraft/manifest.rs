@@ -11,7 +11,7 @@ use crate::workspace::FileSnapshot;
 
 use super::mirror::validate_source_relative;
 
-const MANIFEST_VERSION: u32 = 2;
+const MANIFEST_VERSION: u32 = 3;
 pub(super) const MANIFEST_NAME: &str = "source-blocks.json";
 
 #[derive(Deserialize, Serialize)]
@@ -33,7 +33,10 @@ impl BlockBaseline {
     }
 
     pub(super) fn matches_raw(&self, content: Option<&[u8]>) -> bool {
-        content.is_some_and(|content| Self::digest(content) == self.digest)
+        match content {
+            Some(content) => self.present && Self::digest(content) == self.digest,
+            None => !self.present,
+        }
     }
 
     pub(super) fn update(&mut self, content: &[u8], present: bool) {
@@ -66,6 +69,7 @@ struct LegacyManifest {
 pub(super) struct LoadedManifest {
     pub(super) manifest: SourceBlockManifest,
     pub(super) legacy_sources: BTreeSet<String>,
+    pub(super) needs_sparse_migration: bool,
 }
 
 pub(super) fn parse_manifest(snapshot: &FileSnapshot, path: &Path) -> Result<LoadedManifest> {
@@ -73,6 +77,7 @@ pub(super) fn parse_manifest(snapshot: &FileSnapshot, path: &Path) -> Result<Loa
         return Ok(LoadedManifest {
             manifest: empty_manifest(),
             legacy_sources: BTreeSet::new(),
+            needs_sparse_migration: false,
         });
     };
     let value: serde_json::Value = serde_json::from_slice(content)
@@ -84,6 +89,17 @@ pub(super) fn parse_manifest(snapshot: &FileSnapshot, path: &Path) -> Result<Loa
             Ok(LoadedManifest {
                 manifest: empty_manifest(),
                 legacy_sources: legacy.sources,
+                needs_sparse_migration: true,
+            })
+        }
+        Some(2) => {
+            let mut manifest: SourceBlockManifest = serde_json::from_value(value)?;
+            validate_manifest(&manifest, path)?;
+            manifest.version = MANIFEST_VERSION;
+            Ok(LoadedManifest {
+                manifest,
+                legacy_sources: BTreeSet::new(),
+                needs_sparse_migration: true,
             })
         }
         Some(version) if version == MANIFEST_VERSION as u64 => {
@@ -92,6 +108,7 @@ pub(super) fn parse_manifest(snapshot: &FileSnapshot, path: &Path) -> Result<Loa
             Ok(LoadedManifest {
                 manifest,
                 legacy_sources: BTreeSet::new(),
+                needs_sparse_migration: false,
             })
         }
         Some(version) => bail!(

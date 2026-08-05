@@ -33,6 +33,7 @@ pub(crate) struct Issue {
 
 pub(crate) struct SyncReport {
     pub valid_mdocs: usize,
+    pub source_files: usize,
     pub updated: usize,
     pub removed: usize,
     pub dirty: Vec<Issue>,
@@ -64,6 +65,68 @@ struct ScannedSyncSource {
     node: Result<MdocNode>,
 }
 
+struct MirrorChanges<'a> {
+    root: &'a Path,
+    source: &'a Path,
+    snapshots: &'a mut FileSnapshotBatch,
+    writes: &'a mut Vec<PreparedWrite>,
+    removals: &'a mut Vec<PreparedRemoval>,
+}
+
+impl MirrorChanges<'_> {
+    fn queue(
+        &mut self,
+        srctype: &str,
+        mut path: PathBuf,
+        observed_content: Option<&[u8]>,
+        content: &[u8],
+        present: bool,
+    ) -> Result<()> {
+        if present && observed_content != Some(content) {
+            if observed_content.is_none() {
+                path = prepare_output_path(self.root, self.source, srctype)?;
+            }
+            let snapshot = self.snapshots.capture(&path)?;
+            ensure_observed_content(&path, &snapshot, observed_content)?;
+            self.writes.push(PreparedWrite {
+                path,
+                snapshot,
+                content: content.to_vec(),
+            });
+        } else if !present && observed_content.is_some() {
+            self.queue_removal(srctype, path, observed_content, false)?;
+        }
+        Ok(())
+    }
+
+    fn queue_sparse_migration_removal(
+        &mut self,
+        srctype: &str,
+        path: PathBuf,
+        observed_content: Option<&[u8]>,
+    ) -> Result<()> {
+        self.queue_removal(srctype, path, observed_content, true)
+    }
+
+    fn queue_removal(
+        &mut self,
+        srctype: &str,
+        path: PathBuf,
+        observed_content: Option<&[u8]>,
+        recoverable: bool,
+    ) -> Result<()> {
+        let snapshot = self.snapshots.capture(&path)?;
+        ensure_observed_content(&path, &snapshot, observed_content)?;
+        self.removals.push(PreparedRemoval {
+            path,
+            type_root: self.root.join(".mdc").join(srctype).join("Lib"),
+            snapshot,
+            recoverable,
+        });
+        Ok(())
+    }
+}
+
 const SYNC_SOURCE_BATCH: usize = 2048;
 
 fn reconcile<'a>(
@@ -77,9 +140,9 @@ fn reconcile<'a>(
     match (mdoc_changed, raw_changed) {
         (false, false) => Reconciliation::Unchanged,
         (true, false) => Reconciliation::MdocChanged,
-        (false, true) => Reconciliation::MirrorChanged(back_state(raw_content, baseline.present)),
+        (false, true) => Reconciliation::MirrorChanged(back_state(raw_content)),
         (true, true) => {
-            let raw_state = back_state(raw_content, baseline.present);
+            let raw_state = back_state(raw_content);
             if raw_state.content.as_ref() == mdoc_content && raw_state.present == mdoc_present {
                 Reconciliation::Converged(raw_state)
             } else {
@@ -102,6 +165,7 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
     let LoadedManifest {
         manifest: mut new_manifest,
         legacy_sources,
+        needs_sparse_migration,
     } = loaded_manifest;
 
     let source_files = {
@@ -121,6 +185,7 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
     let mut warnings = Vec::new();
     let mut desired_outputs = HashMap::new();
     let mut valid_mdocs = 0;
+    let mut exported_source_files = 0;
     let mut had_invalid_mdoc = false;
     let mut prepared_output_parents = HashSet::new();
     let mut write_snapshots = FileSnapshotBatch::new(&mdcroot)?;
@@ -184,31 +249,52 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
             valid_mdocs += 1;
 
             let source_baseline = new_manifest.sources.entry(source_id).or_default();
+            let mut mirror_changes = MirrorChanges {
+                root: &mdcroot,
+                source: &relative,
+                snapshots: &mut write_snapshots,
+                writes: &mut writes,
+                removals: &mut removals,
+            };
             for srctype in builtin_srctypes() {
                 let (mdoc_content, mdoc_present) = block_state(&node, srctype);
+                exported_source_files += usize::from(mdoc_present);
                 let raw_path = mirror_paths
                     .next()
                     .expect("every valid mdoc has five prepared mirror paths");
                 let raw_snapshot = mirror_snapshots
                     .next()
                     .expect("every valid mdoc has five mirror snapshots");
-                if let Some(identity) = raw_snapshot.as_ref().map(ReadFileSnapshot::identity) {
-                    desired_outputs.insert(identity.clone(), raw_path.clone());
-                }
                 let raw_content = raw_snapshot.as_ref().map(ReadFileSnapshot::content);
+                if mdoc_present || raw_content.is_some_and(|content| !content.is_empty()) {
+                    if let Some(identity) = raw_snapshot.as_ref().map(ReadFileSnapshot::identity) {
+                        desired_outputs.insert(identity.clone(), raw_path.clone());
+                    }
+                }
 
                 if let Some(baseline) = source_baseline.blocks.get_mut(srctype) {
+                    if needs_sparse_migration
+                        && !baseline.present
+                        && !mdoc_present
+                        && raw_content == Some(&[])
+                    {
+                        mirror_changes.queue_sparse_migration_removal(
+                            srctype,
+                            raw_path,
+                            raw_content,
+                        )?;
+                        continue;
+                    }
                     match reconcile(baseline, mdoc_content, mdoc_present, raw_content) {
                         Reconciliation::Unchanged => {}
                         Reconciliation::MdocChanged => {
-                            if raw_content != Some(mdoc_content) {
-                                writes.push(prepare_mirror_write(
-                                    &mut write_snapshots,
-                                    raw_path,
-                                    raw_content,
-                                    mdoc_content.to_vec(),
-                                )?);
-                            }
+                            mirror_changes.queue(
+                                srctype,
+                                raw_path,
+                                raw_content,
+                                mdoc_content,
+                                mdoc_present,
+                            )?;
                             baseline.update(mdoc_content, mdoc_present);
                         }
                         Reconciliation::MirrorChanged(_) => dirty.push(issue(
@@ -217,15 +303,13 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                             "source mirror has uncommitted changes; run `mdc back`",
                         )),
                         Reconciliation::Converged(raw_state) => {
-                            if raw_content != Some(raw_state.content.as_ref()) {
-                                let normalized_content = raw_state.content.into_owned();
-                                writes.push(prepare_mirror_write(
-                                    &mut write_snapshots,
-                                    raw_path,
-                                    raw_content,
-                                    normalized_content,
-                                )?);
-                            }
+                            mirror_changes.queue(
+                                srctype,
+                                raw_path,
+                                raw_content,
+                                raw_state.content.as_ref(),
+                                raw_state.present,
+                            )?;
                             baseline.update(mdoc_content, mdoc_present);
                         }
                         Reconciliation::Conflict => conflicts.push(issue(
@@ -235,14 +319,21 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                         )),
                     }
                 } else {
-                    if raw_content.is_none() {
-                        writes.push(prepare_mirror_write(
-                            &mut write_snapshots,
+                    if needs_sparse_migration && !mdoc_present && raw_content == Some(&[]) {
+                        mirror_changes.queue_sparse_migration_removal(
+                            srctype,
                             raw_path,
                             raw_content,
-                            mdoc_content.to_vec(),
-                        )?);
-                    } else if raw_content != Some(mdoc_content) {
+                        )?;
+                    } else if raw_content.is_none() {
+                        mirror_changes.queue(
+                            srctype,
+                            raw_path,
+                            raw_content,
+                            mdoc_content,
+                            mdoc_present,
+                        )?;
+                    } else if raw_content != Some(mdoc_content) || !mdoc_present {
                         conflicts.push(issue(
                             &relative,
                             Some(srctype),
@@ -303,13 +394,18 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                 source_baseline.blocks.remove(srctype);
                 continue;
             }
-            if baseline.matches_raw(snapshot.content()) || matches!(snapshot, FileSnapshot::Missing)
+            let clean_sparse_placeholder =
+                needs_sparse_migration && !baseline.present && snapshot.content() == Some(&[]);
+            if baseline.matches_raw(snapshot.content())
+                || clean_sparse_placeholder
+                || matches!(snapshot, FileSnapshot::Missing)
             {
                 if !matches!(snapshot, FileSnapshot::Missing) {
                     removals.push(PreparedRemoval {
                         path,
                         type_root,
                         snapshot,
+                        recoverable: clean_sparse_placeholder,
                     });
                 }
                 source_baseline.blocks.remove(srctype);
@@ -369,6 +465,7 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
     }
     Ok(SyncReport {
         valid_mdocs,
+        source_files: exported_source_files,
         updated: source_write_count,
         removed,
         dirty,
@@ -377,24 +474,18 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
     })
 }
 
-fn prepare_mirror_write(
-    snapshots: &mut FileSnapshotBatch,
-    path: PathBuf,
+fn ensure_observed_content(
+    path: &Path,
+    snapshot: &FileSnapshot,
     observed_content: Option<&[u8]>,
-    content: Vec<u8>,
-) -> Result<PreparedWrite> {
-    let snapshot = snapshots.capture(&path)?;
+) -> Result<()> {
     if snapshot.content() != observed_content {
         bail!(
             "{} changed during source block reconciliation",
             path.display()
         );
     }
-    Ok(PreparedWrite {
-        path,
-        snapshot,
-        content,
-    })
+    Ok(())
 }
 
 fn scan_sources_parallel(root: &Path, paths: &[PathBuf]) -> Result<Vec<ScannedSyncSource>> {
@@ -533,7 +624,7 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
     let manifest_path = mdcroot.join(".mdc").join(MANIFEST_NAME);
     let manifest_snapshot = FileSnapshot::capture(&manifest_path)?;
     let loaded = parse_manifest(&manifest_snapshot, &manifest_path)?;
-    if !loaded.legacy_sources.is_empty() {
+    if loaded.needs_sparse_migration {
         bail!("source block manifest must be upgraded with `mdc sync` before `mdc back`");
     }
     let mut manifest = loaded.manifest;
@@ -570,10 +661,7 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
             Err(error) => {
                 let mut raw_dirty = false;
                 for (srctype, baseline) in &source_baseline.blocks {
-                    let raw_path = existing_output_path(&mdcroot, &relative, srctype)?
-                        .map(|(path, _)| path)
-                        .unwrap_or_else(|| output_path(&mdcroot, &relative, srctype));
-                    let raw_snapshot = FileSnapshot::capture(&raw_path)?;
+                    let (_, raw_snapshot) = capture_existing_mirror(&mdcroot, &relative, srctype)?;
                     if !baseline.matches_raw(raw_snapshot.content()) {
                         raw_dirty = true;
                         break;
@@ -596,10 +684,7 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
         let mut node_changed = false;
         for (srctype, baseline) in &mut source_baseline.blocks {
             let (mdoc_content, mdoc_present) = block_state(&node, srctype);
-            let raw_path = existing_output_path(&mdcroot, &relative, srctype)?
-                .map(|(path, _)| path)
-                .unwrap_or_else(|| output_path(&mdcroot, &relative, srctype));
-            let raw_snapshot = FileSnapshot::capture(&raw_path)?;
+            let (raw_path, raw_snapshot) = capture_existing_mirror(&mdcroot, &relative, srctype)?;
             let raw_content = raw_snapshot.content();
             let raw_state = match reconcile(baseline, mdoc_content, mdoc_present, raw_content) {
                 Reconciliation::Unchanged => continue,
@@ -642,16 +727,10 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
             if !baseline.matches_state(content, present) {
                 baseline.update(content, present);
             }
-            if raw_content != Some(content) {
-                let raw_missing = raw_content.is_none();
+            if present && raw_content != Some(content) {
                 let normalized_content = raw_state.content.into_owned();
-                let path = if raw_missing {
-                    prepare_output_path(&mdcroot, &relative, srctype)?
-                } else {
-                    raw_path
-                };
                 raw_writes.push(PreparedWrite {
-                    path,
+                    path: raw_path,
                     snapshot: raw_snapshot,
                     content: normalized_content,
                 });
@@ -690,6 +769,20 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
     })
 }
 
+fn capture_existing_mirror(
+    root: &Path,
+    source: &Path,
+    srctype: &str,
+) -> Result<(PathBuf, FileSnapshot)> {
+    match existing_output_path(root, source, srctype)? {
+        Some((path, _)) => {
+            let snapshot = FileSnapshot::capture(&path)?;
+            Ok((path, snapshot))
+        }
+        None => Ok((output_path(root, source, srctype), FileSnapshot::Missing)),
+    }
+}
+
 pub(crate) fn targets(mdcroot: &Path, source_path: &Path) -> Result<Vec<(String, PathBuf)>> {
     let source = source_path
         .strip_prefix(mdcroot)
@@ -698,16 +791,11 @@ pub(crate) fn targets(mdcroot: &Path, source_path: &Path) -> Result<Vec<(String,
     let node = MdocNode::load(source_path)?;
     let mut targets = Vec::new();
     for srctype in builtin_srctypes() {
-        let path = output_path(mdcroot, source, srctype);
-        let snapshot = FileSnapshot::capture(&path)?;
-        let block_present = node.source_block(srctype).is_some();
-        let raw_nonempty = snapshot
-            .content()
-            .is_some_and(|content| !content.is_empty());
-        if block_present || raw_nonempty {
-            if matches!(snapshot, FileSnapshot::Missing) {
-                bail!("source mirror is missing: {}", path.display());
-            }
+        let (path, snapshot) = capture_existing_mirror(mdcroot, source, srctype)?;
+        if node.source_block(srctype).is_some() && matches!(snapshot, FileSnapshot::Missing) {
+            bail!("source mirror is missing: {}", path.display());
+        }
+        if !matches!(snapshot, FileSnapshot::Missing) {
             targets.push((srctype.to_string(), path));
         }
     }

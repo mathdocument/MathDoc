@@ -53,7 +53,8 @@ This is a representative layout. SQLite sidecars, compiler state, temporary file
 other managed or ephemeral artifacts may also appear.
 
 The `Lib/` directories are editable working trees. They preserve the relative path of
-each source `.mdoc` and keep editable content separate from compiler artifacts.
+each source `.mdoc` and keep editable content separate from compiler artifacts. Mirror
+files are sparse: only present source blocks have files, including present-empty blocks.
 
 :::note
 The index, manifest, generated drivers, and compiler outputs are managed state. Keep
