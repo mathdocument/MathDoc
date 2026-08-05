@@ -156,7 +156,7 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
     let manifest_path = mdcroot.join(".mdc").join(MANIFEST_NAME);
     let (manifest_snapshot, loaded_manifest) = {
         let _phase = crate::profile::scope("workdraft::load_manifest");
-        let snapshot = FileSnapshot::capture(&manifest_path)?;
+        let snapshot = FileSnapshot::capture_beneath(&mdcroot, &manifest_path)?;
         let loaded = parse_manifest(&snapshot, &manifest_path)?;
         (snapshot, loaded)
     };
@@ -369,7 +369,7 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                 source_baseline.blocks.remove(srctype);
                 continue;
             };
-            let snapshot = FileSnapshot::capture(&path)?;
+            let snapshot = FileSnapshot::capture_beneath(&mdcroot, &path)?;
             if let Some(desired_path) = snapshot
                 .identity()
                 .and_then(|identity| desired_outputs.get(identity))
@@ -423,7 +423,7 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
             let Some((path, _)) = existing_output_path(&mdcroot, &source, srctype)? else {
                 continue;
             };
-            let snapshot = FileSnapshot::capture(&path)?;
+            let snapshot = FileSnapshot::capture_beneath(&mdcroot, &path)?;
             if !matches!(snapshot, FileSnapshot::Missing) {
                 unresolved_legacy_orphans = true;
             }
@@ -589,7 +589,7 @@ fn join_snapshot_workers<T>(
 pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> Result<BackReport> {
     let mdcroot = mutation_lock.root()?.to_path_buf();
     let manifest_path = mdcroot.join(".mdc").join(MANIFEST_NAME);
-    let manifest_snapshot = FileSnapshot::capture(&manifest_path)?;
+    let manifest_snapshot = FileSnapshot::capture_beneath(&mdcroot, &manifest_path)?;
     let loaded = parse_manifest(&manifest_snapshot, &manifest_path)?;
     if loaded.needs_sparse_migration {
         bail!("source block manifest must be upgraded with `mdc sync` before `mdc back`");
@@ -608,8 +608,8 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
 
     for (source_id, source_baseline) in &mut manifest.sources {
         let relative = decode_source_path(source_id)?;
-        let source_path = mdcroot.join(&relative);
-        let source_snapshot = FileSnapshot::capture(&source_path)?;
+        let source_path = crate::workspace::resolve_mdoc_path(&mdcroot, &relative)?;
+        let source_snapshot = FileSnapshot::capture_beneath(&mdcroot, &source_path)?;
         if matches!(source_snapshot, FileSnapshot::Missing) {
             conflicts.push(issue(
                 &relative,
@@ -628,11 +628,14 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
             Err(error) => {
                 let mut raw_dirty = false;
                 for (srctype, baseline) in &source_baseline.blocks {
-                    let (_, raw_snapshot) = capture_existing_mirror(&mdcroot, &relative, srctype)?;
+                    let (raw_path, raw_snapshot) =
+                        capture_existing_mirror(&mdcroot, &relative, srctype)?;
                     if !baseline.matches_raw(raw_snapshot.content()) {
                         raw_dirty = true;
+                        inputs.push((raw_path, raw_snapshot));
                         break;
                     }
+                    inputs.push((raw_path, raw_snapshot));
                 }
                 if raw_dirty {
                     conflicts.push(issue(
@@ -654,13 +657,17 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
             let (raw_path, raw_snapshot) = capture_existing_mirror(&mdcroot, &relative, srctype)?;
             let raw_content = raw_snapshot.content();
             let raw_state = match reconcile(baseline, mdoc_content, mdoc_present, raw_content) {
-                Reconciliation::Unchanged => continue,
+                Reconciliation::Unchanged => {
+                    inputs.push((raw_path, raw_snapshot));
+                    continue;
+                }
                 Reconciliation::MdocChanged => {
                     conflicts.push(issue(
                         &relative,
                         Some(srctype),
                         "mdoc block has uncommitted changes; run `mdc sync`",
                     ));
+                    inputs.push((raw_path, raw_snapshot));
                     continue;
                 }
                 Reconciliation::MirrorChanged(raw_state) | Reconciliation::Converged(raw_state) => {
@@ -672,6 +679,7 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                         Some(srctype),
                         "mdoc block and source mirror both changed",
                     ));
+                    inputs.push((raw_path, raw_snapshot));
                     continue;
                 }
             };
@@ -701,6 +709,8 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                     snapshot: raw_snapshot,
                     content: normalized_content,
                 });
+            } else {
+                inputs.push((raw_path, raw_snapshot));
             }
         }
         if node_changed {
@@ -743,7 +753,7 @@ fn capture_existing_mirror(
 ) -> Result<(PathBuf, FileSnapshot)> {
     match existing_output_path(root, source, srctype)? {
         Some((path, _)) => {
-            let snapshot = FileSnapshot::capture(&path)?;
+            let snapshot = FileSnapshot::capture_beneath(root, &path)?;
             Ok((path, snapshot))
         }
         None => Ok((output_path(root, source, srctype), FileSnapshot::Missing)),
@@ -781,5 +791,49 @@ fn issue(path: &Path, srctype: Option<&str>, message: impl Into<String>) -> Issu
         path: path.to_path_buf(),
         srctype: srctype.map(str::to_string),
         message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn back_rejects_a_mirror_changed_after_reconciliation() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        let path = root.join("node.mdoc");
+        let mut node = MdocNode::new_at_path(&path, "Node");
+        node.upsert_source_block("lean", "original\n".to_string())
+            .unwrap();
+        std::fs::write(&path, node.render().unwrap()).unwrap();
+        let lock = crate::workspace::WorkspaceMutationLock::acquire(&root).unwrap();
+        sync(&lock).unwrap();
+        let mirror = root.join(".mdc/lean/Lib/node.lean");
+        std::fs::write(&mirror, "first edit\n").unwrap();
+        let hook_mirror = mirror.clone();
+        crate::workspace::set_test_hook(
+            crate::workspace::TestHookPoint::WriteBeforeDirectoryBinding,
+            move || std::fs::write(hook_mirror, "second edit\n").unwrap(),
+        );
+
+        let error = match back(&lock) {
+            Ok(_) => panic!("expected concurrent mirror edit to be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(error
+            .to_string()
+            .contains("changed while source block writes"));
+        assert_eq!(
+            MdocNode::load(&path)
+                .unwrap()
+                .source_block("lean")
+                .unwrap()
+                .content,
+            "original\n"
+        );
+        assert_eq!(std::fs::read_to_string(mirror).unwrap(), "second edit\n");
     }
 }

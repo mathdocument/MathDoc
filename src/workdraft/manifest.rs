@@ -86,6 +86,7 @@ pub(super) fn parse_manifest(snapshot: &FileSnapshot, path: &Path) -> Result<Loa
         Some(1) => {
             let legacy: LegacyManifest = serde_json::from_value(value)?;
             debug_assert_eq!(legacy.version, 1);
+            validate_source_ids(legacy.sources.iter(), path)?;
             Ok(LoadedManifest {
                 manifest: empty_manifest(),
                 legacy_sources: legacy.sources,
@@ -154,6 +155,7 @@ fn empty_manifest() -> SourceBlockManifest {
 }
 
 fn validate_manifest(manifest: &SourceBlockManifest, path: &Path) -> Result<()> {
+    validate_source_ids(manifest.sources.keys(), path)?;
     for source in manifest.sources.values() {
         for (srctype, baseline) in &source.blocks {
             if !builtin_srctypes().any(|known| known == srctype) {
@@ -163,13 +165,44 @@ fn validate_manifest(manifest: &SourceBlockManifest, path: &Path) -> Result<()> 
                 );
             }
             if baseline.digest.len() != 64
-                || !baseline.digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || !baseline
+                    .digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
             {
                 bail!(
                     "invalid digest for source type {srctype:?} in source block manifest {}",
                     path.display()
                 );
             }
+        }
+    }
+    Ok(())
+}
+
+fn validate_source_ids<'a>(
+    source_ids: impl Iterator<Item = &'a String>,
+    path: &Path,
+) -> Result<()> {
+    let mut decoded_paths = BTreeSet::new();
+    for source_id in source_ids {
+        let decoded = decode_source_path(source_id).with_context(|| {
+            format!(
+                "invalid source path in source block manifest {}",
+                path.display()
+            )
+        })?;
+        if encode_source_path(&decoded) != *source_id {
+            bail!(
+                "noncanonical source path encoding in source block manifest {}",
+                path.display()
+            );
+        }
+        if !decoded_paths.insert(decoded) {
+            bail!(
+                "duplicate source path in source block manifest {}",
+                path.display()
+            );
         }
     }
     Ok(())

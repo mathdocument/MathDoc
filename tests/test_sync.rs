@@ -335,6 +335,63 @@ fn sync_rejects_unknown_manifest_source_types() {
 }
 
 #[test]
+fn sync_rejects_noncanonical_manifest_encodings() {
+    for (source_id, digest, expected) in [
+        (
+            "646174612F412e6d646f63",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "noncanonical source path encoding",
+        ),
+        (
+            "646174612f412e6d646f63",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "invalid digest",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        std::fs::write(
+            root.join(".mdc/source-blocks.json"),
+            format!(
+                r#"{{"version":3,"sources":{{"{source_id}":{{"blocks":{{"lean":{{"digest":"{digest}","present":true}}}}}}}}}}"#
+            ),
+        )
+        .unwrap();
+
+        let output = run_mdc(root, &["sync"]);
+
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn back_rejects_sources_that_moved_into_a_nested_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join(".mdc")).unwrap();
+    let node = make_node(root, "nested/A.mdoc");
+    write_node(&node);
+    assert!(run_mdc(root, &["sync"]).status.success());
+    let before = std::fs::read(&node.path).unwrap();
+    std::fs::create_dir(node.path.parent().unwrap().join(".mdc")).unwrap();
+    let mirror = root.join(".mdc/lean/Lib/nested/A.lean");
+    std::fs::write(&mirror, "nested edit\n").unwrap();
+
+    let output = run_mdc(root, &["back"]);
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("nested mdoc root"));
+    assert_eq!(std::fs::read(&node.path).unwrap(), before);
+    assert_eq!(std::fs::read_to_string(mirror).unwrap(), "nested edit\n");
+}
+
+#[test]
 fn sync_and_back_preserve_both_sides_on_conflict() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();

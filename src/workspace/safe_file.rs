@@ -305,6 +305,13 @@ struct DirectoryBinding {
     directory: std::fs::File,
 }
 
+#[derive(Debug)]
+struct DirectoryBindingSnapshot {
+    parent: PathBuf,
+    target: CString,
+    identities: Vec<(PathBuf, FileIdentity)>,
+}
+
 impl DirectoryBinding {
     fn open(path: &Path) -> Result<Self> {
         let absolute = if path.is_absolute() {
@@ -480,6 +487,53 @@ impl DirectoryBinding {
     fn sync(&self) {
         let _ = self.directory.sync_all();
     }
+
+    fn into_snapshot(self) -> DirectoryBindingSnapshot {
+        DirectoryBindingSnapshot {
+            parent: self.parent,
+            target: self.target,
+            identities: self.identities,
+        }
+    }
+}
+
+impl DirectoryBindingSnapshot {
+    fn reopen(self, path: &Path) -> Result<DirectoryBinding> {
+        let expected_path = self
+            .parent
+            .join(std::ffi::OsStr::from_bytes(self.target.to_bytes()));
+        let path_name = path
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("path has no file name: {}", path.display()))?;
+        let current_path = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("path has no parent: {}", path.display()))?
+            .canonicalize()
+            .with_context(|| format!("canonicalizing parent of {}", path.display()))?
+            .join(path_name);
+        if expected_path != current_path {
+            return Err(FileConflict::new(path).into());
+        }
+        for (directory_path, expected) in &self.identities {
+            let metadata = std::fs::symlink_metadata(directory_path)
+                .with_context(|| format!("inspecting directory {}", directory_path.display()))?;
+            if metadata.file_type().is_symlink()
+                || !metadata.is_dir()
+                || file_identity(&metadata) != *expected
+            {
+                return Err(FileConflict::new(path).into());
+            }
+        }
+        let directory = open_directory(&self.parent)?;
+        let binding = DirectoryBinding {
+            parent: self.parent,
+            target: self.target,
+            identities: self.identities,
+            directory,
+        };
+        binding.require_current(path)?;
+        Ok(binding)
+    }
 }
 
 fn capture_directory_identities(path: &Path) -> Result<Vec<(PathBuf, FileIdentity)>> {
@@ -613,6 +667,13 @@ impl FileSnapshot {
         let binding = DirectoryBinding::open(path)?;
         let unchanged = self.unchanged_at(&binding, binding.target_name())?;
         Ok(unchanged && binding.is_current()?)
+    }
+
+    pub(crate) fn unchanged_beneath(&self, root: &Path, path: &Path) -> Result<bool> {
+        let mut snapshots = FileSnapshotBatch::new(root)?;
+        let current = snapshots.capture_read(path)?;
+        snapshots.finish()?;
+        Ok(self.matches_read(current.as_ref()))
     }
 
     fn capture_at(binding: &DirectoryBinding, name: &CStr) -> Result<Self> {
@@ -1143,24 +1204,26 @@ pub(crate) struct AppliedWrite {
     path: PathBuf,
     before: FileSnapshot,
     after: FileSnapshot,
-    binding: DirectoryBinding,
+    binding: DirectoryBindingSnapshot,
 }
 
 pub(crate) struct AppliedRename {
     from: PathBuf,
     to: PathBuf,
     after: FileSnapshot,
-    from_binding: DirectoryBinding,
-    to_binding: DirectoryBinding,
+    from_binding: DirectoryBindingSnapshot,
+    to_binding: DirectoryBindingSnapshot,
 }
 
 impl AppliedRename {
     pub(crate) fn rollback(self) -> Result<()> {
+        let from_binding = self.from_binding.reopen(&self.from)?;
+        let to_binding = self.to_binding.reopen(&self.to)?;
         case_rename_bound(
             &self.to,
-            &self.to_binding,
+            &to_binding,
             &self.from,
-            &self.from_binding,
+            &from_binding,
             &self.after,
         )?;
         Ok(())
@@ -1169,17 +1232,13 @@ impl AppliedRename {
 
 impl AppliedWrite {
     pub(crate) fn rollback(self) -> Result<()> {
-        if !self.binding.is_current()? {
+        let binding = self.binding.reopen(&self.path)?;
+        if !binding.is_current()? {
             return Err(FileConflict::new(&self.path).into());
         }
-        require_generation(
-            &self.path,
-            &self.binding,
-            self.binding.target_name(),
-            &self.after,
-        )?;
+        require_generation(&self.path, &binding, binding.target_name(), &self.after)?;
         run_test_hook(TestHookPoint::RollbackAfterInitialVerification);
-        rollback_applied(&self.path, &self.binding, &self.before, &self.after, true)
+        rollback_applied(&self.path, &binding, &self.before, &self.after, true)
     }
 }
 
@@ -1295,7 +1354,7 @@ fn atomic_replace_inner(
         path: path.to_path_buf(),
         before: expected.clone(),
         after,
-        binding,
+        binding: binding.into_snapshot(),
     })
 }
 
@@ -1395,7 +1454,7 @@ fn atomic_remove_inner(
         path: path.to_path_buf(),
         before: expected.clone(),
         after: FileSnapshot::Missing,
-        binding,
+        binding: binding.into_snapshot(),
     }))
 }
 
@@ -1806,8 +1865,8 @@ fn atomic_case_rename_beneath(
         from: from.to_path_buf(),
         to: to.to_path_buf(),
         after,
-        from_binding,
-        to_binding,
+        from_binding: from_binding.into_snapshot(),
+        to_binding: to_binding.into_snapshot(),
     })
 }
 
@@ -2486,6 +2545,24 @@ unsafe fn remove_xattr(fd: RawFd, name: *const libc::c_char) -> libc::c_int {
 mod tests {
     use super::*;
 
+    fn descriptors_for_directory(path: &Path) -> usize {
+        use std::os::unix::fs::MetadataExt;
+
+        let metadata = std::fs::metadata(path).unwrap();
+        (0..4096)
+            .filter(|fd| {
+                let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+                let result = unsafe { libc::fstat(*fd, stat.as_mut_ptr()) };
+                if result != 0 {
+                    return false;
+                }
+                let stat = unsafe { stat.assume_init() };
+                stat.st_dev as u128 == metadata.dev() as u128
+                    && stat.st_ino as u128 == metadata.ino() as u128
+            })
+            .count()
+    }
+
     fn assert_file_conflict(error: &anyhow::Error) {
         assert!(
             error_has_file_conflict(error),
@@ -2506,6 +2583,27 @@ mod tests {
         };
         assert!(error.to_string().contains("hard-linked file"));
         assert_eq!(std::fs::read_to_string(path).unwrap(), "before");
+    }
+
+    #[test]
+    fn applied_write_receipts_do_not_retain_directory_descriptors() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let before = descriptors_for_directory(&root);
+        let mut receipts = Vec::new();
+
+        for index in 0..256 {
+            let path = root.join(format!("file-{index}.txt"));
+            receipts.push(
+                FileSnapshot::Missing
+                    .replace_beneath(&root, &path, b"content")
+                    .unwrap(),
+            );
+        }
+
+        let after = descriptors_for_directory(&root);
+        assert!(after <= before + 1, "before={before}, after={after}");
+        drop(receipts);
     }
 
     #[test]

@@ -55,26 +55,26 @@ pub(super) fn apply_changes(
                 }
             }
         }
-        ensure_unchanged(manifest.path, manifest.snapshot)?;
+        ensure_unchanged(allowed_root, manifest.path, manifest.snapshot)?;
         return Ok(());
     }
 
     let validate_profile = crate::profile::scope("workdraft::validate_inputs_before");
     for (path, snapshot) in inputs {
-        ensure_unchanged(path, snapshot)?;
+        ensure_unchanged(allowed_root, path, snapshot)?;
     }
     for write in &writes {
-        ensure_unchanged(&write.path, &write.snapshot)?;
+        ensure_unchanged(allowed_root, &write.path, &write.snapshot)?;
     }
     for removal in &removals {
         if !removal.recoverable {
-            ensure_unchanged(&removal.path, &removal.snapshot)?;
+            ensure_unchanged(allowed_root, &removal.path, &removal.snapshot)?;
         }
     }
     for rename in &renames {
-        ensure_unchanged(&rename.from, &rename.snapshot)?;
+        ensure_unchanged(allowed_root, &rename.from, &rename.snapshot)?;
     }
-    ensure_unchanged(manifest.path, manifest.snapshot)?;
+    ensure_unchanged(allowed_root, manifest.path, manifest.snapshot)?;
     let recoverable_removals = removals
         .iter()
         .filter(|removal| removal.recoverable)
@@ -116,7 +116,7 @@ pub(super) fn apply_changes(
             if write_paths.contains(path.as_path()) {
                 continue;
             }
-            if !snapshot.unchanged(path)? {
+            if !snapshot.unchanged_beneath(allowed_root, path)? {
                 bail!(
                     "{} changed while source block writes were applied",
                     path.display()
@@ -150,8 +150,8 @@ pub(super) fn apply_changes(
     Ok(())
 }
 
-fn ensure_unchanged(path: &Path, snapshot: &FileSnapshot) -> Result<()> {
-    if !snapshot.unchanged(path)? {
+fn ensure_unchanged(allowed_root: &Path, path: &Path, snapshot: &FileSnapshot) -> Result<()> {
+    if !snapshot.unchanged_beneath(allowed_root, path)? {
         bail!("{} changed during source block operation", path.display());
     }
     Ok(())
