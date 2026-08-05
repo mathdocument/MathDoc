@@ -10,6 +10,13 @@ pub(crate) struct WorkspaceMutationLock {
     control_identity: (u64, u64),
 }
 
+/// Interprocess lock for source mirror reconciliation and compiler workspaces.
+pub(crate) struct WorkspaceWorkLock {
+    file: File,
+    root: PathBuf,
+    control_identity: (u64, u64),
+}
+
 impl WorkspaceMutationLock {
     pub(crate) fn acquire(root: &Path) -> Result<Self> {
         use std::os::fd::AsRawFd;
@@ -97,6 +104,65 @@ impl WorkspaceMutationLock {
     }
 }
 
+impl WorkspaceWorkLock {
+    pub(crate) fn acquire(root: &Path) -> Result<Self> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let root = super::validate_mdcroot(root)?;
+        let control_path = root.join(".mdc");
+        let control_identity = directory_identity(&control_path)?;
+        let path = control_path.join("work.lock");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .open(&path)
+            .with_context(|| format!("opening workspace work lock {}", path.display()))?;
+        if !file.metadata()?.is_file() {
+            bail!(
+                "workspace work lock is not a regular file: {}",
+                path.display()
+            );
+        }
+        loop {
+            // SAFETY: `file` owns a live descriptor for the duration of the lock.
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+                break;
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                return Err(error)
+                    .with_context(|| format!("locking workspace work lock {}", path.display()));
+            }
+        }
+        if directory_identity(&control_path)? != control_identity {
+            bail!(
+                "workspace control directory changed while acquiring its work lock: {}",
+                control_path.display()
+            );
+        }
+        Ok(Self {
+            file,
+            root,
+            control_identity,
+        })
+    }
+
+    pub(crate) fn require_current(&self) -> Result<()> {
+        let control_path = self.root.join(".mdc");
+        if directory_identity(&control_path)? != self.control_identity {
+            bail!(
+                "workspace control directory changed while its work lock was held: {}",
+                control_path.display()
+            );
+        }
+        Ok(())
+    }
+}
+
 fn directory_identity(path: &Path) -> Result<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
 
@@ -119,9 +185,17 @@ impl Drop for WorkspaceMutationLock {
     }
 }
 
+impl Drop for WorkspaceWorkLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        // SAFETY: `self.file` remains open until after Drop returns.
+        let _ = unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::WorkspaceMutationLock;
+    use super::{WorkspaceMutationLock, WorkspaceWorkLock};
 
     #[test]
     fn lock_rejects_replaced_control_directory() {
@@ -134,5 +208,31 @@ mod tests {
         std::fs::create_dir(root.join(".mdc")).unwrap();
 
         assert!(lock.root().is_err());
+    }
+
+    #[test]
+    fn work_lock_does_not_exclude_node_mutations() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        let work_lock = WorkspaceWorkLock::acquire(root).unwrap();
+
+        let mutation_lock = WorkspaceMutationLock::acquire(root).unwrap();
+
+        work_lock.require_current().unwrap();
+        mutation_lock.root().unwrap();
+    }
+
+    #[test]
+    fn work_lock_rejects_replaced_control_directory() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        let lock = WorkspaceWorkLock::acquire(root).unwrap();
+
+        std::fs::rename(root.join(".mdc"), root.join("old-mdc")).unwrap();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+
+        assert!(lock.require_current().is_err());
     }
 }

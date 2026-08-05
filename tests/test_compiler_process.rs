@@ -49,6 +49,85 @@ fn ctrl_c_escalates_and_returns_signal_exit_code() {
 }
 
 #[cfg(unix)]
+#[test]
+fn work_releases_node_mutation_lock_while_compiler_runs() {
+    use mathdoc::mdocnode::{MdocNode, SrcBlock};
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    if which::which("python3").is_err() && which::which("python").is_err() {
+        return;
+    }
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join(".mdc")).unwrap();
+    let ready = root.join("compiler-ready");
+    let mut node = MdocNode::new_at_path(&root.join("node.mdoc"), "Long compile");
+    node.blocks.push(SrcBlock {
+        srctype: "python".to_string(),
+        content: format!(
+            "import pathlib, time\npathlib.Path({:?}).write_text('ready')\ntime.sleep(10)\n",
+            ready.to_string_lossy()
+        ),
+        metadata: Default::default(),
+    });
+    std::fs::write(&node.path, node.render().unwrap()).unwrap();
+
+    let mut work = Command::new(env!("CARGO_BIN_EXE_mdc"))
+        .current_dir(root)
+        .args(["work", &node.fnode])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let ready_deadline = Instant::now() + Duration::from_secs(5);
+    while !ready.exists() && Instant::now() < ready_deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    if !ready.exists() {
+        let status = work.try_wait().unwrap();
+        let _ = work.kill();
+        let _ = work.wait();
+        panic!("mdc did not reach compiler startup; status={status:?}");
+    }
+
+    let mut mutation = Command::new(env!("CARGO_BIN_EXE_mdc"))
+        .current_dir(root)
+        .args(["new", "--title", "Concurrent", "--file", "concurrent"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mutation_deadline = Instant::now() + Duration::from_secs(2);
+    let mutation_status = loop {
+        if let Some(status) = mutation.try_wait().unwrap() {
+            break Some(status);
+        }
+        if Instant::now() >= mutation_deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let work_was_running = work.try_wait().unwrap().is_none();
+
+    let _ = work.kill();
+    let _ = work.wait();
+    if mutation_status.is_none() {
+        let _ = mutation.kill();
+        let _ = mutation.wait();
+    }
+
+    let mutation_status = mutation_status.expect("node mutation waited for compiler completion");
+    assert!(mutation_status.success());
+    assert!(
+        work_was_running,
+        "compiler exited before concurrent mutation"
+    );
+    assert!(root.join("concurrent.mdoc").is_file());
+}
+
+#[cfg(unix)]
 fn python_workspace() -> (tempfile::TempDir, String) {
     use mathdoc::mdocnode::{MdocNode, SrcBlock};
 

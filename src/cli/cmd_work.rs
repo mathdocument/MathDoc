@@ -10,23 +10,24 @@ use super::{cwd, print_workdraft_issues, require_mdcroot, BLD, DIM, GRN, RED, RS
 
 pub(super) fn cmd_work(source: String) -> Result<i32> {
     let mdcroot = require_mdcroot()?;
-    let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&mdcroot)?;
-    let (targets, sync_conflicted, source_path) = {
+    let work_lock = crate::workspace::WorkspaceWorkLock::acquire(&mdcroot)?;
+    let (targets, sync_conflicted, source_fnode) = {
+        let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&mdcroot)?;
         let mut cache = IndCache::open_under_mutation_lock(&mutation_lock)?;
         cache.discover_workspace_changes()?;
-        let (_, _, source_path) = cache.resolve_ref(&source, Some(&cwd()))?;
+        let (source_fnode, _, source_path) = cache.resolve_ref(&source, Some(&cwd()))?;
         let sync = crate::workdraft::sync(&mutation_lock)?;
         print_workdraft_issues(&sync.warnings);
         print_workdraft_issues(&sync.dirty);
         print_workdraft_issues(&sync.conflicts);
         let sync_conflicted = !sync.conflicts.is_empty();
         if sync_conflicted {
-            (Vec::new(), true, source_path)
+            (Vec::new(), true, source_fnode)
         } else {
             (
                 crate::workdraft::targets(&mdcroot, &source_path)?,
                 false,
-                source_path,
+                source_fnode,
             )
         }
     };
@@ -45,6 +46,7 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
     let mut failure_codes = Vec::new();
     let mut interrupted_code = None;
     for (index, (srctype, path)) in targets.iter().enumerate() {
+        work_lock.require_current()?;
         println!(
             "[{}/{}] {BLD}{srctype}{RST}  {}",
             index + 1,
@@ -76,14 +78,21 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
             break;
         }
     }
+    work_lock.require_current()?;
+
+    let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&mdcroot)?;
     let mut cache = IndCache::open_under_mutation_lock(&mutation_lock)?;
+    cache.discover_workspace_changes()?;
+    let (_, _, source_path) = cache.resolve_ref(&source_fnode, Some(&mdcroot))?;
     cache.upsert_path(&source_path)?;
+    work_lock.require_current()?;
     Ok(interrupted_code.unwrap_or_else(|| aggregate_compile_exit(&failure_codes)))
 }
 
 pub(super) fn cmd_back() -> Result<i32> {
     let mdcroot = require_mdcroot()?;
     let report = {
+        let _work_lock = crate::workspace::WorkspaceWorkLock::acquire(&mdcroot)?;
         let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&mdcroot)?;
         let mut cache = IndCache::open_under_mutation_lock(&mutation_lock)?;
         cache.discover_workspace_changes()?;

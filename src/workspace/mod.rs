@@ -6,7 +6,7 @@ use walkdir::WalkDir;
 mod mutation_lock;
 mod safe_file;
 
-pub(crate) use mutation_lock::WorkspaceMutationLock;
+pub(crate) use mutation_lock::{WorkspaceMutationLock, WorkspaceWorkLock};
 pub(crate) use safe_file::{
     atomic_create_if_missing_beneath, ensure_regular_directory_tree, ensure_regular_file_beneath,
     error_has_file_conflict, error_has_infrastructure_failure, regular_directory_exists_beneath,
