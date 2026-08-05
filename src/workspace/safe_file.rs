@@ -926,7 +926,8 @@ impl FileSnapshotBatch {
     }
 }
 
-pub(crate) fn read_regular_file_beneath(root: &Path, path: &Path) -> Result<ReadFileSnapshot> {
+#[cfg(test)]
+fn read_regular_file_beneath(root: &Path, path: &Path) -> Result<ReadFileSnapshot> {
     let binding = DirectoryBinding::open_beneath(root, path)?;
     let fd = unsafe {
         libc::openat(

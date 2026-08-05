@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, ToSql};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::fs::Metadata;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -10,7 +11,7 @@ use crate::indcache::queries::{
     path_has_blocking_issue, CHUNK_SIZE,
 };
 use crate::mdocnode::{MdocHead, MdocIdentity};
-use crate::workspace::{iter_mdoc_files, to_rel_path};
+use crate::workspace::{iter_mdoc_files, to_rel_path, FileSnapshotBatch};
 
 // ── Public write functions ────────────────────────────────────────────────────
 
@@ -59,6 +60,7 @@ pub fn refresh_search_index(conn: &Connection, root: &Path) -> Result<()> {
 }
 
 const BULK_ROWS: usize = 200;
+const SCAN_BATCH: usize = 2048;
 
 struct ScannedMdoc {
     path: String,
@@ -86,17 +88,72 @@ struct IndexIssue {
 fn scan_workspace(root: &Path) -> Result<Vec<ScannedMdoc>> {
     let mut paths = iter_mdoc_files(root).collect::<Result<Vec<_>>>()?;
     paths.sort();
-    paths
-        .into_iter()
-        .map(|path| scan_mdoc(root, &path))
-        .collect()
+    let mut files = Vec::with_capacity(paths.len());
+    for paths in paths.chunks(SCAN_BATCH) {
+        files.extend(scan_workspace_batch(root, paths)?);
+    }
+    Ok(files)
 }
 
-fn scan_mdoc(root: &Path, path: &Path) -> Result<ScannedMdoc> {
-    let snapshot = crate::workspace::read_regular_file_beneath(root, path)?;
-    let content = snapshot.content();
+fn scan_workspace_batch(root: &Path, paths: &[PathBuf]) -> Result<Vec<ScannedMdoc>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let worker_count = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1)
+        .min(8)
+        .min(paths.len());
+    let chunk_size = paths.len().div_ceil(worker_count);
+    std::thread::scope(|scope| {
+        let mut workers = Vec::with_capacity(worker_count);
+        for paths in paths.chunks(chunk_size) {
+            workers.push(scope.spawn(move || -> Result<Vec<ScannedMdoc>> {
+                let mut snapshots = FileSnapshotBatch::new(root)?;
+                let mut files = Vec::with_capacity(paths.len());
+                for path in paths {
+                    let snapshot = snapshots.capture_read(path)?.ok_or_else(|| {
+                        anyhow::anyhow!("mdoc file disappeared: {}", path.display())
+                    })?;
+                    files.push(scan_mdoc(
+                        root,
+                        path,
+                        snapshot.content(),
+                        snapshot.metadata(),
+                    )?);
+                }
+                snapshots.finish()?;
+                Ok(files)
+            }));
+        }
+
+        let mut files = Vec::with_capacity(paths.len());
+        let mut first_error = None;
+        for worker in workers {
+            match worker.join() {
+                Ok(Ok(worker_files)) => files.extend(worker_files),
+                Ok(Err(error)) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+                Err(_) => {
+                    if first_error.is_none() {
+                        first_error = Some(anyhow::anyhow!("mdoc scan worker panicked"));
+                    }
+                }
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(files),
+        }
+    })
+}
+
+fn scan_mdoc(root: &Path, path: &Path, content: &[u8], metadata: &Metadata) -> Result<ScannedMdoc> {
     let path_string = to_rel_path(root, path);
-    let (mtime_ns, size) = metadata_state(snapshot.metadata())?;
+    let (mtime_ns, size) = metadata_state(metadata)?;
 
     match MdocHead::load_bytes(path, content) {
         Ok(head) => Ok(ScannedMdoc {
