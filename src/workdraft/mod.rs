@@ -3,15 +3,12 @@ mod mirror;
 mod transaction;
 
 use anyhow::{bail, Context, Result};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use crate::config::builtin_srctypes;
 use crate::mdocnode::MdocNode;
-use crate::workspace::{
-    ensure_regular_directory_tree, iter_mdoc_files, FileSnapshot, FileSnapshotBatch,
-    ReadFileSnapshot,
-};
+use crate::workspace::{iter_mdoc_files, FileSnapshot, FileSnapshotBatch, ReadFileSnapshot};
 
 use manifest::{
     decode_source_path, encode_source_path, parse_manifest, BlockBaseline, LoadedManifest,
@@ -187,7 +184,6 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
     let mut valid_mdocs = 0;
     let mut exported_source_files = 0;
     let mut had_invalid_mdoc = false;
-    let mut prepared_output_parents = HashSet::new();
     let mut write_snapshots = FileSnapshotBatch::new(&mdcroot)?;
     let mut source_files = source_files.into_iter();
 
@@ -208,14 +204,7 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                     continue;
                 }
                 for srctype in builtin_srctypes() {
-                    let raw_path = output_path(&mdcroot, &source.relative, srctype);
-                    let raw_parent = raw_path
-                        .parent()
-                        .expect("source mirror always has a parent directory");
-                    if prepared_output_parents.insert(raw_parent.to_path_buf()) {
-                        ensure_regular_directory_tree(&mdcroot, raw_parent)?;
-                    }
-                    paths.push(raw_path);
+                    paths.push(output_path(&mdcroot, &source.relative, srctype));
                 }
             }
             paths

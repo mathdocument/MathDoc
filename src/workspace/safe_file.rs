@@ -728,7 +728,9 @@ impl FileSnapshotBatch {
     }
 
     pub(crate) fn capture_read(&mut self, path: &Path) -> Result<Option<ReadFileSnapshot>> {
-        let (directory_fd, file_name) = self.bind_file(path)?;
+        let Some((directory_fd, file_name)) = self.bind_file_if_parent_exists(path)? else {
+            return Ok(None);
+        };
         let fd = unsafe {
             libc::openat(
                 directory_fd,
@@ -798,6 +800,16 @@ impl FileSnapshotBatch {
     }
 
     fn bind_file(&mut self, path: &Path) -> Result<(RawFd, CString)> {
+        self.bind_file_if_parent_exists(path)?.ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("snapshot parent does not exist for {}", path.display()),
+            )
+            .into()
+        })
+    }
+
+    fn bind_file_if_parent_exists(&mut self, path: &Path) -> Result<Option<(RawFd, CString)>> {
         let relative = path.strip_prefix(&self.root).map_err(|_| {
             anyhow::anyhow!(
                 "snapshot path {} is outside root {}",
@@ -813,8 +825,10 @@ impl FileSnapshotBatch {
             .ok_or_else(|| anyhow::anyhow!("snapshot path has no file name: {}", path.display()))?;
         let file_name = CString::new(file_name.as_bytes())
             .with_context(|| format!("path contains a null byte: {}", path.display()))?;
-        let directory_fd = self.bind_directory(parent, path)?;
-        Ok((directory_fd, file_name))
+        let Some(directory_fd) = self.bind_directory_if_exists(parent, path)? else {
+            return Ok(None);
+        };
+        Ok(Some((directory_fd, file_name)))
     }
 
     pub(crate) fn finish(self) -> Result<()> {
@@ -839,12 +853,16 @@ impl FileSnapshotBatch {
         Ok(())
     }
 
-    fn bind_directory(&mut self, relative: &Path, target_path: &Path) -> Result<RawFd> {
+    fn bind_directory_if_exists(
+        &mut self,
+        relative: &Path,
+        target_path: &Path,
+    ) -> Result<Option<RawFd>> {
         if relative.as_os_str().is_empty() {
-            return Ok(self.root_directory.as_raw_fd());
+            return Ok(Some(self.root_directory.as_raw_fd()));
         }
         if let Some(directory) = self.directories.get(relative) {
-            return Ok(directory.directory.as_raw_fd());
+            return Ok(Some(directory.directory.as_raw_fd()));
         }
 
         let mut absolute_path = self.root.clone();
@@ -874,6 +892,8 @@ impl FileSnapshotBatch {
                     Some(libc::ELOOP) | Some(libc::ENOTDIR)
                 ) {
                     Err(FileConflict::new(target_path).into())
+                } else if error.kind() == std::io::ErrorKind::NotFound {
+                    Ok(None)
                 } else {
                     Err(error).with_context(|| {
                         format!("binding snapshot directory {}", absolute_path.display())
@@ -917,12 +937,13 @@ impl FileSnapshotBatch {
                 directory,
             },
         );
-        Ok(self
-            .directories
-            .get(relative)
-            .expect("bound directory was inserted")
-            .directory
-            .as_raw_fd())
+        Ok(Some(
+            self.directories
+                .get(relative)
+                .expect("bound directory was inserted")
+                .directory
+                .as_raw_fd(),
+        ))
     }
 }
 
@@ -2447,6 +2468,36 @@ mod tests {
         assert_eq!(snapshot.content(), Some(b"content".as_slice()));
         assert!(matches!(missing, FileSnapshot::Missing));
         assert_eq!(read.content(), b"content");
+    }
+
+    #[test]
+    fn snapshot_batch_read_treats_a_missing_parent_as_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("missing/nested/node.mdoc");
+
+        let mut batch = FileSnapshotBatch::new(&root).unwrap();
+        let read = batch.capture_read(&path).unwrap();
+        batch.finish().unwrap();
+
+        assert!(read.is_none());
+    }
+
+    #[test]
+    fn snapshot_batch_read_rejects_a_symlinked_parent() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        symlink(outside.path(), root.join("linked")).unwrap();
+
+        let mut batch = FileSnapshotBatch::new(&root).unwrap();
+        let error = batch
+            .capture_read(&root.join("linked/node.mdoc"))
+            .unwrap_err();
+
+        assert_file_conflict(&error);
     }
 
     #[test]
