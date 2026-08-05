@@ -99,12 +99,16 @@ impl IndCache {
         Ok(())
     }
 
-    /// Discover additions, deletions, and metadata changes; marks bootstrapped.
+    /// Discover additions, deletions, and metadata changes using the metadata fast path.
     pub fn discover_workspace_changes(&mut self) -> Result<()> {
         let _profile = crate::profile::scope("IndCache::discover_workspace_changes");
+        let changes = discovery::discover_workspace_changes(&self.conn, &self.root)?;
+        if changes.is_empty() {
+            return Ok(());
+        }
         let tx = self.conn.transaction()?;
         let (changed_fnodes, has_deletion) =
-            discovery::discover_workspace_changes(&tx, &self.root)?;
+            discovery::apply_workspace_changes(&tx, &self.root, changes)?;
         if has_deletion {
             // Deletions can decrease ancestor depths; full backfill is needed.
             derived::backfill_all_topo_depths(&tx)?;
@@ -114,10 +118,6 @@ impl IndCache {
                 derived::refresh_topo_depth_upward_from(&tx, fnode)?;
             }
         }
-        tx.execute(
-            "UPDATE mdoc_index_state SET bootstrapped = 1 WHERE id = 1",
-            [],
-        )?;
         tx.commit()?;
         Ok(())
     }
