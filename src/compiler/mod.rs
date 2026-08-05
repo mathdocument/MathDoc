@@ -28,16 +28,16 @@ pub struct CompilerReq {
 }
 
 impl CompilerReq {
-    fn timeout_sec(&self) -> u64 {
+    fn timeout_sec(&self) -> Result<u64> {
         self.config
             .timeout_sec()
-            .expect("timed compiler must have a resolved timeout")
+            .ok_or_else(|| anyhow::anyhow!("compiler request is missing timeout_sec"))
     }
 
-    fn setup_timeout_sec(&self) -> u64 {
+    fn setup_timeout_sec(&self) -> Result<u64> {
         self.config
             .setup_timeout_sec()
-            .expect("compiler setup must have a resolved timeout")
+            .ok_or_else(|| anyhow::anyhow!("compiler request is missing setup_timeout_sec"))
     }
 
     fn emit_progress(&self, message: &str) {

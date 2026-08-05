@@ -142,3 +142,54 @@ fn load_config_rejects_non_positive_setup_timeout_with_source_key() {
     assert!(error.contains("[src.lean]"), "{error}");
     assert!(error.contains("positive integer"), "{error}");
 }
+
+#[test]
+fn load_config_rejects_unknown_and_inapplicable_settings() {
+    for (section, setting, expected) in [
+        ("python", "typo_timeout_sec = 1", "unknown field"),
+        ("text", "timeout_sec = 1", "does not support timeout_sec"),
+        (
+            "python",
+            "setup_timeout_sec = 1",
+            "does not support setup_timeout_sec",
+        ),
+    ] {
+        let dir = TempDir::new().unwrap();
+        let mdc = dir.path().join(".mdc");
+        fs::create_dir(&mdc).unwrap();
+        fs::write(
+            mdc.join("config.toml"),
+            format!("[src.{section}]\n{setting}\n"),
+        )
+        .unwrap();
+
+        let error = Config::load(dir.path()).unwrap_err().to_string();
+
+        assert!(error.contains(&format!("[src.{section}]")), "{error}");
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn load_config_rejects_non_regular_and_symlinked_files() {
+    use std::os::unix::fs::symlink;
+
+    let directory_config = TempDir::new().unwrap();
+    fs::create_dir(directory_config.path().join(".mdc")).unwrap();
+    fs::create_dir(directory_config.path().join(".mdc/config.toml")).unwrap();
+    assert!(Config::load(directory_config.path()).is_err());
+
+    let symlinked_config = TempDir::new().unwrap();
+    fs::create_dir(symlinked_config.path().join(".mdc")).unwrap();
+    let external = TempDir::new().unwrap();
+    let target = external.path().join("config.toml");
+    fs::write(&target, "[src.python]\ntimeout_sec = 1\n").unwrap();
+    symlink(&target, symlinked_config.path().join(".mdc/config.toml")).unwrap();
+
+    assert!(Config::load(symlinked_config.path()).is_err());
+    assert_eq!(
+        fs::read_to_string(target).unwrap(),
+        "[src.python]\ntimeout_sec = 1\n"
+    );
+}

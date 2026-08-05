@@ -128,6 +128,61 @@ fn test_python_uses_deterministic_working_directory() {
 
 #[cfg(unix)]
 #[test]
+fn test_python_treats_leading_hyphen_source_as_a_file() {
+    if which::which("python3").is_err() && which::which("python").is_err() {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let lib = root.join(".mdc/python/Lib");
+    std::fs::create_dir_all(&lib).unwrap();
+    let source = lib.join("-c.py");
+    std::fs::write(
+        &source,
+        "import pathlib\npathlib.Path('hyphen-marker').write_text('ok')\n",
+    )
+    .unwrap();
+    let mut req = make_req(root, "python");
+    req.source = source;
+
+    let result = CompilerRegistry::default_registry()
+        .resolve("python")
+        .unwrap()
+        .compile(&req);
+
+    assert!(result.is_success(), "{}", result.stderr);
+    assert_eq!(
+        std::fs::read_to_string(lib.join("hyphen-marker")).unwrap(),
+        "ok"
+    );
+}
+
+#[test]
+fn timed_compilers_reject_unresolved_configuration_without_panicking() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry = CompilerRegistry::default_registry();
+
+    for srctype in ["python", "latex", "lean", "rocq"] {
+        let req = CompilerReq {
+            mdcroot: tmp.path().to_path_buf(),
+            source: test_source_path(tmp.path(), srctype),
+            config: crate::config::SrcConfig::default(),
+            progress: None,
+        };
+
+        let result = registry.resolve(srctype).unwrap().compile(&req);
+
+        assert!(!result.is_success());
+        assert!(
+            result.stderr.contains("missing timeout_sec"),
+            "{srctype}: {}",
+            result.stderr
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn test_latex_compiles_hello_world() {
     if which::which("latexmk").is_err() || which::which("xelatex").is_err() {
         return;

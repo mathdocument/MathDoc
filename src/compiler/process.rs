@@ -570,6 +570,9 @@ where
                         }
                         .into());
                     }
+                    if let Some(error) = stdout_drain.error().or_else(|| stderr_drain.error()) {
+                        bail!("{error}{}", drain_diagnostics(&stdout_drain, &stderr_drain));
+                    }
                     break exit_status;
                 }
                 Ok(None) => {}

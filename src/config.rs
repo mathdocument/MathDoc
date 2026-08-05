@@ -106,7 +106,7 @@ pub fn canonical_srctype(srctype: &str) -> &str {
 /// Per-srctype compiler configuration. All fields are optional at the TOML level;
 /// `Config::src_config()` always returns a fully-merged value with built-in defaults applied.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SrcConfig {
     #[serde(default, deserialize_with = "deserialize_positive_seconds")]
     timeout_sec: Option<NonZeroU64>,
@@ -154,16 +154,20 @@ where
 
 impl Config {
     pub fn load(mdcroot: &Path) -> Result<Self> {
+        let mdcroot = crate::workspace::validate_mdcroot(mdcroot)?;
         let config_path = mdcroot.join(".mdc").join("config.toml");
-        if !config_path.is_file() {
+        let mut snapshots = crate::workspace::FileSnapshotBatch::new(&mdcroot)?;
+        let snapshot = snapshots.capture_read(&config_path)?;
+        snapshots.finish()?;
+        let Some(snapshot) = snapshot else {
             return Ok(Config::default());
-        }
-        let text = std::fs::read_to_string(&config_path)
-            .with_context(|| format!("reading {}", config_path.display()))?;
+        };
+        let text = std::str::from_utf8(snapshot.content())
+            .with_context(|| format!("reading {} as UTF-8", config_path.display()))?;
         if text.trim().is_empty() {
             return Ok(Config::default());
         }
-        let parsed: ConfigFile = toml::from_str(&text).map_err(|error| {
+        let parsed: ConfigFile = toml::from_str(text).map_err(|error| {
             anyhow::anyhow!("invalid TOML in {}: {error}", config_path.display())
         })?;
         let mut src = HashMap::new();
@@ -179,6 +183,9 @@ impl Config {
                     config_path.display()
                 )
             })?;
+            if let Err(error) = validate_src_config(canonical, &config) {
+                anyhow::bail!("invalid compiler configuration [src.{srctype}]: {error}");
+            }
             src.insert(canonical.to_string(), config);
         }
         Ok(Config { src })
@@ -195,6 +202,16 @@ impl Config {
             setup_timeout_sec: user.setup_timeout_sec.or(defaults.setup_timeout_sec),
         }
     }
+}
+
+fn validate_src_config(srctype: &str, config: &SrcConfig) -> Result<()> {
+    if srctype == "text" && config.timeout_sec.is_some() {
+        anyhow::bail!("the text compiler does not support timeout_sec");
+    }
+    if srctype != "lean" && config.setup_timeout_sec.is_some() {
+        anyhow::bail!("the {srctype} compiler does not support setup_timeout_sec");
+    }
+    Ok(())
 }
 
 /// Built-in defaults for the compilers shipped with MathDoc.

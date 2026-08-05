@@ -423,18 +423,21 @@ fn format_src_header(srctype: &str, metadata: &HashMap<String, String>) -> Strin
 fn shlex_split(input: &str) -> Result<Vec<String>> {
     let mut tokens: Vec<String> = Vec::new();
     let mut current = String::new();
+    let mut token_started = false;
     let mut chars = input.chars().peekable();
 
     while let Some(&character) = chars.peek() {
         match character {
             ' ' | '\t' => {
                 chars.next();
-                if !current.is_empty() {
+                if token_started {
                     tokens.push(std::mem::take(&mut current));
+                    token_started = false;
                 }
             }
             '"' => {
                 chars.next();
+                token_started = true;
                 loop {
                     match chars.next() {
                         None => bail!("unterminated double-quoted string"),
@@ -454,6 +457,7 @@ fn shlex_split(input: &str) -> Result<Vec<String>> {
             }
             '\'' => {
                 chars.next();
+                token_started = true;
                 loop {
                     match chars.next() {
                         None => bail!("unterminated single-quoted string"),
@@ -464,12 +468,13 @@ fn shlex_split(input: &str) -> Result<Vec<String>> {
             }
             _ => {
                 chars.next();
+                token_started = true;
                 current.push(character);
             }
         }
     }
 
-    if !current.is_empty() {
+    if token_started {
         tokens.push(current);
     }
     Ok(tokens)
@@ -489,6 +494,18 @@ mod tests {
     fn shlex_escaped_quote() {
         let tokens = shlex_split(r#"lean version="4\"0""#).unwrap();
         assert_eq!(tokens, vec!["lean", "version=4\"0"]);
+    }
+
+    #[test]
+    fn shlex_preserves_empty_quoted_tokens() {
+        assert_eq!(shlex_split("text \"\" ''").unwrap(), ["text", "", ""]);
+        assert!(parse_src_header("text \"\"", 1, Path::new("invalid.mdoc")).is_err());
+        assert_eq!(
+            parse_src_header("text key=\"\"", 1, Path::new("valid.mdoc"))
+                .unwrap()
+                .1["key"],
+            ""
+        );
     }
 
     #[test]

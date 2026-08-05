@@ -18,7 +18,10 @@ impl SrcCompiler for CompilerLatex {
     }
 
     fn compile(&self, req: &CompilerReq) -> CompilerRes {
-        let timeout_sec = req.timeout_sec();
+        let timeout_sec = match req.timeout_sec() {
+            Ok(timeout) => timeout,
+            Err(error) => return CompilerRes::err(error.to_string()),
+        };
 
         let latexmk = match require_tool("latexmk") {
             Ok(p) => p,
@@ -77,12 +80,6 @@ impl SrcCompiler for CompilerLatex {
 }
 
 fn ensure_workspace(workspace: &CompilerWorkspace, relative: &Path) -> Result<()> {
-    let main_path = workspace.root().join(MAIN_FILE);
-    let main_snapshot = workspace.snapshot(&main_path)?;
-    if main_snapshot.content().is_none() {
-        workspace.replace_generated(&main_path, &main_snapshot, DEFAULT_MAIN.as_bytes())?;
-    }
-
     let input = relative
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("LaTeX source path is not valid UTF-8"))?;
@@ -92,8 +89,28 @@ fn ensure_workspace(workspace: &CompilerWorkspace, relative: &Path) -> Result<()
     let driver = format!("\\input{{\"Lib/{input}\"}}\n");
     let driver_path = workspace.root().join(DRIVER_FILE);
     let driver_snapshot = workspace.snapshot(&driver_path)?;
-    if driver_snapshot.content() != Some(driver.as_bytes()) {
-        workspace.replace_generated(&driver_path, &driver_snapshot, driver.as_bytes())?;
+    let main_path = workspace.root().join(MAIN_FILE);
+    let main_snapshot = workspace.snapshot(&main_path)?;
+
+    let driver_change = if driver_snapshot.content() != Some(driver.as_bytes()) {
+        Some(workspace.replace_generated(&driver_path, &driver_snapshot, driver.as_bytes())?)
+    } else {
+        None
+    };
+    if main_snapshot.content().is_none() {
+        if let Err(error) =
+            workspace.replace_generated(&main_path, &main_snapshot, DEFAULT_MAIN.as_bytes())
+        {
+            return match driver_change {
+                Some(change) => match change.rollback() {
+                    Ok(()) => Err(error),
+                    Err(rollback_error) => Err(anyhow::anyhow!(
+                        "{error}; additionally failed to roll back {DRIVER_FILE}: {rollback_error}"
+                    )),
+                },
+                None => Err(error),
+            };
+        }
     }
     Ok(())
 }
@@ -157,6 +174,18 @@ mod tests {
             std::fs::read_to_string(workspace.root().join(MAIN_FILE)).unwrap(),
             DEFAULT_MAIN
         );
+    }
+
+    #[test]
+    fn invalid_source_path_does_not_leave_generated_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = test_workspace(&dir);
+
+        let error = ensure_workspace(&workspace, Path::new("bad%.tex")).unwrap_err();
+
+        assert!(error.to_string().contains("cannot be represented safely"));
+        assert!(!workspace.root().join(MAIN_FILE).exists());
+        assert!(!workspace.root().join(DRIVER_FILE).exists());
     }
 
     #[test]

@@ -17,8 +17,14 @@ impl SrcCompiler for CompilerLean {
     }
 
     fn compile(&self, req: &CompilerReq) -> CompilerRes {
-        let timeout_sec = req.timeout_sec();
-        let setup_timeout_sec = req.setup_timeout_sec();
+        let timeout_sec = match req.timeout_sec() {
+            Ok(timeout) => timeout,
+            Err(error) => return CompilerRes::err(error.to_string()),
+        };
+        let setup_timeout_sec = match req.setup_timeout_sec() {
+            Ok(timeout) => timeout,
+            Err(error) => return CompilerRes::err(error.to_string()),
+        };
 
         let lake = match require_tool("lake") {
             Ok(p) => p,
@@ -154,16 +160,30 @@ fn validate_lakefile(content: &[u8]) -> Result<()> {
     let parsed = text
         .parse::<toml::Value>()
         .map_err(|error| anyhow::anyhow!("invalid lakefile.toml: {error}"))?;
-    let has_lib = parsed
+    let library = parsed
         .get("lean_lib")
         .and_then(toml::Value::as_array)
-        .is_some_and(|libraries| {
-            libraries.iter().any(|library| {
+        .and_then(|libraries| {
+            libraries.iter().find(|library| {
                 library.get("name").and_then(toml::Value::as_str) == Some(DRIVER_MODULE)
             })
         });
-    if !has_lib {
+    let Some(library) = library else {
         bail!("lakefile.toml must declare `[[lean_lib]] name = \"Lib\"`");
+    };
+    if library
+        .get("srcDir")
+        .and_then(toml::Value::as_str)
+        .is_some_and(|source| source != ".")
+    {
+        bail!("the `Lib` lean library must use the workspace root as its srcDir");
+    }
+    if parsed
+        .get("buildDir")
+        .and_then(toml::Value::as_str)
+        .is_some_and(|build| build != ".lake/build")
+    {
+        bail!("lakefile.toml must use `.lake/build` as its buildDir");
     }
     Ok(())
 }
@@ -402,6 +422,27 @@ exit 1
             std::fs::read_to_string(root.join("lakefile.toml")).unwrap(),
             custom
         );
+    }
+
+    #[test]
+    fn custom_source_and_build_layouts_are_rejected() {
+        for (setting, expected) in [
+            ("srcDir = \"src\"", "srcDir"),
+            (
+                "buildDir = \"custom-build\"\n\n[[lean_lib]]\nname = \"Lib\"",
+                "buildDir",
+            ),
+        ] {
+            let content = if setting.starts_with("buildDir") {
+                format!("name = \"custom\"\n{setting}\n")
+            } else {
+                format!("name = \"custom\"\n\n[[lean_lib]]\nname = \"Lib\"\n{setting}\n")
+            };
+
+            let error = validate_lakefile(content.as_bytes()).unwrap_err();
+
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 
     #[test]

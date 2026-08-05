@@ -11,7 +11,10 @@ impl SrcCompiler for CompilerPython {
     }
 
     fn compile(&self, req: &CompilerReq) -> CompilerRes {
-        let timeout_sec = req.timeout_sec();
+        let timeout_sec = match req.timeout_sec() {
+            Ok(timeout) => timeout,
+            Err(error) => return CompilerRes::err(error.to_string()),
+        };
         let python = match require_tool("python3").or_else(|_| require_tool("python")) {
             Ok(p) => p,
             Err(e) => return CompilerRes::err_code(e.to_string(), 127),
@@ -26,7 +29,11 @@ impl SrcCompiler for CompilerPython {
         };
         match run_process(
             &python,
-            [std::path::Path::new("-B"), relative.as_path()],
+            [
+                std::path::Path::new("-B"),
+                std::path::Path::new("--"),
+                relative.as_path(),
+            ],
             "python",
             timeout_sec,
             Some(&lib_root),

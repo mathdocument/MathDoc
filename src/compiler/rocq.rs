@@ -19,7 +19,10 @@ impl SrcCompiler for CompilerRocq {
     }
 
     fn compile(&self, req: &CompilerReq) -> CompilerRes {
-        let timeout_sec = req.timeout_sec();
+        let timeout_sec = match req.timeout_sec() {
+            Ok(timeout) => timeout,
+            Err(error) => return CompilerRes::err(error.to_string()),
+        };
 
         let rocq = match require_tool("rocq") {
             Ok(p) => p,
