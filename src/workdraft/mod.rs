@@ -125,6 +125,7 @@ impl MirrorChanges<'_> {
 }
 
 const SYNC_SOURCE_BATCH: usize = 2048;
+const MAX_PARALLEL_WORKERS: usize = 12;
 
 fn reconcile<'a>(
     baseline: &BlockBaseline,
@@ -552,7 +553,7 @@ fn parallel_worker_count(item_count: usize) -> usize {
     std::thread::available_parallelism()
         .map(std::num::NonZeroUsize::get)
         .unwrap_or(1)
-        .min(8)
+        .min(MAX_PARALLEL_WORKERS)
         .min(item_count)
 }
 
