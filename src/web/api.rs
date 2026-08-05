@@ -5,7 +5,9 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::core::{DependencyCandidates, GraphCheckReport, GraphRootItem, NodeSummary};
+use crate::core::{
+    DependencyCandidates, FormalizationStatus, GraphCheckReport, GraphRootItem, NodeSummary,
+};
 use crate::indcache::IndCache;
 use crate::mdocnode::MdocNode;
 use crate::workspace::to_rel_path;
@@ -35,6 +37,7 @@ pub struct NodeDetail {
     /// Direct dependency fnodes (in source order, deduplicated).
     pub depens: Vec<String>,
     pub blocks: Vec<crate::mdocnode::SrcBlock>,
+    pub formalization: FormalizationStatus,
 }
 
 /// Focused node data needed by the three-column browser in one response.
@@ -353,9 +356,19 @@ pub async fn node_detail(
     let (fnode, _, abs_path) =
         resolve_with_cache(&mut cache, &fnode).map_err(ApiError::from_resolve)?;
     let (snapshot, node) = load_node_generation(&mut cache, &fnode, &abs_path)?;
-    let summary = cache.node_summary(&fnode);
+    let cache_fields = (|| {
+        Ok::<_, anyhow::Error>((
+            cache.node_summary(&fnode)?,
+            cache.formalization_status(&fnode)?,
+        ))
+    })();
     ensure_snapshot_unchanged(&snapshot, &abs_path)?;
-    Ok(Json(node_detail_from_generation(summary?, node)))
+    let (summary, formalization) = cache_fields?;
+    Ok(Json(node_detail_from_generation(
+        summary,
+        node,
+        formalization,
+    )))
 }
 
 pub async fn node_view(
@@ -370,14 +383,15 @@ pub async fn node_view(
     let cache_fields = (|| {
         Ok::<_, anyhow::Error>((
             cache.node_summary(&fnode)?,
+            cache.formalization_status(&fnode)?,
             cache.direct_referrer_summaries(&fnode)?,
             cache.direct_dependency_summaries(&fnode)?,
         ))
     })();
     ensure_snapshot_unchanged(&snapshot, &abs_path)?;
-    let (summary, referrers, children) = cache_fields?;
+    let (summary, formalization, referrers, children) = cache_fields?;
     Ok(Json(NodeView {
-        node: node_detail_from_generation(summary, node),
+        node: node_detail_from_generation(summary, node, formalization),
         referrers,
         children,
     }))
@@ -424,7 +438,11 @@ fn ensure_snapshot_unchanged(
     }
 }
 
-fn node_detail_from_generation(info: NodeSummary, node: MdocNode) -> NodeDetail {
+fn node_detail_from_generation(
+    info: NodeSummary,
+    node: MdocNode,
+    formalization: FormalizationStatus,
+) -> NodeDetail {
     NodeDetail {
         fnode: info.fnode,
         title: info.title,
@@ -433,6 +451,7 @@ fn node_detail_from_generation(info: NodeSummary, node: MdocNode) -> NodeDetail 
         depth: info.depth,
         depens: node.depens,
         blocks: node.blocks,
+        formalization,
     }
 }
 
@@ -543,6 +562,7 @@ fn committed_node_detail(cache: &mut IndCache, node: &MdocNode) -> Json<NodeDeta
 
 fn node_detail_from_committed_cache(cache: &mut IndCache, node: &MdocNode) -> NodeDetail {
     let summary = cache.node_summary(&node.fnode).ok();
+    let formalization = cache.formalization_status(&node.fnode).unwrap_or_default();
     let broken = summary.as_ref().map(|item| item.broken).unwrap_or(true);
     let depth = summary.map(|item| item.depth).unwrap_or(0);
     NodeDetail {
@@ -553,6 +573,7 @@ fn node_detail_from_committed_cache(cache: &mut IndCache, node: &MdocNode) -> No
         depth,
         depens: node.depens.clone(),
         blocks: node.blocks.clone(),
+        formalization,
     }
 }
 

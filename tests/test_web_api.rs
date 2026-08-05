@@ -614,6 +614,10 @@ async fn node_detail_returns_blocks_and_depens() {
     assert_eq!(val["blocks"][0]["srctype"], "latex");
     assert_eq!(val["blocks"][0]["content"], "y = 2\n");
     assert_eq!(val["depens"], serde_json::json!([]));
+    assert_eq!(
+        val["formalization"],
+        serde_json::json!({ "lean": "no_code", "rocq": "no_code" })
+    );
 
     let _ = root;
 }
@@ -663,6 +667,7 @@ async fn node_view_returns_detail_referrers_and_children_together() {
     )
     .await;
     assert_eq!(view["node"]["title"], "Main Theorem");
+    assert_eq!(view["node"]["formalization"]["lean"], "no_code");
     assert!(view["referrers"].as_array().unwrap().is_empty());
     assert!(view["children"].as_array().unwrap().is_empty());
 
@@ -814,6 +819,33 @@ async fn put_block_creates_and_updates_block() {
         .find(|b| b["srctype"] == "text")
         .unwrap();
     assert_eq!(text_block["content"], "updated\n");
+}
+
+#[tokio::test]
+async fn put_formal_block_returns_refreshed_status() {
+    let dir = TempDir::new().unwrap();
+    let (_root, app) = build_app(&dir);
+    let (_, roots) = get_json(&app, "/api/graph/roots").await;
+    let fnode = roots
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["title"] == "Main Theorem")
+        .unwrap()["fnode"]
+        .as_str()
+        .unwrap();
+
+    let (status, value) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/node/{fnode}/block/lean"),
+        serde_json::json!({ "content": "#check Nat\n" }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "value={value}");
+    assert_eq!(value["formalization"]["lean"], "unverified");
+    assert_eq!(value["formalization"]["rocq"], "no_code");
 }
 
 #[tokio::test]
