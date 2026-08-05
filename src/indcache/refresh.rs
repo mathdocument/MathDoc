@@ -655,8 +655,8 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
         || new_has_blocking_issue;
     if graph_changed {
         super::derived::bump_graph_epoch(conn)?;
+        invalidate_index_digest(conn)?;
     }
-    invalidate_index_digest(conn)?;
     Ok(UpsertOutcome {
         old_fnode,
         new_fnode,

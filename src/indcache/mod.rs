@@ -136,7 +136,8 @@ impl IndCache {
                     derived::refresh_topo_depth_upward_from(&tx, new)?;
                 }
                 (_, Some(new)) => derived::refresh_topo_depth_upward_from(&tx, new)?,
-                (_, None) => derived::backfill_all_topo_depths(&tx)?,
+                (Some(old), None) => derived::refresh_topo_depth_upward_from(&tx, old)?,
+                (None, None) => derived::backfill_all_topo_depths(&tx)?,
             }
         }
 

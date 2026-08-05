@@ -1653,6 +1653,41 @@ fn full_refresh_skips_graph_rebuild_when_index_semantics_are_unchanged() {
 }
 
 #[test]
+fn unchanged_reachable_refresh_preserves_the_workspace_digest() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    let source = root.join("source.mdoc");
+    write(
+        &source,
+        "@fnode: source-node\n@title: Source\n\n@dep:\ndep-node\n@end\n",
+    );
+    write(
+        &root.join("dep.mdoc"),
+        "@fnode: dep-node\n@title: Dependency\n",
+    );
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    cache.refresh_all().unwrap();
+    let digest = |cache: &IndCache| -> String {
+        rusqlite::Connection::open(index_path(cache))
+            .unwrap()
+            .query_row(
+                "SELECT index_digest FROM mdoc_index_state WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    let initial_digest = digest(&cache);
+    assert!(!initial_digest.is_empty());
+
+    cache.refresh_reachable_from_path(&source, -1).unwrap();
+
+    assert_eq!(digest(&cache), initial_digest);
+}
+
+#[test]
 fn blocking_claimant_transition_refreshes_graph_caches_and_invalid_deletion_epoch() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
