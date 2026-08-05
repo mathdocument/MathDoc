@@ -45,9 +45,39 @@
     verified: "Verified",
   };
 
-  function applyFormalization(updated: NodeDetail) {
+  function applySavedBlock(updated: NodeDetail) {
     if (load.kind !== "ready" || load.node.fnode !== updated.fnode) return;
-    onRefresh?.({ ...load.node, formalization: updated.formalization });
+    const updatedBlocks = new Map(updated.blocks.map((block) => [block.srctype, block]));
+    onRefresh?.({
+      ...load.node,
+      revision: updated.revision,
+      formalization: updated.formalization,
+      blocks: load.node.blocks.map((block) => updatedBlocks.get(block.srctype) ?? block),
+    });
+  }
+
+  function applyDeletedBlock(updated: NodeDetail, srctype: string) {
+    if (load.kind !== "ready" || load.node.fnode !== updated.fnode) return;
+    onRefresh?.({
+      ...load.node,
+      revision: updated.revision,
+      formalization: updated.formalization,
+      blocks: load.node.blocks.filter((block) => block.srctype !== srctype),
+    });
+  }
+
+  function applyAddedBlock(updated: NodeDetail) {
+    if (load.kind !== "ready" || load.node.fnode !== updated.fnode) return;
+    const existing = new Set(load.node.blocks.map((block) => block.srctype));
+    onRefresh?.({
+      ...load.node,
+      revision: updated.revision,
+      formalization: updated.formalization,
+      blocks: [
+        ...load.node.blocks,
+        ...updated.blocks.filter((block) => !existing.has(block.srctype)),
+      ],
+    });
   }
 
   function reportReady() {
@@ -121,11 +151,11 @@
     setMutationPending(titleMutationId, true);
     titleError = null;
     try {
-      const updated = await api.putTitle(targetFnode, newTitle);
+      const updated = await api.putTitle(targetFnode, newTitle, load.node.revision);
       if (!isCurrent() || load.kind !== "ready") return;
       // A title write returns the whole node, but unrelated block drafts may
       // be newer than the blocks in that response.
-      onRefresh?.({ ...load.node, title: updated.title });
+      onRefresh?.({ ...load.node, title: updated.title, revision: updated.revision });
       editingTitle = false;
     } catch (e) {
       if (isCurrent()) titleError = errMsg(e);
@@ -264,9 +294,10 @@
         {#each node.blocks as block (block.srctype)}
           <BlockEditor
             fnode={node.fnode}
+            revision={node.revision}
             {block}
-            onDeleted={refreshNode}
-            onSaved={applyFormalization}
+            onDeleted={applyDeletedBlock}
+            onSaved={applySavedBlock}
             onReady={() => reportBlockReady(block.srctype)}
           />
         {/each}
@@ -274,8 +305,9 @@
       {#key node.fnode}
         <AddBlockControl
           fnode={node.fnode}
+          revision={node.revision}
           existingSrctypes={node.blocks.map((b) => b.srctype)}
-          onAdded={refreshNode}
+          onAdded={applyAddedBlock}
         />
       {/key}
     </div>

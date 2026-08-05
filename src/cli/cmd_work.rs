@@ -51,7 +51,7 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
             "[{}/{}] {BLD}{srctype}{RST}  {}",
             index + 1,
             total,
-            path.display()
+            escape_terminal(&path.to_string_lossy())
         );
         let _ = std::io::stdout().flush();
 

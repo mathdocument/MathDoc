@@ -1,0 +1,60 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { api } from "./api";
+
+function jsonResponse(revision: string): Response {
+  return new Response(JSON.stringify({ revision }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("node mutations", () => {
+  it("serializes writes and carries the committed revision forward", async () => {
+    let finishFirst!: () => void;
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => {
+        finishFirst = () => resolve(jsonResponse("revision-2"));
+      }))
+      .mockResolvedValueOnce(jsonResponse("revision-3"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = api.putTitle("queue-node", "First", "revision-1");
+    const second = api.putBlock("queue-node", "text", "Second", "revision-1");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    finishFirst();
+    await Promise.all([first, second]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstBody = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    const secondBody = JSON.parse(fetchMock.mock.calls[1]![1]!.body as string);
+    expect(firstBody.expected_revision).toBe("revision-1");
+    expect(secondBody.expected_revision).toBe("revision-2");
+  });
+
+  it("preserves the latest revision after a queued write fails", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse("revision-2"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "rejected" }), {
+        status: 422,
+        headers: { "content-type": "application/json" },
+      }))
+      .mockResolvedValueOnce(jsonResponse("revision-3"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = api.putTitle("failure-queue-node", "First", "revision-1");
+    const second = api.putTitle("failure-queue-node", "Rejected", "revision-1");
+    const third = api.putBlock("failure-queue-node", "text", "Third", "revision-1");
+    const results = await Promise.allSettled([first, second, third]);
+
+    expect(results.map((result) => result.status)).toEqual(["fulfilled", "rejected", "fulfilled"]);
+    const thirdBody = JSON.parse(fetchMock.mock.calls[2]![1]!.body as string);
+    expect(thirdBody.expected_revision).toBe("revision-2");
+  });
+});

@@ -29,6 +29,10 @@ jobs:
         run: npm run check
         working-directory: web
 
+      - name: Test frontend
+        run: npm test
+        working-directory: web
+
       - name: Build frontend
         run: npm run build
         working-directory: web
@@ -37,6 +41,17 @@ jobs:
         run: |
           git diff --exit-code -- web/dist
           test -z "$(git status --porcelain --untracked-files=all -- web/dist)"
+
+      - name: Verify packaged VS Code extension
+        working-directory: editors/vscode
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          archive="mdc-mdoc-${version}.vsix"
+          test -f "$archive"
+          cmp -s package.json <(unzip -p "$archive" extension/package.json)
+          cmp -s LICENSE <(unzip -p "$archive" extension/LICENSE.txt)
+          cmp -s language-configuration.json <(unzip -p "$archive" extension/language-configuration.json)
+          cmp -s syntaxes/mdoc.tmLanguage.json <(unzip -p "$archive" extension/syntaxes/mdoc.tmLanguage.json)
 
       - name: Install documentation dependencies
         run: npm ci

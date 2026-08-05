@@ -42,9 +42,9 @@ GET    /api/node/:fnode
 GET    /api/node/:fnode/view
 GET    /api/node/:fnode/children
 GET    /api/node/:fnode/dep/candidates?q=&n=
-PUT    /api/node/:fnode/title                 { title }
-PUT    /api/node/:fnode/block/:srctype        { content }
-DELETE /api/node/:fnode/block/:srctype
+PUT    /api/node/:fnode/title                 { title, expected_revision? }
+PUT    /api/node/:fnode/block/:srctype        { content, expected_revision? }
+DELETE /api/node/:fnode/block/:srctype        { expected_revision? }
 POST   /api/node/:fnode/dep/add               { dep_fnode }
 POST   /api/node/:fnode/dep/rm                { dep_fnodes: [] }
 POST   /api/node/new                          { title, file?, parent_fnode? }
@@ -52,9 +52,9 @@ POST   /api/node/new                          { title, file?, parent_fnode? }
 
 All `:fnode` parameters accept an exact fnode, unique prefix, or path-like reference via
 `IndCache::resolve_ref`. Write handlers return canonical `NodeDetail` for the affected
-node. Title and ordinary block-save flows consume that response directly; current
-add/delete-block and dependency/create flows perform a follow-up node or node-view
-request to rebuild editor or relationship state.
+node. The frontend consumes write responses directly and merges them into the focused
+snapshot without replacing unrelated drafts. It refreshes only the dependency summary
+list after relationship changes.
 
 All successful endpoints currently return `200 OK`, including node creation and block
 deletion. Creation does not return `201`, and deletion does not return `204`. Read
@@ -73,9 +73,10 @@ responses use these shapes:
 | Every write | `NodeDetail` |
 
 `NodeSummary` contains `fnode`, `title`, `rel_path`, `broken`, and `depth`.
-`NodeDetail` adds ordered `depens` and source blocks containing `srctype`, `content`, and
-`metadata`. Root items use `component_size` and `topo_depth`. An empty candidate result
-explains itself with `no_match`, `excluded`, or `result_limit`.
+`NodeDetail` adds a SHA-256 `revision` for the exact `.mdoc` generation, ordered `depens`,
+and source blocks containing `srctype`, `content`, and `metadata`. Root items use
+`component_size` and `topo_depth`. An empty candidate result explains itself with
+`no_match`, `excluded`, or `result_limit`.
 
 ## API contracts
 
@@ -97,7 +98,8 @@ explains itself with `no_match`, `excluded`, or `result_limit`.
   `min(24, 6 * (max(0, ln1p(in_degree) - ln1p(out_degree)) + 1))`. Selection adds three
   pixels; otherwise hover adds two.
 - `dep/add.dep_fnode` and `node/new.parent_fnode` resolve as normal references despite
-  their names. Neither accepts title fallback; self or existing additions return `422`.
+  their names. Neither accepts title fallback; self additions return `422`, while an
+  existing dependency is an idempotent `200` response.
 - `dep/rm.dep_fnodes` contains literal case-sensitive fnodes. Exact direct matches are
   removed; nonmatches are ignored if at least one value matches, and no matches returns
   `422`.
@@ -113,6 +115,11 @@ explains itself with `no_match`, `excluded`, or `result_limit`.
   block no metadata. Unknown types and deletion of a missing block return `422`.
 - Titles are trimmed and must remain nonempty. Title or block mutations that would
   produce invalid MathDoc structure return `422`.
+- Title and block clients may send the `revision` returned by a read or prior write as
+  `expected_revision`. A stale value returns `409` without changing the file. The
+  bundled frontend always sends it and serializes writes per node so concurrent local
+  edits carry each committed revision into the next request. Omitting it preserves the
+  API's last-write-wins compatibility behavior. A bodyless block DELETE remains valid.
 
 After Host validation, API errors use `{ "error": string }`. Common statuses are `400`
 for malformed input, `404` not found, `405` unsupported method, `409` generation

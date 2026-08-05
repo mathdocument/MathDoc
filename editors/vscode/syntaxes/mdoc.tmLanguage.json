@@ -87,7 +87,7 @@
       ]
     },
     "block-src-python": {
-      "begin": "^(@src)(:)\\s*(python)\\s*$",
+      "begin": "^(@src)(:)\\s*((?i:python))(?:[ \\t]+.*)?\\s*$",
       "end": "^(@end)\\s*$",
       "beginCaptures": {
         "1": {
@@ -113,7 +113,7 @@
       ]
     },
     "block-src-latex": {
-      "begin": "^(@src)(:)\\s*(latex)\\s*$",
+      "begin": "^(@src)(:)\\s*((?i:latex))(?:[ \\t]+.*)?\\s*$",
       "end": "^(@end)\\s*$",
       "beginCaptures": {
         "1": {
@@ -139,7 +139,7 @@
       ]
     },
     "block-src-lean": {
-      "begin": "^(@src)(:)\\s*(lean)\\s*$",
+      "begin": "^(@src)(:)\\s*((?i:lean))(?:[ \\t]+.*)?\\s*$",
       "end": "^(@end)\\s*$",
       "beginCaptures": {
         "1": {
@@ -165,7 +165,7 @@
       ]
     },
     "block-src-rocq": {
-      "begin": "^(@src)(:)\\s*(rocq)\\s*$",
+      "begin": "^(@src)(:)\\s*((?i:rocq))(?:[ \\t]+.*)?\\s*$",
       "end": "^(@end)\\s*$",
       "beginCaptures": {
         "1": {
@@ -191,7 +191,7 @@
       ]
     },
     "block-src-generic": {
-      "begin": "^(@src)(:)\\s*(\\w+)\\s*$",
+      "begin": "^(@src)(:)\\s*([A-Za-z][A-Za-z0-9_-]*)(?:[ \\t]+.*)?\\s*$",
       "end": "^(@end)\\s*$",
       "beginCaptures": {
         "1": {

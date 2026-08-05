@@ -5,6 +5,15 @@ import {
   settlePendingMutations,
   unsavedDraftRevision,
 } from "./unsaved";
+import {
+  browserHistoryEntry,
+  focusedHistoryState,
+  type BrowserHistoryEntry,
+  type BrowserHistoryMode,
+} from "./history";
+
+export { browserHistoryEntry } from "./history";
+export type { BrowserHistoryEntry, BrowserHistoryMode } from "./history";
 
 export type LoadState =
   | { kind: "idle" }
@@ -93,33 +102,6 @@ export async function withViewTransition(
 
 let navigationRequest = 0;
 
-export type BrowserHistoryMode = "push" | "replace" | "none";
-
-export interface BrowserHistoryEntry {
-  mdcHistory: 1;
-  fnode: string;
-  index: number;
-  entries: string[];
-}
-
-export function browserHistoryEntry(value: unknown): BrowserHistoryEntry | null {
-  if (!value || typeof value !== "object") return null;
-  const candidate = value as Partial<BrowserHistoryEntry>;
-  if (
-    candidate.mdcHistory !== 1 ||
-    typeof candidate.fnode !== "string" ||
-    !Number.isInteger(candidate.index) ||
-    !Array.isArray(candidate.entries) ||
-    !candidate.entries.every((entry) => typeof entry === "string") ||
-    candidate.index! < 0 ||
-    candidate.index! >= candidate.entries.length ||
-    candidate.entries[candidate.index!] !== candidate.fnode
-  ) {
-    return null;
-  }
-  return candidate as BrowserHistoryEntry;
-}
-
 export function initialHistoryOptions(fnode: string): {
   pushHistory: boolean;
   historyIndex?: number;
@@ -143,19 +125,14 @@ export function commitFocusedHistory(
   opts: {
     pushHistory?: boolean;
     historyIndex?: number;
+    historyEntries?: string[];
     browserHistory?: BrowserHistoryMode;
   } = {},
 ): void {
   const push = opts.pushHistory ?? true;
-  if (push) {
-    appState.history = [
-      ...appState.history.slice(0, appState.historyIdx + 1),
-      fnode,
-    ];
-    appState.historyIdx = appState.history.length - 1;
-  } else if (opts.historyIndex !== undefined) {
-    appState.historyIdx = opts.historyIndex;
-  }
+  const history = focusedHistoryState(appState.history, appState.historyIdx, fnode, opts);
+  appState.history = history.entries;
+  appState.historyIdx = history.index;
 
   const mode = opts.browserHistory ?? (push ? "push" : "none");
   if (mode === "none") return;
@@ -183,6 +160,7 @@ export async function navigate(
     skipTransition?: boolean;
     skipUnsavedGuard?: boolean;
     historyIndex?: number;
+    historyEntries?: string[];
     browserHistory?: BrowserHistoryMode;
   } = {},
 ): Promise<boolean> {
@@ -214,6 +192,7 @@ export async function navigate(
       commitFocusedHistory(fnode, {
         pushHistory: push,
         historyIndex: opts.historyIndex,
+        historyEntries: opts.historyEntries,
         browserHistory: opts.browserHistory,
       });
       committed = true;

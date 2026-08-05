@@ -3,7 +3,7 @@
   import { Link2, Plus, X } from "@lucide/svelte";
   import { api } from "../lib/api";
   import { errMsg } from "../lib/format";
-  import type { DependencyCandidatesEmpty, NodeInfo } from "../lib/types";
+  import type { DependencyCandidatesEmpty, NodeDetail, NodeInfo } from "../lib/types";
   import { shortFnode } from "../lib/format";
   import { modal } from "../lib/modal";
   import {
@@ -15,10 +15,11 @@
 
   interface Props {
     targetFnode: string;
-    onAdded: () => void;
+    targetRevision: string;
+    onAdded: (node: NodeDetail) => void;
     onClose: () => void;
   }
-  let { targetFnode, onAdded, onClose }: Props = $props();
+  let { targetFnode, targetRevision, onAdded, onClose }: Props = $props();
 
   let query = $state("");
   let results = $state<NodeInfo[]>([]);
@@ -149,11 +150,11 @@
     setMutationPending(mutationId, true);
     error = null;
     try {
-      await api.addDep(targetFnode, node.fnode);
+      const updated = await api.addDep(targetFnode, node.fnode, targetRevision);
       setMutationPending(mutationId, false);
       pending = false;
       if (!alive) return;
-      onAdded();
+      onAdded(updated);
       onClose();
     } catch (e) {
       if (alive) error = errMsg(e);
@@ -180,12 +181,12 @@
         parent_fnode: targetFnode,
       };
       if (creatingFile.trim().length > 0) params.file = creatingFile.trim();
-      await api.newNode(params);
+      const updated = await api.newNode(params, targetRevision);
       setMutationPending(mutationId, false);
       pending = false;
       if (!alive) return;
       removeDraft(draftId);
-      onAdded();
+      onAdded(updated);
       onClose();
     } catch (e) {
       if (alive) error = errMsg(e);

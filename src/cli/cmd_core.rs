@@ -101,9 +101,10 @@ pub(super) fn cmd_search(query: String, max_results: usize) -> Result<i32> {
     let rows = cache.search(&q, max_results)?;
 
     println!(
-        "{BLD}{}{RST} result{} for {CYN}{q}{RST}",
+        "{BLD}{}{RST} result{} for {CYN}{}{RST}",
         rows.len(),
-        if rows.len() == 1 { "" } else { "s" }
+        if rows.len() == 1 { "" } else { "s" },
+        crate::core::escape_terminal(&q),
     );
     for node in &rows {
         println!(

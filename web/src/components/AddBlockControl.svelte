@@ -3,14 +3,16 @@
   import { Braces, Plus } from "@lucide/svelte";
   import { api } from "../lib/api";
   import { errMsg } from "../lib/format";
+  import type { NodeDetail } from "../lib/types";
   import { setMutationPending } from "../lib/unsaved";
 
   interface Props {
     fnode: string;
+    revision: string;
     existingSrctypes: string[];
-    onAdded?: () => void;
+    onAdded?: (node: NodeDetail) => void;
   }
-  let { fnode, existingSrctypes, onAdded }: Props = $props();
+  let { fnode, revision, existingSrctypes, onAdded }: Props = $props();
 
   const ALL_SRCTYPES = ["text", "latex", "python", "lean", "rocq"] as const;
 
@@ -61,17 +63,18 @@
   async function add(srctype: string) {
     if (adding) return;
     const targetFnode = fnode;
+    const targetRevision = revision;
     adding = srctype;
     let pending = true;
     setMutationPending(mutationId, true);
     error = null;
     try {
-      await api.putBlock(targetFnode, srctype, "");
+      const node = await api.putBlock(targetFnode, srctype, "", targetRevision);
       setMutationPending(mutationId, false);
       pending = false;
       if (!alive || fnode !== targetFnode) return;
       open = false;
-      onAdded?.();
+      onAdded?.(node);
     } catch (e) {
       if (alive && fnode === targetFnode) error = errMsg(e);
     } finally {

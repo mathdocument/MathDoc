@@ -51,7 +51,7 @@ The repository includes a packaged extension for VS Code 1.85 or newer. It provi
 syntax highlighting, folding, and embedded-language mapping in `.mdoc` files:
 
 ```bash
-code --install-extension editors/vscode/mdc-mdoc-0.1.0.vsix --force
+code --install-extension editors/vscode/mdc-mdoc-0.1.1.vsix --force
 ```
 
 The extension is declaration-only and does not install `mdc` or any compiler.

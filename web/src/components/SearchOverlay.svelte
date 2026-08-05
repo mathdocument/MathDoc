@@ -2,7 +2,7 @@
   import { api } from "../lib/api";
   import { Search, X } from "@lucide/svelte";
   import type { NodeInfo } from "../lib/types";
-  import { shortFnode } from "../lib/format";
+  import { errMsg, shortFnode } from "../lib/format";
   import { modal } from "../lib/modal";
 
   interface Props {
@@ -15,6 +15,7 @@
   let results = $state<NodeInfo[]>([]);
   let selected = $state(0);
   let loading = $state(false);
+  let error: string | null = $state(null);
   let inputEl = $state<HTMLInputElement | null>(null);
   let searchRequest = 0;
 
@@ -42,9 +43,11 @@
       results = [];
       selected = 0;
       loading = false;
+      error = null;
       return;
     }
     loading = true;
+    error = null;
     results = [];
     selected = 0;
     const handle = setTimeout(async () => {
@@ -53,9 +56,10 @@
         if (request !== searchRequest) return;
         results = fresh;
         selected = firstSelectable(fresh);
-      } catch {
+      } catch (e) {
         if (request !== searchRequest) return;
         results = [];
+        error = errMsg(e);
       } finally {
         if (request === searchRequest) loading = false;
       }
@@ -132,7 +136,7 @@
       <button class="close-btn" onclick={onClose} title="Close" aria-label="Close search"><X size={17} strokeWidth={1.8} /></button>
     </div>
     <ul class="results">
-      {#each results as r, i (r.fnode)}
+      {#each results as r, i (`${r.fnode}\0${r.rel_path}`)}
         <li>
           <button
             class="row"
@@ -147,7 +151,9 @@
           </button>
         </li>
       {:else}
-        {#if query && !loading}
+        {#if error}
+          <li class="empty error" role="alert">search failed: {error}</li>
+        {:else if query && !loading}
           <li class="empty">no results</li>
         {/if}
       {/each}
@@ -289,6 +295,9 @@
     color: var(--mdc-muted);
     padding: 1.5rem;
     font-size: 0.76rem;
+  }
+  .empty.error {
+    color: var(--mdc-error);
   }
   .hint {
     display: flex;

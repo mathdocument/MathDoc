@@ -43,6 +43,7 @@ export interface NodeDetail {
   rel_path: string;
   broken: boolean;
   depth: number;
+  revision: string;
   depens: string[];
   blocks: SrcBlock[];
   formalization: FormalizationStatus;

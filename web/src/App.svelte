@@ -34,7 +34,7 @@
   import RmDepOverlay from "./components/RmDepOverlay.svelte";
   import NewNodeOverlay from "./components/NewNodeOverlay.svelte";
   import DepthGraph from "./components/DepthGraph.svelte";
-  import type { NodeDetail } from "./lib/types";
+  import type { NodeDetail, SrcBlock } from "./lib/types";
   import {
     confirmDiscardDrafts,
     hasUnsavedDrafts,
@@ -47,7 +47,7 @@
     | { kind: "search" }
     | { kind: "add-dep"; target: string }
     | { kind: "rm-dep"; target: string }
-    | { kind: "new-node"; target: string };
+    | { kind: "new-node" };
 
   let overlay = $state<Overlay>({ kind: "none" });
   let initialLoad = $state(true);
@@ -67,6 +67,7 @@
   // Increment after dependency mutations to refresh the graph data.
   let graphRevision = $state(0);
   let forceLoadRequest = 0;
+  let relationRequest = 0;
   let viewRequest = 0;
   let forceRelationsDirty = false;
   // NodeDetail for the force-graph side panel (fetched on selection).
@@ -125,12 +126,14 @@
         ? await onForceSelect(entry.fnode, {
             pushHistory: false,
             historyIndex: entry.index,
+            historyEntries: entry.entries,
             browserHistory: "replace",
             preserveOnFailure: true,
           })
         : await navigate(entry.fnode, {
             pushHistory: false,
             historyIndex: entry.index,
+            historyEntries: entry.entries,
             browserHistory: "replace",
           });
       if (request !== popstateRequest || committed) return;
@@ -158,18 +161,24 @@
     initialLoad = false;
     (async () => {
       try {
-        const roots = await api.roots();
-        if (roots.length === 0) {
-          initialError = "workspace has no nodes — run `mdc new -t \"…\"` first";
-          return;
-        }
-        // URL hash can override: #ref=...
+        // URL hash can override the default even when a cyclic graph has no roots.
         const hash = window.location.hash.slice(1);
         const params = new URLSearchParams(hash);
         const ref = params.get("ref");
         if (ref) {
           const resolved = await api.resolve(ref);
           await navigate(resolved.fnode, initialHistoryOptions(resolved.fnode));
+          return;
+        }
+        const roots = (await api.roots()).filter((node) => !node.broken);
+        if (roots.length === 0) {
+          const graph = await api.full();
+          const fallback = graph.nodes.find((node) => !node.broken);
+          if (!fallback) {
+            initialError = "workspace has no valid nodes — create one with New node";
+            return;
+          }
+          await navigate(fallback.fnode, initialHistoryOptions(fallback.fnode));
           return;
         }
         const deepest = [...roots].sort((a, b) => b.topo_depth - a.topo_depth)[0]!;
@@ -235,6 +244,7 @@
       const node = await api.node(targetFnode);
       if (request !== forceLoadRequest || forceSelectedFnode !== targetFnode) return false;
       if (unsavedDraftRevision() !== confirmedDraftRevision) return false;
+      forceEditorRevision++;
       forceNodeLoad = { kind: "ready", node };
       return true;
     } catch (e) {
@@ -260,16 +270,60 @@
     }
   }
 
-  function afterDepMutation() {
-    graphRevision++;
-    if (view === "force") {
-      forceRelationsDirty = true;
-      void refreshForceNodeRaw();
+  function sameBlocks(left: SrcBlock[], right: SrcBlock[]): boolean {
+    return left.length === right.length && left.every((block, index) => {
+      const other = right[index];
+      if (!other || block.srctype !== other.srctype || block.content !== other.content) {
+        return false;
+      }
+      const keys = Object.keys(block.metadata).sort();
+      const otherKeys = Object.keys(other.metadata).sort();
+      return keys.length === otherKeys.length &&
+        keys.every((key, keyIndex) =>
+          key === otherKeys[keyIndex] && block.metadata[key] === other.metadata[key]);
+    });
+  }
+
+  function relationUpdate(current: NodeDetail, updated: NodeDetail): NodeDetail {
+    const contentUnchanged = current.title === updated.title &&
+      sameBlocks(current.blocks, updated.blocks);
+    if (!contentUnchanged) {
+      refreshError = "dependencies updated, but node content changed externally; refresh before editing";
+      return { ...current, depens: updated.depens };
     }
-    else void refreshCurrent();
+    return {
+      ...current,
+      revision: updated.revision,
+      depens: updated.depens,
+      formalization: updated.formalization,
+    };
+  }
+
+  function afterDepMutation(updated: NodeDetail) {
+    const request = ++relationRequest;
+    refreshError = null;
+    graphRevision++;
+    if (forceNodeLoad.kind === "ready" && forceNodeLoad.node.fnode === updated.fnode) {
+      forceNodeLoad = { kind: "ready", node: relationUpdate(forceNodeLoad.node, updated) };
+    }
+    if (appState.load.kind === "ready" && appState.load.node.fnode === updated.fnode) {
+      refreshFocused(relationUpdate(appState.load.node, updated));
+    }
+    forceRelationsDirty = true;
+    void api.children(updated.fnode).then((items) => {
+      if (request !== relationRequest) return;
+      if (appState.load.kind === "ready" && appState.load.node.fnode === updated.fnode) {
+        appState.children = { items, selected: -1 };
+        forceRelationsDirty = false;
+      }
+    }).catch((e) => {
+      if (request !== relationRequest) return;
+      refreshError = e instanceof Error ? e.message : String(e);
+    });
   }
 
   function afterNodeCreated(fnode: string) {
+    initialError = null;
     graphRevision++;
     if (view === "force") void onForceSelect(fnode);
     else void navigate(fnode);
@@ -287,6 +341,11 @@
     (view === "force"
       ? forceNodeLoad.kind === "ready" && !forceNodeLoad.node.broken
       : appState.load.kind === "ready" && !appState.load.node.broken),
+  );
+  let activeRevision = $derived(
+    view === "force"
+      ? forceNodeLoad.kind === "ready" ? forceNodeLoad.node.revision : null
+      : appState.load.kind === "ready" ? appState.load.node.revision : null,
   );
   // Depens of the active node.
   let activeDepens = $derived(
@@ -324,6 +383,7 @@
       skipUnsavedGuard?: boolean;
       pushHistory?: boolean;
       historyIndex?: number;
+      historyEntries?: string[];
       browserHistory?: BrowserHistoryMode;
       preserveOnFailure?: boolean;
     } = {},
@@ -357,6 +417,7 @@
         commitFocusedHistory(fnode, {
           pushHistory: opts.pushHistory,
           historyIndex: opts.historyIndex,
+          historyEntries: opts.historyEntries,
           browserHistory: opts.browserHistory,
         });
         committed = true;
@@ -499,8 +560,7 @@
       ><Unlink2 size={15} strokeWidth={1.8} /><span>Remove dependency</span></button>
       <button
         class="tool"
-        onclick={() => { if (activeFnode) overlay = { kind: "new-node", target: activeFnode }; }}
-        disabled={!activeReady}
+        onclick={() => { overlay = { kind: "new-node" }; }}
         title="Create node"
       ><Plus size={15} strokeWidth={2} /><span>New node</span></button>
     </div>
@@ -636,7 +696,8 @@
   {#key overlay.target}
     <AddDepOverlay
       targetFnode={overlay.target}
-      onAdded={() => afterDepMutation()}
+      targetRevision={activeRevision!}
+      onAdded={afterDepMutation}
       onClose={() => (overlay = { kind: "none" })}
     />
   {/key}
@@ -646,13 +707,14 @@
   {#key overlay.target}
     <RmDepOverlay
       targetFnode={overlay.target}
-      onRemoved={() => afterDepMutation()}
+      targetRevision={activeRevision!}
+      onRemoved={afterDepMutation}
       onClose={() => (overlay = { kind: "none" })}
     />
   {/key}
 {/if}
 
-{#if overlay.kind === "new-node" && activeReady}
+{#if overlay.kind === "new-node"}
   <NewNodeOverlay
     onCreated={afterNodeCreated}
     onClose={() => (overlay = { kind: "none" })}

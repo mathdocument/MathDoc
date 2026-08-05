@@ -56,11 +56,16 @@ fn asset_response(path: &str, file: rust_embed::EmbeddedFile) -> Response {
     if path == "index.html" {
         resp.headers_mut()
             .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    } else {
+    } else if path.starts_with("assets/") {
         // Cache hashed assets aggressively.
         resp.headers_mut().insert(
             header::CACHE_CONTROL,
             HeaderValue::from_static("public, max-age=31536000, immutable"),
+        );
+    } else {
+        resp.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=0, must-revalidate"),
         );
     }
     resp

@@ -43,6 +43,27 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+const nodeMutationTails = new Map<string, Promise<string>>();
+
+function mutateNode(
+  fnode: string,
+  expectedRevision: string,
+  operation: (revision: string) => Promise<NodeDetail>,
+): Promise<NodeDetail> {
+  const previous = nodeMutationTails.get(fnode) ?? Promise.resolve(expectedRevision);
+  let attemptedRevision = expectedRevision;
+  const response = previous.then((revision) => {
+    attemptedRevision = revision;
+    return operation(revision);
+  });
+  const tail = response.then((node) => node.revision, () => attemptedRevision);
+  nodeMutationTails.set(fnode, tail);
+  void tail.finally(() => {
+    if (nodeMutationTails.get(fnode) === tail) nodeMutationTails.delete(fnode);
+  });
+  return response;
+}
+
 export const api = {
   roots: () => req<GraphRootItem[]>("/api/graph/roots"),
   full: () => req<GraphFull>("/api/graph/full"),
@@ -59,42 +80,53 @@ export const api = {
     req<DependencyCandidates>(
       `/api/node/${encodeURIComponent(fnode)}/dep/candidates?q=${encodeURIComponent(q)}&n=${n}`,
     ),
-  putBlock: (fnode: string, srctype: string, content: string) =>
-    req<NodeDetail>(
+  putBlock: (fnode: string, srctype: string, content: string, expectedRevision: string) =>
+    mutateNode(fnode, expectedRevision, (revision) => req<NodeDetail>(
       `/api/node/${encodeURIComponent(fnode)}/block/${encodeURIComponent(srctype)}`,
       {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, expected_revision: revision }),
       },
-    ),
-  deleteBlock: (fnode: string, srctype: string) =>
-    req<NodeDetail>(
+    )),
+  deleteBlock: (fnode: string, srctype: string, expectedRevision: string) =>
+    mutateNode(fnode, expectedRevision, (revision) => req<NodeDetail>(
       `/api/node/${encodeURIComponent(fnode)}/block/${encodeURIComponent(srctype)}`,
-      { method: "DELETE" },
-    ),
-  putTitle: (fnode: string, title: string) =>
-    req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}/title`, {
+      {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expected_revision: revision }),
+      },
+    )),
+  putTitle: (fnode: string, title: string, expectedRevision: string) =>
+    mutateNode(fnode, expectedRevision, (revision) => req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}/title`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ title }),
-    }),
-  addDep: (fnode: string, depFnode: string) =>
-    req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}/dep/add`, {
+      body: JSON.stringify({ title, expected_revision: revision }),
+    })),
+  addDep: (fnode: string, depFnode: string, expectedRevision: string) =>
+    mutateNode(fnode, expectedRevision, () => req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}/dep/add`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ dep_fnode: depFnode }),
-    }),
-  rmDeps: (fnode: string, depFnodes: string[]) =>
-    req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}/dep/rm`, {
+    })),
+  rmDeps: (fnode: string, depFnodes: string[], expectedRevision: string) =>
+    mutateNode(fnode, expectedRevision, () => req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}/dep/rm`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ dep_fnodes: depFnodes }),
-    }),
-  newNode: (params: { title: string; file?: string; parent_fnode?: string }) =>
-    req<NodeDetail>(`/api/node/new`, {
+    })),
+  newNode: (
+    params: { title: string; file?: string; parent_fnode?: string },
+    expectedRevision?: string,
+  ) => {
+    const create = () => req<NodeDetail>(`/api/node/new`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(params),
-    }),
+    });
+    return params.parent_fnode && expectedRevision
+      ? mutateNode(params.parent_fnode, expectedRevision, create)
+      : create();
+  },
 };

@@ -147,6 +147,57 @@ async fn send_json(
     (status, val)
 }
 
+async fn send_empty(
+    app: &axum::Router,
+    method: &str,
+    path: &str,
+) -> (StatusCode, serde_json::Value) {
+    let resp = app
+        .clone()
+        .oneshot(
+            local_request()
+                .method(method)
+                .uri(path)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let val = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, val)
+}
+
+async fn send_raw(
+    app: &axum::Router,
+    method: &str,
+    path: &str,
+    content_type: &str,
+    body: &str,
+) -> (StatusCode, serde_json::Value) {
+    let resp = app
+        .clone()
+        .oneshot(
+            local_request()
+                .method(method)
+                .uri(path)
+                .header("content-type", content_type)
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let val = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, val)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -377,9 +428,14 @@ async fn embedded_index_assets_use_release_mime_and_cache_policy() {
             response.headers().get("content-type").unwrap(),
             &expected_mime
         );
+        let expected_cache = if path.starts_with("assets/") {
+            "public, max-age=31536000, immutable"
+        } else {
+            "public, max-age=0, must-revalidate"
+        };
         assert_eq!(
             response.headers().get("cache-control").unwrap(),
-            "public, max-age=31536000, immutable"
+            expected_cache
         );
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -995,19 +1051,45 @@ async fn delete_block_removes_block() {
         "sanity: pre-built node has 1 block"
     );
 
-    let (status, val) = send_json(
-        &app,
-        "DELETE",
-        &format!("/api/node/{}/block/latex", fnode),
-        serde_json::Value::Null,
-    )
-    .await;
+    let (status, val) =
+        send_empty(&app, "DELETE", &format!("/api/node/{}/block/latex", fnode)).await;
     assert_eq!(status, StatusCode::OK, "val={val}");
     assert!(val["blocks"]
         .as_array()
         .unwrap()
         .iter()
         .all(|b| b["srctype"] != "latex"));
+}
+
+#[tokio::test]
+async fn malformed_delete_bodies_do_not_bypass_revision_validation() {
+    let dir = TempDir::new().unwrap();
+    let (_root, app) = build_app(&dir);
+    let (_, roots) = get_json(&app, "/api/graph/roots").await;
+    let main = roots
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["title"] == "Main Theorem")
+        .unwrap();
+    let fnode = main["fnode"].as_str().unwrap();
+    let path = format!("/api/node/{fnode}/block/latex");
+
+    for (content_type, body) in [
+        ("application/json", "{"),
+        ("application/json", r#"{"expected_revision":123}"#),
+        ("text/plain", "{}"),
+    ] {
+        let (status, value) = send_raw(&app, "DELETE", &path, content_type, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "value={value}");
+    }
+
+    let (_, detail) = get_json(&app, &format!("/api/node/{fnode}")).await;
+    assert!(detail["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|block| block["srctype"] == "latex"));
 }
 
 #[tokio::test]
@@ -1038,6 +1120,87 @@ async fn put_title_updates_title() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(val["error"].as_str().unwrap().contains("non-empty"));
+}
+
+#[tokio::test]
+async fn stale_client_revision_cannot_overwrite_an_external_edit() {
+    let dir = TempDir::new().unwrap();
+    let (root, app) = build_app(&dir);
+    let (_, roots) = get_json(&app, "/api/graph/roots").await;
+    let main = roots
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["title"] == "Main Theorem")
+        .unwrap();
+    let fnode = main["fnode"].as_str().unwrap();
+    let (_, detail) = get_json(&app, &format!("/api/node/{fnode}")).await;
+    let revision = detail["revision"].as_str().unwrap();
+    let path = root.join(detail["rel_path"].as_str().unwrap());
+    let mut external = MdocNode::load(&path).unwrap();
+    external.title = "External title".to_string();
+    write_node(&external);
+    let external_bytes = std::fs::read(&path).unwrap();
+
+    let (status, value) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/node/{fnode}/title"),
+        serde_json::json!({
+            "title": "Stale browser title",
+            "expected_revision": revision,
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CONFLICT, "value={value}");
+    assert_eq!(std::fs::read(&path).unwrap(), external_bytes);
+}
+
+#[tokio::test]
+async fn stale_block_revisions_cannot_overwrite_an_external_edit() {
+    for method in ["PUT", "DELETE"] {
+        let dir = TempDir::new().unwrap();
+        let (root, app) = build_app(&dir);
+        let (_, roots) = get_json(&app, "/api/graph/roots").await;
+        let main = roots
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["title"] == "Main Theorem")
+            .unwrap();
+        let fnode = main["fnode"].as_str().unwrap();
+        let (_, detail) = get_json(&app, &format!("/api/node/{fnode}")).await;
+        let revision = detail["revision"].as_str().unwrap();
+        let path = root.join(detail["rel_path"].as_str().unwrap());
+        let mut external = MdocNode::load(&path).unwrap();
+        external.title = format!("External edit before {method}");
+        write_node(&external);
+        let external_bytes = std::fs::read(&path).unwrap();
+        let body = if method == "PUT" {
+            serde_json::json!({
+                "content": "stale block",
+                "expected_revision": revision,
+            })
+        } else {
+            serde_json::json!({ "expected_revision": revision })
+        };
+
+        let (status, value) = send_json(
+            &app,
+            method,
+            &format!("/api/node/{fnode}/block/latex"),
+            body,
+        )
+        .await;
+
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "method={method}, value={value}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), external_bytes);
+    }
 }
 
 #[tokio::test]
@@ -1212,15 +1375,24 @@ async fn add_and_remove_dep_via_api() {
     assert_eq!(children.as_array().unwrap().len(), 1);
     assert_eq!(children[0]["title"], "Background Lemma");
 
-    // Adding the same dep again should fail (already present).
-    let (status, _val) = send_json(
+    // Adding the same dep again is an idempotent success.
+    let (status, val) = send_json(
         &app,
         "POST",
         &format!("/api/node/{}/dep/add", main_fnode),
         serde_json::json!({ "dep_fnode": bg_fnode }),
     )
     .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(status, StatusCode::OK, "val={val}");
+    assert_eq!(
+        val["depens"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|dependency| *dependency == bg_fnode)
+            .count(),
+        1
+    );
 
     // Remove the dep.
     let (status, val) = send_json(
@@ -1235,6 +1407,44 @@ async fn add_and_remove_dep_via_api() {
         .as_array()
         .unwrap()
         .contains(&serde_json::json!(bg_fnode)));
+}
+
+#[tokio::test]
+async fn duplicate_dep_returns_the_persisted_noncanonical_revision() {
+    let dir = TempDir::new().unwrap();
+    let (root, app) = build_app(&dir);
+    let (_, roots) = get_json(&app, "/api/graph/roots").await;
+    let main = roots
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["title"] == "Main Theorem")
+        .unwrap();
+    let background = roots
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["title"] == "Background Lemma")
+        .unwrap();
+    let main_fnode = main["fnode"].as_str().unwrap();
+    let background_fnode = background["fnode"].as_str().unwrap();
+    let (_, detail) = get_json(&app, &format!("/api/node/{main_fnode}")).await;
+    let path = root.join(detail["rel_path"].as_str().unwrap());
+    let mut node = MdocNode::load(&path).unwrap();
+    node.add_dependency(background_fnode);
+    std::fs::write(&path, format!("{}\n", node.render().unwrap())).unwrap();
+
+    let (status, duplicate) = send_json(
+        &app,
+        "POST",
+        &format!("/api/node/{main_fnode}/dep/add"),
+        serde_json::json!({ "dep_fnode": background_fnode }),
+    )
+    .await;
+    let (_, fresh) = get_json(&app, &format!("/api/node/{main_fnode}")).await;
+
+    assert_eq!(status, StatusCode::OK, "duplicate={duplicate}");
+    assert_eq!(duplicate["revision"], fresh["revision"]);
 }
 
 #[tokio::test]

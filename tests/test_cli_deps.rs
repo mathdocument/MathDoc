@@ -56,6 +56,44 @@ fn graph_output_escapes_workspace_terminal_controls() {
 }
 
 #[test]
+fn search_escapes_terminal_controls_in_the_query() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    init_workspace(root);
+    write_node(root, "node.mdoc", "safe-node", "Safe", &[]);
+
+    let output = run_mdc(root, &["search", "unsafe\u{1b}]0;query\u{7}"]);
+    let stdout = output_text(&output.stdout);
+
+    assert!(output.status.success());
+    assert!(!stdout.contains("\u{1b}]"));
+    assert!(!stdout.contains('\u{7}'));
+}
+
+#[test]
+fn dependency_reports_use_user_facing_count_labels() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    init_workspace(root);
+    write_node(root, "target.mdoc", "target-node", "Target", &[]);
+    write_node(
+        root,
+        "source.mdoc",
+        "source-node",
+        "Source",
+        &["target-node"],
+    );
+
+    let show = run_mdc(root, &["dep", "show", "source-node", "-d", "1"]);
+    let refs = run_mdc(root, &["dep", "refs", "target-node", "-d", "1"]);
+
+    assert!(show.status.success());
+    assert!(refs.status.success());
+    assert!(output_text(&show.stdout).contains("dependencies"));
+    assert!(output_text(&refs.stdout).contains("referrers"));
+}
+
+#[test]
 fn dep_add_target_accepts_paths_and_canonicalizes_prefixes() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();

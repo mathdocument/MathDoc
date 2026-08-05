@@ -32,12 +32,13 @@
 
   interface Props {
     fnode: string;
+    revision: string;
     block: SrcBlock;
-    onDeleted?: (srctype: string) => void;
+    onDeleted?: (node: NodeDetail, srctype: string) => void;
     onSaved?: (node: NodeDetail) => void;
     onReady?: () => void;
   }
-  let { fnode, block, onDeleted, onSaved, onReady }: Props = $props();
+  let { fnode, revision, block, onDeleted, onSaved, onReady }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
   let editorView: EditorView | null = null;
@@ -168,6 +169,7 @@
     if (!editorView || !dirty || saving || deleting) return;
     const targetFnode = fnode;
     const targetSrctype = block.srctype;
+    const targetRevision = revision;
     const requestIdentity = identityVersion;
     saving = true;
     setMutationPending(mutationId, true);
@@ -179,7 +181,7 @@
       fnode === targetFnode && block.srctype === targetSrctype;
 
     try {
-      const node = await api.putBlock(targetFnode, targetSrctype, content);
+      const node = await api.putBlock(targetFnode, targetSrctype, content, targetRevision);
       if (!isCurrent() || !editorView) return;
       const updated = node.blocks.find((b) => b.srctype === targetSrctype);
       if (!updated) {
@@ -215,21 +217,25 @@
     if (!confirm(`Delete the ${block.srctype} block from this node?`)) return;
     const targetFnode = fnode;
     const targetSrctype = block.srctype;
+    const targetRevision = revision;
     const requestIdentity = identityVersion;
     error = null;
     deleting = true;
+    let pending = true;
     setMutationPending(mutationId, true);
     const isCurrent = () => alive && requestIdentity === identityVersion &&
       fnode === targetFnode && block.srctype === targetSrctype;
     try {
-      await api.deleteBlock(targetFnode, targetSrctype);
+      const node = await api.deleteBlock(targetFnode, targetSrctype, targetRevision);
       if (!isCurrent()) return;
       setDirty(false);
-      onDeleted?.(targetSrctype);
+      setMutationPending(mutationId, false);
+      pending = false;
+      onDeleted?.(node, targetSrctype);
     } catch (e) {
       if (isCurrent()) error = errMsg(e);
     } finally {
-      setMutationPending(mutationId, false);
+      if (pending) setMutationPending(mutationId, false);
       if (isCurrent()) deleting = false;
     }
   }
@@ -252,7 +258,6 @@
     if (nextFnode === prevFnode && nextSrctype === prevSrctype && nextContent === prevContent) return;
     const identityChanged = prevFnode !== null &&
       (nextFnode !== prevFnode || nextSrctype !== prevSrctype);
-    if (!identityChanged && (saving || deleting)) return;
     prevFnode = nextFnode;
     prevSrctype = nextSrctype;
     prevContent = nextContent;
@@ -272,13 +277,13 @@
           doc: nextContent,
           extensions: editorExtensions,
         }));
-      } else {
+      } else if (!dirty && editorView.state.doc.toString() !== nextContent) {
         editorView.dispatch({
           changes: { from: 0, to: editorView.state.doc.length, insert: nextContent },
         });
       }
     }
-    setDirty(false);
+    setDirty(editorView?.state.doc.toString() !== lastSavedContent);
   });
 </script>
 

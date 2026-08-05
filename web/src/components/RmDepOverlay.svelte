@@ -3,17 +3,18 @@
   import { Unlink2, X } from "@lucide/svelte";
   import { api } from "../lib/api";
   import { errMsg } from "../lib/format";
-  import type { NodeInfo } from "../lib/types";
+  import type { NodeDetail, NodeInfo } from "../lib/types";
   import { shortFnode } from "../lib/format";
   import { modal } from "../lib/modal";
   import { setMutationPending } from "../lib/unsaved";
 
   interface Props {
     targetFnode: string;
-    onRemoved: () => void;
+    targetRevision: string;
+    onRemoved: (node: NodeDetail) => void;
     onClose: () => void;
   }
-  let { targetFnode, onRemoved, onClose }: Props = $props();
+  let { targetFnode, targetRevision, onRemoved, onClose }: Props = $props();
 
   let children = $state<NodeInfo[]>([]);
   let selected = $state<boolean[]>([]);
@@ -91,11 +92,11 @@
     setMutationPending(mutationId, true);
     error = null;
     try {
-      await api.rmDeps(targetFnode, toRemove);
+      const updated = await api.rmDeps(targetFnode, toRemove, targetRevision);
       setMutationPending(mutationId, false);
       pending = false;
       if (!alive) return;
-      onRemoved();
+      onRemoved(updated);
       onClose();
     } catch (e) {
       if (alive) error = errMsg(e);

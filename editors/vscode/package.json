@@ -2,8 +2,18 @@
   "name": "mdc-mdoc",
   "displayName": "mdoc Language Support",
   "description": "Syntax highlighting and language support for .mdoc files (mdc workspace)",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "mdc",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mathdocument/MathDoc.git"
+  },
+  "files": [
+    "language-configuration.json",
+    "syntaxes/**",
+    "LICENSE"
+  ],
   "engines": {
     "vscode": "^1.85.0"
   },

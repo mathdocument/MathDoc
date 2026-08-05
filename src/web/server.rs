@@ -44,8 +44,14 @@ pub async fn serve(
     let browser_url = initial_fnode
         .map(|fnode| format!("{url}/#ref={}", encode_fragment_value(fnode)))
         .unwrap_or_else(|| url.clone());
-    eprintln!("mdc serve  →  {browser_url}");
-    eprintln!("  workspace: {}", mdcroot.display());
+    eprintln!(
+        "mdc serve  →  {}",
+        crate::core::escape_terminal(&browser_url)
+    );
+    eprintln!(
+        "  workspace: {}",
+        crate::core::escape_terminal(&mdcroot.to_string_lossy())
+    );
     #[cfg(feature = "dev-web")]
     eprintln!("  (dev-web: serving from web/dist; run `npm run dev` for HMR)");
     eprintln!("  Ctrl-C to stop");

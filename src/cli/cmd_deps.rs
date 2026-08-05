@@ -64,7 +64,7 @@ fn open_and_resolve_source(source: &str, refresh_depth: i32) -> Result<(IndCache
 pub(super) fn cmd_dep_show(source: String, depth: i32) -> Result<i32> {
     let (cache, source_item) = open_and_resolve_source(&source, depth)?;
     let report = cache.dependency_report(&source_item.fnode, depth)?;
-    print_dep_report_sections(&cache, &source_item, "depens", &report)
+    print_dep_report_sections(&cache, &source_item, "dependencies", &report)
 }
 
 // ── cmd: dep leaf ─────────────────────────────────────────────────────────────
@@ -376,7 +376,7 @@ pub(super) fn cmd_dep_refs(target: String, depth: i32) -> Result<i32> {
     print_dep_report(
         "target",
         &target_item,
-        "refers",
+        "referrers",
         &ref_items,
         &std::collections::HashMap::new(),
     );

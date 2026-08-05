@@ -135,12 +135,7 @@ pub(super) fn cmd_graph_tui(source: Option<String>) -> Result<i32> {
     let start_fnode = if let Some(ref source) = source {
         resolve_start_ref(&cache, source)?
     } else {
-        let roots = cache.global_root_items()?;
-        roots
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("no nodes in workspace"))?
-            .fnode
+        default_start_fnode(&mut cache)?
     };
 
     let mut app = TuiApp::new(cache, start_fnode)?;
@@ -163,6 +158,22 @@ pub(super) fn cmd_graph_tui(source: Option<String>) -> Result<i32> {
         }
     }
     Ok(0)
+}
+
+fn default_start_fnode(cache: &mut crate::indcache::IndCache) -> Result<String> {
+    if let Some(root) = cache
+        .global_root_items()?
+        .into_iter()
+        .find(|node| !node.broken)
+    {
+        return Ok(root.fnode);
+    }
+    cache
+        .all_node_summaries()?
+        .into_iter()
+        .find(|node| !node.broken)
+        .map(|node| node.fnode)
+        .ok_or_else(|| anyhow::anyhow!("no valid nodes in workspace"))
 }
 
 // ── Data types ────────────────────────────────────────────────────────────────
@@ -1944,6 +1955,26 @@ mod tests {
             resolve_start_ref(&cache, "Start by Title").unwrap(),
             "title-start-node"
         );
+    }
+
+    #[test]
+    fn default_start_accepts_a_graph_with_no_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".mdc")).unwrap();
+        std::fs::write(
+            dir.path().join("a.mdoc"),
+            "@fnode: a-node\n@title: A\n\n@dep:\nb-node\n@end\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("b.mdoc"),
+            "@fnode: b-node\n@title: B\n\n@dep:\na-node\n@end\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("broken.mdoc"), "@title: Broken\n").unwrap();
+        let mut cache = crate::indcache::IndCache::open(dir.path().to_path_buf()).unwrap();
+
+        assert_eq!(default_start_fnode(&mut cache).unwrap(), "a-node");
     }
 
     fn test_app() -> (tempfile::TempDir, TuiApp, std::path::PathBuf) {

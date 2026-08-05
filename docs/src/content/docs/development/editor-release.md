@@ -9,14 +9,13 @@ description: Maintain the VS Code extension, embedded frontend, documentation, a
 registers the language, folding markers, a TextMate grammar, and embedded-language
 mappings for source blocks.
 
-Embedded highlighting currently recognizes canonical lowercase `@src: <type>` headers
-without metadata. Valid case variants and metadata-bearing headers require future
-grammar maintenance.
+Embedded highlighting recognizes source-type names case-insensitively and permits
+metadata after the type, matching the `.mdoc` parser.
 
 Install the checked-in package locally:
 
 ```bash
-code --install-extension editors/vscode/mdc-mdoc-0.1.0.vsix --force
+code --install-extension editors/vscode/mdc-mdoc-0.1.1.vsix --force
 ```
 
 Build a VSIX from source:
@@ -41,9 +40,8 @@ cd editors/vscode
 npx @vscode/vsce publish -p "$VSCE_PAT"
 ```
 
-Before public publication, verify the `publisher`, bump the extension `version`, and
-add Marketplace metadata such as `repository`, `LICENSE`, and either `.vscodeignore` or
-a `files` allowlist.
+Before public publication, verify the `publisher`, bump the extension `version`, and add
+Marketplace presentation metadata such as a README and icon.
 
 ## Embedded web assets
 
@@ -53,6 +51,7 @@ Any change under `web/src/` must be followed by:
 cd web
 npm ci
 npm run check
+npm test
 npm run build
 ```
 

@@ -1,9 +1,11 @@
+use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::core::{
     DependencyCandidates, FormalizationStatus, GraphCheckReport, GraphRootItem, NodeSummary,
@@ -34,6 +36,8 @@ pub struct NodeDetail {
     pub rel_path: String,
     pub broken: bool,
     pub depth: u32,
+    /// Digest of the exact `.mdoc` generation represented by this response.
+    pub revision: String,
     /// Direct dependency fnodes (in source order, deduplicated).
     pub depens: Vec<String>,
     pub blocks: Vec<crate::mdocnode::SrcBlock>,
@@ -83,6 +87,7 @@ pub struct GraphEdge {
 
 #[derive(Debug, Clone, Copy)]
 enum ApiErrorKind {
+    BadRequest,
     NotFound,
     Validation,
     Conflict,
@@ -114,6 +119,15 @@ impl ApiError {
         )
     }
 
+    fn bad_request(message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self::new(
+            ApiErrorKind::BadRequest,
+            message.clone(),
+            anyhow::anyhow!(message),
+        )
+    }
+
     fn generation_conflict(expected_fnode: &str, loaded_fnode: &str) -> Self {
         Self::new(
             ApiErrorKind::Conflict,
@@ -127,6 +141,14 @@ impl ApiError {
             ApiErrorKind::Conflict,
             "resource changed; refresh and retry",
             anyhow::anyhow!("{} changed while loading node data", path.display()),
+        )
+    }
+
+    fn stale_client_revision(path: &std::path::Path) -> Self {
+        Self::new(
+            ApiErrorKind::Conflict,
+            "resource changed; refresh and retry",
+            anyhow::anyhow!("client revision is stale for {}", path.display()),
         )
     }
 
@@ -186,6 +208,7 @@ impl From<anyhow::Error> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match self.kind {
+            ApiErrorKind::BadRequest => StatusCode::BAD_REQUEST,
             ApiErrorKind::NotFound => StatusCode::NOT_FOUND,
             ApiErrorKind::Validation => StatusCode::UNPROCESSABLE_ENTITY,
             ApiErrorKind::Conflict => StatusCode::CONFLICT,
@@ -368,6 +391,7 @@ pub async fn node_detail(
         summary,
         node,
         formalization,
+        snapshot_revision(&snapshot),
     )))
 }
 
@@ -391,7 +415,12 @@ pub async fn node_view(
     ensure_snapshot_unchanged(&snapshot, &abs_path)?;
     let (summary, formalization, referrers, children) = cache_fields?;
     Ok(Json(NodeView {
-        node: node_detail_from_generation(summary, node, formalization),
+        node: node_detail_from_generation(
+            summary,
+            node,
+            formalization,
+            snapshot_revision(&snapshot),
+        ),
         referrers,
         children,
     }))
@@ -442,6 +471,7 @@ fn node_detail_from_generation(
     info: NodeSummary,
     node: MdocNode,
     formalization: FormalizationStatus,
+    revision: String,
 ) -> NodeDetail {
     NodeDetail {
         fnode: info.fnode,
@@ -449,6 +479,7 @@ fn node_detail_from_generation(
         rel_path: info.rel_path,
         broken: info.broken,
         depth: info.depth,
+        revision,
         depens: node.depens,
         blocks: node.blocks,
         formalization,
@@ -480,8 +511,11 @@ pub async fn node_put_block(
     Json(body): Json<BlockBody>,
 ) -> ApiResult<Json<NodeDetail>> {
     let srctype = validate_srctype(&srctype)?;
-    let content = body.content;
-    mutate_node(&state, &fnode, move |node| {
+    let BlockBody {
+        content,
+        expected_revision,
+    } = body;
+    mutate_node(&state, &fnode, expected_revision.as_deref(), move |node| {
         node.upsert_source_block(srctype, content)?;
         Ok(())
     })
@@ -491,14 +525,41 @@ pub async fn node_put_block(
 pub async fn node_delete_block(
     State(state): State<AppState>,
     Path((fnode, srctype)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> ApiResult<Json<NodeDetail>> {
     let srctype = validate_srctype(&srctype)?;
-    mutate_node(&state, &fnode, |node| {
-        if !node.remove_source_block(srctype) {
-            bail!("no '@src: {srctype}' block on this node");
+    let body = if body.is_empty() {
+        None
+    } else {
+        let is_json = headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"));
+        if !is_json {
+            return Err(ApiError::bad_request(
+                "non-empty DELETE body must use application/json",
+            ));
         }
-        Ok(())
-    })
+        Some(
+            serde_json::from_slice::<RevisionBody>(&body).map_err(|error| {
+                ApiError::bad_request(format!("invalid DELETE request body: {error}"))
+            })?,
+        )
+    };
+    mutate_node(
+        &state,
+        &fnode,
+        body.as_ref()
+            .and_then(|body| body.expected_revision.as_deref()),
+        |node| {
+            if !node.remove_source_block(srctype) {
+                bail!("no '@src: {srctype}' block on this node");
+            }
+            Ok(())
+        },
+    )
 }
 
 /// Update the @title of the focused node.
@@ -512,10 +573,15 @@ pub async fn node_put_title(
         bail!("@title must be non-empty");
     }
     let title = title.to_string();
-    mutate_node(&state, &fnode, move |node| {
-        node.set_title(title);
-        Ok(())
-    })
+    mutate_node(
+        &state,
+        &fnode,
+        body.expected_revision.as_deref(),
+        move |node| {
+            node.set_title(title);
+            Ok(())
+        },
+    )
 }
 
 // ── Write helpers ─────────────────────────────────────────────────────────────
@@ -523,11 +589,21 @@ pub async fn node_put_title(
 #[derive(Debug, Deserialize)]
 pub struct BlockBody {
     pub content: String,
+    #[serde(default)]
+    pub expected_revision: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TitleBody {
     pub title: String,
+    #[serde(default)]
+    pub expected_revision: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RevisionBody {
+    #[serde(default)]
+    pub expected_revision: Option<String>,
 }
 
 /// The five built-in srctypes. Rejecting unknown srctypes keeps the work/back
@@ -539,6 +615,7 @@ fn validate_srctype(srctype: &str) -> ApiResult<&'static str> {
 fn mutate_node(
     state: &AppState,
     raw_ref: &str,
+    expected_revision: Option<&str>,
     mutate: impl FnOnce(&mut MdocNode) -> ApiResult<()>,
 ) -> ApiResult<Json<NodeDetail>> {
     with_workspace_mutation(state, |cache, mutation_lock| {
@@ -547,6 +624,9 @@ fn mutate_node(
         let (snapshot, mut node) = snapshot_node(&abs_path)?;
         if node.fnode != fnode {
             bail!("fnode mismatch when updating node");
+        }
+        if expected_revision.is_some_and(|expected| expected != snapshot_revision(&snapshot)) {
+            return Err(ApiError::stale_client_revision(&abs_path));
         }
         mutate(&mut node)?;
         save_and_index(cache, mutation_lock, &node, &snapshot)?;
@@ -560,6 +640,23 @@ fn committed_node_detail(cache: &mut IndCache, node: &MdocNode) -> Json<NodeDeta
     Json(node_detail_from_committed_cache(cache, node))
 }
 
+fn current_node_detail(
+    cache: &mut IndCache,
+    fnode: &str,
+    abs_path: &std::path::Path,
+) -> ApiResult<Json<NodeDetail>> {
+    let (snapshot, node) = load_node_generation(cache, fnode, abs_path)?;
+    let summary = cache.node_summary(fnode)?;
+    let formalization = cache.formalization_status(fnode)?;
+    ensure_snapshot_unchanged(&snapshot, abs_path)?;
+    Ok(Json(node_detail_from_generation(
+        summary,
+        node,
+        formalization,
+        snapshot_revision(&snapshot),
+    )))
+}
+
 fn node_detail_from_committed_cache(cache: &mut IndCache, node: &MdocNode) -> NodeDetail {
     let summary = cache.node_summary(&node.fnode).ok();
     let formalization = cache.formalization_status(&node.fnode).unwrap_or_default();
@@ -571,10 +668,26 @@ fn node_detail_from_committed_cache(cache: &mut IndCache, node: &MdocNode) -> No
         rel_path: to_rel_path(cache.root(), &node.path),
         broken,
         depth,
+        revision: rendered_node_revision(node),
         depens: node.depens.clone(),
         blocks: node.blocks.clone(),
         formalization,
     }
+}
+
+fn snapshot_revision(snapshot: &crate::workspace::FileSnapshot) -> String {
+    revision_digest(snapshot.content().unwrap_or_default())
+}
+
+fn rendered_node_revision(node: &MdocNode) -> String {
+    let rendered = node
+        .render()
+        .expect("a committed node must remain structurally renderable");
+    revision_digest(rendered.as_bytes())
+}
+
+fn revision_digest(content: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(content))
 }
 
 fn snapshot_node(
@@ -617,15 +730,23 @@ pub async fn node_add_dep(
         let (fnode, _, _) = resolve_with_cache(cache, &fnode).map_err(ApiError::from_resolve)?;
         let mut graph =
             crate::depgraph::DepGraph::from_ref_under_lock(cache, mutation_lock, &fnode, None)?;
-        let (added, _, _) = graph
+        let (added, skipped_existing, skipped_self) = graph
             .add_direct_dependency_ref_under_lock(mutation_lock, &body.dep_fnode, None)
             .map_err(ApiError::rejected)?;
-        if added.is_empty() {
-            bail!("dependency already present or equals self");
+        if !skipped_self.is_empty() {
+            bail!("a node cannot depend on itself");
         }
+        if added.is_empty() && skipped_existing.is_empty() {
+            bail!("dependency was not added");
+        }
+        let unchanged = added.is_empty();
         let node = graph.root_node().clone();
         drop(graph);
-        Ok(committed_node_detail(cache, &node))
+        if unchanged {
+            current_node_detail(cache, &node.fnode, &node.path)
+        } else {
+            Ok(committed_node_detail(cache, &node))
+        }
     })
 }
 
