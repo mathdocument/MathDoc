@@ -459,6 +459,12 @@ impl IndCache {
             Ok(resolved) => return Ok(resolved),
             Err(error) => error,
         };
+        if !matches!(
+            ref_error.downcast_ref::<ResolveRefError>(),
+            Some(ResolveRefError::NotFound(_))
+        ) {
+            return Err(ref_error);
+        }
         let raw_ref = raw_ref.trim();
         if raw_ref.is_empty() {
             return Err(ref_error);

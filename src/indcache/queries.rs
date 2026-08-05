@@ -283,6 +283,10 @@ pub fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>> {
     };
 
     let invalid_issues = invalid_issue_rows(conn)?;
+    let valid_fnodes: HashSet<String> = valid_node_rows(conn)?
+        .into_iter()
+        .map(|(fnode, _, _)| fnode)
+        .collect();
 
     let mut items: Vec<GraphRootItem> = valid_roots
         .into_iter()
@@ -298,7 +302,11 @@ pub fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>> {
         )
         .collect();
 
+    let mut broken_paths = HashSet::new();
     for issue in &invalid_issues {
+        if valid_fnodes.contains(&issue.fnode) || !broken_paths.insert(issue.rel_path.as_str()) {
+            continue;
+        }
         let is_placeholder = issue.fnode.starts_with('<') && issue.fnode.ends_with('>');
         if !is_placeholder && fnodes_with_incoming.contains(&issue.fnode) {
             continue;
@@ -453,8 +461,14 @@ fn node_lookup(conn: &Connection) -> Result<HashMap<String, (String, String)>> {
 
 fn issue_lookup(conn: &Connection) -> Result<HashMap<String, GraphIssue>> {
     let mut map: HashMap<String, GraphIssue> = HashMap::new();
+    let valid_fnodes: HashSet<String> = valid_node_rows(conn)?
+        .into_iter()
+        .map(|(fnode, _, _)| fnode)
+        .collect();
     for issue in invalid_issue_rows(conn)? {
-        map.entry(issue.fnode.clone()).or_insert(issue);
+        if !valid_fnodes.contains(&issue.fnode) {
+            map.entry(issue.fnode.clone()).or_insert(issue);
+        }
     }
     for issue in missing_issue_rows(conn)? {
         map.entry(issue.fnode.clone()).or_insert(issue);
@@ -466,7 +480,9 @@ pub(super) fn invalid_issue_rows(conn: &Connection) -> Result<Vec<GraphIssue>> {
     let mut stmt = conn.prepare(
         "SELECT path, ref_fnode, error FROM mdoc_issues
          WHERE kind IN ('invalid', 'duplicate')
-         ORDER BY path, ref_fnode, error",
+         ORDER BY path,
+                  CASE WHEN kind = 'invalid' THEN 0 ELSE 1 END,
+                  ref_fnode, error",
     )?;
     let rows = stmt
         .query_map([], |r| {
@@ -615,16 +631,25 @@ fn issue_lookup_for_fnodes(
         let sql = format!(
             "SELECT path, kind, ref_fnode, error FROM mdoc_issues
              WHERE ref_fnode IN ({placeholders})
-               AND (
-                 kind IN ('invalid', 'duplicate')
-                 OR (kind = 'missing' AND NOT EXISTS (
+                AND (
+                  kind IN ('invalid', 'duplicate')
+                  OR (kind = 'missing' AND NOT EXISTS (
                    SELECT 1 FROM mdoc_issues AS si
-                   WHERE si.path = mdoc_issues.path
-                     AND si.kind IN ('invalid', 'duplicate')
-                 ))
-               )
-              ORDER BY CASE WHEN kind IN ('invalid', 'duplicate') THEN 0 ELSE 1 END,
-                       path, ref_fnode, error"
+                    WHERE si.path = mdoc_issues.path
+                      AND si.kind IN ('invalid', 'duplicate')
+                  ))
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM mdocs AS valid
+                  WHERE valid.fnode = mdoc_issues.ref_fnode
+                    AND NOT EXISTS (
+                      SELECT 1 FROM mdoc_issues AS blocking
+                      WHERE blocking.path = valid.path
+                        AND blocking.kind IN ('invalid', 'duplicate')
+                    )
+                )
+               ORDER BY CASE WHEN kind IN ('invalid', 'duplicate') THEN 0 ELSE 1 END,
+                        path, ref_fnode, error"
         );
         let params: Vec<&dyn rusqlite::types::ToSql> = chunk
             .iter()
@@ -718,20 +743,20 @@ fn dependency_item(
     nodes: &HashMap<String, (String, String)>,
     issues: &HashMap<String, GraphIssue>,
 ) -> DependencyItem {
-    if let Some(issue) = issues.get(fnode) {
-        return DependencyItem {
-            depth,
-            fnode: issue.fnode.clone(),
-            title: issue.title.clone(),
-            rel_path: issue.rel_path.clone(),
-        };
-    }
     if let Some((title, path)) = nodes.get(fnode) {
         return DependencyItem {
             depth,
             fnode: fnode.to_string(),
             title: title.clone(),
             rel_path: path.clone(),
+        };
+    }
+    if let Some(issue) = issues.get(fnode) {
+        return DependencyItem {
+            depth,
+            fnode: issue.fnode.clone(),
+            title: issue.title.clone(),
+            rel_path: issue.rel_path.clone(),
         };
     }
     DependencyItem {
@@ -844,7 +869,10 @@ const SEARCH_ORDER_SQL: &str = "CASE WHEN lower(m.fnode) LIKE ? ESCAPE '\\' THEN
      length(m.title),
      m.path";
 const NODE_SUMMARY_COLUMNS_SQL: &str = "m.fnode, m.title, m.path,
-     EXISTS(SELECT 1 FROM mdoc_issues i WHERE i.ref_fnode = m.fnode),
+     EXISTS(
+       SELECT 1 FROM mdoc_issues i
+       WHERE i.path = m.path AND i.kind IN ('invalid', 'duplicate')
+     ),
      m.topo_depth";
 
 fn search_patterns(query: &str) -> (String, String, String) {

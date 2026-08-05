@@ -450,6 +450,24 @@ fn test_search_and_resolve_surface_duplicate_fnodes() {
 }
 
 #[test]
+fn start_ref_does_not_mask_an_ambiguous_fnode_with_a_title() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    write(&root.join("dup-a.mdoc"), "@fnode: token\n@title: A\n");
+    write(&root.join("dup-b.mdoc"), "@fnode: token\n@title: B\n");
+    write(
+        &root.join("titled.mdoc"),
+        "@fnode: titled-node\n@title: token\n",
+    );
+
+    let cache = IndCache::open(root.to_path_buf()).unwrap();
+    let error = cache.resolve_start_ref("token", Some(root)).unwrap_err();
+
+    assert!(error.to_string().contains("ambiguous mdoc reference"));
+}
+
+#[test]
 fn test_search_treats_like_metacharacters_literally() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
@@ -926,6 +944,91 @@ fn test_upsert_path_updates_cached_edges_and_missing_issues() {
     assert_eq!(
         cache.direct_dependency_summaries("src-node").unwrap(),
         vec![missing]
+    );
+}
+
+#[test]
+fn partial_identity_issue_does_not_poison_a_valid_node_with_the_same_fnode() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    write(
+        &root.join("valid.mdoc"),
+        "@fnode: shared-node\n@title: Valid Node\n",
+    );
+    write(&root.join("broken.mdoc"), "@fnode: shared-node\n");
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+
+    let summary = cache.node_summary("shared-node").unwrap();
+    assert!(!summary.broken);
+    assert_eq!(summary.title, "Valid Node");
+    assert!(cache.issue_for_fnode("shared-node").unwrap().is_none());
+    assert!(cache
+        .dependency_report("shared-node", -1)
+        .unwrap()
+        .issues_by_fnode
+        .is_empty());
+    assert_eq!(cache.node_degrees("shared-node").unwrap().in_degree, 0);
+    assert!(cache
+        .graph_check_report()
+        .unwrap()
+        .invalid
+        .iter()
+        .any(|issue| issue.rel_path == "broken.mdoc"));
+}
+
+#[test]
+fn unblocked_duplicate_claimant_rebuilds_its_missing_issues() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    let duplicate = root.join("duplicate.mdoc");
+    write(
+        &root.join("source.mdoc"),
+        "@fnode: shared-node\n@title: Source\n\n@dep:\nmissing-node\n@end\n",
+    );
+    write(&duplicate, "@fnode: shared-node\n@title: Duplicate\n");
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    assert!(cache.graph_check_report().unwrap().missing.is_empty());
+
+    fs::remove_file(&duplicate).unwrap();
+    cache.upsert_path(&duplicate).unwrap();
+
+    let report = cache.graph_check_report().unwrap();
+    assert_eq!(report.missing.len(), 1);
+    assert_eq!(report.missing[0].fnode, "missing-node");
+    assert!(cache
+        .dependency_report("shared-node", -1)
+        .unwrap()
+        .issues_by_fnode
+        .contains_key("missing-node"));
+}
+
+#[test]
+fn graph_roots_deduplicate_multiple_blocking_issues_for_one_path() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    write(
+        &root.join("valid.mdoc"),
+        "@fnode: shared-node\n@title: Valid\n",
+    );
+    write(
+        &root.join("invalid.mdoc"),
+        "@fnode: shared-node\n@title: Invalid\n@title: Again\n",
+    );
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    let roots = cache.global_root_items().unwrap();
+
+    assert_eq!(
+        roots
+            .iter()
+            .filter(|item| item.rel_path == "invalid.mdoc")
+            .count(),
+        1
     );
 }
 
@@ -1685,6 +1788,45 @@ fn unchanged_reachable_refresh_preserves_the_workspace_digest() {
     cache.refresh_reachable_from_path(&source, -1).unwrap();
 
     assert_eq!(digest(&cache), initial_digest);
+}
+
+#[test]
+fn semantic_upsert_invalidates_digest_for_an_aba_full_refresh() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    let source = root.join("source.mdoc");
+    let initial = "@fnode: source-node\n@title: Initial\n\n@dep:\nfirst-node\nsecond-node\n@end\n";
+    write(&source, initial);
+    write(
+        &root.join("first.mdoc"),
+        "@fnode: first-node\n@title: First\n",
+    );
+    write(
+        &root.join("second.mdoc"),
+        "@fnode: second-node\n@title: Second\n",
+    );
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    write(
+        &source,
+        "@fnode: source-node\n@title: Changed\n\n@dep:\nsecond-node\nfirst-node\n@end\n",
+    );
+    cache.upsert_path(&source).unwrap();
+    write(&source, initial);
+
+    cache.refresh_all().unwrap();
+
+    assert_eq!(cache.node_summary("source-node").unwrap().title, "Initial");
+    assert_eq!(
+        cache
+            .direct_dependency_summaries("source-node")
+            .unwrap()
+            .into_iter()
+            .map(|node| node.fnode)
+            .collect::<Vec<_>>(),
+        ["first-node", "second-node"]
+    );
 }
 
 #[test]

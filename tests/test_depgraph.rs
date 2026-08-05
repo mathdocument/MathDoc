@@ -100,6 +100,22 @@ fn test_from_ref_detects_duplicate_via_filesystem_fallback() {
     );
 }
 
+#[test]
+fn from_ref_rejects_a_stale_fnode_that_now_names_a_different_node() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join(".mdc")).unwrap();
+    let path = root.join("node.mdoc");
+    fs::write(&path, "@fnode: old-node\n@title: Old\n").unwrap();
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    fs::write(&path, "@fnode: new-node\n@title: New\n").unwrap();
+
+    let error = expect_err(DepGraph::from_ref(&mut cache, "old-node", Some(root)));
+
+    assert!(error.to_string().contains("identity changed"));
+    assert_eq!(MdocNode::load(&path).unwrap().fnode, "new-node");
+}
+
 // ── mutation ──────────────────────────────────────────────────────────────────
 
 #[test]
@@ -372,6 +388,24 @@ fn test_create_and_add_dependency_no_side_effects_on_cycle() {
         search_results.is_empty(),
         "new node must not be indexed after failure"
     );
+}
+
+#[test]
+fn create_and_add_dependency_rejects_invalid_declared_targets_without_side_effects() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let root_node = make_node(root, "Root", "text", "root");
+    write_node(&root_node);
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    let mut graph = DepGraph::from_ref(&mut cache, &root_node.fnode, None).unwrap();
+    let mut new_node = make_node(root, "New", "text", "new");
+    new_node.add_dependency("missing-target");
+    let new_path = new_node.path.clone();
+
+    let error = graph.create_and_add_dependency(new_node).unwrap_err();
+
+    assert!(error.to_string().contains("dependency target is missing"));
+    assert!(!new_path.exists());
 }
 
 #[test]

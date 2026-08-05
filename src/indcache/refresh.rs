@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use rusqlite::{Connection, ToSql};
+use rusqlite::{Connection, OptionalExtension, ToSql};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::Metadata;
@@ -92,6 +92,12 @@ pub(super) struct UpsertOutcome {
     pub(super) old_fnode: Option<String>,
     pub(super) new_fnode: Option<String>,
     pub(super) graph_changed: bool,
+}
+
+#[derive(PartialEq, Eq)]
+struct IndexedFileSemantics {
+    node: Option<(String, String, Vec<String>)>,
+    invalid: Option<(String, String)>,
 }
 
 fn scan_workspace(root: &Path) -> Result<Vec<ScannedMdoc>> {
@@ -577,11 +583,14 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
     let rel_path = to_rel_path(&root_resolved, &file_path);
     let old_fnode = fnode_for_path(conn, &rel_path)?;
     let old_had_blocking_issue = path_has_blocking_issue(conn, &rel_path)?;
+    let old_semantics = indexed_file_semantics(conn, &rel_path)?;
 
-    let meta = match std::fs::metadata(&file_path) {
-        Ok(m) if m.is_file() => m,
-        Ok(_) => bail!("mdoc path is not a regular file: {}", file_path.display()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+    let mut source_snapshots = FileSnapshotBatch::new(&root_resolved)?;
+    let source_snapshot = source_snapshots.capture_read(&file_path)?;
+    source_snapshots.finish()?;
+    let source_snapshot = match source_snapshot {
+        Some(snapshot) => snapshot,
+        None => {
             delete_indexed_path(conn, &rel_path)?;
             return Ok(UpsertOutcome {
                 graph_changed: old_fnode.is_some() || old_had_blocking_issue,
@@ -589,22 +598,9 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
                 new_fnode: None,
             });
         }
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("reading metadata for {}", file_path.display()))
-        }
     };
-    let snapshot = crate::workspace::FileSnapshot::capture(&file_path)?;
-    let Some(content) = snapshot.content() else {
-        delete_indexed_path(conn, &rel_path)?;
-        return Ok(UpsertOutcome {
-            graph_changed: old_fnode.is_some() || old_had_blocking_issue,
-            old_fnode,
-            new_fnode: None,
-        });
-    };
-
-    let (mtime_ns, size) = metadata_state(&meta)?;
+    let content = source_snapshot.content();
+    let (mtime_ns, size) = metadata_state(source_snapshot.metadata())?;
 
     // Snapshot old edge targets before clearing
     let old_dst_fnodes: HashSet<String> = {
@@ -694,8 +690,12 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
         .into_iter()
         .flatten()
         .collect();
+    let mut duplicate_state_changes = HashSet::new();
     for fnode in &identity_fnodes {
-        refresh_duplicate_issues_for_fnode(conn, Some(fnode))?;
+        duplicate_state_changes.extend(refresh_duplicate_issues_for_fnode(conn, Some(fnode))?);
+    }
+    for path in duplicate_state_changes {
+        refresh_missing_issues_for_source(conn, &path)?;
     }
     refresh_missing_issues_for_source(conn, &rel_path)?;
     for fnode in &identity_fnodes {
@@ -726,8 +726,11 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
         || old_dst_fnodes != new_dst_fnodes
         || old_had_blocking_issue
         || new_has_blocking_issue;
+    let semantic_changed = old_semantics != indexed_file_semantics(conn, &rel_path)?;
     if graph_changed {
         super::derived::bump_graph_epoch(conn)?;
+    }
+    if graph_changed || semantic_changed {
         invalidate_index_digest(conn)?;
     }
     Ok(UpsertOutcome {
@@ -753,7 +756,9 @@ pub fn delete_indexed_path(conn: &Connection, stale_path: &str) -> Result<()> {
     conn.execute("DELETE FROM mdoc_edges WHERE src_path = ?", [stale_path])?;
     conn.execute("DELETE FROM mdoc_issues WHERE path = ?", [stale_path])?;
 
-    refresh_duplicate_issues_for_fnode(conn, old_fnode.as_deref())?;
+    for path in refresh_duplicate_issues_for_fnode(conn, old_fnode.as_deref())? {
+        refresh_missing_issues_for_source(conn, &path)?;
+    }
     refresh_missing_issues_for_target(conn, old_fnode.as_deref())?;
 
     let mut affected = old_dst_fnodes;
@@ -781,6 +786,36 @@ fn invalidate_index_digest(conn: &Connection) -> Result<()> {
         [],
     )?;
     Ok(())
+}
+
+fn indexed_file_semantics(conn: &Connection, rel_path: &str) -> Result<IndexedFileSemantics> {
+    let node = conn
+        .query_row(
+            "SELECT fnode, title FROM mdocs WHERE path = ?",
+            [rel_path],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    let node = match node {
+        Some((fnode, title)) => {
+            let mut stmt =
+                conn.prepare("SELECT dst_fnode FROM mdoc_edges WHERE src_path = ? ORDER BY ord")?;
+            let dependencies = stmt
+                .query_map([rel_path], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Some((fnode, title, dependencies))
+        }
+        None => None,
+    };
+    let invalid = conn
+        .query_row(
+            "SELECT ref_fnode, error FROM mdoc_issues
+             WHERE path = ? AND kind = 'invalid'",
+            [rel_path],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    Ok(IndexedFileSemantics { node, invalid })
 }
 
 pub(crate) fn metadata_state(meta: &std::fs::Metadata) -> Result<(i64, i64)> {
@@ -847,10 +882,21 @@ fn cleanup_stale_fnode_paths(
     Ok(())
 }
 
-fn refresh_duplicate_issues_for_fnode(conn: &Connection, fnode: Option<&str>) -> Result<()> {
+fn refresh_duplicate_issues_for_fnode(
+    conn: &Connection,
+    fnode: Option<&str>,
+) -> Result<HashSet<String>> {
     let fnode = match fnode {
         Some(f) if is_reportable_fnode(f) => f,
-        _ => return Ok(()),
+        _ => return Ok(HashSet::new()),
+    };
+    let old_paths: HashSet<String> = {
+        let mut stmt = conn
+            .prepare("SELECT path FROM mdoc_issues WHERE kind = 'duplicate' AND ref_fnode = ?")?;
+        let paths = stmt
+            .query_map([fnode], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        paths
     };
     conn.execute(
         "DELETE FROM mdoc_issues WHERE kind = 'duplicate' AND ref_fnode = ?",
@@ -860,14 +906,21 @@ fn refresh_duplicate_issues_for_fnode(conn: &Connection, fnode: Option<&str>) ->
     let paths: Vec<String> = stmt
         .query_map([fnode], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<_>>()?;
-    if paths.len() < 2 {
-        return Ok(());
+    let new_paths: HashSet<String> = if paths.len() < 2 {
+        HashSet::new()
+    } else {
+        paths.iter().cloned().collect()
+    };
+    if paths.len() >= 2 {
+        let error = format!("duplicate fnode '{}' across: {}", fnode, paths.join(", "));
+        for path in &paths {
+            insert_issue(conn, path, "duplicate", fnode, &error)?;
+        }
     }
-    let error = format!("duplicate fnode '{}' across: {}", fnode, paths.join(", "));
-    for path in &paths {
-        insert_issue(conn, path, "duplicate", fnode, &error)?;
-    }
-    Ok(())
+    Ok(old_paths
+        .symmetric_difference(&new_paths)
+        .cloned()
+        .collect())
 }
 
 fn is_reportable_fnode(fnode: &str) -> bool {
@@ -875,6 +928,10 @@ fn is_reportable_fnode(fnode: &str) -> bool {
 }
 
 fn refresh_missing_issues_for_source(conn: &Connection, src_path: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM mdoc_issues WHERE kind = 'missing' AND path = ?",
+        [src_path],
+    )?;
     if path_has_blocking_issue(conn, src_path)? {
         return Ok(());
     }

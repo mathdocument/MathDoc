@@ -75,12 +75,20 @@ impl<'cache> DepGraph<'cache> {
         let base_cwd = cwd
             .map(|c| c.to_path_buf())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| root.clone()));
-        let (_, _, src_path) = cache.resolve_ref(ref_str, Some(&base_cwd))?;
+        let (resolved_fnode, _, src_path) = cache.resolve_ref(ref_str, Some(&base_cwd))?;
         // Ensure the resolved file is indexed before checking for duplicates.
         // Without this, a file resolved via filesystem fallback (not yet in the index)
         // would be invisible to reconcile_fnode_paths, allowing a silent bypass.
         cache.upsert_path(&src_path)?;
         let node = MdocNode::load(&src_path)?;
+        if node.fnode != resolved_fnode {
+            bail!(
+                "mdoc identity changed while resolving '{}': expected {}, found {}",
+                ref_str,
+                resolved_fnode,
+                node.fnode
+            );
+        }
 
         let dup_paths = cache.reconcile_fnode_paths(&node.fnode)?;
         if dup_paths.len() > 1 {
@@ -413,6 +421,14 @@ impl<'cache> DepGraph<'cache> {
         new_node.path =
             crate::workspace::validate_new_mdoc_path(self.cache.root(), &new_node.path)?;
 
+        let declared_dependencies = dedupe_keep_order(&new_node.depens);
+        for dep_fnode in &declared_dependencies {
+            if dep_fnode == &new_node.fnode {
+                bail!("new node cannot depend on itself");
+            }
+            self.validate_dependency_target(dep_fnode)?;
+        }
+
         // Check both cycle sources before touching disk.
         if self.cache.is_reachable(&new_node.fnode, &root)? {
             bail!(
@@ -421,10 +437,7 @@ impl<'cache> DepGraph<'cache> {
                 short_fnode(&root)
             );
         }
-        for dep_fnode in &new_node.depens {
-            if dep_fnode == &new_node.fnode {
-                bail!("new node cannot depend on itself");
-            }
+        for dep_fnode in &declared_dependencies {
             if self.cache.is_reachable(dep_fnode, &root)? {
                 bail!(
                     "adding {} as a dependency of {} would create a cycle \
