@@ -164,8 +164,30 @@ pub(crate) struct PreservedMetadata {
     permissions: std::fs::Permissions,
     uid: u32,
     gid: u32,
+    generation: ReadGeneration,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     extended_attributes: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReadGeneration {
+    len: u64,
+    mtime: i64,
+    mtime_nsec: i64,
+    ctime: i64,
+    ctime_nsec: i64,
+}
+
+impl ReadGeneration {
+    fn capture(metadata: &std::fs::Metadata) -> Self {
+        Self {
+            len: metadata.len(),
+            mtime: metadata.mtime(),
+            mtime_nsec: metadata.mtime_nsec(),
+            ctime: metadata.ctime(),
+            ctime_nsec: metadata.ctime_nsec(),
+        }
+    }
 }
 
 impl PreservedMetadata {
@@ -205,6 +227,7 @@ impl PreservedMetadata {
             permissions: metadata.permissions(),
             uid: metadata.uid(),
             gid: metadata.gid(),
+            generation: ReadGeneration::capture(metadata),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             extended_attributes,
         })
@@ -224,6 +247,12 @@ impl PreservedMetadata {
                     true
                 }
             }
+    }
+
+    fn matches_file_metadata(&self, other: &std::fs::Metadata) -> bool {
+        same_permissions(&self.permissions, &other.permissions())
+            && self.uid == other.uid()
+            && self.gid == other.gid()
     }
 
     fn apply(&self, file: &mut std::fs::File, path: &Path) -> Result<()> {
@@ -646,6 +675,26 @@ impl FileSnapshot {
                 *content == *current
                     && *identity == *current_identity
                     && metadata.matches(current_metadata)
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn matches_read(&self, current: Option<&ReadFileSnapshot>) -> bool {
+        match (self, current) {
+            (Self::Missing, None) => true,
+            (
+                Self::File {
+                    content,
+                    metadata,
+                    identity,
+                },
+                Some(current),
+            ) => {
+                content == current.content()
+                    && identity == current.identity()
+                    && metadata.generation == ReadGeneration::capture(current.metadata())
+                    && metadata.matches_file_metadata(current.metadata())
             }
             _ => false,
         }
@@ -2481,6 +2530,29 @@ mod tests {
         batch.finish().unwrap();
 
         assert!(read.is_none());
+    }
+
+    #[test]
+    fn full_snapshot_matches_a_lightweight_read_generation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("node.mdoc");
+        std::fs::write(&path, "content").unwrap();
+        let snapshot = FileSnapshot::capture(&path).unwrap();
+
+        let mut batch = FileSnapshotBatch::new(&root).unwrap();
+        let current = batch.capture_read(&path).unwrap();
+        batch.finish().unwrap();
+        assert!(snapshot.matches_read(current.as_ref()));
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode ^ 0o100)).unwrap();
+        let mut batch = FileSnapshotBatch::new(&root).unwrap();
+        let current = batch.capture_read(&path).unwrap();
+        batch.finish().unwrap();
+        assert!(!snapshot.matches_read(current.as_ref()));
     }
 
     #[test]

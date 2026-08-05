@@ -548,29 +548,6 @@ pub(super) fn read_files_parallel(
     })
 }
 
-pub(super) fn capture_files_parallel(root: &Path, paths: &[PathBuf]) -> Result<Vec<FileSnapshot>> {
-    if paths.is_empty() {
-        return Ok(Vec::new());
-    }
-    let worker_count = parallel_worker_count(paths.len());
-    let chunk_size = paths.len().div_ceil(worker_count);
-    std::thread::scope(|scope| {
-        let mut workers = Vec::with_capacity(worker_count);
-        for chunk in paths.chunks(chunk_size) {
-            workers.push(scope.spawn(move || -> Result<Vec<FileSnapshot>> {
-                let mut snapshots = FileSnapshotBatch::new(root)?;
-                let mut result = Vec::with_capacity(chunk.len());
-                for path in chunk {
-                    result.push(snapshots.capture(path)?);
-                }
-                snapshots.finish()?;
-                Ok(result)
-            }));
-        }
-        join_snapshot_workers(workers, paths.len(), "file snapshot worker panicked")
-    })
-}
-
 fn parallel_worker_count(item_count: usize) -> usize {
     std::thread::available_parallelism()
         .map(std::num::NonZeroUsize::get)

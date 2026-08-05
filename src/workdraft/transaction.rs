@@ -48,9 +48,9 @@ pub(super) fn apply_changes(
         let _phase = crate::profile::scope("workdraft::validate_noop_inputs");
         for chunk in inputs.chunks(2048) {
             let paths: Vec<_> = chunk.iter().map(|(path, _)| path.clone()).collect();
-            let current = super::capture_files_parallel(allowed_root, &paths)?;
+            let current = super::read_files_parallel(allowed_root, &paths)?;
             for ((path, snapshot), current) in chunk.iter().zip(&current) {
-                if !snapshot.matches(current) {
+                if !snapshot.matches_read(current.as_ref()) {
                     bail!("{} changed during source block operation", path.display());
                 }
             }
