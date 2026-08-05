@@ -10,6 +10,7 @@ use rusqlite::Connection;
 use super::refresh::{delete_indexed_path, metadata_state, upsert_mdoc_row};
 
 type FileState = (i64, i64);
+const MAX_METADATA_WORKERS: usize = 12;
 
 pub(super) struct WorkspaceChanges {
     changed_paths: Vec<PathBuf>,
@@ -108,7 +109,7 @@ fn scan_workspace_metadata(root: &Path) -> Result<Vec<(PathBuf, String, FileStat
     let worker_count = std::thread::available_parallelism()
         .map(std::num::NonZeroUsize::get)
         .unwrap_or(1)
-        .min(8)
+        .min(MAX_METADATA_WORKERS)
         .min(paths.len());
     let chunk_size = paths.len().div_ceil(worker_count);
     std::thread::scope(|scope| {

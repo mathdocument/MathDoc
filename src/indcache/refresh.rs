@@ -61,6 +61,7 @@ pub fn refresh_search_index(conn: &Connection, root: &Path) -> Result<()> {
 
 const BULK_ROWS: usize = 200;
 const SCAN_BATCH: usize = 2048;
+const MAX_SCAN_WORKERS: usize = 12;
 
 struct ScannedMdoc {
     path: String,
@@ -108,7 +109,7 @@ fn scan_workspace_batch(root: &Path, paths: &[PathBuf]) -> Result<Vec<ScannedMdo
     let worker_count = std::thread::available_parallelism()
         .map(std::num::NonZeroUsize::get)
         .unwrap_or(1)
-        .min(8)
+        .min(MAX_SCAN_WORKERS)
         .min(paths.len());
     let chunk_size = paths.len().div_ceil(worker_count);
     std::thread::scope(|scope| {
