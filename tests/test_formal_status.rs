@@ -61,8 +61,8 @@ fn full_refresh_tracks_verified_and_stale_artifacts() {
     let node = formal_node(root, "notes/card.mdoc");
     let lean_source = root.join(".mdc/lean/Lib/notes/card.lean");
     let rocq_source = root.join(".mdc/rocq/Lib/notes/card.v");
-    write(&lean_source, "lean source");
-    write(&rocq_source, "rocq source");
+    write(&lean_source, "formal source\n");
+    write(&rocq_source, "formal source\n");
 
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     assert_eq!(
@@ -121,7 +121,7 @@ fn focused_upsert_refreshes_artifact_status() {
     fs::create_dir(root.join(".mdc")).unwrap();
     let node = formal_node(root, "card.mdoc");
     let lean_source = root.join(".mdc/lean/Lib/card.lean");
-    write(&lean_source, "lean source");
+    write(&lean_source, "formal source\n");
 
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     assert_eq!(
@@ -136,6 +136,33 @@ fn focused_upsert_refreshes_artifact_status() {
     );
     cache.upsert_path(&node.path).unwrap();
 
+    assert_eq!(
+        cache.formalization_status(&node.fnode).unwrap().lean,
+        FormalCodeStatus::Verified
+    );
+
+    let mut edited = MdocNode::load(&node.path).unwrap();
+    edited
+        .blocks
+        .iter_mut()
+        .find(|block| block.srctype == "lean")
+        .unwrap()
+        .content = "changed source\n".to_string();
+    write(&edited.path, &edited.render().unwrap());
+    cache.upsert_path(&edited.path).unwrap();
+    assert_eq!(
+        cache.formalization_status(&node.fnode).unwrap().lean,
+        FormalCodeStatus::Unverified
+    );
+
+    edited
+        .blocks
+        .iter_mut()
+        .find(|block| block.srctype == "lean")
+        .unwrap()
+        .content = "formal source\n".to_string();
+    write(&edited.path, &edited.render().unwrap());
+    cache.upsert_path(&edited.path).unwrap();
     assert_eq!(
         cache.formalization_status(&node.fnode).unwrap().lean,
         FormalCodeStatus::Verified

@@ -14,13 +14,15 @@ pub(crate) fn evaluate_node(
 ) -> Result<FormalizationStatus> {
     Ok(FormalizationStatus {
         lean: evaluate_language(
-            node.source_block("lean").is_some(),
+            node.source_block("lean")
+                .map(|block| block.content.as_bytes()),
             &lean_source_path(root, relative),
             &lean_artifact_path(root, relative),
             snapshots,
         )?,
         rocq: evaluate_language(
-            node.source_block("rocq").is_some(),
+            node.source_block("rocq")
+                .map(|block| block.content.as_bytes()),
             &rocq_source_path(root, relative),
             &rocq_artifact_path(root, relative),
             snapshots,
@@ -29,21 +31,24 @@ pub(crate) fn evaluate_node(
 }
 
 fn evaluate_language(
-    block_present: bool,
+    block_content: Option<&[u8]>,
     source: &Path,
     artifact: &Path,
     snapshots: &mut FileSnapshotBatch,
 ) -> Result<FormalCodeStatus> {
-    if !block_present {
+    let Some(block_content) = block_content else {
         return Ok(FormalCodeStatus::NoCode);
-    }
-    let Some(source) = snapshots.capture_metadata(source)? else {
+    };
+    let Some(source) = snapshots.capture_read(source)? else {
         return Ok(FormalCodeStatus::Unverified);
     };
+    if source.content() != block_content {
+        return Ok(FormalCodeStatus::Unverified);
+    }
     let Some(artifact) = snapshots.capture_metadata(artifact)? else {
         return Ok(FormalCodeStatus::Unverified);
     };
-    let source_time = (source.mtime(), source.mtime_nsec());
+    let source_time = (source.metadata().mtime(), source.metadata().mtime_nsec());
     let artifact_time = (artifact.mtime(), artifact.mtime_nsec());
     Ok(if artifact_time > source_time {
         FormalCodeStatus::Verified
