@@ -6,11 +6,12 @@ use std::fs::Metadata;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+use crate::core::{FormalCodeStatus, FormalizationStatus};
 use crate::indcache::queries::{
     edge_targets_for_source_path, fnode_for_path, path_for_fnode_if_unique,
     path_has_blocking_issue, CHUNK_SIZE,
 };
-use crate::mdocnode::{MdocHead, MdocIdentity};
+use crate::mdocnode::{MdocIdentity, MdocNode};
 use crate::workspace::{iter_mdoc_files, to_rel_path, FileSnapshotBatch};
 
 // ── Public write functions ────────────────────────────────────────────────────
@@ -67,6 +68,7 @@ struct ScannedMdoc {
     path: String,
     mtime_ns: i64,
     size: i64,
+    formal_status: FormalizationStatus,
     node: Option<ScannedNode>,
     invalid: Option<IndexIssue>,
 }
@@ -127,6 +129,7 @@ fn scan_workspace_batch(root: &Path, paths: &[PathBuf]) -> Result<Vec<ScannedMdo
                         path,
                         snapshot.content(),
                         snapshot.metadata(),
+                        &mut snapshots,
                     )?);
                 }
                 snapshots.finish()?;
@@ -158,20 +161,30 @@ fn scan_workspace_batch(root: &Path, paths: &[PathBuf]) -> Result<Vec<ScannedMdo
     })
 }
 
-fn scan_mdoc(root: &Path, path: &Path, content: &[u8], metadata: &Metadata) -> Result<ScannedMdoc> {
+fn scan_mdoc(
+    root: &Path,
+    path: &Path,
+    content: &[u8],
+    metadata: &Metadata,
+    snapshots: &mut FileSnapshotBatch,
+) -> Result<ScannedMdoc> {
     let path_string = to_rel_path(root, path);
+    let relative = path
+        .strip_prefix(root)
+        .with_context(|| format!("relativizing {}", path.display()))?;
     let (mtime_ns, size) = metadata_state(metadata)?;
 
-    match MdocHead::load_bytes(path, content) {
-        Ok(head) => Ok(ScannedMdoc {
+    match MdocNode::load_bytes(path, content) {
+        Ok(node) => Ok(ScannedMdoc {
             path: path_string,
             mtime_ns,
             size,
+            formal_status: crate::formal_status::evaluate_node(root, relative, &node, snapshots)?,
             node: Some(ScannedNode {
-                fnode: head.fnode,
-                title_lc: head.title.to_lowercase(),
-                title: head.title,
-                dependencies: head.depens,
+                fnode: node.fnode,
+                title_lc: node.title.to_lowercase(),
+                title: node.title,
+                dependencies: node.depens,
                 structurally_valid: true,
             }),
             invalid: None,
@@ -196,6 +209,7 @@ fn scan_mdoc(root: &Path, path: &Path, content: &[u8], metadata: &Metadata) -> R
                 path: path_string,
                 mtime_ns,
                 size,
+                formal_status: FormalizationStatus::default(),
                 node,
             })
         }
@@ -297,10 +311,24 @@ fn hash_value(digest: &mut Sha256, value: &[u8]) {
     digest.update(value);
 }
 
+fn formal_status_value(status: FormalCodeStatus) -> i64 {
+    match status {
+        FormalCodeStatus::NoCode => 0,
+        FormalCodeStatus::Unverified => 1,
+        FormalCodeStatus::Verified => 2,
+    }
+}
+
 fn sync_file_states(conn: &Connection, files: &[ScannedMdoc]) -> Result<()> {
-    let mut stmt = conn.prepare("SELECT path, mtime_ns, size FROM mdoc_files")?;
-    let current: HashMap<String, (i64, i64)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))?
+    let mut stmt =
+        conn.prepare("SELECT path, mtime_ns, size, lean_status, rocq_status FROM mdoc_files")?;
+    let current: HashMap<String, (i64, i64, i64, i64)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                (row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?),
+            ))
+        })?
         .collect::<rusqlite::Result<_>>()?;
     drop(stmt);
 
@@ -320,26 +348,49 @@ fn sync_file_states(conn: &Connection, files: &[ScannedMdoc]) -> Result<()> {
 
     let changed: Vec<&ScannedMdoc> = files
         .iter()
-        .filter(|file| current.get(&file.path) != Some(&(file.mtime_ns, file.size)))
+        .filter(|file| {
+            current.get(&file.path)
+                != Some(&(
+                    file.mtime_ns,
+                    file.size,
+                    formal_status_value(file.formal_status.lean),
+                    formal_status_value(file.formal_status.rocq),
+                ))
+        })
         .collect();
     for chunk in changed.chunks(BULK_ROWS) {
         let placeholders = chunk
             .iter()
-            .map(|_| "(?,?,?)")
+            .map(|_| "(?,?,?,?,?)")
             .collect::<Vec<_>>()
             .join(",");
-        let mut params: Vec<&dyn ToSql> = Vec::with_capacity(chunk.len() * 3);
-        for file in chunk {
+        let statuses: Vec<(i64, i64)> = chunk
+            .iter()
+            .map(|file| {
+                (
+                    formal_status_value(file.formal_status.lean),
+                    formal_status_value(file.formal_status.rocq),
+                )
+            })
+            .collect();
+        let mut params: Vec<&dyn ToSql> = Vec::with_capacity(chunk.len() * 5);
+        for (file, (lean_status, rocq_status)) in chunk.iter().zip(&statuses) {
             params.push(&file.path);
             params.push(&file.mtime_ns);
             params.push(&file.size);
+            params.push(lean_status);
+            params.push(rocq_status);
         }
         conn.execute(
             &format!(
-                "INSERT INTO mdoc_files (path, mtime_ns, size) VALUES {placeholders}
+                "INSERT INTO mdoc_files
+                   (path, mtime_ns, size, lean_status, rocq_status)
+                 VALUES {placeholders}
                  ON CONFLICT(path) DO UPDATE SET
                    mtime_ns = excluded.mtime_ns,
-                   size = excluded.size"
+                   size = excluded.size,
+                   lean_status = excluded.lean_status,
+                   rocq_status = excluded.rocq_status"
             ),
             params.as_slice(),
         )?;
@@ -555,15 +606,6 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
 
     let (mtime_ns, size) = metadata_state(&meta)?;
 
-    conn.execute(
-        "INSERT INTO mdoc_files (path, mtime_ns, size)
-         VALUES (?, ?, ?)
-         ON CONFLICT(path) DO UPDATE SET
-             mtime_ns = excluded.mtime_ns,
-             size = excluded.size",
-        rusqlite::params![rel_path, mtime_ns, size],
-    )?;
-
     // Snapshot old edge targets before clearing
     let old_dst_fnodes: HashSet<String> = {
         let mut stmt = conn.prepare("SELECT dst_fnode FROM mdoc_edges WHERE src_path = ?")?;
@@ -572,12 +614,42 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
             .collect::<rusqlite::Result<_>>()?;
         rows
     };
-    conn.execute("DELETE FROM mdoc_edges WHERE src_path = ?", [&rel_path])?;
-    conn.execute("DELETE FROM mdoc_issues WHERE path = ?", [&rel_path])?;
-
     // Strict structural parse and tolerant identity fallback both use this one
     // captured byte generation.
-    let parse_result = MdocHead::load_bytes(&file_path, content);
+    let parse_result = MdocNode::load_bytes(&file_path, content);
+    let formal_status = match &parse_result {
+        Ok(node) => {
+            let mut snapshots = FileSnapshotBatch::new(&root_resolved)?;
+            let status = crate::formal_status::evaluate_node(
+                &root_resolved,
+                Path::new(&rel_path),
+                node,
+                &mut snapshots,
+            )?;
+            snapshots.finish()?;
+            status
+        }
+        Err(_) => FormalizationStatus::default(),
+    };
+    conn.execute(
+        "INSERT INTO mdoc_files
+           (path, mtime_ns, size, lean_status, rocq_status)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(path) DO UPDATE SET
+             mtime_ns = excluded.mtime_ns,
+             size = excluded.size,
+             lean_status = excluded.lean_status,
+             rocq_status = excluded.rocq_status",
+        rusqlite::params![
+            rel_path,
+            mtime_ns,
+            size,
+            formal_status_value(formal_status.lean),
+            formal_status_value(formal_status.rocq)
+        ],
+    )?;
+    conn.execute("DELETE FROM mdoc_edges WHERE src_path = ?", [&rel_path])?;
+    conn.execute("DELETE FROM mdoc_issues WHERE path = ?", [&rel_path])?;
     let new_fnode: Option<String>;
     let mut new_dst_fnodes: HashSet<String> = HashSet::new();
 

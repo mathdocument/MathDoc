@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 16;
+const SCHEMA_VERSION: i32 = 17;
 
 const CREATE_SQL: &str = "
 CREATE TABLE IF NOT EXISTS mdocs (
@@ -16,9 +16,11 @@ CREATE INDEX IF NOT EXISTS idx_mdocs_title_lc ON mdocs(title_lc);
 CREATE INDEX IF NOT EXISTS idx_mdocs_fnode    ON mdocs(fnode);
 
 CREATE TABLE IF NOT EXISTS mdoc_files (
-    path     TEXT    PRIMARY KEY,
-    mtime_ns INTEGER NOT NULL,
-    size     INTEGER NOT NULL
+    path        TEXT    PRIMARY KEY,
+    mtime_ns    INTEGER NOT NULL,
+    size        INTEGER NOT NULL,
+    lean_status INTEGER NOT NULL DEFAULT 0 CHECK (lean_status BETWEEN 0 AND 2),
+    rocq_status INTEGER NOT NULL DEFAULT 0 CHECK (rocq_status BETWEEN 0 AND 2)
 );
 
 CREATE TABLE IF NOT EXISTS mdoc_edges (
@@ -374,5 +376,30 @@ mod tests {
             )
             .unwrap();
         assert!(digest.is_empty());
+    }
+
+    #[test]
+    fn schema_sixteen_is_rebuilt_with_formal_status_columns() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("index.db");
+        let conn = open_db(&path).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE mdoc_files DROP COLUMN rocq_status;
+             ALTER TABLE mdoc_files DROP COLUMN lean_status;
+             PRAGMA user_version = 16;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open_db(&path).unwrap();
+        let status_columns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('mdoc_files')
+                 WHERE name IN ('lean_status', 'rocq_status')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status_columns, 2);
     }
 }

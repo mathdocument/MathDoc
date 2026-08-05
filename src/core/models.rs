@@ -17,6 +17,21 @@ pub struct NodeDegrees {
     pub out_degree: u32,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FormalCodeStatus {
+    #[default]
+    NoCode,
+    Unverified,
+    Verified,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormalizationStatus {
+    pub lean: FormalCodeStatus,
+    pub rocq: FormalCodeStatus,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DependencyCandidates {
     pub nodes: Vec<NodeSummary>,

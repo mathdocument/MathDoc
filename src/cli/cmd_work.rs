@@ -11,7 +11,7 @@ use super::{cwd, print_workdraft_issues, require_mdcroot, BLD, DIM, GRN, RED, RS
 pub(super) fn cmd_work(source: String) -> Result<i32> {
     let mdcroot = require_mdcroot()?;
     let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&mdcroot)?;
-    let (targets, sync_conflicted) = {
+    let (targets, sync_conflicted, source_path) = {
         let mut cache = IndCache::open_under_mutation_lock(&mutation_lock)?;
         cache.discover_workspace_changes()?;
         let (_, _, source_path) = cache.resolve_ref(&source, Some(&cwd()))?;
@@ -21,9 +21,13 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
         print_workdraft_issues(&sync.conflicts);
         let sync_conflicted = !sync.conflicts.is_empty();
         if sync_conflicted {
-            (Vec::new(), true)
+            (Vec::new(), true, source_path)
         } else {
-            (crate::workdraft::targets(&mdcroot, &source_path)?, false)
+            (
+                crate::workdraft::targets(&mdcroot, &source_path)?,
+                false,
+                source_path,
+            )
         }
     };
 
@@ -39,6 +43,7 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
     let registry = CompilerRegistry::default_registry();
     let total = targets.len();
     let mut failure_codes = Vec::new();
+    let mut interrupted_code = None;
     for (index, (srctype, path)) in targets.iter().enumerate() {
         println!(
             "[{}/{}] {BLD}{srctype}{RST}  {}",
@@ -67,10 +72,13 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
             failure_codes.push(result.rtcode);
         }
         if result.interrupted {
-            return Ok(result.rtcode);
+            interrupted_code = Some(result.rtcode);
+            break;
         }
     }
-    Ok(aggregate_compile_exit(&failure_codes))
+    let mut cache = IndCache::open_under_mutation_lock(&mutation_lock)?;
+    cache.upsert_path(&source_path)?;
+    Ok(interrupted_code.unwrap_or_else(|| aggregate_compile_exit(&failure_codes)))
 }
 
 pub(super) fn cmd_back() -> Result<i32> {

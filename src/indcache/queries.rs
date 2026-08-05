@@ -6,8 +6,8 @@ pub(crate) const CHUNK_SIZE: usize = 500;
 
 use crate::core::{
     representative_cycles, DependencyCandidates, DependencyCandidatesEmpty, DependencyItem,
-    DependencyTraversalReport, GraphCheckReport, GraphIssue, GraphRootItem, IssueKind, NodeDegrees,
-    NodeSummary,
+    DependencyTraversalReport, FormalCodeStatus, FormalizationStatus, GraphCheckReport, GraphIssue,
+    GraphRootItem, IssueKind, NodeDegrees, NodeSummary,
 };
 
 // ── Public query functions ──────────────────────────────────────────────────
@@ -156,6 +156,37 @@ pub fn node_degrees(conn: &Connection, fnode: &str) -> Result<NodeDegrees> {
         in_degree: u32::try_from(*in_degree)?,
         out_degree: u32::try_from(*out_degree)?,
     })
+}
+
+pub fn formalization_status(conn: &Connection, fnode: &str) -> Result<FormalizationStatus> {
+    let mut stmt = conn.prepare(
+        "SELECT f.lean_status, f.rocq_status
+         FROM mdocs m
+         JOIN mdoc_files f ON f.path = m.path
+         WHERE m.fnode = ?
+         ORDER BY m.path",
+    )?;
+    let rows = stmt
+        .query_map([fnode], |row| {
+            Ok(FormalizationStatus {
+                lean: decode_formal_status(row.get(0)?)?,
+                rocq: decode_formal_status(row.get(1)?)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let [status] = rows.as_slice() else {
+        bail!("formal status source must be one indexed node: {fnode}");
+    };
+    Ok(*status)
+}
+
+fn decode_formal_status(value: i64) -> rusqlite::Result<FormalCodeStatus> {
+    match value {
+        0 => Ok(FormalCodeStatus::NoCode),
+        1 => Ok(FormalCodeStatus::Unverified),
+        2 => Ok(FormalCodeStatus::Verified),
+        _ => Err(rusqlite::Error::IntegralValueOutOfRange(0, value)),
+    }
 }
 
 /// Direct referrers with all list metadata in one query.

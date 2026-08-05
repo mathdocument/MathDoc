@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::core::{
-    short_fnode, DependencyCandidates, DependencyItem, DependencyTraversalReport, GraphCheckReport,
-    GraphIssue, GraphRootItem, NodeDegrees, NodeSummary,
+    short_fnode, DependencyCandidates, DependencyItem, DependencyTraversalReport,
+    FormalizationStatus, GraphCheckReport, GraphIssue, GraphRootItem, NodeDegrees, NodeSummary,
 };
 use crate::mdocnode::{MdocHead, MdocIdentity, MdocNode};
 
@@ -264,6 +264,10 @@ impl IndCache {
 
     pub fn node_degrees(&self, fnode: &str) -> Result<NodeDegrees> {
         queries::node_degrees(&self.conn, fnode)
+    }
+
+    pub fn formalization_status(&self, fnode: &str) -> Result<FormalizationStatus> {
+        queries::formalization_status(&self.conn, fnode)
     }
 
     #[cfg(test)]

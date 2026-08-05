@@ -12,6 +12,8 @@ pub mod core;
 #[cfg(unix)]
 pub mod depgraph;
 #[cfg(unix)]
+pub(crate) mod formal_status;
+#[cfg(unix)]
 pub mod indcache;
 #[cfg(unix)]
 pub mod mdocnode;
