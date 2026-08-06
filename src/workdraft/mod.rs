@@ -762,12 +762,15 @@ fn capture_existing_mirror(
     }
 }
 
-pub(crate) fn targets(mdcroot: &Path, source_path: &Path) -> Result<Vec<(String, PathBuf)>> {
+pub(crate) fn targets(
+    mdcroot: &Path,
+    source_path: &Path,
+    node: &MdocNode,
+) -> Result<Vec<(String, PathBuf)>> {
     let source = source_path
         .strip_prefix(mdcroot)
         .with_context(|| format!("relativizing {}", source_path.display()))?;
     validate_source_relative(source)?;
-    let node = MdocNode::load(source_path)?;
     let mut targets = Vec::new();
     for srctype in builtin_srctypes() {
         let (path, snapshot) = capture_existing_mirror(mdcroot, source, srctype)?;

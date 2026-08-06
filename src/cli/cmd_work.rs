@@ -20,6 +20,7 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
         print_workdraft_issues(&sync.dirty);
         print_workdraft_issues(&sync.conflicts);
         let sync_conflicted = !sync.conflicts.is_empty();
+        let node = crate::mdocnode::MdocNode::load(&source_path)?;
         let targets = if sync_conflicted {
             Vec::new()
         } else {
@@ -28,9 +29,8 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
                 &source_fnode,
                 &crate::formal::status::FORMAL_LANGUAGES.map(str::to_string),
             )?;
-            crate::workdraft::targets(&mdcroot, &source_path)?
+            crate::workdraft::targets(&mdcroot, &source_path, &node)?
         };
-        let node = crate::mdocnode::MdocNode::load(&source_path)?;
         let formal_languages = targets
             .iter()
             .map(|(srctype, _)| srctype)
