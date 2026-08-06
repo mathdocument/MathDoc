@@ -16,6 +16,7 @@ pub(crate) struct MdocHead {
     pub fnode: String,
     pub title: String,
     pub depens: Vec<String>,
+    pub source_types: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -40,7 +41,14 @@ impl MdocHead {
             fnode: parsed.fnode,
             title: parsed.title,
             depens: parsed.depens,
+            source_types: parsed.source_types,
         })
+    }
+
+    pub(crate) fn has_source_block(&self, srctype: &str) -> bool {
+        self.source_types
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(srctype))
     }
 }
 
@@ -166,6 +174,8 @@ mod tests {
         .unwrap();
         assert_eq!(head.fnode, "ff");
         assert!(head.depens.is_empty());
+        assert_eq!(head.source_types, ["lean"]);
+        assert!(head.has_source_block("LEAN"));
     }
 
     #[test]

@@ -11,7 +11,7 @@ use crate::indcache::queries::{
     edge_targets_for_source_path, fnode_for_path, path_for_fnode_if_unique,
     path_has_blocking_issue, CHUNK_SIZE,
 };
-use crate::mdocnode::{MdocIdentity, MdocNode};
+use crate::mdocnode::{MdocHead, MdocIdentity};
 use crate::workspace::{iter_mdoc_files, to_rel_path, FileSnapshotBatch};
 
 // ── Public write functions ────────────────────────────────────────────────────
@@ -205,17 +205,17 @@ fn scan_mdoc(root: &Path, path: &Path, content: &[u8], metadata: &Metadata) -> R
     let path_string = to_rel_path(root, path);
     let (mtime_ns, size) = metadata_state(metadata)?;
 
-    match MdocNode::load_bytes(path, content) {
-        Ok(node) => Ok(ScannedMdoc {
+    match MdocHead::load_bytes(path, content) {
+        Ok(head) => Ok(ScannedMdoc {
             path: path_string,
             mtime_ns,
             size,
-            formal_status: block_presence_status(&node),
+            formal_status: block_presence_status(&head),
             node: Some(ScannedNode {
-                fnode: node.fnode,
-                title_lc: node.title.to_lowercase(),
-                title: node.title,
-                dependencies: node.depens,
+                fnode: head.fnode,
+                title_lc: head.title.to_lowercase(),
+                title: head.title,
+                dependencies: head.depens,
                 structurally_valid: true,
             }),
             invalid: None,
@@ -637,7 +637,7 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
     };
     // Strict structural parse and tolerant identity fallback both use this one
     // captured byte generation.
-    let parse_result = MdocNode::load_bytes(&file_path, content);
+    let parse_result = MdocHead::load_bytes(&file_path, content);
     let formal_status = match &parse_result {
         Ok(node) => block_presence_status(node),
         Err(_) => FormalizationStatus::default(),
@@ -803,14 +803,14 @@ fn invalidate_index_digest(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn block_presence_status(node: &MdocNode) -> FormalizationStatus {
+fn block_presence_status(head: &MdocHead) -> FormalizationStatus {
     FormalizationStatus {
-        lean: if node.source_block("lean").is_some() {
+        lean: if head.has_source_block("lean") {
             FormalCodeStatus::Unverified
         } else {
             FormalCodeStatus::NoCode
         },
-        rocq: if node.source_block("rocq").is_some() {
+        rocq: if head.has_source_block("rocq") {
             FormalCodeStatus::Unverified
         } else {
             FormalCodeStatus::NoCode

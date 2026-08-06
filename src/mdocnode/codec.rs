@@ -9,6 +9,7 @@ pub(super) struct ParsedMdoc {
     pub fnode: String,
     pub title: String,
     pub depens: Vec<String>,
+    pub source_types: Vec<String>,
     pub blocks: Vec<SrcBlock>,
 }
 
@@ -25,6 +26,7 @@ pub(super) fn parse(path: &Path, content: &[u8], include_blocks: bool) -> Result
     let mut title = String::new();
     let mut depens: Vec<String> = Vec::new();
     let mut seen_dep_block = false;
+    let mut source_types = Vec::new();
     let mut blocks: Vec<SrcBlock> = Vec::new();
     let mut seen_srctypes: HashSet<String> = HashSet::new();
 
@@ -150,6 +152,7 @@ pub(super) fn parse(path: &Path, content: &[u8], include_blocks: bool) -> Result
                 );
             }
             seen_srctypes.insert(srctype_identity);
+            source_types.push(srctype.clone());
             if include_blocks {
                 blocks.push(SrcBlock {
                     srctype,
@@ -186,6 +189,7 @@ pub(super) fn parse(path: &Path, content: &[u8], include_blocks: bool) -> Result
         fnode,
         title,
         depens,
+        source_types,
         blocks,
     })
 }
