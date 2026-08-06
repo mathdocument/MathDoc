@@ -21,8 +21,8 @@ pub(crate) use safe_file::{
     atomic_create_if_missing_beneath, ensure_regular_directory_tree, ensure_regular_file_beneath,
     error_has_file_conflict, error_has_infrastructure_failure, regular_directory_exists_beneath,
     remove_directory_tree_beneath, remove_empty_directory_beneath, run_test_hook, AppliedRename,
-    AppliedWrite, DirectoryGeneration, FileSnapshot, FileSnapshotBatch, PersistenceRecoveryError,
-    ReadFileSnapshot, TestHookPoint,
+    AppliedWrite, DirectoryGeneration, FileSnapshot, FileSnapshotBatch, FileStatSnapshot,
+    PersistenceRecoveryError, ReadFileSnapshot, TestHookPoint,
 };
 #[cfg(test)]
 pub(crate) use safe_file::{set_test_hook, FileConflict};

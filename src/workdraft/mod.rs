@@ -3,16 +3,19 @@ mod mirror;
 mod transaction;
 
 use anyhow::{bail, Context, Result};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use crate::config::builtin_srctypes;
 use crate::mdocnode::MdocNode;
-use crate::workspace::{iter_mdoc_files, FileSnapshot, FileSnapshotBatch, ReadFileSnapshot};
+use crate::workspace::{
+    iter_mdoc_files, FileSnapshot, FileSnapshotBatch, FileStatSnapshot, ReadFileSnapshot,
+};
 
 use manifest::{
     decode_source_path, encode_source_path, parse_manifest, LoadedManifest, SourceBaseline,
-    MANIFEST_NAME,
+    SourceBlockManifest, MANIFEST_NAME,
 };
 use mirror::{
     back_state, existing_output_path, output_path, prepare_output_path, validate_source_relative,
@@ -42,6 +45,7 @@ pub(crate) struct SyncReport {
 pub(crate) struct BackReport {
     pub updated_blocks: usize,
     pub updated_mdocs: usize,
+    pub index_refreshed: bool,
     pub conflicts: Vec<Issue>,
     pub warnings: Vec<Issue>,
 }
@@ -58,8 +62,27 @@ struct ScannedSyncSource {
     path: PathBuf,
     relative: PathBuf,
     source_id: String,
-    snapshot: FileSnapshot,
+    snapshot: ReadFileSnapshot,
     node: Result<MdocNode>,
+}
+
+struct BackScanRequest {
+    relative: PathBuf,
+    source_path: PathBuf,
+    srctypes: Vec<&'static str>,
+}
+
+struct ScannedBackSource {
+    relative: PathBuf,
+    source_path: PathBuf,
+    source_snapshot: Option<ReadFileSnapshot>,
+    mirrors: Vec<(&'static str, PathBuf, Option<ReadFileSnapshot>)>,
+}
+
+struct ObservationSpec {
+    source_id: String,
+    srctype: String,
+    path: PathBuf,
 }
 
 struct MirrorChanges<'a> {
@@ -151,7 +174,22 @@ fn reconcile<'a>(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> Result<SyncReport> {
+    sync_with_cache(mutation_lock, None)
+}
+
+pub(crate) fn sync_cached(
+    mutation_lock: &crate::workspace::WorkspaceMutationLock,
+    cache: &mut crate::indcache::IndCache,
+) -> Result<SyncReport> {
+    sync_with_cache(mutation_lock, Some(cache))
+}
+
+fn sync_with_cache(
+    mutation_lock: &crate::workspace::WorkspaceMutationLock,
+    mut cache: Option<&mut crate::indcache::IndCache>,
+) -> Result<SyncReport> {
     let _profile = crate::profile::scope("workdraft::sync");
     let mdcroot = mutation_lock.root()?.to_path_buf();
     let manifest_path = mdcroot.join(".mdc").join(MANIFEST_NAME);
@@ -173,8 +211,58 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
         files.sort();
         files
     };
+    let observation_changes = if legacy_sources.is_empty() && !needs_sparse_migration {
+        check_observation_cache(
+            cache.as_deref(),
+            &mdcroot,
+            &manifest_snapshot,
+            &new_manifest,
+            &source_files,
+        )?
+    } else {
+        None
+    };
+    if let Some((cached, changed)) = &observation_changes {
+        if changed.is_empty() {
+            require_fast_path_current(mutation_lock, &mdcroot, &manifest_path, &manifest_snapshot)?;
+            return Ok(SyncReport {
+                valid_mdocs: cached.valid_mdocs,
+                source_files: cached.source_files,
+                updated: 0,
+                removed: 0,
+                dirty: Vec::new(),
+                conflicts: Vec::new(),
+                warnings: Vec::new(),
+            });
+        }
+    }
+    let observation_sources = source_files.clone();
+    let incremental_changed = observation_changes
+        .as_ref()
+        .map(|(_, changed)| changed.clone());
+    let source_files = if let Some(changed) = &incremental_changed {
+        source_files
+            .into_iter()
+            .filter(|path| {
+                path.strip_prefix(&mdcroot)
+                    .ok()
+                    .map(encode_source_path)
+                    .is_some_and(|source_id| changed.contains(&source_id))
+            })
+            .collect()
+    } else {
+        source_files
+    };
     let reconcile_profile = crate::profile::scope("workdraft::reconcile_mdocs");
-    let mut current_source_ids = BTreeSet::new();
+    let mut current_source_ids = if incremental_changed.is_some() {
+        observation_sources
+            .iter()
+            .filter_map(|path| path.strip_prefix(&mdcroot).ok())
+            .map(encode_source_path)
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
     let mut writes = Vec::new();
     let mut removals = Vec::new();
     let mut renames = Vec::new();
@@ -183,8 +271,13 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
     let mut conflicts = Vec::new();
     let mut warnings = Vec::new();
     let mut desired_outputs = HashMap::new();
-    let mut valid_mdocs = 0;
-    let mut exported_source_files = 0;
+    let mut expected_source_contents = HashMap::new();
+    let mut valid_mdocs = observation_changes
+        .as_ref()
+        .map_or(0, |(cached, _)| cached.valid_mdocs);
+    let mut exported_source_files = observation_changes
+        .as_ref()
+        .map_or(0, |(cached, _)| cached.source_files);
     let mut had_invalid_mdoc = false;
     let mut write_snapshots = FileSnapshotBatch::new(&mdcroot)?;
     let mut source_files = source_files.into_iter();
@@ -227,12 +320,24 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                 snapshot,
                 node,
             } = source;
+            if incremental_changed.is_some() {
+                expected_source_contents.insert(source_id.clone(), snapshot.content().to_vec());
+            }
+            if incremental_changed.is_some() {
+                valid_mdocs = valid_mdocs.saturating_sub(1);
+                exported_source_files = exported_source_files.saturating_sub(
+                    new_manifest
+                        .sources
+                        .get(&source_id)
+                        .map_or(0, |baseline| baseline.blocks.len()),
+                );
+            }
             current_source_ids.insert(source_id.clone());
             let node = match node {
                 Ok(node) => node,
                 Err(error) => {
                     had_invalid_mdoc = true;
-                    inputs.push((source_path, snapshot));
+                    inputs.push((source_path, Some(snapshot)));
                     warnings.push(issue(&relative, None, error.to_string()));
                     continue;
                 }
@@ -253,6 +358,7 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                 let raw_path = mirror_paths
                     .next()
                     .expect("every valid mdoc has five prepared mirror paths");
+                let raw_input_path = raw_path.clone();
                 let raw_snapshot = mirror_snapshots
                     .next()
                     .expect("every valid mdoc has five mirror snapshots");
@@ -274,6 +380,7 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                             raw_path,
                             raw_content,
                         )?;
+                        inputs.push((raw_input_path, raw_snapshot));
                         continue;
                     }
                     match reconcile(
@@ -342,8 +449,9 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                         ));
                     }
                 }
+                inputs.push((raw_input_path, raw_snapshot));
             }
-            inputs.push((source_path, snapshot));
+            inputs.push((source_path, Some(snapshot)));
         }
         debug_assert!(mirror_paths.next().is_none());
         debug_assert!(mirror_snapshots.next().is_none());
@@ -447,6 +555,7 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
 
     let source_write_count = writes.len();
     let removed = removals.len();
+    let renamed = renames.len();
     {
         let _phase = crate::profile::scope("workdraft::apply_changes");
         apply_changes(
@@ -462,6 +571,29 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
             removals,
             renames,
         )?;
+    }
+    if dirty.is_empty() && conflicts.is_empty() && warnings.is_empty() {
+        if let Some(changed_sources) = &incremental_changed {
+            update_observation_cache(
+                cache.as_deref_mut(),
+                &mdcroot,
+                &new_manifest,
+                changed_sources,
+                &expected_source_contents,
+                valid_mdocs,
+                exported_source_files,
+            )?;
+        } else if source_write_count == 0 && removed == 0 && renamed == 0 {
+            store_observation_cache(
+                cache,
+                &mdcroot,
+                &new_manifest,
+                &observation_sources,
+                &inputs,
+                valid_mdocs,
+                exported_source_files,
+            )?;
+        }
     }
     Ok(SyncReport {
         valid_mdocs,
@@ -507,14 +639,10 @@ fn scan_sources_parallel(root: &Path, paths: &[PathBuf]) -> Result<Vec<ScannedSy
                         .to_path_buf();
                     validate_source_relative(&relative)?;
                     let source_id = encode_source_path(&relative);
-                    let snapshot = snapshots.capture(source_path)?;
-                    let node = match snapshot.content() {
-                        Some(content) => MdocNode::load_bytes(source_path, content),
-                        None => Err(anyhow::anyhow!(
-                            "mdoc file disappeared: {}",
-                            source_path.display()
-                        )),
-                    };
+                    let snapshot = snapshots.capture_read(source_path)?.ok_or_else(|| {
+                        anyhow::anyhow!("mdoc file disappeared: {}", source_path.display())
+                    })?;
+                    let node = MdocNode::load_bytes(source_path, snapshot.content());
                     result.push(ScannedSyncSource {
                         path: source_path.clone(),
                         relative,
@@ -559,6 +687,34 @@ pub(super) fn read_files_parallel(
     })
 }
 
+pub(super) fn stat_files_parallel(
+    root: &Path,
+    paths: &[PathBuf],
+) -> Result<Vec<Option<FileStatSnapshot>>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let worker_count = parallel_worker_count(paths.len());
+    let chunk_size = paths.len().div_ceil(worker_count);
+    std::thread::scope(|scope| {
+        let mut workers = Vec::with_capacity(worker_count);
+        for chunk in paths.chunks(chunk_size) {
+            workers.push(
+                scope.spawn(move || -> Result<Vec<Option<FileStatSnapshot>>> {
+                    let mut snapshots = FileSnapshotBatch::new(root)?;
+                    let mut result = Vec::with_capacity(chunk.len());
+                    for path in chunk {
+                        result.push(snapshots.capture_stat(path)?);
+                    }
+                    snapshots.finish()?;
+                    Ok(result)
+                }),
+            );
+        }
+        join_snapshot_workers(workers, paths.len(), "file stat worker panicked")
+    })
+}
+
 fn parallel_worker_count(item_count: usize) -> usize {
     std::thread::available_parallelism()
         .map(std::num::NonZeroUsize::get)
@@ -596,18 +752,64 @@ fn join_snapshot_workers<T>(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> Result<BackReport> {
+    back_with_cache(mutation_lock, None)
+}
+
+pub(crate) fn back_cached(
+    mutation_lock: &crate::workspace::WorkspaceMutationLock,
+    cache: &mut crate::indcache::IndCache,
+) -> Result<BackReport> {
+    back_with_cache(mutation_lock, Some(cache))
+}
+
+fn back_with_cache(
+    mutation_lock: &crate::workspace::WorkspaceMutationLock,
+    mut cache: Option<&mut crate::indcache::IndCache>,
+) -> Result<BackReport> {
+    let _profile = crate::profile::scope("workdraft::back");
     let mdcroot = mutation_lock.root()?.to_path_buf();
     let manifest_path = mdcroot.join(".mdc").join(MANIFEST_NAME);
-    let manifest_snapshot = FileSnapshot::capture_beneath(&mdcroot, &manifest_path)?;
-    let loaded = parse_manifest(&manifest_snapshot, &manifest_path)?;
+    let (manifest_snapshot, loaded) = {
+        let _phase = crate::profile::scope("workdraft::load_manifest");
+        let snapshot = FileSnapshot::capture_beneath(&mdcroot, &manifest_path)?;
+        let loaded = parse_manifest(&snapshot, &manifest_path)?;
+        (snapshot, loaded)
+    };
     if loaded.needs_sparse_migration {
         bail!("source block manifest must be upgraded with `mdc sync` before `mdc back`");
     }
     let mut manifest = loaded.manifest;
+    if let Some(cache) = cache.as_deref_mut() {
+        if cache.workdraft_index_is_dirty()? {
+            cache.recover_workdraft_index()?;
+        }
+    }
     if manifest.sources.is_empty() {
         return Ok(BackReport::default());
     }
+    let source_files = {
+        let _phase = crate::profile::scope("workdraft::enumerate_back_mdocs");
+        let mut files = iter_mdoc_files(&mdcroot).collect::<Result<Vec<_>>>()?;
+        files.sort();
+        files
+    };
+    let observation_changes = check_observation_cache(
+        cache.as_deref(),
+        &mdcroot,
+        &manifest_snapshot,
+        &manifest,
+        &source_files,
+    )?;
+    if observation_changes
+        .as_ref()
+        .is_some_and(|(_, changed)| changed.is_empty())
+    {
+        require_fast_path_current(mutation_lock, &mdcroot, &manifest_path, &manifest_snapshot)?;
+        return Ok(BackReport::default());
+    }
+    let changed_sources = observation_changes.map(|(_, changed)| changed);
 
     let mut node_writes = Vec::new();
     let mut raw_writes = Vec::new();
@@ -615,12 +817,54 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
     let mut updated_blocks = 0;
     let mut conflicts = Vec::new();
     let mut warnings = Vec::new();
+    let mut expected_source_contents = HashMap::new();
 
-    for (source_id, source_baseline) in &mut manifest.sources {
-        let relative = decode_source_path(source_id)?;
-        let source_path = crate::workspace::resolve_mdoc_path(&mdcroot, &relative)?;
-        let source_snapshot = FileSnapshot::capture_beneath(&mdcroot, &source_path)?;
-        if matches!(source_snapshot, FileSnapshot::Missing) {
+    let requests = {
+        let _phase = crate::profile::scope("workdraft::prepare_back_paths");
+        manifest
+            .sources
+            .iter()
+            .filter(|(source_id, _)| {
+                changed_sources
+                    .as_ref()
+                    .is_none_or(|changed| changed.contains(*source_id))
+            })
+            .map(|(source_id, source_baseline)| {
+                let relative = decode_source_path(source_id)?;
+                let source_path = crate::workspace::resolve_mdoc_path(&mdcroot, &relative)?;
+                let srctypes = builtin_srctypes()
+                    .filter(|srctype| !source_baseline.is_unknown(srctype))
+                    .collect();
+                Ok(BackScanRequest {
+                    relative,
+                    source_path,
+                    srctypes,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
+    let scanned_sources = {
+        let _phase = crate::profile::scope("workdraft::read_back_inputs_parallel");
+        scan_back_sources_parallel(&mdcroot, requests)?
+    };
+
+    let classify_profile = crate::profile::scope("workdraft::classify_back_reconciliation");
+    for scanned in scanned_sources {
+        let source_id = encode_source_path(&scanned.relative);
+        let source_baseline = manifest
+            .sources
+            .get_mut(&source_id)
+            .expect("scanned back source came from the manifest");
+        let ScannedBackSource {
+            relative,
+            source_path,
+            source_snapshot,
+            mirrors,
+        } = scanned;
+        if let Some(snapshot) = &source_snapshot {
+            expected_source_contents.insert(source_id.clone(), snapshot.content().to_vec());
+        }
+        if source_snapshot.is_none() {
             conflicts.push(issue(
                 &relative,
                 None,
@@ -631,19 +875,18 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
         let mut node = match MdocNode::load_bytes(
             &source_path,
             source_snapshot
-                .content()
+                .as_ref()
+                .map(ReadFileSnapshot::content)
                 .expect("missing source snapshot handled above"),
         ) {
             Ok(node) => node,
             Err(error) => {
                 let mut raw_dirty = false;
-                for srctype in builtin_srctypes() {
-                    if source_baseline.is_unknown(srctype) {
-                        continue;
-                    }
-                    let (raw_path, raw_snapshot) =
-                        capture_existing_mirror(&mdcroot, &relative, srctype)?;
-                    if !source_baseline.matches_raw(srctype, raw_snapshot.content()) {
+                for (srctype, raw_path, raw_snapshot) in mirrors {
+                    if !source_baseline.matches_raw(
+                        srctype,
+                        raw_snapshot.as_ref().map(ReadFileSnapshot::content),
+                    ) {
                         raw_dirty = true;
                         inputs.push((raw_path, raw_snapshot));
                         break;
@@ -665,13 +908,9 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
         };
 
         let mut node_changed = false;
-        for srctype in builtin_srctypes() {
-            if source_baseline.is_unknown(srctype) {
-                continue;
-            }
+        for (srctype, raw_path, raw_snapshot) in mirrors {
             let (mdoc_content, mdoc_present) = block_state(&node, srctype);
-            let (raw_path, raw_snapshot) = capture_existing_mirror(&mdcroot, &relative, srctype)?;
-            let raw_content = raw_snapshot.content();
+            let raw_content = raw_snapshot.as_ref().map(ReadFileSnapshot::content);
             let raw_state = match reconcile(
                 source_baseline,
                 srctype,
@@ -727,8 +966,12 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
             if present && raw_content != Some(content) {
                 let normalized_content = raw_state.content.into_owned();
                 raw_writes.push(PreparedWrite {
+                    snapshot: hydrate_observed_snapshot(
+                        &mdcroot,
+                        &raw_path,
+                        raw_snapshot.as_ref(),
+                    )?,
                     path: raw_path,
-                    snapshot: raw_snapshot,
                     content: normalized_content,
                 });
             } else {
@@ -736,37 +979,434 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
             }
         }
         if node_changed {
+            let content = node.render()?.into_bytes();
+            expected_source_contents.insert(source_id, content.clone());
             node_writes.push(PreparedWrite {
+                snapshot: hydrate_observed_snapshot(
+                    &mdcroot,
+                    &source_path,
+                    source_snapshot.as_ref(),
+                )?,
                 path: source_path,
-                snapshot: source_snapshot,
-                content: node.render()?.into_bytes(),
+                content,
             });
         } else {
             inputs.push((source_path, source_snapshot));
         }
     }
+    drop(classify_profile);
 
     let updated_mdocs = node_writes.len();
+    let updated_paths: Vec<_> = node_writes.iter().map(|write| write.path.clone()).collect();
     node_writes.append(&mut raw_writes);
-    apply_changes(
-        &mdcroot,
-        || mutation_lock.root().map(|_| ()),
-        PreparedManifest {
-            path: &manifest_path,
-            snapshot: &manifest_snapshot,
-            content: &manifest,
-        },
-        &inputs,
-        node_writes,
-        Vec::new(),
-        Vec::new(),
-    )?;
+    let write_count = node_writes.len();
+    if updated_mdocs != 0 {
+        if let Some(cache) = cache.as_deref_mut() {
+            cache.set_workdraft_index_dirty(true)?;
+        }
+    }
+    {
+        let _phase = crate::profile::scope("workdraft::apply_back_changes");
+        apply_changes(
+            &mdcroot,
+            || mutation_lock.root().map(|_| ()),
+            PreparedManifest {
+                path: &manifest_path,
+                snapshot: &manifest_snapshot,
+                content: &manifest,
+            },
+            &inputs,
+            node_writes,
+            Vec::new(),
+            Vec::new(),
+        )?;
+    }
+    let mut index_refreshed = false;
+    if updated_mdocs != 0 {
+        if let Some(cache) = cache.as_deref_mut() {
+            if updated_paths.len() == 1 {
+                cache.discover_workspace_changes()?;
+                cache.upsert_path(&updated_paths[0])?;
+            } else {
+                cache.refresh_all()?;
+            }
+            index_refreshed = true;
+        }
+    }
+    if conflicts.is_empty() && warnings.is_empty() {
+        let source_file_count = manifest
+            .sources
+            .values()
+            .map(|source| source.blocks.len())
+            .sum();
+        if let Some(changed_sources) = &changed_sources {
+            update_observation_cache(
+                cache.as_deref_mut(),
+                &mdcroot,
+                &manifest,
+                changed_sources,
+                &expected_source_contents,
+                manifest.sources.len(),
+                source_file_count,
+            )?;
+        } else if write_count == 0 {
+            store_observation_cache(
+                cache.as_deref_mut(),
+                &mdcroot,
+                &manifest,
+                &source_files,
+                &inputs,
+                manifest.sources.len(),
+                source_file_count,
+            )?;
+        }
+    }
+    if index_refreshed {
+        if let Some(cache) = cache {
+            cache.set_workdraft_index_dirty(false)?;
+        }
+    }
     Ok(BackReport {
         updated_blocks,
         updated_mdocs,
+        index_refreshed,
         conflicts,
         warnings,
     })
+}
+
+fn check_observation_cache(
+    cache: Option<&crate::indcache::IndCache>,
+    root: &Path,
+    manifest_snapshot: &FileSnapshot,
+    manifest: &SourceBlockManifest,
+    source_files: &[PathBuf],
+) -> Result<Option<(crate::indcache::WorkdraftObservationCache, BTreeSet<String>)>> {
+    let Some(cache) = cache else {
+        return Ok(None);
+    };
+    let _profile = crate::profile::scope("workdraft::check_observation_cache");
+    let digest: [u8; 32] = Sha256::digest(manifest_snapshot.content().unwrap_or(&[])).into();
+    let Some(cached) = cache.load_workdraft_observations(&digest)? else {
+        return Ok(None);
+    };
+    let Some(specs) = observation_specs(root, manifest, source_files)? else {
+        return Ok(None);
+    };
+    if cached.files.len() != specs.len() {
+        return Ok(None);
+    }
+    if cached.valid_mdocs != manifest.sources.len()
+        || cached.source_files
+            != manifest
+                .sources
+                .values()
+                .map(|source| source.blocks.len())
+                .sum::<usize>()
+    {
+        return Ok(None);
+    }
+    let paths: Vec<_> = specs.iter().map(|spec| spec.path.clone()).collect();
+    let stats = stat_files_parallel_batched(root, &paths, SYNC_SOURCE_BATCH * 6)?;
+    let mut changed = BTreeSet::new();
+    for (spec, stat) in specs.iter().zip(stats) {
+        if cached
+            .files
+            .get(&(spec.source_id.clone(), spec.srctype.clone()))
+            != Some(&stat)
+        {
+            changed.insert(spec.source_id.clone());
+        }
+    }
+    Ok(Some((cached, changed)))
+}
+
+fn require_fast_path_current(
+    mutation_lock: &crate::workspace::WorkspaceMutationLock,
+    root: &Path,
+    manifest_path: &Path,
+    manifest_snapshot: &FileSnapshot,
+) -> Result<()> {
+    if !manifest_snapshot.unchanged_beneath(root, manifest_path)? {
+        bail!(
+            "{} changed during source block reconciliation",
+            manifest_path.display()
+        );
+    }
+    mutation_lock.root()?;
+    Ok(())
+}
+
+fn store_observation_cache(
+    cache: Option<&mut crate::indcache::IndCache>,
+    root: &Path,
+    manifest: &SourceBlockManifest,
+    source_files: &[PathBuf],
+    inputs: &[(PathBuf, Option<ReadFileSnapshot>)],
+    valid_mdocs: usize,
+    source_file_count: usize,
+) -> Result<()> {
+    let Some(cache) = cache else {
+        return Ok(());
+    };
+    let _profile = crate::profile::scope("workdraft::store_observation_cache");
+    let Some(specs) = observation_specs(root, manifest, source_files)? else {
+        return Ok(());
+    };
+    let stats_by_path: HashMap<&Path, Option<FileStatSnapshot>> = inputs
+        .iter()
+        .map(|(path, snapshot)| {
+            (
+                path.as_path(),
+                snapshot.as_ref().map(ReadFileSnapshot::stat_snapshot),
+            )
+        })
+        .collect();
+    let observations = specs
+        .into_iter()
+        .map(|spec| {
+            let stat = stats_by_path
+                .get(spec.path.as_path())
+                .copied()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("missing validated observation for {}", spec.path.display())
+                })?;
+            Ok(crate::indcache::WorkdraftObservation {
+                source_id: spec.source_id,
+                srctype: spec.srctype,
+                stat,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let digest = serialized_manifest_digest(manifest)?;
+    cache.store_workdraft_observations(&digest, valid_mdocs, source_file_count, observations)
+}
+
+fn update_observation_cache(
+    cache: Option<&mut crate::indcache::IndCache>,
+    root: &Path,
+    manifest: &SourceBlockManifest,
+    changed_sources: &BTreeSet<String>,
+    expected_source_contents: &HashMap<String, Vec<u8>>,
+    valid_mdocs: usize,
+    source_file_count: usize,
+) -> Result<()> {
+    let Some(cache) = cache else {
+        return Ok(());
+    };
+    let _profile = crate::profile::scope("workdraft::update_observation_cache");
+    let mut specs = Vec::with_capacity(changed_sources.len() * 6);
+    for source_id in changed_sources {
+        let relative = decode_source_path(source_id)?;
+        let baseline = manifest
+            .sources
+            .get(source_id)
+            .expect("changed observation source is in the manifest");
+        if builtin_srctypes().any(|srctype| baseline.is_unknown(srctype)) {
+            return Ok(());
+        }
+        specs.push(ObservationSpec {
+            source_id: source_id.clone(),
+            srctype: String::new(),
+            path: root.join(&relative),
+        });
+        for srctype in builtin_srctypes() {
+            specs.push(ObservationSpec {
+                source_id: source_id.clone(),
+                srctype: srctype.to_string(),
+                path: output_path(root, &relative, srctype),
+            });
+        }
+    }
+    let paths: Vec<_> = specs.iter().map(|spec| spec.path.clone()).collect();
+    let snapshots = read_files_parallel(root, &paths)?;
+    for (spec, snapshot) in specs.iter().zip(&snapshots) {
+        if spec.srctype.is_empty() {
+            let expected = expected_source_contents
+                .get(&spec.source_id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("missing expected mdoc content for {}", spec.path.display())
+                })?;
+            if snapshot.as_ref().map(ReadFileSnapshot::content) != Some(expected.as_slice()) {
+                bail!(
+                    "{} changed while observations were updated",
+                    spec.path.display()
+                );
+            }
+        } else {
+            let baseline = manifest
+                .sources
+                .get(&spec.source_id)
+                .expect("observation source is in the manifest");
+            if !baseline.matches_raw(
+                &spec.srctype,
+                snapshot.as_ref().map(ReadFileSnapshot::content),
+            ) {
+                bail!(
+                    "{} changed while observations were updated",
+                    spec.path.display()
+                );
+            }
+        }
+    }
+    let observations = specs
+        .into_iter()
+        .zip(snapshots)
+        .map(|(spec, snapshot)| crate::indcache::WorkdraftObservation {
+            source_id: spec.source_id,
+            srctype: spec.srctype,
+            stat: snapshot.as_ref().map(ReadFileSnapshot::stat_snapshot),
+        })
+        .collect();
+    let digest = serialized_manifest_digest(manifest)?;
+    cache.update_workdraft_observations(&digest, valid_mdocs, source_file_count, observations)
+}
+
+fn serialized_manifest_digest(manifest: &SourceBlockManifest) -> Result<[u8; 32]> {
+    let mut content = serde_json::to_vec_pretty(manifest)?;
+    content.push(b'\n');
+    Ok(Sha256::digest(content).into())
+}
+
+fn observation_specs(
+    root: &Path,
+    manifest: &SourceBlockManifest,
+    source_files: &[PathBuf],
+) -> Result<Option<Vec<ObservationSpec>>> {
+    if source_files.len() != manifest.sources.len() {
+        return Ok(None);
+    }
+    let mut specs = Vec::with_capacity(source_files.len() * 6);
+    for source_path in source_files {
+        let relative = source_path
+            .strip_prefix(root)
+            .with_context(|| format!("relativizing {}", source_path.display()))?;
+        validate_source_relative(relative)?;
+        let source_id = encode_source_path(relative);
+        let Some(baseline) = manifest.sources.get(&source_id) else {
+            return Ok(None);
+        };
+        if builtin_srctypes().any(|srctype| baseline.is_unknown(srctype)) {
+            return Ok(None);
+        }
+        specs.push(ObservationSpec {
+            source_id: source_id.clone(),
+            srctype: String::new(),
+            path: source_path.clone(),
+        });
+        for srctype in builtin_srctypes() {
+            specs.push(ObservationSpec {
+                source_id: source_id.clone(),
+                srctype: srctype.to_string(),
+                path: output_path(root, relative, srctype),
+            });
+        }
+    }
+    Ok(Some(specs))
+}
+
+fn stat_files_parallel_batched(
+    root: &Path,
+    paths: &[PathBuf],
+    batch_size: usize,
+) -> Result<Vec<Option<FileStatSnapshot>>> {
+    let mut stats = Vec::with_capacity(paths.len());
+    for batch in paths.chunks(batch_size) {
+        stats.extend(stat_files_parallel(root, batch)?);
+    }
+    Ok(stats)
+}
+
+fn scan_back_sources_parallel(
+    root: &Path,
+    requests: Vec<BackScanRequest>,
+) -> Result<Vec<ScannedBackSource>> {
+    if requests.is_empty() {
+        return Ok(Vec::new());
+    }
+    let source_paths: Vec<_> = requests
+        .iter()
+        .map(|request| request.source_path.clone())
+        .collect();
+    let source_snapshots = {
+        let _phase = crate::profile::scope("workdraft::read_back_mdocs_parallel");
+        read_files_parallel_batched(root, &source_paths, SYNC_SOURCE_BATCH)?
+    };
+    let mirror_paths: Vec<_> = requests
+        .iter()
+        .zip(&source_snapshots)
+        .flat_map(|(request, snapshot)| {
+            snapshot.iter().flat_map(|_| {
+                request
+                    .srctypes
+                    .iter()
+                    .map(|srctype| output_path(root, &request.relative, srctype))
+            })
+        })
+        .collect();
+    let mirror_snapshots = {
+        let _phase = crate::profile::scope("workdraft::read_back_mirrors_parallel");
+        read_files_parallel_batched(root, &mirror_paths, SYNC_SOURCE_BATCH * 5)?
+    };
+    let mut mirror_paths = mirror_paths.into_iter();
+    let mut mirror_snapshots = mirror_snapshots.into_iter();
+    let result = requests
+        .into_iter()
+        .zip(source_snapshots)
+        .map(|(request, source_snapshot)| {
+            let mirrors = if source_snapshot.is_some() {
+                request
+                    .srctypes
+                    .iter()
+                    .map(|srctype| {
+                        (
+                            *srctype,
+                            mirror_paths.next().expect("prepared mirror path"),
+                            mirror_snapshots.next().expect("captured mirror snapshot"),
+                        )
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            ScannedBackSource {
+                relative: request.relative,
+                source_path: request.source_path,
+                source_snapshot,
+                mirrors,
+            }
+        })
+        .collect();
+    debug_assert!(mirror_paths.next().is_none());
+    debug_assert!(mirror_snapshots.next().is_none());
+    Ok(result)
+}
+
+fn read_files_parallel_batched(
+    root: &Path,
+    paths: &[PathBuf],
+    batch_size: usize,
+) -> Result<Vec<Option<ReadFileSnapshot>>> {
+    let mut snapshots = Vec::with_capacity(paths.len());
+    for batch in paths.chunks(batch_size) {
+        snapshots.extend(read_files_parallel(root, batch)?);
+    }
+    Ok(snapshots)
+}
+
+fn hydrate_observed_snapshot(
+    root: &Path,
+    path: &Path,
+    observed: Option<&ReadFileSnapshot>,
+) -> Result<FileSnapshot> {
+    let snapshot = FileSnapshot::capture_beneath(root, path)?;
+    if !snapshot.matches_read(observed) {
+        bail!(
+            "{} changed during source block reconciliation",
+            path.display()
+        );
+    }
+    Ok(snapshot)
 }
 
 fn capture_existing_mirror(

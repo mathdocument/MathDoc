@@ -5,7 +5,7 @@ description: SQLite ownership, schemas, refresh paths, derived graph data, and c
 
 `IndCache` owns the SQLite database at `.mdc/index.db`, operational indexing and
 materialization transaction boundaries, and the conversion between filesystem state
-and indexed graph state. The current schema version is `21`; compatible schemas starting
+and indexed graph state. The current schema version is `22`; compatible schemas starting
 at version `17` are migrated transactionally in place, older managed schemas are rebuilt
 from `.mdoc` files, and newer schemas are rejected without mutation.
 The version 19 migration removes stored missing diagnostics and rebuilds valid in-degree
@@ -13,6 +13,7 @@ before enabling their derived view. Version 21 interns dependency endpoint strin
 rewrites edges to compact integer references without recomputing graph-derived rows.
 The migration releases the old table and index pages to SQLite's freelist, so they are
 immediately reusable even though the database file does not shrink until `VACUUM`.
+Version 22 adds rebuildable source-reconciliation observations used by `sync` and `back`.
 
 MathDoc bundles SQLite and requires engine version 3.51.3 or newer so concurrent WAL
 readers cannot encounter older WAL-reset defects. The connection enables WAL mode and
@@ -80,6 +81,8 @@ updates. Read-facing facades may transactionally materialize derived caches.
 | `mdoc_weak_component` | `fnode`, `component_size` | Weak component size per node |
 | `mdoc_index_state` | epoch, dirty flags, bootstrap, digest, document count | Global materialization state |
 | `mdoc_scc_result` | `graph_epoch`, `cycles_json` | Representative cycles for one epoch |
+| `mdoc_workdraft_state` | manifest digest and clean-result counts | Observation-cache generation |
+| `mdoc_workdraft_observations` | encoded source path, source type, file generation | Rebuildable sync/back acceleration |
 
 `mdoc_valid_edges` is a schema-owned view. It resolves interned endpoint IDs back to text
 and includes `mdoc_edges` whose source path has no `invalid` or `duplicate` issue. A
@@ -91,6 +94,16 @@ paths prune only their now-unreferenced symbols, avoiding a workspace-wide clean
 from the maintained valid-edge in-degree aggregate when no complete identity claimant
 exists in `mdocs`. Invalid or duplicate complete claimants remain present-but-invalid
 rather than also being missing.
+
+The workdraft observation cache is not the synchronization baseline;
+`.mdc/source-blocks.json` remains authoritative. Observations are stored only after a
+conflict-free reconciliation and are accepted only when that manifest's SHA-256 digest
+and complete source inventory still match. Each mdoc and each of its five possible
+mirrors records presence, device/inode, size, mtime, ctime, mode, uid, and gid. Safe
+descriptor-relative `fstatat` batches compare those generations without rereading file
+bodies. A mismatch identifies the affected sources, which are then reread, reconciled,
+and validated byte-for-byte. Missing cache state, legacy manifests, source-set changes,
+or malformed observations fall back to full reconciliation.
 
 `IndCache::search(query, limit)` is the canonical ranked search returning
 `NodeSummary`. Dependency candidate search reuses its patterns, ranking, and projection

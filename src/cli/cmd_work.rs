@@ -15,7 +15,7 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
         let mutation_lock = work_lock.acquire_mutation_lock()?;
         let mut cache = IndCache::open_refreshed_under_mutation_lock(&mutation_lock)?;
         let (source_fnode, _, source_path) = cache.resolve_ref(&source, Some(&cwd()))?;
-        let sync = crate::workdraft::sync(&mutation_lock)?;
+        let sync = crate::workdraft::sync_cached(&mutation_lock, &mut cache)?;
         print_workdraft_issues(&sync.warnings);
         print_workdraft_issues(&sync.dirty);
         print_workdraft_issues(&sync.conflicts);
@@ -145,8 +145,8 @@ pub(super) fn cmd_back() -> Result<i32> {
         let mutation_lock = work_lock.acquire_mutation_lock()?;
         let mut cache = IndCache::open_under_mutation_lock(&mutation_lock)?;
         cache.discover_workspace_changes()?;
-        let report = crate::workdraft::back(&mutation_lock)?;
-        if report.updated_mdocs != 0 {
+        let report = crate::workdraft::back_cached(&mutation_lock, &mut cache)?;
+        if report.updated_mdocs != 0 && !report.index_refreshed {
             cache.refresh_all()?;
         } else {
             cache.refresh_formal_statuses()?;

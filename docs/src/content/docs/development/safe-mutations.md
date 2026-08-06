@@ -42,14 +42,16 @@ cache of no-follow parent-directory descriptors, records every traversed directo
 identity, and verifies those generations before writes apply.
 
 During `sync`, mdocs are processed in batches of 2,048 sources. Mdoc and mirror reads use
-at most eight scoped workers with deterministic result ordering. Read-only mirror
+at most twelve scoped workers with deterministic result ordering. Read-only mirror
 snapshots omit replacement metadata; a selected write target is recaptured as a
-complete snapshot and its observed content is checked again. `back` instead walks the
-tracked manifest sources serially and captures complete mdoc and mirror snapshots.
+complete snapshot and its observed content is checked again. `back` uses the same
+parallel lightweight scan and hydrates complete snapshots only for write targets.
 
-If `sync` produces no writes, removals, renames, or manifest change, it recaptures every
-mdoc input as a complete snapshot in chunks of 2,048 and verifies the manifest before
-returning.
+A clean observation-cache hit uses descriptor-relative `fstatat` batches before returning.
+Generation checks include inode, size, mtime, ctime, permissions, and ownership. A cache
+miss retains exact byte-level input validation. The manifest and workspace lock generation
+are revalidated before a fast return; operations that write validate unchanged inputs
+before and after applying changes and revalidate the manifest generation.
 
 Completed operations are retained until the source-block manifest commits. If a later
 step fails, MathDoc attempts rollback in reverse order. Rollback is best-effort and can

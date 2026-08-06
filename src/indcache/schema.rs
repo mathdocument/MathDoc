@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 21;
+const SCHEMA_VERSION: i32 = 22;
 const FIRST_INCREMENTAL_SCHEMA_VERSION: i32 = 17;
 const MIN_SQLITE_VERSION_NUMBER: i32 = 3_051_003;
 
@@ -62,6 +62,32 @@ CREATE TABLE IF NOT EXISTS mdoc_symbols (
     id    INTEGER PRIMARY KEY,
     fnode TEXT NOT NULL UNIQUE
 );
+
+CREATE TABLE IF NOT EXISTS mdoc_workdraft_state (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    manifest_digest BLOB    NOT NULL DEFAULT X'',
+    valid_mdocs     INTEGER NOT NULL DEFAULT 0 CHECK (valid_mdocs >= 0),
+    source_files    INTEGER NOT NULL DEFAULT 0 CHECK (source_files >= 0),
+    index_dirty     INTEGER NOT NULL DEFAULT 0 CHECK (index_dirty IN (0, 1))
+);
+INSERT OR IGNORE INTO mdoc_workdraft_state (id) VALUES (1);
+
+CREATE TABLE IF NOT EXISTS mdoc_workdraft_observations (
+    source_id  TEXT    NOT NULL,
+    srctype    TEXT    NOT NULL,
+    present    INTEGER NOT NULL CHECK (present IN (0, 1)),
+    device     INTEGER NOT NULL,
+    inode      INTEGER NOT NULL,
+    size       INTEGER NOT NULL,
+    mtime      INTEGER NOT NULL,
+    mtime_nsec INTEGER NOT NULL,
+    ctime      INTEGER NOT NULL,
+    ctime_nsec INTEGER NOT NULL,
+    mode       INTEGER NOT NULL,
+    uid        INTEGER NOT NULL,
+    gid        INTEGER NOT NULL,
+    PRIMARY KEY (source_id, srctype)
+) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS mdoc_edges (
     src_path      TEXT    NOT NULL,
@@ -150,6 +176,8 @@ DROP TABLE IF EXISTS mdoc_index_state;
 DROP TABLE IF EXISTS mdoc_issues;
 DROP TABLE IF EXISTS mdoc_edges;
 DROP TABLE IF EXISTS mdoc_symbols;
+DROP TABLE IF EXISTS mdoc_workdraft_observations;
+DROP TABLE IF EXISTS mdoc_workdraft_state;
 DROP TABLE IF EXISTS mdoc_dirs;
 DROP TABLE IF EXISTS mdoc_files;
 DROP TABLE IF EXISTS mdocs;
@@ -991,6 +1019,35 @@ mod tests {
             )
             .unwrap();
         assert!(edge_sql.contains("WITHOUT ROWID"));
+    }
+
+    #[test]
+    fn schema_twenty_one_adds_workdraft_observations_without_discarding_rows() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("index.db");
+        let conn = open_db(&path).unwrap();
+        insert_edge(&conn, "source.mdoc", "source-node", "target-node", 0);
+        conn.execute_batch(
+            "DROP TABLE mdoc_workdraft_observations;
+             DROP TABLE mdoc_workdraft_state;
+             PRAGMA user_version = 21;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open_db(&path).unwrap();
+
+        assert_eq!(checked_user_version(&conn).unwrap(), SCHEMA_VERSION);
+        let edges: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mdoc_edges", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(edges, 1);
+        let state_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mdoc_workdraft_state", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(state_rows, 1);
     }
 
     #[test]

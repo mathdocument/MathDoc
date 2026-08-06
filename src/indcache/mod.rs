@@ -110,6 +110,18 @@ pub struct IndCache {
     conn: Connection,
 }
 
+pub(crate) struct WorkdraftObservationCache {
+    pub(crate) valid_mdocs: usize,
+    pub(crate) source_files: usize,
+    pub(crate) files: HashMap<(String, String), Option<crate::workspace::FileStatSnapshot>>,
+}
+
+pub(crate) struct WorkdraftObservation {
+    pub(crate) source_id: String,
+    pub(crate) srctype: String,
+    pub(crate) stat: Option<crate::workspace::FileStatSnapshot>,
+}
+
 impl IndCache {
     /// Open (or create) the index database for the workspace rooted at `root`.
     pub fn open(root: PathBuf) -> Result<Self> {
@@ -181,6 +193,230 @@ impl IndCache {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub(crate) fn load_workdraft_observations(
+        &self,
+        manifest_digest: &[u8; 32],
+    ) -> Result<Option<WorkdraftObservationCache>> {
+        self.require_current_database()?;
+        let (stored_digest, valid_mdocs, source_files): (Vec<u8>, i64, i64) = self.conn.query_row(
+            "SELECT manifest_digest, valid_mdocs, source_files
+                 FROM mdoc_workdraft_state WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        if stored_digest.as_slice() != manifest_digest {
+            return Ok(None);
+        }
+        if valid_mdocs < 0 || source_files < 0 {
+            return Ok(None);
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT source_id, srctype, present, device, inode, size,
+                    mtime, mtime_nsec, ctime, ctime_nsec, mode, uid, gid
+             FROM mdoc_workdraft_observations",
+        )?;
+        let files = stmt
+            .query_map([], |row| {
+                let source_id: String = row.get(0)?;
+                let srctype: String = row.get(1)?;
+                let present: bool = row.get(2)?;
+                let stat = if present {
+                    Some(crate::workspace::FileStatSnapshot {
+                        device: row.get::<_, i64>(3)? as u64,
+                        inode: row.get::<_, i64>(4)? as u64,
+                        size: row.get::<_, i64>(5)? as u64,
+                        mtime: row.get(6)?,
+                        mtime_nsec: row.get(7)?,
+                        ctime: row.get(8)?,
+                        ctime_nsec: row.get(9)?,
+                        mode: row.get::<_, i64>(10)? as u32,
+                        uid: row.get::<_, i64>(11)? as u32,
+                        gid: row.get::<_, i64>(12)? as u32,
+                    })
+                } else {
+                    None
+                };
+                Ok(((source_id, srctype), stat))
+            })?
+            .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+        self.require_current_database()?;
+        Ok(Some(WorkdraftObservationCache {
+            valid_mdocs: valid_mdocs as usize,
+            source_files: source_files as usize,
+            files,
+        }))
+    }
+
+    pub(crate) fn workdraft_index_is_dirty(&self) -> Result<bool> {
+        self.require_current_database()?;
+        let dirty = self.conn.query_row(
+            "SELECT index_dirty FROM mdoc_workdraft_state WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        self.require_current_database()?;
+        Ok(dirty)
+    }
+
+    pub(crate) fn set_workdraft_index_dirty(&mut self, dirty: bool) -> Result<()> {
+        self.require_current_database()?;
+        self.conn.execute(
+            "UPDATE mdoc_workdraft_state SET index_dirty = ? WHERE id = 1",
+            [dirty],
+        )?;
+        self.require_current_database()?;
+        Ok(())
+    }
+
+    pub(crate) fn recover_workdraft_index(&mut self) -> Result<()> {
+        self.require_current_database()?;
+        self.conn.execute(
+            "UPDATE mdoc_index_state SET index_digest = '' WHERE id = 1",
+            [],
+        )?;
+        self.refresh_all()?;
+        self.set_workdraft_index_dirty(false)
+    }
+
+    pub(crate) fn store_workdraft_observations(
+        &mut self,
+        manifest_digest: &[u8; 32],
+        valid_mdocs: usize,
+        source_files: usize,
+        observations: Vec<WorkdraftObservation>,
+    ) -> Result<()> {
+        self.require_current_database()?;
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM mdoc_workdraft_observations", [])?;
+        {
+            let mut insert = tx.prepare(
+                "INSERT INTO mdoc_workdraft_observations
+                   (source_id, srctype, present, device, inode, size,
+                    mtime, mtime_nsec, ctime, ctime_nsec, mode, uid, gid)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )?;
+            for observation in observations {
+                let stat = observation
+                    .stat
+                    .unwrap_or(crate::workspace::FileStatSnapshot {
+                        device: 0,
+                        inode: 0,
+                        size: 0,
+                        mtime: 0,
+                        mtime_nsec: 0,
+                        ctime: 0,
+                        ctime_nsec: 0,
+                        mode: 0,
+                        uid: 0,
+                        gid: 0,
+                    });
+                insert.execute(rusqlite::params![
+                    observation.source_id,
+                    observation.srctype,
+                    observation.stat.is_some(),
+                    stat.device as i64,
+                    stat.inode as i64,
+                    stat.size as i64,
+                    stat.mtime,
+                    stat.mtime_nsec,
+                    stat.ctime,
+                    stat.ctime_nsec,
+                    i64::from(stat.mode),
+                    i64::from(stat.uid),
+                    i64::from(stat.gid),
+                ])?;
+            }
+        }
+        tx.execute(
+            "UPDATE mdoc_workdraft_state
+             SET manifest_digest = ?, valid_mdocs = ?, source_files = ?
+             WHERE id = 1",
+            rusqlite::params![
+                manifest_digest.as_slice(),
+                i64::try_from(valid_mdocs).unwrap_or(i64::MAX),
+                i64::try_from(source_files).unwrap_or(i64::MAX),
+            ],
+        )?;
+        tx.commit()?;
+        self.require_current_database()?;
+        Ok(())
+    }
+
+    pub(crate) fn update_workdraft_observations(
+        &mut self,
+        manifest_digest: &[u8; 32],
+        valid_mdocs: usize,
+        source_files: usize,
+        observations: Vec<WorkdraftObservation>,
+    ) -> Result<()> {
+        self.require_current_database()?;
+        let tx = self.conn.transaction()?;
+        {
+            let mut upsert = tx.prepare(
+                "INSERT INTO mdoc_workdraft_observations
+                   (source_id, srctype, present, device, inode, size,
+                    mtime, mtime_nsec, ctime, ctime_nsec, mode, uid, gid)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(source_id, srctype) DO UPDATE SET
+                    present = excluded.present,
+                    device = excluded.device,
+                    inode = excluded.inode,
+                    size = excluded.size,
+                    mtime = excluded.mtime,
+                    mtime_nsec = excluded.mtime_nsec,
+                    ctime = excluded.ctime,
+                    ctime_nsec = excluded.ctime_nsec,
+                    mode = excluded.mode,
+                    uid = excluded.uid,
+                    gid = excluded.gid",
+            )?;
+            for observation in observations {
+                let stat = observation
+                    .stat
+                    .unwrap_or(crate::workspace::FileStatSnapshot {
+                        device: 0,
+                        inode: 0,
+                        size: 0,
+                        mtime: 0,
+                        mtime_nsec: 0,
+                        ctime: 0,
+                        ctime_nsec: 0,
+                        mode: 0,
+                        uid: 0,
+                        gid: 0,
+                    });
+                upsert.execute(rusqlite::params![
+                    observation.source_id,
+                    observation.srctype,
+                    observation.stat.is_some(),
+                    stat.device as i64,
+                    stat.inode as i64,
+                    stat.size as i64,
+                    stat.mtime,
+                    stat.mtime_nsec,
+                    stat.ctime,
+                    stat.ctime_nsec,
+                    i64::from(stat.mode),
+                    i64::from(stat.uid),
+                    i64::from(stat.gid),
+                ])?;
+            }
+        }
+        tx.execute(
+            "UPDATE mdoc_workdraft_state
+             SET manifest_digest = ?, valid_mdocs = ?, source_files = ?
+             WHERE id = 1",
+            rusqlite::params![
+                manifest_digest.as_slice(),
+                i64::try_from(valid_mdocs).unwrap_or(i64::MAX),
+                i64::try_from(source_files).unwrap_or(i64::MAX),
+            ],
+        )?;
+        tx.commit()?;
+        self.require_current_database()?;
+        Ok(())
     }
 
     fn require_current_database(&self) -> Result<()> {

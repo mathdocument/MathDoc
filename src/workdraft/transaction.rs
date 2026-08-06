@@ -2,7 +2,7 @@ use anyhow::{bail, Result};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::workspace::{AppliedRename, AppliedWrite, FileSnapshot};
+use crate::workspace::{AppliedRename, AppliedWrite, FileSnapshot, ReadFileSnapshot};
 
 use super::manifest::SourceBlockManifest;
 use super::mirror::remove_empty_parents;
@@ -32,11 +32,30 @@ pub(super) struct PreparedManifest<'a> {
     pub(super) content: &'a SourceBlockManifest,
 }
 
-pub(super) fn apply_changes(
+pub(super) trait InputObservation {
+    fn matches_read(&self, current: Option<&ReadFileSnapshot>) -> bool;
+}
+
+impl InputObservation for FileSnapshot {
+    fn matches_read(&self, current: Option<&ReadFileSnapshot>) -> bool {
+        FileSnapshot::matches_read(self, current)
+    }
+}
+
+impl InputObservation for Option<ReadFileSnapshot> {
+    fn matches_read(&self, current: Option<&ReadFileSnapshot>) -> bool {
+        match self {
+            Some(snapshot) => snapshot.matches(current),
+            None => current.is_none(),
+        }
+    }
+}
+
+pub(super) fn apply_changes<I: InputObservation>(
     allowed_root: &Path,
     validate_workspace: impl Fn() -> Result<()>,
     manifest: PreparedManifest<'_>,
-    inputs: &[(PathBuf, FileSnapshot)],
+    inputs: &[(PathBuf, I)],
     writes: Vec<PreparedWrite>,
     removals: Vec<PreparedRemoval>,
     renames: Vec<PreparedRename>,
@@ -70,7 +89,11 @@ pub(super) fn apply_changes(
     ensure_unchanged(allowed_root, manifest.path, manifest.snapshot)?;
     drop(validate_profile);
 
-    let write_paths: HashSet<&Path> = writes.iter().map(|write| write.path.as_path()).collect();
+    let mut changed_paths: HashSet<&Path> =
+        writes.iter().map(|write| write.path.as_path()).collect();
+    changed_paths.extend(removals.iter().map(|removal| removal.path.as_path()));
+    changed_paths.extend(renames.iter().map(|rename| rename.from.as_path()));
+    changed_paths.extend(renames.iter().map(|rename| rename.to.as_path()));
     let mut applied = Vec::new();
     let result = (|| -> Result<()> {
         for removal in removals.iter().filter(|removal| removal.recoverable) {
@@ -120,10 +143,11 @@ pub(super) fn apply_changes(
         validate_inputs_parallel(
             allowed_root,
             inputs,
-            Some(&write_paths),
+            Some(&changed_paths),
             "while source block writes were applied",
         )?;
         drop(validate_profile);
+        ensure_unchanged(allowed_root, manifest.path, manifest.snapshot)?;
         if manifest_changed {
             validate_workspace()?;
             applied.push(AppliedChange::Write(manifest.snapshot.replace_beneath(
@@ -159,9 +183,9 @@ fn ensure_unchanged(allowed_root: &Path, path: &Path, snapshot: &FileSnapshot) -
     Ok(())
 }
 
-fn validate_inputs_parallel(
+fn validate_inputs_parallel<I: InputObservation>(
     allowed_root: &Path,
-    inputs: &[(PathBuf, FileSnapshot)],
+    inputs: &[(PathBuf, I)],
     skip_paths: Option<&HashSet<&Path>>,
     context: &str,
 ) -> Result<()> {
@@ -239,7 +263,7 @@ mod tests {
                 snapshot: &manifest_snapshot,
                 content: &manifest,
             },
-            &[],
+            &[] as &[(PathBuf, FileSnapshot)],
             vec![
                 PreparedWrite {
                     path: first_path.clone(),
@@ -293,7 +317,7 @@ mod tests {
                 snapshot: &manifest_snapshot,
                 content: &manifest,
             },
-            &[],
+            &[] as &[(PathBuf, FileSnapshot)],
             vec![PreparedWrite {
                 path: write_path.clone(),
                 snapshot: FileSnapshot::Missing,
@@ -390,7 +414,7 @@ mod tests {
                 snapshot: &manifest_snapshot,
                 content: &manifest,
             },
-            &[],
+            &[] as &[(PathBuf, FileSnapshot)],
             vec![PreparedWrite {
                 path,
                 snapshot: FileSnapshot::Missing,
@@ -445,7 +469,7 @@ mod tests {
                 snapshot: &manifest_snapshot,
                 content: &manifest,
             },
-            &[],
+            &[] as &[(PathBuf, FileSnapshot)],
             Vec::new(),
             vec![PreparedRemoval {
                 path,
@@ -508,7 +532,7 @@ mod tests {
                 snapshot: &manifest_snapshot,
                 content: &manifest,
             },
-            &[],
+            &[] as &[(PathBuf, FileSnapshot)],
             Vec::new(),
             Vec::new(),
             vec![PreparedRename { from, to, snapshot }],

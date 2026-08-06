@@ -23,6 +23,13 @@ snapshot-checked batch application, and reverse-order rollback attempts. Rollbac
 best-effort and batches are not crash-atomic. Work and mutation lock generations are
 revalidated at their handoff and at every applied filesystem boundary.
 
+After a clean reconciliation, SQLite retains rebuildable file-generation observations
+keyed by manifest digest. Later `sync` and `back` runs compare mdocs and all five expected
+mirror paths with descriptor-relative stat batches. Unchanged workspaces avoid content
+reads; changed sources alone are hydrated and reconciled. The observations include ctime
+and inode identity, so same-size edits with a restored mtime still invalidate the fast
+path. They never replace the manifest's content digests or write-time byte validation.
+
 ## Compiler boundary
 
 `src/compiler/mod.rs` owns:

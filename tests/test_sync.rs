@@ -37,6 +37,17 @@ fn write_node(node: &MdocNode) {
     std::fs::write(&node.path, node.render().unwrap()).unwrap();
 }
 
+fn rewrite_preserving_mtime(path: &Path, content: &[u8]) {
+    let modified = std::fs::metadata(path).unwrap().modified().unwrap();
+    std::fs::write(path, content).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+}
+
 #[test]
 fn sync_exports_present_blocks_and_back_imports_mirror_edits() {
     let dir = tempfile::tempdir().unwrap();
@@ -103,6 +114,94 @@ fn sync_exports_present_blocks_and_back_imports_mirror_edits() {
             .unwrap(),
         "A"
     );
+}
+
+#[test]
+fn sync_observation_cache_detects_same_size_same_mtime_mdoc_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join(".mdc")).unwrap();
+    let node = make_node(root, "data/A.mdoc");
+    write_node(&node);
+    assert!(run_mdc(root, &["sync"]).status.success());
+
+    let original = std::fs::read(&node.path).unwrap();
+    let changed = String::from_utf8(original)
+        .unwrap()
+        .replace("#check Nat", "#check Int");
+    rewrite_preserving_mtime(&node.path, changed.as_bytes());
+
+    let output = run_mdc(root, &["sync"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(".mdc/lean/Lib/data/A.lean")).unwrap(),
+        "#check Int\n"
+    );
+}
+
+#[test]
+fn back_observation_cache_detects_same_size_same_mtime_mirror_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join(".mdc")).unwrap();
+    let node = make_node(root, "data/A.mdoc");
+    write_node(&node);
+    assert!(run_mdc(root, &["sync"]).status.success());
+
+    let mirror = root.join(".mdc/lean/Lib/data/A.lean");
+    rewrite_preserving_mtime(&mirror, b"#check Int\n");
+
+    let output = run_mdc(root, &["back"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let saved = MdocNode::load(&node.path).unwrap();
+    assert_eq!(saved.source_block("lean").unwrap().content, "#check Int\n");
+}
+
+#[test]
+fn back_repairs_an_index_update_interrupted_after_reconciliation() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join(".mdc")).unwrap();
+    let node = make_node(root, "data/A.mdoc");
+    write_node(&node);
+    assert!(run_mdc(root, &["sync"]).status.success());
+
+    let connection = rusqlite::Connection::open(root.join(".mdc/index.db")).unwrap();
+    connection
+        .execute_batch(
+            "UPDATE mdocs SET title = 'Stale', title_lc = 'stale'
+             WHERE path = 'data/A.mdoc';
+             UPDATE mdoc_workdraft_state SET index_dirty = 1 WHERE id = 1;",
+        )
+        .unwrap();
+    drop(connection);
+
+    let output = run_mdc(root, &["back"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let connection = rusqlite::Connection::open(root.join(".mdc/index.db")).unwrap();
+    let (title, dirty): (String, bool) = connection
+        .query_row(
+            "SELECT m.title, s.index_dirty
+             FROM mdocs m CROSS JOIN mdoc_workdraft_state s
+             WHERE m.path = 'data/A.mdoc' AND s.id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(title, "Source Mirror");
+    assert!(!dirty);
 }
 
 #[test]

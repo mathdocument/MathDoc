@@ -82,7 +82,7 @@ pub(super) fn cmd_sync() -> Result<i32> {
     let mutation_lock = work_lock.acquire_mutation_lock()?;
     let mut cache = IndCache::open_refreshed_under_mutation_lock(&mutation_lock)?;
     let total = cache.count()?;
-    let draft = crate::workdraft::sync(&mutation_lock)?;
+    let draft = crate::workdraft::sync_cached(&mutation_lock, &mut cache)?;
     cache.refresh_formal_statuses()?;
     work_lock.require_current()?;
     println!("synced  {BLD}{total}{RST} mdocs");

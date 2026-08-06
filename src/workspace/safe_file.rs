@@ -147,6 +147,52 @@ pub(crate) struct ReadFileSnapshot {
     identity: FileIdentity,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FileStatSnapshot {
+    pub(crate) device: u64,
+    pub(crate) inode: u64,
+    pub(crate) size: u64,
+    pub(crate) mtime: i64,
+    pub(crate) mtime_nsec: i64,
+    pub(crate) ctime: i64,
+    pub(crate) ctime_nsec: i64,
+    pub(crate) mode: u32,
+    pub(crate) uid: u32,
+    pub(crate) gid: u32,
+}
+
+impl FileStatSnapshot {
+    fn from_metadata(metadata: &std::fs::Metadata) -> Self {
+        Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            size: metadata.len(),
+            mtime: metadata.mtime(),
+            mtime_nsec: metadata.mtime_nsec(),
+            ctime: metadata.ctime(),
+            ctime_nsec: metadata.ctime_nsec(),
+            mode: metadata.mode(),
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+        }
+    }
+
+    fn from_stat(stat: &libc::stat) -> Self {
+        Self {
+            device: stat.st_dev as u64,
+            inode: stat.st_ino,
+            size: stat.st_size as u64,
+            mtime: stat_mtime(stat),
+            mtime_nsec: stat_mtime_nsec(stat),
+            ctime: stat_ctime(stat),
+            ctime_nsec: stat_ctime_nsec(stat),
+            mode: stat.st_mode as u32,
+            uid: stat.st_uid,
+            gid: stat.st_gid,
+        }
+    }
+}
+
 impl ReadFileSnapshot {
     pub(crate) fn content(&self) -> &[u8] {
         &self.content
@@ -170,6 +216,10 @@ impl ReadFileSnapshot {
             && self.metadata.uid() == other.metadata.uid()
             && self.metadata.gid() == other.metadata.gid()
             && same_permissions(&self.metadata.permissions(), &other.metadata.permissions())
+    }
+
+    pub(crate) fn stat_snapshot(&self) -> FileStatSnapshot {
+        FileStatSnapshot::from_metadata(&self.metadata)
     }
 }
 
@@ -1052,6 +1102,30 @@ impl FileSnapshotBatch {
             identity: file_identity(&final_metadata),
             metadata: final_metadata,
         }))
+    }
+
+    pub(crate) fn capture_stat(&mut self, path: &Path) -> Result<Option<FileStatSnapshot>> {
+        let Some((directory_fd, file_name)) = self.bind_file_if_parent_exists(path)? else {
+            return Ok(None);
+        };
+        let stat = match entry_stat(directory_fd, &file_name) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(error).with_context(|| format!("inspecting {}", path.display()))
+            }
+        };
+        if !stat_is_regular(&stat) {
+            bail!("refusing to access non-regular file {}", path.display());
+        }
+        if stat.st_nlink > 1 {
+            bail!(
+                "refusing to access hard-linked file {} ({} links)",
+                path.display(),
+                stat.st_nlink
+            );
+        }
+        Ok(Some(FileStatSnapshot::from_stat(&stat)))
     }
 
     fn bind_file(&mut self, path: &Path) -> Result<(RawFd, CString)> {
