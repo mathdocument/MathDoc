@@ -1037,26 +1037,13 @@ impl FileSnapshotBatch {
             return Err(FileConflict::new(path).into());
         }
         run_test_hook(TestHookPoint::ReadAfterContent);
-        let current_fd = unsafe {
-            libc::openat(
-                directory_fd,
-                file_name.as_ptr(),
-                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-            )
-        };
-        if current_fd < 0 {
-            let error = std::io::Error::last_os_error();
-            return Err(anyhow::Error::from(FileConflict::new(path)))
-                .context(format!("could not verify {}: {error}", path.display()));
-        }
-        let current = unsafe { std::fs::File::from_raw_fd(current_fd) };
-        let current_metadata = current
-            .metadata()
-            .with_context(|| format!("verifying {}", path.display()))?;
-        if !current_metadata.is_file()
-            || current_metadata.nlink() > 1
-            || file_identity(&current_metadata) != file_identity(&final_metadata)
-            || !same_read_generation(&final_metadata, &current_metadata)
+        let current = entry_stat(directory_fd, &file_name).map_err(|error| {
+            anyhow::Error::from(FileConflict::new(path))
+                .context(format!("could not verify {}: {error}", path.display()))
+        })?;
+        if !stat_is_regular(&current)
+            || current.st_nlink > 1
+            || !metadata_matches_stat(&final_metadata, &current)
         {
             return Err(FileConflict::new(path).into());
         }
@@ -1297,6 +1284,53 @@ fn same_read_generation(left: &std::fs::Metadata, right: &std::fs::Metadata) -> 
         && left.mtime_nsec() == right.mtime_nsec()
         && left.ctime() == right.ctime()
         && left.ctime_nsec() == right.ctime_nsec()
+}
+
+fn entry_stat(directory_fd: RawFd, name: &CStr) -> std::io::Result<libc::stat> {
+    let mut stat = std::mem::MaybeUninit::uninit();
+    let result = unsafe {
+        libc::fstatat(
+            directory_fd,
+            name.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if result == 0 {
+        Ok(unsafe { stat.assume_init() })
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn stat_is_regular(stat: &libc::stat) -> bool {
+    stat.st_mode & libc::S_IFMT == libc::S_IFREG
+}
+
+fn metadata_matches_stat(metadata: &std::fs::Metadata, stat: &libc::stat) -> bool {
+    metadata.dev() == stat.st_dev as u64
+        && metadata.ino() == stat.st_ino
+        && metadata.len() == stat.st_size as u64
+        && metadata.mtime() == stat_mtime(stat)
+        && metadata.mtime_nsec() == stat_mtime_nsec(stat)
+        && metadata.ctime() == stat_ctime(stat)
+        && metadata.ctime_nsec() == stat_ctime_nsec(stat)
+}
+
+fn stat_mtime(stat: &libc::stat) -> i64 {
+    stat.st_mtime
+}
+
+fn stat_mtime_nsec(stat: &libc::stat) -> i64 {
+    stat.st_mtime_nsec
+}
+
+fn stat_ctime(stat: &libc::stat) -> i64 {
+    stat.st_ctime
+}
+
+fn stat_ctime_nsec(stat: &libc::stat) -> i64 {
+    stat.st_ctime_nsec
 }
 
 #[derive(Debug)]
