@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 18;
+const SCHEMA_VERSION: i32 = 19;
 const FIRST_INCREMENTAL_SCHEMA_VERSION: i32 = 17;
 
 const CREATE_SQL: &str = "
@@ -75,6 +75,18 @@ CREATE TABLE IF NOT EXISTS mdoc_in_degree (
     in_degree INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE VIEW IF NOT EXISTS mdoc_missing_issues AS
+SELECT '<unknown>' AS path,
+       'missing' AS kind,
+       d.fnode AS ref_fnode,
+       'missing dependency target: ' || d.fnode AS error
+FROM mdoc_in_degree d
+WHERE d.in_degree > 0
+  AND NOT EXISTS (
+    SELECT 1 FROM mdocs claimant
+    WHERE claimant.fnode = d.fnode
+);
+
 CREATE TABLE IF NOT EXISTS mdoc_scc_result (
     id          INTEGER PRIMARY KEY CHECK (id = 1),
     graph_epoch INTEGER NOT NULL DEFAULT -1,
@@ -88,6 +100,7 @@ CREATE TABLE IF NOT EXISTS mdoc_weak_component (
 ";
 
 const RESET_SQL: &str = "
+DROP VIEW IF EXISTS mdoc_missing_issues;
 DROP VIEW IF EXISTS mdoc_valid_edges;
 DROP TABLE IF EXISTS mdoc_weak_component;
 DROP TABLE IF EXISTS mdoc_scc_result;
@@ -105,6 +118,16 @@ CREATE INDEX IF NOT EXISTS idx_mdoc_edges_src_dst
     ON mdoc_edges(src_fnode, dst_fnode, src_path);
 CREATE INDEX IF NOT EXISTS idx_mdoc_edges_dst_src
     ON mdoc_edges(dst_fnode, src_fnode, src_path, ord);
+";
+
+const MIGRATE_18_TO_19_SQL: &str = "
+DELETE FROM mdoc_issues WHERE kind = 'missing';
+DELETE FROM mdoc_in_degree;
+INSERT INTO mdoc_in_degree (fnode, in_degree)
+SELECT dst_fnode, COUNT(*)
+FROM mdoc_valid_edges
+GROUP BY dst_fnode
+HAVING COUNT(*) > 0;
 ";
 
 /// Open the database at `path` with WAL mode and apply the schema.
@@ -191,7 +214,7 @@ fn is_database_busy(error: &anyhow::Error) -> bool {
 /// Migrate compatible schemas in place and rebuild older derived caches.
 fn apply_schema(conn: &mut Connection) -> Result<()> {
     let tx = conn.transaction()?;
-    let user_version = checked_user_version(&tx)?;
+    let mut user_version = checked_user_version(&tx)?;
 
     if user_version < FIRST_INCREMENTAL_SCHEMA_VERSION {
         tx.execute_batch(RESET_SQL)?;
@@ -200,9 +223,13 @@ fn apply_schema(conn: &mut Connection) -> Result<()> {
     } else {
         if user_version == 17 {
             tx.execute_batch(MIGRATE_17_TO_18_SQL)?;
-            tx.execute_batch("PRAGMA user_version = 18;")?;
+            user_version = 18;
+        }
+        if user_version == 18 {
+            tx.execute_batch(MIGRATE_18_TO_19_SQL)?;
         }
         tx.execute_batch(CREATE_SQL)?;
+        tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     }
 
     tx.commit()?;
@@ -258,6 +285,47 @@ mod tests {
             vec![
                 ("missing".to_string(), "target".to_string()),
                 ("valid".to_string(), "target".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_issue_view_uses_valid_edge_degrees_and_any_complete_claimant() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_db(&dir.path().join("index.db")).unwrap();
+        conn.execute_batch(
+            "INSERT INTO mdoc_in_degree (fnode, in_degree) VALUES
+                 ('absent-target', 2),
+                 ('present-target', 1),
+                 ('invalid-target', 1),
+                 ('duplicate-target', 1),
+                 ('partial-target', 1);
+             INSERT INTO mdocs (path, fnode, title, title_lc) VALUES
+                 ('present-target.mdoc', 'present-target', 'Present', 'present'),
+                 ('invalid-target.mdoc', 'invalid-target', 'Invalid', 'invalid'),
+                 ('duplicate-target-a.mdoc', 'duplicate-target', 'Duplicate A', 'duplicate a'),
+                 ('duplicate-target-b.mdoc', 'duplicate-target', 'Duplicate B', 'duplicate b');
+             INSERT INTO mdoc_issues (path, kind, ref_fnode, error) VALUES
+                 ('invalid-target.mdoc', 'invalid', 'invalid-target', 'invalid target'),
+                 ('duplicate-target-a.mdoc', 'duplicate', 'duplicate-target', 'duplicate target'),
+                 ('duplicate-target-b.mdoc', 'duplicate', 'duplicate-target', 'duplicate target'),
+                 ('partial-target.mdoc', 'invalid', 'partial-target', 'partial target');",
+        )
+        .unwrap();
+
+        let rows: Vec<(String, String)> = conn
+            .prepare("SELECT path, ref_fnode FROM mdoc_missing_issues ORDER BY ref_fnode")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+
+        assert_eq!(
+            rows,
+            vec![
+                ("<unknown>".into(), "absent-target".into()),
+                ("<unknown>".into(), "partial-target".into()),
             ]
         );
     }
@@ -456,7 +524,13 @@ mod tests {
              INSERT INTO mdocs (path, fnode, title, title_lc)
                  VALUES ('source.mdoc', 'source-node', 'Source', 'source');
              INSERT INTO mdoc_edges (src_path, src_fnode, dst_fnode, ord)
-                 VALUES ('source.mdoc', 'source-node', 'target-node', 0);
+                  VALUES ('source.mdoc', 'source-node', 'target-node', 0);
+             INSERT INTO mdoc_in_degree (fnode, in_degree) VALUES
+                  ('target-node', 99),
+                  ('stale-target', 1);
+             INSERT INTO mdoc_issues (path, kind, ref_fnode, error)
+                  VALUES ('source.mdoc', 'missing', 'target-node', 'legacy missing target');
+             DROP VIEW mdoc_missing_issues;
              DROP INDEX idx_mdoc_edges_src_dst;
              DROP INDEX idx_mdoc_edges_dst_src;
              PRAGMA user_version = 17;",
@@ -475,6 +549,20 @@ mod tests {
             .unwrap();
         assert_eq!(edge, ("source-node".into(), "target-node".into()));
         assert_eq!(checked_user_version(&conn).unwrap(), SCHEMA_VERSION);
+        let stored_missing: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM mdoc_issues WHERE kind = 'missing'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_missing, 0);
+        let derived_missing: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mdoc_missing_issues", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(derived_missing, 1);
         for index in ["idx_mdoc_edges_src_dst", "idx_mdoc_edges_dst_src"] {
             let exists: bool = conn
                 .query_row(
@@ -485,6 +573,109 @@ mod tests {
                 .unwrap();
             assert!(exists);
         }
+    }
+
+    #[test]
+    fn schema_eighteen_migrates_missing_issues_without_discarding_base_rows() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("index.db");
+        let conn = open_db(&path).unwrap();
+        conn.execute_batch(
+            "INSERT INTO mdoc_files (path, mtime_ns, size) VALUES
+                 ('source.mdoc', 1, 2),
+                 ('bad.mdoc', 3, 4);
+             INSERT INTO mdocs (path, fnode, title, title_lc)
+                  VALUES ('source.mdoc', 'source-node', 'Source', 'source');
+             INSERT INTO mdoc_edges (src_path, src_fnode, dst_fnode, ord)
+                  VALUES ('source.mdoc', 'source-node', 'target-node', 0);
+             INSERT INTO mdoc_in_degree (fnode, in_degree) VALUES
+                  ('target-node', 99),
+                  ('stale-target', 1);
+             INSERT INTO mdoc_issues (path, kind, ref_fnode, error) VALUES
+                  ('source.mdoc', 'missing', 'target-node', 'legacy missing target'),
+                  ('bad.mdoc', 'invalid', 'bad-node', 'invalid node');
+             DROP VIEW mdoc_missing_issues;
+             PRAGMA user_version = 18;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open_db(&path).unwrap();
+
+        assert_eq!(checked_user_version(&conn).unwrap(), SCHEMA_VERSION);
+        let rows: Vec<(String, String)> = conn
+            .prepare("SELECT kind, ref_fnode FROM mdoc_issues ORDER BY kind, ref_fnode")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, vec![("invalid".into(), "bad-node".into())]);
+        let derived: (String, String) = conn
+            .query_row(
+                "SELECT path, ref_fnode FROM mdoc_missing_issues",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(derived, ("<unknown>".into(), "target-node".into()));
+        let degrees: Vec<(String, i64)> = conn
+            .prepare("SELECT fnode, in_degree FROM mdoc_in_degree ORDER BY fnode")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(degrees, vec![("target-node".into(), 1)]);
+        let base_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mdoc_files", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(base_rows, 2);
+    }
+
+    #[test]
+    fn failed_missing_issue_migration_rolls_back_schema_and_rows() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("index.db");
+        let conn = open_db(&path).unwrap();
+        conn.execute_batch(
+            "INSERT INTO mdoc_issues (path, kind, ref_fnode, error)
+                  VALUES ('source.mdoc', 'missing', 'target-node', 'legacy missing target');
+             DROP VIEW mdoc_missing_issues;
+             CREATE TRIGGER reject_missing_issue_delete
+             BEFORE DELETE ON mdoc_issues
+             WHEN OLD.kind = 'missing'
+             BEGIN
+                 SELECT RAISE(ABORT, 'preserve missing row');
+             END;
+             PRAGMA user_version = 18;",
+        )
+        .unwrap();
+        drop(conn);
+
+        assert!(open_db(&path).is_err());
+
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(checked_user_version(&conn).unwrap(), 18);
+        let missing_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM mdoc_issues WHERE kind = 'missing'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(missing_rows, 1);
+        let view_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM sqlite_schema
+                     WHERE type = 'view' AND name = 'mdoc_missing_issues'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!view_exists);
     }
 
     #[test]
@@ -544,5 +735,26 @@ mod tests {
                 .unwrap();
             assert!(plan.contains(index), "unexpected query plan: {plan}");
         }
+
+        let plan = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT path, ref_fnode FROM mdoc_missing_issues
+                 WHERE ref_fnode = 'target'",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+            .join("\n");
+        assert!(
+            plan.contains("sqlite_autoindex_mdoc_in_degree_1"),
+            "missing-target lookup did not use the in-degree key:\n{plan}"
+        );
+        assert!(
+            plan.contains("idx_mdocs_fnode"),
+            "missing-target lookup did not use the claimant index:\n{plan}"
+        );
     }
 }

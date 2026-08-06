@@ -5,9 +5,11 @@ description: SQLite ownership, schemas, refresh paths, derived graph data, and c
 
 `IndCache` owns the SQLite database at `.mdc/index.db`, operational indexing and
 materialization transaction boundaries, and the conversion between filesystem state
-and indexed graph state. The current schema version is `18`; compatible schemas starting
+and indexed graph state. The current schema version is `19`; compatible schemas starting
 at version `17` are migrated transactionally in place, older managed schemas are rebuilt
 from `.mdoc` files, and newer schemas are rejected without mutation.
+The version 19 migration removes stored missing diagnostics and rebuilds valid in-degree
+before enabling their derived view.
 
 The connection enables WAL mode and foreign keys. It is opened without following
 symlinks, and multiply linked database files are rejected. `IndCache` also keeps an open
@@ -50,7 +52,8 @@ updates. Read-facing facades may transactionally materialize derived caches.
 | `mdoc_files` | `path`, `mtime_ns`, `size` | Change detection and stale path cleanup |
 | `mdocs` | `path`, `fnode`, `title`, `title_lc`, `topo_depth` | Search, resolution, persisted depth |
 | `mdoc_edges` | `src_path`, `src_fnode`, `dst_fnode`, `ord` | Ordered dependency edges |
-| `mdoc_issues` | `path`, `kind`, `ref_fnode`, `error` | Invalid, duplicate, and missing diagnostics |
+| `mdoc_issues` | `path`, `kind`, `ref_fnode`, `error` | Stored invalid and duplicate diagnostics |
+| `mdoc_missing_issues` | valid in-degree and claimant indexes | Derived missing-target diagnostics |
 | `mdoc_in_degree` | `fnode`, `in_degree` | Precomputed valid-source in-degree |
 | `mdoc_weak_component` | `fnode`, `component_size` | Weak component size per node |
 | `mdoc_index_state` | epoch, dirty flags, bootstrap, digest | Global materialization state |
@@ -60,7 +63,10 @@ updates. Read-facing facades may transactionally materialize derived caches.
 has no `invalid` or `duplicate` issue. A missing target does not suppress its source
 edge. Source/destination and composite covering edge indexes support pair lookups and
 reverse traversal without scanning a high-degree source, while the path-leading issue
-primary key supports the view predicate.
+primary key supports the view predicate. `mdoc_missing_issues` derives missing targets
+from the maintained valid-edge in-degree aggregate when no complete identity claimant
+exists in `mdocs`. Invalid or duplicate complete claimants remain present-but-invalid
+rather than also being missing.
 
 `IndCache::search(query, limit)` is the canonical ranked search returning
 `NodeSummary`. Dependency candidate search reuses its patterns, ranking, and projection
@@ -90,7 +96,7 @@ dependency order, and parse status, but not source block bodies.
 If the digest matches, existing node, edge, issue, in-degree, epoch, and derived rows are
 retained. If it differs, refresh streams the indexed and scanned semantics in path order.
 Up to 1,024 changed or stale paths use the same incremental maintenance as focused
-upserts; larger changes fall back to constructing global issues, replacing base rows with
+upserts; larger changes fall back to constructing stored issues, replacing base rows with
 multi-value inserts, rebuilding in-degree, and eagerly rebuilding topological depths and
 weak components. The threshold bounds incremental statement and ancestor-update costs
 without making small edits rewrite the complete index.
@@ -106,7 +112,8 @@ workspace mutation lock before final duplicate, snapshot, and cycle checks.
 
 Bulk SQL uses `CHUNK_SIZE = 500` for `IN (...)` lists. Full refresh replacement uses
 200-row multi-value inserts to remain within SQLite variable limits, including the
-four-column edge and issue tables.
+four-column edge and stored-issue tables. Missing diagnostics are queried from their view
+instead of being rewritten when a popular target appears or disappears.
 
 ## Derived graph data
 

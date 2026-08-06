@@ -299,7 +299,6 @@ fn scan_mdoc(root: &Path, path: &Path, content: &[u8], metadata: &Metadata) -> R
 fn build_issues(files: &[ScannedMdoc]) -> Vec<IndexIssue> {
     let mut issues = Vec::new();
     let mut claimants: HashMap<&str, Vec<&str>> = HashMap::new();
-    let mut blocking_paths = HashSet::new();
 
     for file in files {
         if let Some(invalid) = &file.invalid {
@@ -309,7 +308,6 @@ fn build_issues(files: &[ScannedMdoc]) -> Vec<IndexIssue> {
                 ref_fnode: invalid.ref_fnode.clone(),
                 error: invalid.error.clone(),
             });
-            blocking_paths.insert(file.path.as_str());
         }
         if let Some(node) = &file.node {
             if is_reportable_fnode(&node.fnode) {
@@ -327,32 +325,12 @@ fn build_issues(files: &[ScannedMdoc]) -> Vec<IndexIssue> {
         }
         let error = format!("duplicate fnode '{}' across: {}", fnode, paths.join(", "));
         for path in paths {
-            blocking_paths.insert(*path);
             issues.push(IndexIssue {
                 path: (*path).to_string(),
                 kind: "duplicate",
                 ref_fnode: fnode.to_string(),
                 error: error.clone(),
             });
-        }
-    }
-
-    for file in files {
-        let Some(node) = &file.node else {
-            continue;
-        };
-        if !node.structurally_valid || blocking_paths.contains(file.path.as_str()) {
-            continue;
-        }
-        for dependency in &node.dependencies {
-            if !claimants.contains_key(dependency.as_str()) {
-                issues.push(IndexIssue {
-                    path: file.path.clone(),
-                    kind: "missing",
-                    ref_fnode: dependency.clone(),
-                    error: format!("missing dependency target: {dependency}"),
-                });
-            }
         }
     }
     issues.sort_by(|left, right| {
@@ -1013,16 +991,8 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
         .into_iter()
         .flatten()
         .collect();
-    let mut duplicate_state_changes = HashSet::new();
     for fnode in &identity_fnodes {
-        duplicate_state_changes.extend(refresh_duplicate_issues_for_fnode(conn, Some(fnode))?);
-    }
-    for path in duplicate_state_changes {
-        refresh_missing_issues_for_source(conn, &path)?;
-    }
-    refresh_missing_issues_for_source(conn, &rel_path)?;
-    for fnode in &identity_fnodes {
-        refresh_missing_issues_for_target(conn, Some(fnode))?;
+        refresh_duplicate_issues_for_fnode(conn, Some(fnode))?;
     }
     let new_has_blocking_issue = path_has_blocking_issue(conn, &rel_path)?;
 
@@ -1079,10 +1049,7 @@ pub fn delete_indexed_path(conn: &Connection, stale_path: &str) -> Result<()> {
     conn.execute("DELETE FROM mdoc_edges WHERE src_path = ?", [stale_path])?;
     conn.execute("DELETE FROM mdoc_issues WHERE path = ?", [stale_path])?;
 
-    for path in refresh_duplicate_issues_for_fnode(conn, old_fnode.as_deref())? {
-        refresh_missing_issues_for_source(conn, &path)?;
-    }
-    refresh_missing_issues_for_target(conn, old_fnode.as_deref())?;
+    refresh_duplicate_issues_for_fnode(conn, old_fnode.as_deref())?;
 
     let mut affected = old_dst_fnodes;
     if let Some(ref fnode) = old_fnode {
@@ -1220,21 +1187,10 @@ fn cleanup_stale_fnode_paths(
     Ok(())
 }
 
-fn refresh_duplicate_issues_for_fnode(
-    conn: &Connection,
-    fnode: Option<&str>,
-) -> Result<HashSet<String>> {
+fn refresh_duplicate_issues_for_fnode(conn: &Connection, fnode: Option<&str>) -> Result<()> {
     let fnode = match fnode {
         Some(f) if is_reportable_fnode(f) => f,
-        _ => return Ok(HashSet::new()),
-    };
-    let old_paths: HashSet<String> = {
-        let mut stmt = conn
-            .prepare("SELECT path FROM mdoc_issues WHERE kind = 'duplicate' AND ref_fnode = ?")?;
-        let paths = stmt
-            .query_map([fnode], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        paths
+        _ => return Ok(()),
     };
     conn.execute(
         "DELETE FROM mdoc_issues WHERE kind = 'duplicate' AND ref_fnode = ?",
@@ -1244,76 +1200,15 @@ fn refresh_duplicate_issues_for_fnode(
     let paths: Vec<String> = stmt
         .query_map([fnode], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<_>>()?;
-    let new_paths: HashSet<String> = if paths.len() < 2 {
-        HashSet::new()
-    } else {
-        paths.iter().cloned().collect()
-    };
     if paths.len() >= 2 {
         let error = format!("duplicate fnode '{}' across: {}", fnode, paths.join(", "));
         for path in &paths {
             insert_issue(conn, path, "duplicate", fnode, &error)?;
         }
     }
-    Ok(old_paths
-        .symmetric_difference(&new_paths)
-        .cloned()
-        .collect())
+    Ok(())
 }
 
 fn is_reportable_fnode(fnode: &str) -> bool {
     !(fnode.is_empty() || fnode.starts_with('<') && fnode.ends_with('>'))
-}
-
-fn refresh_missing_issues_for_source(conn: &Connection, src_path: &str) -> Result<()> {
-    conn.execute(
-        "DELETE FROM mdoc_issues WHERE kind = 'missing' AND path = ?",
-        [src_path],
-    )?;
-    if path_has_blocking_issue(conn, src_path)? {
-        return Ok(());
-    }
-    let mut stmt =
-        conn.prepare("SELECT dst_fnode FROM mdoc_edges WHERE src_path = ? ORDER BY ord")?;
-    let dep_fnodes: Vec<String> = stmt
-        .query_map([src_path], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    for dep_fnode in dep_fnodes {
-        refresh_missing_issues_for_target(conn, Some(&dep_fnode))?;
-    }
-    Ok(())
-}
-
-fn refresh_missing_issues_for_target(conn: &Connection, target_fnode: Option<&str>) -> Result<()> {
-    let target = match target_fnode {
-        Some(f) if !(f.is_empty() || f.starts_with('<') && f.ends_with('>')) => f,
-        _ => return Ok(()),
-    };
-    conn.execute(
-        "DELETE FROM mdoc_issues WHERE kind = 'missing' AND ref_fnode = ?",
-        [target],
-    )?;
-    // Any claimant means the target is present. Multiple claimants are
-    // reported separately as a duplicate/ambiguous target.
-    let mut stmt = conn.prepare("SELECT path FROM mdocs WHERE fnode = ? ORDER BY path LIMIT 2")?;
-    let node_paths: Vec<String> = stmt
-        .query_map([target], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    if !node_paths.is_empty() {
-        return Ok(());
-    }
-    let error = format!("missing dependency target: {target}");
-    let mut stmt2 = conn.prepare(
-        "SELECT DISTINCT src_path FROM mdoc_edges WHERE dst_fnode = ? ORDER BY src_path",
-    )?;
-    let src_paths: Vec<String> = stmt2
-        .query_map([target], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    for src_path in src_paths {
-        if path_has_blocking_issue(conn, &src_path)? {
-            continue;
-        }
-        insert_issue(conn, &src_path, "missing", target, &error)?;
-    }
-    Ok(())
 }

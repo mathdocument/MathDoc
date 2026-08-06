@@ -475,14 +475,8 @@ pub(super) fn invalid_issue_rows(conn: &Connection) -> Result<Vec<GraphIssue>> {
 
 fn missing_issue_rows(conn: &Connection) -> Result<Vec<GraphIssue>> {
     let mut stmt = conn.prepare(
-        "SELECT ref_fnode, error FROM mdoc_issues
-         WHERE kind = 'missing'
-           AND NOT EXISTS (
-             SELECT 1 FROM mdoc_issues AS si
-             WHERE si.path = mdoc_issues.path
-               AND si.kind IN ('invalid', 'duplicate')
-           )
-         ORDER BY ref_fnode, path",
+        "SELECT ref_fnode, error FROM mdoc_missing_issues
+         ORDER BY ref_fnode",
     )?;
     let mut deduped: Vec<GraphIssue> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -738,19 +732,17 @@ fn issue_lookup_for_fnodes(
     for chunk in fnodes.chunks(CHUNK_SIZE) {
         let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
-            "SELECT path, kind, ref_fnode, error FROM mdoc_issues
+            "WITH issue_rows AS (
+               SELECT path, kind, ref_fnode, error FROM mdoc_issues
+               WHERE kind IN ('invalid', 'duplicate')
+               UNION ALL
+               SELECT path, kind, ref_fnode, error FROM mdoc_missing_issues
+             )
+             SELECT path, kind, ref_fnode, error FROM issue_rows
              WHERE ref_fnode IN ({placeholders})
-                AND (
-                  kind IN ('invalid', 'duplicate')
-                  OR (kind = 'missing' AND NOT EXISTS (
-                   SELECT 1 FROM mdoc_issues AS si
-                    WHERE si.path = mdoc_issues.path
-                      AND si.kind IN ('invalid', 'duplicate')
-                  ))
-                )
                 AND NOT EXISTS (
                   SELECT 1 FROM mdocs AS valid
-                  WHERE valid.fnode = mdoc_issues.ref_fnode
+                  WHERE valid.fnode = issue_rows.ref_fnode
                     AND NOT EXISTS (
                       SELECT 1 FROM mdoc_issues AS blocking
                       WHERE blocking.path = valid.path

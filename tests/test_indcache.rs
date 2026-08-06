@@ -30,6 +30,17 @@ fn indexed_fnode_count(cache: &IndCache, fnode: &str) -> usize {
         .count()
 }
 
+fn stored_missing_issue_count(cache: &IndCache) -> i64 {
+    rusqlite::Connection::open(index_path(cache))
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM mdoc_issues WHERE kind = 'missing'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
 fn topo_depth(cache: &IndCache, fnode: &str) -> u32 {
     cache.node_summary(fnode).unwrap().depth
 }
@@ -546,6 +557,7 @@ fn full_refresh_crosses_bulk_insert_boundaries() {
     assert_eq!(report.nodes, 201);
     assert_eq!(report.edges, 201);
     assert_eq!(report.missing.len(), 201);
+    assert_eq!(stored_missing_issue_count(&cache), 0);
 }
 
 #[test]
@@ -981,6 +993,7 @@ fn test_upsert_path_updates_cached_edges_and_missing_issues() {
         cache.direct_dependency_summaries("src-node").unwrap(),
         vec![missing]
     );
+    assert_eq!(stored_missing_issue_count(&cache), 0);
 }
 
 #[test]
@@ -1063,7 +1076,7 @@ fn partial_identity_issue_does_not_poison_a_valid_node_with_the_same_fnode() {
 }
 
 #[test]
-fn unblocked_duplicate_claimant_rebuilds_its_missing_issues() {
+fn unblocked_duplicate_claimant_exposes_derived_missing_issue() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     setup(root);
@@ -1088,6 +1101,37 @@ fn unblocked_duplicate_claimant_rebuilds_its_missing_issues() {
         .unwrap()
         .issues_by_fnode
         .contains_key("missing-node"));
+}
+
+#[test]
+fn source_blocking_transitions_refresh_derived_missing_issues() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    let source = root.join("source.mdoc");
+    let duplicate = root.join("duplicate.mdoc");
+    write(
+        &source,
+        "@fnode: shared-node\n@title: Source\n\n@dep:\nmissing-node\n@end\n",
+    );
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    assert_eq!(cache.graph_check_report().unwrap().missing.len(), 1);
+
+    write(&duplicate, "@fnode: shared-node\n@title: Duplicate\n");
+    cache.upsert_path(&duplicate).unwrap();
+    assert!(cache.graph_check_report().unwrap().missing.is_empty());
+
+    fs::remove_file(&duplicate).unwrap();
+    cache.discover_workspace_changes().unwrap();
+    assert_eq!(cache.graph_check_report().unwrap().missing.len(), 1);
+
+    write(
+        &source,
+        "@fnode: shared-node\n@title: Source\n@title: Invalid\n\n@dep:\nmissing-node\n@end\n",
+    );
+    cache.upsert_path(&source).unwrap();
+    assert!(cache.graph_check_report().unwrap().missing.is_empty());
+    assert_eq!(stored_missing_issue_count(&cache), 0);
 }
 
 #[test]
