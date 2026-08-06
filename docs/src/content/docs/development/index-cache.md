@@ -5,11 +5,14 @@ description: SQLite ownership, schemas, refresh paths, derived graph data, and c
 
 `IndCache` owns the SQLite database at `.mdc/index.db`, operational indexing and
 materialization transaction boundaries, and the conversion between filesystem state
-and indexed graph state. The current schema version is `20`; compatible schemas starting
+and indexed graph state. The current schema version is `21`; compatible schemas starting
 at version `17` are migrated transactionally in place, older managed schemas are rebuilt
 from `.mdoc` files, and newer schemas are rejected without mutation.
 The version 19 migration removes stored missing diagnostics and rebuilds valid in-degree
-before enabling their derived view.
+before enabling their derived view. Version 21 interns dependency endpoint strings and
+rewrites edges to compact integer references without recomputing graph-derived rows.
+The migration releases the old table and index pages to SQLite's freelist, so they are
+immediately reusable even though the database file does not shrink until `VACUUM`.
 
 MathDoc bundles SQLite and requires engine version 3.51.3 or newer so concurrent WAL
 readers cannot encounter older WAL-reset defects. The connection enables WAL mode and
@@ -69,7 +72,8 @@ updates. Read-facing facades may transactionally materialize derived caches.
 | `mdoc_files` | `path`, `mtime_ns`, `size` | Change detection and stale path cleanup |
 | `mdocs` | integer `id`, unique `path`, `fnode`, generated `fnode_lc`, title, depth | Search, resolution, persisted depth |
 | `mdoc_search` | FTS5 trigram index over fnode and normalized title | Indexed substring search |
-| `mdoc_edges` | `src_path`, `src_fnode`, `dst_fnode`, `ord` | Ordered dependency edges |
+| `mdoc_symbols` | integer `id`, unique `fnode` | Interned dependency endpoint strings |
+| `mdoc_edges` | `src_path`, `src_symbol_id`, `dst_symbol_id`, `ord` | Compact ordered dependency edges |
 | `mdoc_issues` | `path`, `kind`, `ref_fnode`, `error` | Stored invalid and duplicate diagnostics |
 | `mdoc_missing_issues` | valid in-degree and claimant indexes | Derived missing-target diagnostics |
 | `mdoc_in_degree` | `fnode`, `in_degree` | Precomputed valid-source in-degree |
@@ -77,11 +81,13 @@ updates. Read-facing facades may transactionally materialize derived caches.
 | `mdoc_index_state` | epoch, dirty flags, bootstrap, digest, document count | Global materialization state |
 | `mdoc_scc_result` | `graph_epoch`, `cycles_json` | Representative cycles for one epoch |
 
-`mdoc_valid_edges` is a schema-owned view. It includes `mdoc_edges` whose source path
-has no `invalid` or `duplicate` issue. A missing target does not suppress its source
-edge. Source/destination and composite covering edge indexes support pair lookups and
-reverse traversal without scanning a high-degree source, while the path-leading issue
-primary key supports the view predicate. `mdoc_missing_issues` derives missing targets
+`mdoc_valid_edges` is a schema-owned view. It resolves interned endpoint IDs back to text
+and includes `mdoc_edges` whose source path has no `invalid` or `duplicate` issue. A
+missing target does not suppress its source edge. Integer source/destination covering
+indexes support pair lookups and reverse traversal without scanning a high-degree source,
+while the path-leading issue primary key supports the view predicate. Replaced and deleted
+paths prune only their now-unreferenced symbols, avoiding a workspace-wide cleanup scan.
+`mdoc_missing_issues` derives missing targets
 from the maintained valid-edge in-degree aggregate when no complete identity claimant
 exists in `mdocs`. Invalid or duplicate complete claimants remain present-but-invalid
 rather than also being missing.
@@ -136,9 +142,10 @@ bootstrap. Node creation and dependency writes also run `refresh_all()` under th
 workspace mutation lock before final duplicate, snapshot, and cycle checks.
 
 Bulk SQL uses `CHUNK_SIZE = 500` for `IN (...)` lists. Full refresh replacement uses
-200-row multi-value inserts to remain within SQLite variable limits, including the
-four-column edge and stored-issue tables. Missing diagnostics are queried from their view
-instead of being rewritten when a popular target appears or disappears.
+200-row multi-value inserts to remain within SQLite variable limits. Edge batches first
+intern their distinct source and target strings, resolve the integer IDs, and then write
+the four-column edge rows. Missing diagnostics are queried from their view instead of
+being rewritten when a popular target appears or disappears.
 
 ## Derived graph data
 

@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 20;
+const SCHEMA_VERSION: i32 = 21;
 const FIRST_INCREMENTAL_SCHEMA_VERSION: i32 = 17;
 const MIN_SQLITE_VERSION_NUMBER: i32 = 3_051_003;
 
@@ -58,19 +58,22 @@ CREATE INDEX IF NOT EXISTS idx_mdoc_files_lean_verified
 CREATE INDEX IF NOT EXISTS idx_mdoc_files_rocq_verified
     ON mdoc_files(rocq_status) WHERE rocq_status = 2;
 
-CREATE TABLE IF NOT EXISTS mdoc_edges (
-    src_path  TEXT    NOT NULL,
-    src_fnode TEXT    NOT NULL,
-    dst_fnode TEXT    NOT NULL,
-    ord       INTEGER NOT NULL,
-    PRIMARY KEY (src_path, ord)
+CREATE TABLE IF NOT EXISTS mdoc_symbols (
+    id    INTEGER PRIMARY KEY,
+    fnode TEXT NOT NULL UNIQUE
 );
-CREATE INDEX IF NOT EXISTS idx_mdoc_edges_src_fnode ON mdoc_edges(src_fnode);
-CREATE INDEX IF NOT EXISTS idx_mdoc_edges_dst_fnode ON mdoc_edges(dst_fnode);
+
+CREATE TABLE IF NOT EXISTS mdoc_edges (
+    src_path      TEXT    NOT NULL,
+    src_symbol_id INTEGER NOT NULL REFERENCES mdoc_symbols(id),
+    dst_symbol_id INTEGER NOT NULL REFERENCES mdoc_symbols(id),
+    ord           INTEGER NOT NULL,
+    PRIMARY KEY (src_path, ord)
+) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_mdoc_edges_src_dst
-    ON mdoc_edges(src_fnode, dst_fnode, src_path);
+    ON mdoc_edges(src_symbol_id, dst_symbol_id, src_path);
 CREATE INDEX IF NOT EXISTS idx_mdoc_edges_dst_src
-    ON mdoc_edges(dst_fnode, src_fnode, src_path, ord);
+    ON mdoc_edges(dst_symbol_id, src_symbol_id, src_path, ord);
 
 CREATE TABLE IF NOT EXISTS mdoc_issues (
     path      TEXT NOT NULL,
@@ -83,8 +86,10 @@ CREATE INDEX IF NOT EXISTS idx_mdoc_issues_kind      ON mdoc_issues(kind);
 CREATE INDEX IF NOT EXISTS idx_mdoc_issues_ref_fnode ON mdoc_issues(ref_fnode);
 
 CREATE VIEW IF NOT EXISTS mdoc_valid_edges AS
-SELECT e.src_path, e.src_fnode, e.dst_fnode, e.ord
+SELECT e.src_path, src.fnode AS src_fnode, dst.fnode AS dst_fnode, e.ord
 FROM mdoc_edges e
+JOIN mdoc_symbols src ON src.id = e.src_symbol_id
+JOIN mdoc_symbols dst ON dst.id = e.dst_symbol_id
 WHERE NOT EXISTS (
     SELECT 1 FROM mdoc_issues i
     WHERE i.path = e.src_path
@@ -144,6 +149,7 @@ DROP TABLE IF EXISTS mdoc_in_degree;
 DROP TABLE IF EXISTS mdoc_index_state;
 DROP TABLE IF EXISTS mdoc_issues;
 DROP TABLE IF EXISTS mdoc_edges;
+DROP TABLE IF EXISTS mdoc_symbols;
 DROP TABLE IF EXISTS mdoc_dirs;
 DROP TABLE IF EXISTS mdoc_files;
 DROP TABLE IF EXISTS mdocs;
@@ -188,6 +194,36 @@ ALTER TABLE mdoc_index_state
 UPDATE mdoc_index_state
 SET document_count = (SELECT COUNT(*) FROM mdocs)
 WHERE id = 1;
+";
+
+const MIGRATE_20_TO_21_SQL: &str = "
+DROP VIEW IF EXISTS mdoc_valid_edges;
+ALTER TABLE mdoc_edges RENAME TO mdoc_edges_schema_20;
+CREATE TABLE mdoc_symbols (
+    id    INTEGER PRIMARY KEY,
+    fnode TEXT NOT NULL UNIQUE
+);
+INSERT INTO mdoc_symbols (fnode)
+SELECT fnode FROM (
+    SELECT src_fnode AS fnode FROM mdoc_edges_schema_20
+    UNION
+    SELECT dst_fnode AS fnode FROM mdoc_edges_schema_20
+)
+ORDER BY fnode;
+CREATE TABLE mdoc_edges (
+    src_path      TEXT    NOT NULL,
+    src_symbol_id INTEGER NOT NULL REFERENCES mdoc_symbols(id),
+    dst_symbol_id INTEGER NOT NULL REFERENCES mdoc_symbols(id),
+    ord           INTEGER NOT NULL,
+    PRIMARY KEY (src_path, ord)
+) WITHOUT ROWID;
+INSERT INTO mdoc_edges (src_path, src_symbol_id, dst_symbol_id, ord)
+SELECT e.src_path, src.id, dst.id, e.ord
+FROM mdoc_edges_schema_20 e
+JOIN mdoc_symbols src ON src.fnode = e.src_fnode
+JOIN mdoc_symbols dst ON dst.fnode = e.dst_fnode
+ORDER BY e.src_path, e.ord;
+DROP TABLE mdoc_edges_schema_20;
 ";
 
 /// Open the database at `path` with WAL mode and apply the schema.
@@ -304,6 +340,10 @@ fn apply_schema(conn: &mut Connection) -> Result<()> {
         let rebuild_search = user_version == 19;
         if rebuild_search {
             tx.execute_batch(MIGRATE_19_TO_20_SQL)?;
+            user_version = 20;
+        }
+        if user_version == 20 {
+            tx.execute_batch(MIGRATE_20_TO_21_SQL)?;
         }
         tx.execute_batch(CREATE_SQL)?;
         if rebuild_search {
@@ -323,6 +363,58 @@ fn apply_schema(conn: &mut Connection) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    fn insert_edge(conn: &Connection, path: &str, source: &str, target: &str, order: i64) {
+        conn.execute(
+            "INSERT INTO mdoc_symbols (fnode) VALUES (?), (?)
+             ON CONFLICT(fnode) DO NOTHING",
+            [source, target],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mdoc_edges (src_path, src_symbol_id, dst_symbol_id, ord)
+             SELECT ?, src.id, dst.id, ?
+             FROM mdoc_symbols src, mdoc_symbols dst
+             WHERE src.fnode = ? AND dst.fnode = ?",
+            rusqlite::params![path, order, source, target],
+        )
+        .unwrap();
+    }
+
+    fn downgrade_edges_to_schema_twenty(conn: &Connection) {
+        conn.execute_batch(
+            "DROP VIEW mdoc_valid_edges;
+             ALTER TABLE mdoc_edges RENAME TO mdoc_edges_schema_21;
+             CREATE TABLE mdoc_edges (
+                 src_path  TEXT    NOT NULL,
+                 src_fnode TEXT    NOT NULL,
+                 dst_fnode TEXT    NOT NULL,
+                 ord       INTEGER NOT NULL,
+                 PRIMARY KEY (src_path, ord)
+             );
+             INSERT INTO mdoc_edges (src_path, src_fnode, dst_fnode, ord)
+             SELECT e.src_path, src.fnode, dst.fnode, e.ord
+             FROM mdoc_edges_schema_21 e
+             JOIN mdoc_symbols src ON src.id = e.src_symbol_id
+             JOIN mdoc_symbols dst ON dst.id = e.dst_symbol_id;
+             DROP TABLE mdoc_edges_schema_21;
+             DROP TABLE mdoc_symbols;
+             CREATE INDEX idx_mdoc_edges_src_fnode ON mdoc_edges(src_fnode);
+             CREATE INDEX idx_mdoc_edges_dst_fnode ON mdoc_edges(dst_fnode);
+             CREATE INDEX idx_mdoc_edges_src_dst
+                 ON mdoc_edges(src_fnode, dst_fnode, src_path);
+             CREATE INDEX idx_mdoc_edges_dst_src
+                 ON mdoc_edges(dst_fnode, src_fnode, src_path, ord);
+             CREATE VIEW mdoc_valid_edges AS
+             SELECT e.src_path, e.src_fnode, e.dst_fnode, e.ord
+             FROM mdoc_edges e
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM mdoc_issues i
+                 WHERE i.path = e.src_path AND i.kind IN ('invalid', 'duplicate')
+             );",
+        )
+        .unwrap();
+    }
 
     fn downgrade_mdocs_to_schema_nineteen(conn: &Connection) {
         conn.execute_batch(
@@ -382,13 +474,16 @@ mod tests {
     fn valid_edge_view_filters_only_blocking_source_issues() {
         let dir = TempDir::new().unwrap();
         let conn = open_db(&dir.path().join("index.db")).unwrap();
+        for (path, source) in [
+            ("valid.mdoc", "valid"),
+            ("missing.mdoc", "missing"),
+            ("invalid.mdoc", "invalid"),
+            ("duplicate.mdoc", "duplicate"),
+        ] {
+            insert_edge(&conn, path, source, "target", 0);
+        }
         conn.execute_batch(
-            "INSERT INTO mdoc_edges (src_path, src_fnode, dst_fnode, ord) VALUES
-                 ('valid.mdoc', 'valid', 'target', 0),
-                 ('missing.mdoc', 'missing', 'target', 0),
-                 ('invalid.mdoc', 'invalid', 'target', 0),
-                 ('duplicate.mdoc', 'duplicate', 'target', 0);
-             INSERT INTO mdoc_issues (path, kind, ref_fnode, error) VALUES
+            "INSERT INTO mdoc_issues (path, kind, ref_fnode, error) VALUES
                  ('missing.mdoc', 'missing', 'absent', 'missing target'),
                  ('invalid.mdoc', 'invalid', 'invalid', 'invalid source'),
                  ('duplicate.mdoc', 'duplicate', 'duplicate', 'duplicate source');",
@@ -556,7 +651,7 @@ mod tests {
         let mut conn = open_db(&path).unwrap();
         // Old derived rows are discarded rather than migrated in place.
         conn.execute_batch("PRAGMA user_version = 0;").unwrap();
-        conn.execute_batch("INSERT INTO mdoc_edges (src_path, src_fnode, dst_fnode, ord) VALUES ('a.mdoc', 'fa', 'fb', 0)").unwrap();
+        insert_edge(&conn, "a.mdoc", "fa", "fb", 0);
         apply_schema(&mut conn).unwrap();
         let edges: i32 = conn
             .query_row("SELECT COUNT(*) FROM mdoc_edges", [], |r| r.get(0))
@@ -642,6 +737,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("index.db");
         let conn = open_db(&path).unwrap();
+        downgrade_edges_to_schema_twenty(&conn);
         conn.execute_batch(
             "INSERT INTO mdoc_files (path, mtime_ns, size) VALUES ('source.mdoc', 1, 2);
              INSERT INTO mdocs (path, fnode, title, title_lc)
@@ -666,7 +762,8 @@ mod tests {
 
         let edge: (String, String) = conn
             .query_row(
-                "SELECT src_fnode, dst_fnode FROM mdoc_edges WHERE src_path = 'source.mdoc'",
+                "SELECT src_fnode, dst_fnode
+                 FROM mdoc_valid_edges WHERE src_path = 'source.mdoc'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -704,6 +801,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("index.db");
         let conn = open_db(&path).unwrap();
+        downgrade_edges_to_schema_twenty(&conn);
         conn.execute_batch(
             "INSERT INTO mdoc_files (path, mtime_ns, size) VALUES
                  ('source.mdoc', 1, 2),
@@ -765,10 +863,11 @@ mod tests {
         let conn = open_db(&path).unwrap();
         conn.execute_batch(
             "INSERT INTO mdocs (path, fnode, title, title_lc)
-                  VALUES ('source.mdoc', 'SOURCE-NODE', 'Search Needle', 'search needle');",
+                   VALUES ('source.mdoc', 'SOURCE-NODE', 'Search Needle', 'search needle');",
         )
         .unwrap();
         downgrade_mdocs_to_schema_nineteen(&conn);
+        downgrade_edges_to_schema_twenty(&conn);
         conn.execute_batch("PRAGMA user_version = 19;").unwrap();
         drop(conn);
 
@@ -817,6 +916,130 @@ mod tests {
     }
 
     #[test]
+    fn schema_twenty_normalizes_edge_endpoints_without_discarding_rows() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("index.db");
+        let conn = open_db(&path).unwrap();
+        downgrade_edges_to_schema_twenty(&conn);
+        conn.execute_batch(
+            "INSERT INTO mdoc_edges (src_path, src_fnode, dst_fnode, ord) VALUES
+                 ('a.mdoc', 'shared-source', 'first-target', 0),
+                 ('b.mdoc', 'shared-source', 'second-target', 0);
+             INSERT INTO mdoc_issues (path, kind, ref_fnode, error)
+                 VALUES ('a.mdoc', 'invalid', 'shared-source', 'blocked source');
+             INSERT INTO mdoc_in_degree (fnode, in_degree)
+                 VALUES ('derived-sentinel', 7);
+             PRAGMA user_version = 20;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open_db(&path).unwrap();
+
+        assert_eq!(checked_user_version(&conn).unwrap(), SCHEMA_VERSION);
+        let edges: Vec<(String, String, String)> = conn
+            .prepare(
+                "SELECT e.src_path, src.fnode, dst.fnode
+                 FROM mdoc_edges e
+                 JOIN mdoc_symbols src ON src.id = e.src_symbol_id
+                 JOIN mdoc_symbols dst ON dst.id = e.dst_symbol_id
+                 ORDER BY e.src_path, e.ord",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            edges,
+            [
+                (
+                    "a.mdoc".into(),
+                    "shared-source".into(),
+                    "first-target".into()
+                ),
+                (
+                    "b.mdoc".into(),
+                    "shared-source".into(),
+                    "second-target".into()
+                ),
+            ]
+        );
+        let symbol_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mdoc_symbols", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(symbol_count, 3);
+        let valid_edge_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mdoc_valid_edges", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(valid_edge_count, 1);
+        let derived_degree: i64 = conn
+            .query_row(
+                "SELECT in_degree FROM mdoc_in_degree WHERE fnode = 'derived-sentinel'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(derived_degree, 7);
+        let edge_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'mdoc_edges'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(edge_sql.contains("WITHOUT ROWID"));
+    }
+
+    #[test]
+    fn failed_edge_normalization_migration_rolls_back_schema_and_rows() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("index.db");
+        let conn = open_db(&path).unwrap();
+        downgrade_edges_to_schema_twenty(&conn);
+        conn.execute_batch(
+            "INSERT INTO mdoc_edges (src_path, src_fnode, dst_fnode, ord)
+                 VALUES ('source.mdoc', 'source-node', 'target-node', 0);
+             DROP INDEX idx_mdoc_edges_dst_src;
+             CREATE TABLE idx_mdoc_edges_dst_src (value TEXT);
+             INSERT INTO idx_mdoc_edges_dst_src VALUES ('preserve me');
+             PRAGMA user_version = 20;",
+        )
+        .unwrap();
+        drop(conn);
+
+        assert!(open_db(&path).is_err());
+
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(checked_user_version(&conn).unwrap(), 20);
+        let edge: (String, String) = conn
+            .query_row("SELECT src_fnode, dst_fnode FROM mdoc_edges", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(edge, ("source-node".into(), "target-node".into()));
+        let symbols_exist: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM sqlite_schema
+                     WHERE type = 'table' AND name = 'mdoc_symbols'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!symbols_exist);
+        let value: String = conn
+            .query_row("SELECT value FROM idx_mdoc_edges_dst_src", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(value, "preserve me");
+    }
+
+    #[test]
     fn failed_search_index_migration_rolls_back_schema_creation() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("index.db");
@@ -862,6 +1085,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("index.db");
         let conn = open_db(&path).unwrap();
+        downgrade_edges_to_schema_twenty(&conn);
         conn.execute_batch(
             "INSERT INTO mdoc_issues (path, kind, ref_fnode, error)
                   VALUES ('source.mdoc', 'missing', 'target-node', 'legacy missing target');
@@ -907,6 +1131,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("index.db");
         let conn = open_db(&path).unwrap();
+        downgrade_edges_to_schema_twenty(&conn);
         conn.execute_batch(
             "INSERT INTO mdoc_edges (src_path, src_fnode, dst_fnode, ord)
                  VALUES ('source.mdoc', 'source-node', 'target-node', 0);
@@ -946,18 +1171,24 @@ mod tests {
 
         for (sql, index) in [
             (
-                "SELECT dst_fnode, src_path FROM mdoc_edges WHERE src_fnode = 'source'",
+                "SELECT dst_fnode, src_path
+                 FROM mdoc_valid_edges WHERE src_fnode = 'source'",
                 "idx_mdoc_edges_src_dst",
             ),
             (
-                "SELECT src_fnode, src_path, ord FROM mdoc_edges WHERE dst_fnode = 'target'",
+                "SELECT src_fnode, src_path, ord
+                 FROM mdoc_valid_edges WHERE dst_fnode = 'target'",
                 "idx_mdoc_edges_dst_src",
             ),
         ] {
-            let plan: String = conn
-                .query_row(&format!("EXPLAIN QUERY PLAN {sql}"), [], |row| row.get(3))
-                .unwrap();
-            assert!(plan.contains(index), "unexpected query plan: {plan}");
+            let mut plan = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let plan = plan
+                .query_map([], |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+                .join("\n");
+            assert!(plan.contains(index), "unexpected query plan:\n{plan}");
         }
 
         let plan = conn

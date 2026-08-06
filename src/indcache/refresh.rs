@@ -386,8 +386,12 @@ fn indexed_digest(conn: &Connection) -> Result<String> {
          FROM mdoc_files f LEFT JOIN mdocs m ON m.path = f.path
          ORDER BY f.path",
     )?;
-    let mut edge_stmt =
-        conn.prepare("SELECT src_path, dst_fnode FROM mdoc_edges ORDER BY src_path, ord")?;
+    let mut edge_stmt = conn.prepare(
+        "SELECT e.src_path, dst.fnode
+         FROM mdoc_edges e
+         JOIN mdoc_symbols dst ON dst.id = e.dst_symbol_id
+         ORDER BY e.src_path, e.ord",
+    )?;
     let mut invalid_stmt = conn.prepare(
         "SELECT path, ref_fnode, error FROM mdoc_issues
          WHERE kind = 'invalid' ORDER BY path, ref_fnode, error",
@@ -492,8 +496,12 @@ fn semantic_delta_paths(
          FROM mdoc_files f LEFT JOIN mdocs m ON m.path = f.path
          ORDER BY f.path",
     )?;
-    let mut edge_stmt =
-        conn.prepare("SELECT src_path, dst_fnode FROM mdoc_edges ORDER BY src_path, ord")?;
+    let mut edge_stmt = conn.prepare(
+        "SELECT e.src_path, dst.fnode
+         FROM mdoc_edges e
+         JOIN mdoc_symbols dst ON dst.id = e.dst_symbol_id
+         ORDER BY e.src_path, e.ord",
+    )?;
     let mut invalid_stmt = conn.prepare(
         "SELECT path, ref_fnode, error FROM mdoc_issues
          WHERE kind = 'invalid' ORDER BY path, ref_fnode, error",
@@ -703,7 +711,12 @@ fn replace_index_rows(
     files: &[ScannedMdoc],
     issues: &[IndexIssue],
 ) -> Result<()> {
-    conn.execute_batch("DELETE FROM mdoc_edges; DELETE FROM mdoc_issues; DELETE FROM mdocs;")?;
+    conn.execute_batch(
+        "DELETE FROM mdoc_edges;
+         DELETE FROM mdoc_symbols;
+         DELETE FROM mdoc_issues;
+         DELETE FROM mdocs;",
+    )?;
 
     let nodes: Vec<(&ScannedMdoc, &ScannedNode)> = files
         .iter()
@@ -750,27 +763,7 @@ fn replace_index_rows(
                 })
         })
         .collect();
-    for chunk in edges.chunks(BULK_ROWS) {
-        let placeholders = chunk
-            .iter()
-            .map(|_| "(?,?,?,?)")
-            .collect::<Vec<_>>()
-            .join(",");
-        let mut params: Vec<&dyn ToSql> = Vec::with_capacity(chunk.len() * 4);
-        for (path, source, target, order) in chunk {
-            params.push(path);
-            params.push(source);
-            params.push(target);
-            params.push(order);
-        }
-        conn.execute(
-            &format!(
-                "INSERT INTO mdoc_edges (src_path, src_fnode, dst_fnode, ord)
-                 VALUES {placeholders}"
-            ),
-            params.as_slice(),
-        )?;
-    }
+    insert_edges(conn, &edges)?;
 
     for chunk in issues.chunks(BULK_ROWS) {
         let placeholders = chunk
@@ -796,6 +789,79 @@ fn replace_index_rows(
         "UPDATE mdoc_index_state SET document_count = ? WHERE id = 1",
         [i64::try_from(nodes.len()).unwrap_or(i64::MAX)],
     )?;
+    Ok(())
+}
+
+fn insert_edges(conn: &Connection, edges: &[(&str, &str, &str, i64)]) -> Result<()> {
+    let mut symbols = Vec::with_capacity(edges.len() * 2);
+    for (_, source, target, _) in edges {
+        symbols.push(*source);
+        symbols.push(*target);
+    }
+    symbols.sort_unstable();
+    symbols.dedup();
+
+    for chunk in symbols.chunks(CHUNK_SIZE) {
+        let placeholders = chunk.iter().map(|_| "(?)").collect::<Vec<_>>().join(",");
+        conn.execute(
+            &format!(
+                "INSERT INTO mdoc_symbols (fnode) VALUES {placeholders}
+                 ON CONFLICT(fnode) DO NOTHING"
+            ),
+            rusqlite::params_from_iter(chunk.iter().copied()),
+        )?;
+    }
+
+    let mut symbol_ids: HashMap<String, i64> = HashMap::with_capacity(symbols.len());
+    for chunk in symbols.chunks(CHUNK_SIZE) {
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT fnode, id FROM mdoc_symbols WHERE fnode IN ({placeholders})"
+        ))?;
+        for row in stmt.query_map(rusqlite::params_from_iter(chunk.iter().copied()), |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })? {
+            let (fnode, id) = row?;
+            symbol_ids.insert(fnode, id);
+        }
+    }
+
+    for chunk in edges.chunks(BULK_ROWS) {
+        let resolved: Vec<(&str, i64, i64, i64)> = chunk
+            .iter()
+            .map(|(path, source, target, order)| {
+                Ok((
+                    *path,
+                    *symbol_ids.get(*source).ok_or_else(|| {
+                        anyhow::anyhow!("missing interned source symbol {source}")
+                    })?,
+                    *symbol_ids.get(*target).ok_or_else(|| {
+                        anyhow::anyhow!("missing interned target symbol {target}")
+                    })?,
+                    *order,
+                ))
+            })
+            .collect::<Result<_>>()?;
+        let placeholders = chunk
+            .iter()
+            .map(|_| "(?,?,?,?)")
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut params: Vec<&dyn ToSql> = Vec::with_capacity(chunk.len() * 4);
+        for (path, source, target, order) in &resolved {
+            params.push(path);
+            params.push(source);
+            params.push(target);
+            params.push(order);
+        }
+        conn.execute(
+            &format!(
+                "INSERT INTO mdoc_edges (src_path, src_symbol_id, dst_symbol_id, ord)
+                 VALUES {placeholders}"
+            ),
+            params.as_slice(),
+        )?;
+    }
     Ok(())
 }
 
@@ -882,6 +948,7 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
     let old_fnode = fnode_for_path(conn, &rel_path)?;
     let old_had_blocking_issue = path_has_blocking_issue(conn, &rel_path)?;
     let old_semantics = indexed_file_semantics(conn, &rel_path)?;
+    let old_symbol_ids = symbol_ids_for_source_path(conn, &rel_path)?;
 
     let mut source_snapshots = FileSnapshotBatch::new(&root_resolved)?;
     let source_snapshot = source_snapshots.capture_read(&file_path)?;
@@ -902,7 +969,12 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
 
     // Snapshot old edge targets before clearing
     let old_dst_fnodes: HashSet<String> = {
-        let mut stmt = conn.prepare("SELECT dst_fnode FROM mdoc_edges WHERE src_path = ?")?;
+        let mut stmt = conn.prepare(
+            "SELECT dst.fnode
+             FROM mdoc_edges e
+             JOIN mdoc_symbols dst ON dst.id = e.dst_symbol_id
+             WHERE e.src_path = ?",
+        )?;
         let rows: HashSet<String> = stmt
             .query_map([&rel_path], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<_>>()?;
@@ -949,30 +1021,20 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
 
             upsert_search_row(conn, &rel_path, &head.fnode, &head.title)?;
             new_dst_fnodes.extend(head.depens.iter().cloned());
-            for (offset, dependencies) in head.depens.chunks(BULK_ROWS).enumerate() {
-                let placeholders = dependencies
-                    .iter()
-                    .map(|_| "(?,?,?,?)")
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let orders: Vec<i64> = (0..dependencies.len())
-                    .map(|index| (offset * BULK_ROWS + index) as i64)
-                    .collect();
-                let mut params: Vec<&dyn ToSql> = Vec::with_capacity(dependencies.len() * 4);
-                for (dependency, order) in dependencies.iter().zip(&orders) {
-                    params.push(&rel_path);
-                    params.push(&head.fnode);
-                    params.push(dependency);
-                    params.push(order);
-                }
-                conn.execute(
-                    &format!(
-                        "INSERT INTO mdoc_edges (src_path, src_fnode, dst_fnode, ord)
-                         VALUES {placeholders}"
-                    ),
-                    params.as_slice(),
-                )?;
-            }
+            let edges: Vec<(&str, &str, &str, i64)> = head
+                .depens
+                .iter()
+                .enumerate()
+                .map(|(order, dependency)| {
+                    (
+                        rel_path.as_str(),
+                        head.fnode.as_str(),
+                        dependency.as_str(),
+                        order as i64,
+                    )
+                })
+                .collect();
+            insert_edges(conn, &edges)?;
         }
         Err(e) => {
             let identity = MdocIdentity::from_bytes(content);
@@ -1010,13 +1072,20 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
         .into_iter()
         .flatten()
     {
-        let mut stmt = conn.prepare("SELECT dst_fnode FROM mdoc_edges WHERE src_fnode = ?")?;
+        let mut stmt = conn.prepare(
+            "SELECT dst.fnode
+             FROM mdoc_edges e
+             JOIN mdoc_symbols src ON src.id = e.src_symbol_id
+             JOIN mdoc_symbols dst ON dst.id = e.dst_symbol_id
+             WHERE src.fnode = ?",
+        )?;
         let targets: HashSet<String> = stmt
             .query_map([fnode], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<_>>()?;
         affected.extend(targets);
     }
     super::derived::refresh_in_degree_for_fnodes(conn, &affected)?;
+    prune_orphaned_symbols(conn, &old_symbol_ids)?;
 
     // Blocking issues filter edges and nodes without changing their stored
     // identities. In particular, a duplicate claimant becoming a malformed
@@ -1045,8 +1114,14 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
 pub fn delete_indexed_path(conn: &Connection, stale_path: &str) -> Result<()> {
     let old_fnode = fnode_for_path(conn, stale_path)?;
     let old_had_blocking_issue = path_has_blocking_issue(conn, stale_path)?;
+    let old_symbol_ids = symbol_ids_for_source_path(conn, stale_path)?;
     let old_dst_fnodes: HashSet<String> = {
-        let mut stmt = conn.prepare("SELECT dst_fnode FROM mdoc_edges WHERE src_path = ?")?;
+        let mut stmt = conn.prepare(
+            "SELECT dst.fnode
+             FROM mdoc_edges e
+             JOIN mdoc_symbols dst ON dst.id = e.dst_symbol_id
+             WHERE e.src_path = ?",
+        )?;
         let rows: HashSet<String> = stmt
             .query_map([stale_path], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<_>>()?;
@@ -1064,13 +1139,20 @@ pub fn delete_indexed_path(conn: &Connection, stale_path: &str) -> Result<()> {
 
     let mut affected = old_dst_fnodes;
     if let Some(ref fnode) = old_fnode {
-        let mut stmt = conn.prepare("SELECT dst_fnode FROM mdoc_edges WHERE src_fnode = ?")?;
+        let mut stmt = conn.prepare(
+            "SELECT dst.fnode
+             FROM mdoc_edges e
+             JOIN mdoc_symbols src ON src.id = e.src_symbol_id
+             JOIN mdoc_symbols dst ON dst.id = e.dst_symbol_id
+             WHERE src.fnode = ?",
+        )?;
         let targets: HashSet<String> = stmt
             .query_map([fnode.as_str()], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<_>>()?;
         affected.extend(targets);
     }
     super::derived::refresh_in_degree_for_fnodes(conn, &affected)?;
+    prune_orphaned_symbols(conn, &old_symbol_ids)?;
 
     if old_fnode.is_some() || !affected.is_empty() || old_had_blocking_issue {
         super::derived::bump_graph_epoch(conn)?;
@@ -1086,6 +1168,41 @@ fn invalidate_index_digest(conn: &Connection) -> Result<()> {
         "UPDATE mdoc_index_state SET index_digest = '' WHERE id = 1",
         [],
     )?;
+    Ok(())
+}
+
+fn symbol_ids_for_source_path(conn: &Connection, rel_path: &str) -> Result<HashSet<i64>> {
+    let mut stmt =
+        conn.prepare("SELECT src_symbol_id, dst_symbol_id FROM mdoc_edges WHERE src_path = ?")?;
+    let mut ids = HashSet::new();
+    for row in stmt.query_map([rel_path], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+    })? {
+        let (source, target) = row?;
+        ids.insert(source);
+        ids.insert(target);
+    }
+    Ok(ids)
+}
+
+fn prune_orphaned_symbols(conn: &Connection, ids: &HashSet<i64>) -> Result<()> {
+    let ids: Vec<i64> = ids.iter().copied().collect();
+    for chunk in ids.chunks(CHUNK_SIZE) {
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        conn.execute(
+            &format!(
+                "DELETE FROM mdoc_symbols
+                 WHERE id IN ({placeholders})
+                   AND NOT EXISTS (
+                       SELECT 1 FROM mdoc_edges WHERE src_symbol_id = mdoc_symbols.id
+                   )
+                   AND NOT EXISTS (
+                       SELECT 1 FROM mdoc_edges WHERE dst_symbol_id = mdoc_symbols.id
+                   )"
+            ),
+            rusqlite::params_from_iter(chunk),
+        )?;
+    }
     Ok(())
 }
 
@@ -1126,8 +1243,13 @@ fn indexed_file_semantics(conn: &Connection, rel_path: &str) -> Result<IndexedFi
         .optional()?;
     let node = match node {
         Some((fnode, title)) => {
-            let mut stmt =
-                conn.prepare("SELECT dst_fnode FROM mdoc_edges WHERE src_path = ? ORDER BY ord")?;
+            let mut stmt = conn.prepare(
+                "SELECT dst.fnode
+                 FROM mdoc_edges e
+                 JOIN mdoc_symbols dst ON dst.id = e.dst_symbol_id
+                 WHERE e.src_path = ?
+                 ORDER BY e.ord",
+            )?;
             let dependencies = stmt
                 .query_map([rel_path], |row| row.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;

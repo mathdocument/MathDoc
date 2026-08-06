@@ -1318,8 +1318,13 @@ pub fn path_has_blocking_issue(conn: &Connection, rel_path: &str) -> Result<bool
 }
 
 pub fn edge_targets_for_source_path(conn: &Connection, src_path: &str) -> Result<Vec<String>> {
-    let mut stmt =
-        conn.prepare("SELECT dst_fnode FROM mdoc_edges WHERE src_path = ? ORDER BY ord")?;
+    let mut stmt = conn.prepare(
+        "SELECT dst.fnode
+         FROM mdoc_edges e
+         JOIN mdoc_symbols dst ON dst.id = e.dst_symbol_id
+         WHERE e.src_path = ?
+         ORDER BY e.ord",
+    )?;
     let rows = stmt
         .query_map([src_path], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<_>>()?;

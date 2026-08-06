@@ -605,7 +605,10 @@ fn incremental_upsert_batches_large_ordered_dependency_lists() {
     let connection = rusqlite::Connection::open(index_path(&cache)).unwrap();
     let rows: Vec<(String, i64)> = connection
         .prepare(
-            "SELECT dst_fnode, ord FROM mdoc_edges WHERE src_path = 'source.mdoc' ORDER BY ord",
+            "SELECT dst_fnode, ord
+             FROM mdoc_valid_edges
+             WHERE src_path = 'source.mdoc'
+             ORDER BY ord",
         )
         .unwrap()
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
@@ -617,6 +620,44 @@ fn incremental_upsert_batches_large_ordered_dependency_lists() {
         assert_eq!(actual, expected);
         assert_eq!(*stored_order, order as i64);
     }
+    drop(connection);
+
+    let peer = root.join("peer.mdoc");
+    write(
+        &peer,
+        "@fnode: peer-node\n@title: Peer\n\n@dep:\ndep-000\n@end\n",
+    );
+    cache.upsert_path(&peer).unwrap();
+    write(
+        &source,
+        "@fnode: source-node\n@title: Source\n\n@dep:\nreplacement-dep\n@end\n",
+    );
+    cache.upsert_path(&source).unwrap();
+    let connection = rusqlite::Connection::open(index_path(&cache)).unwrap();
+    let symbols: Vec<String> = connection
+        .prepare("SELECT fnode FROM mdoc_symbols ORDER BY fnode")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        symbols,
+        ["dep-000", "peer-node", "replacement-dep", "source-node"]
+    );
+    drop(connection);
+
+    fs::remove_file(peer).unwrap();
+    cache.discover_workspace_changes().unwrap();
+    let connection = rusqlite::Connection::open(index_path(&cache)).unwrap();
+    let symbols: Vec<String> = connection
+        .prepare("SELECT fnode FROM mdoc_symbols ORDER BY fnode")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(symbols, ["replacement-dep", "source-node"]);
 }
 
 #[test]
