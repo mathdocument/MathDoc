@@ -5,9 +5,9 @@ description: SQLite ownership, schemas, refresh paths, derived graph data, and c
 
 `IndCache` owns the SQLite database at `.mdc/index.db`, operational indexing and
 materialization transaction boundaries, and the conversion between filesystem state
-and indexed graph state. The current schema version is `16`; older managed schemas are
-discarded and rebuilt from `.mdoc` files, while newer schemas are rejected without
-mutation.
+and indexed graph state. The current schema version is `18`; compatible schemas starting
+at version `17` are migrated transactionally in place, older managed schemas are rebuilt
+from `.mdoc` files, and newer schemas are rejected without mutation.
 
 The connection enables WAL mode and foreign keys. It is opened without following
 symlinks, and multiply linked database files are rejected. `IndCache` also keeps an open
@@ -58,8 +58,9 @@ updates. Read-facing facades may transactionally materialize derived caches.
 
 `mdoc_valid_edges` is a schema-owned view. It includes `mdoc_edges` whose source path
 has no `invalid` or `duplicate` issue. A missing target does not suppress its source
-edge. Source/destination edge indexes and the path-leading issue primary key support the
-view predicates.
+edge. Source/destination and composite covering edge indexes support pair lookups and
+reverse traversal without scanning a high-degree source, while the path-leading issue
+primary key supports the view predicate.
 
 `IndCache::search(query, limit)` is the canonical ranked search returning
 `NodeSummary`. Dependency candidate search reuses its patterns, ranking, and projection
@@ -92,8 +93,9 @@ memory, replaces base rows with multi-value inserts, rebuilds in-degree in one g
 query, and eagerly rebuilds topological depths and weak components.
 
 Graph changes invalidate the epoch-keyed SCC result; `graph_check_report()` rebuilds it
-lazily. Incremental path upserts and deletes clear `index_digest`, forcing the next
-strong refresh to reconcile the complete graph.
+lazily. Incremental path upserts and deletes clear `index_digest`; the next strong refresh
+streams indexed semantics to distinguish an already synchronized incremental index from
+an ABA edit before deciding whether a complete graph rebuild is necessary.
 
 The first `IndCache::open()` after database creation or schema rebuild performs a full
 bootstrap. Node creation and dependency writes also run `refresh_all()` under the

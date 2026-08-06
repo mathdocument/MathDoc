@@ -2,7 +2,8 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 17;
+const SCHEMA_VERSION: i32 = 18;
+const FIRST_INCREMENTAL_SCHEMA_VERSION: i32 = 17;
 
 const CREATE_SQL: &str = "
 CREATE TABLE IF NOT EXISTS mdocs (
@@ -36,6 +37,10 @@ CREATE TABLE IF NOT EXISTS mdoc_edges (
 );
 CREATE INDEX IF NOT EXISTS idx_mdoc_edges_src_fnode ON mdoc_edges(src_fnode);
 CREATE INDEX IF NOT EXISTS idx_mdoc_edges_dst_fnode ON mdoc_edges(dst_fnode);
+CREATE INDEX IF NOT EXISTS idx_mdoc_edges_src_dst
+    ON mdoc_edges(src_fnode, dst_fnode, src_path);
+CREATE INDEX IF NOT EXISTS idx_mdoc_edges_dst_src
+    ON mdoc_edges(dst_fnode, src_fnode, src_path, ord);
 
 CREATE TABLE IF NOT EXISTS mdoc_issues (
     path      TEXT NOT NULL,
@@ -93,6 +98,13 @@ DROP TABLE IF EXISTS mdoc_edges;
 DROP TABLE IF EXISTS mdoc_dirs;
 DROP TABLE IF EXISTS mdoc_files;
 DROP TABLE IF EXISTS mdocs;
+";
+
+const MIGRATE_17_TO_18_SQL: &str = "
+CREATE INDEX IF NOT EXISTS idx_mdoc_edges_src_dst
+    ON mdoc_edges(src_fnode, dst_fnode, src_path);
+CREATE INDEX IF NOT EXISTS idx_mdoc_edges_dst_src
+    ON mdoc_edges(dst_fnode, src_fnode, src_path, ord);
 ";
 
 /// Open the database at `path` with WAL mode and apply the schema.
@@ -176,16 +188,20 @@ fn is_database_busy(error: &anyhow::Error) -> bool {
         })
 }
 
-/// Rebuild old derived indexes instead of migrating derived rows in place.
+/// Migrate compatible schemas in place and rebuild older derived caches.
 fn apply_schema(conn: &mut Connection) -> Result<()> {
     let tx = conn.transaction()?;
     let user_version = checked_user_version(&tx)?;
 
-    if user_version < SCHEMA_VERSION {
+    if user_version < FIRST_INCREMENTAL_SCHEMA_VERSION {
         tx.execute_batch(RESET_SQL)?;
         tx.execute_batch(CREATE_SQL)?;
         tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     } else {
+        if user_version == 17 {
+            tx.execute_batch(MIGRATE_17_TO_18_SQL)?;
+            tx.execute_batch("PRAGMA user_version = 18;")?;
+        }
         tx.execute_batch(CREATE_SQL)?;
     }
 
@@ -427,6 +443,106 @@ mod tests {
                 .unwrap();
             assert!(sql.contains(column));
             assert!(sql.contains("WHERE"));
+        }
+    }
+
+    #[test]
+    fn schema_seventeen_migrates_without_discarding_rows() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("index.db");
+        let conn = open_db(&path).unwrap();
+        conn.execute_batch(
+            "INSERT INTO mdoc_files (path, mtime_ns, size) VALUES ('source.mdoc', 1, 2);
+             INSERT INTO mdocs (path, fnode, title, title_lc)
+                 VALUES ('source.mdoc', 'source-node', 'Source', 'source');
+             INSERT INTO mdoc_edges (src_path, src_fnode, dst_fnode, ord)
+                 VALUES ('source.mdoc', 'source-node', 'target-node', 0);
+             DROP INDEX idx_mdoc_edges_src_dst;
+             DROP INDEX idx_mdoc_edges_dst_src;
+             PRAGMA user_version = 17;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open_db(&path).unwrap();
+
+        let edge: (String, String) = conn
+            .query_row(
+                "SELECT src_fnode, dst_fnode FROM mdoc_edges WHERE src_path = 'source.mdoc'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(edge, ("source-node".into(), "target-node".into()));
+        assert_eq!(checked_user_version(&conn).unwrap(), SCHEMA_VERSION);
+        for index in ["idx_mdoc_edges_src_dst", "idx_mdoc_edges_dst_src"] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = ?)",
+                    [index],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists);
+        }
+    }
+
+    #[test]
+    fn failed_incremental_migration_rolls_back_schema_and_rows() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("index.db");
+        let conn = open_db(&path).unwrap();
+        conn.execute_batch(
+            "INSERT INTO mdoc_edges (src_path, src_fnode, dst_fnode, ord)
+                 VALUES ('source.mdoc', 'source-node', 'target-node', 0);
+             DROP INDEX idx_mdoc_edges_src_dst;
+             DROP INDEX idx_mdoc_edges_dst_src;
+             CREATE TABLE idx_mdoc_edges_dst_src (value TEXT);
+             PRAGMA user_version = 17;",
+        )
+        .unwrap();
+        drop(conn);
+
+        assert!(open_db(&path).is_err());
+
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(checked_user_version(&conn).unwrap(), 17);
+        let edges: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mdoc_edges", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(edges, 1);
+        let first_index_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM sqlite_schema
+                     WHERE type = 'index' AND name = 'idx_mdoc_edges_src_dst'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!first_index_exists);
+    }
+
+    #[test]
+    fn edge_pair_queries_use_covering_indexes() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_db(&dir.path().join("index.db")).unwrap();
+
+        for (sql, index) in [
+            (
+                "SELECT dst_fnode, src_path FROM mdoc_edges WHERE src_fnode = 'source'",
+                "idx_mdoc_edges_src_dst",
+            ),
+            (
+                "SELECT src_fnode, src_path, ord FROM mdoc_edges WHERE dst_fnode = 'target'",
+                "idx_mdoc_edges_dst_src",
+            ),
+        ] {
+            let plan: String = conn
+                .query_row(&format!("EXPLAIN QUERY PLAN {sql}"), [], |row| row.get(3))
+                .unwrap();
+            assert!(plan.contains(index), "unexpected query plan: {plan}");
         }
     }
 }
