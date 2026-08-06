@@ -1412,6 +1412,38 @@ fn test_incremental_topo_depth_converges_across_short_and_long_paths() {
 }
 
 #[test]
+fn batched_topo_refresh_merges_overlapping_ancestor_sets() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    let a_path = root.join("a.mdoc");
+    let b_path = root.join("b.mdoc");
+    write(
+        &root.join("root.mdoc"),
+        "@fnode: root-node\n@title: Root\n\n@dep:\na-node\nb-node\n@end\n",
+    );
+    write(&a_path, "@fnode: a-node\n@title: A\n");
+    write(&b_path, "@fnode: b-node\n@title: B\n");
+    write(&root.join("x.mdoc"), "@fnode: x-node\n@title: X\n");
+    write(&root.join("y.mdoc"), "@fnode: y-node\n@title: Y\n");
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+
+    write(
+        &a_path,
+        "@fnode: a-node\n@title: A\n\n@dep:\nx-node\n@end\n",
+    );
+    write(
+        &b_path,
+        "@fnode: b-node\n@title: B\n\n@dep:\ny-node\n@end\n",
+    );
+    cache.discover_workspace_changes().unwrap();
+
+    assert_eq!(topo_depth(&cache, "a-node"), 1);
+    assert_eq!(topo_depth(&cache, "b-node"), 1);
+    assert_eq!(topo_depth(&cache, "root-node"), 2);
+}
+
+#[test]
 fn test_lazy_component_rebuild_updates_every_member_size() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();

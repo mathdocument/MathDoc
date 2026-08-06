@@ -140,88 +140,160 @@ pub(super) fn refresh_all_derived_data(conn: &Connection) -> Result<()> {
     persist_weak_components(conn, &graph, &valid_nodes, &invalid_issues)
 }
 
-/// Recompute `start_fnode` and its reverse-reachable ancestors in dependency-first order.
-pub(super) fn refresh_topo_depth_upward_from(conn: &Connection, start_fnode: &str) -> Result<()> {
-    let mut affected: HashSet<String> = HashSet::from([start_fnode.to_string()]);
-    let mut reverse: HashMap<String, Vec<String>> = HashMap::new();
-    let mut queue: VecDeque<String> = VecDeque::from([start_fnode.to_string()]);
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT e.src_fnode
-         FROM mdoc_valid_edges e
-         WHERE e.dst_fnode = ?",
+struct DepthState {
+    has_dependencies: bool,
+    remaining: usize,
+    max_dependency_depth: u32,
+}
+
+/// Recompute all seeds and their reverse-reachable ancestors in one set operation.
+pub(super) fn refresh_topo_depth_upward_from_many(
+    conn: &Connection,
+    seeds: &HashSet<String>,
+) -> Result<()> {
+    let _profile = crate::profile::scope("derived::refresh_topo_depth_upward_from_many");
+    if seeds.is_empty() {
+        return Ok(());
+    }
+    let collect_profile = crate::profile::scope("derived::collect_affected_topo_nodes");
+    conn.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS mdc_topo_seeds (
+             fnode TEXT PRIMARY KEY
+         ) WITHOUT ROWID;
+         CREATE TEMP TABLE IF NOT EXISTS mdc_topo_affected (
+             fnode TEXT PRIMARY KEY
+         ) WITHOUT ROWID;
+         DELETE FROM mdc_topo_seeds;
+         DELETE FROM mdc_topo_affected;",
     )?;
-    while let Some(fnode) = queue.pop_front() {
-        let parents: Vec<String> = stmt
-            .query_map([&fnode], |row| row.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        for parent in &parents {
-            if affected.insert(parent.clone()) {
-                queue.push_back(parent.clone());
+    let seeds = seeds.iter().collect::<Vec<_>>();
+    for chunk in seeds.chunks(CHUNK_SIZE) {
+        let placeholders = chunk.iter().map(|_| "(?)").collect::<Vec<_>>().join(",");
+        conn.execute(
+            &format!("INSERT INTO mdc_topo_seeds (fnode) VALUES {placeholders}"),
+            rusqlite::params_from_iter(chunk.iter().copied()),
+        )?;
+    }
+    conn.execute_batch(
+        "INSERT OR IGNORE INTO mdc_topo_affected (fnode)
+         WITH RECURSIVE affected(fnode) AS (
+             SELECT fnode FROM mdc_topo_seeds
+             UNION
+             SELECT e.src_fnode
+             FROM mdoc_valid_edges e
+             JOIN affected a ON a.fnode = e.dst_fnode
+         )
+         SELECT fnode FROM affected;",
+    )?;
+    drop(collect_profile);
+
+    let load_profile = crate::profile::scope("derived::load_affected_topo_edges");
+    let mut states = conn
+        .prepare("SELECT fnode FROM mdc_topo_affected")?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .map(|row| {
+            row.map(|fnode| {
+                (
+                    fnode,
+                    DepthState {
+                        has_dependencies: false,
+                        remaining: 0,
+                        max_dependency_depth: 0,
+                    },
+                )
+            })
+        })
+        .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+    let mut referrers: HashMap<String, Vec<String>> = HashMap::new();
+    let mut affected_edges = HashSet::new();
+    let mut external_edges = Vec::new();
+    let mut stmt = conn.prepare(
+        "SELECT e.src_fnode, e.dst_fnode
+         FROM mdoc_valid_edges e
+         JOIN mdc_topo_affected a ON a.fnode = e.src_fnode",
+    )?;
+    for row in stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })? {
+        let (source, dependency) = row?;
+        let dependency_affected = states.contains_key(&dependency);
+        let state = states
+            .get_mut(&source)
+            .expect("affected edge source was initialized");
+        state.has_dependencies = true;
+        if dependency_affected {
+            if affected_edges.insert((source.clone(), dependency.clone())) {
+                state.remaining += 1;
+                referrers.entry(dependency).or_default().push(source);
             }
+        } else {
+            external_edges.push((source, dependency));
         }
-        reverse.insert(fnode, parents);
     }
     drop(stmt);
 
-    let mut remaining: HashMap<String, usize> =
-        affected.iter().map(|fnode| (fnode.clone(), 0)).collect();
-    for parents in reverse.values() {
-        for parent in parents {
-            *remaining.entry(parent.clone()).or_default() += 1;
+    let external_fnodes = external_edges
+        .iter()
+        .map(|(_, dependency)| dependency)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut external_depths = HashMap::new();
+    for chunk in external_fnodes.chunks(CHUNK_SIZE) {
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT fnode, MAX(topo_depth) FROM mdocs
+             WHERE fnode IN ({placeholders}) GROUP BY fnode"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        for row in stmt.query_map(rusqlite::params_from_iter(chunk.iter().copied()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+        })? {
+            let (fnode, depth) = row?;
+            external_depths.insert(fnode, depth);
         }
     }
-    let mut ready: VecDeque<String> = remaining
+    for (source, dependency) in external_edges {
+        if let Some(depth) = external_depths.get(&dependency) {
+            let state = states
+                .get_mut(&source)
+                .expect("affected edge source was initialized");
+            state.max_dependency_depth = state.max_dependency_depth.max(*depth);
+        }
+    }
+    drop(load_profile);
+
+    let compute_profile = crate::profile::scope("derived::compute_affected_topo_depths");
+    let mut ready = states
         .iter()
-        .filter(|(_, count)| **count == 0)
+        .filter(|(_, state)| state.remaining == 0)
         .map(|(fnode, _)| fnode.clone())
-        .collect();
-    let mut processed = 0;
+        .collect::<VecDeque<_>>();
+    let mut depths = HashMap::with_capacity(states.len());
     while let Some(fnode) = ready.pop_front() {
-        let new_depth = compute_node_topo_depth(conn, &fnode)?;
-        conn.execute(
-            "UPDATE mdocs SET topo_depth = ? WHERE fnode = ?",
-            rusqlite::params![new_depth, &fnode],
-        )?;
-        processed += 1;
-        for parent in reverse.get(&fnode).into_iter().flatten() {
-            if let Some(count) = remaining.get_mut(parent) {
-                *count -= 1;
-                if *count == 0 {
-                    ready.push_back(parent.clone());
-                }
+        let state = states.get(&fnode).expect("ready node has a depth state");
+        let depth = if state.has_dependencies {
+            state.max_dependency_depth + 1
+        } else {
+            0
+        };
+        depths.insert(fnode.clone(), depth);
+        for referrer in referrers.get(&fnode).into_iter().flatten() {
+            let state = states
+                .get_mut(referrer)
+                .expect("affected referrer has a depth state");
+            state.remaining -= 1;
+            state.max_dependency_depth = state.max_dependency_depth.max(depth);
+            if state.remaining == 0 {
+                ready.push_back(referrer.clone());
             }
         }
     }
-
-    // Cycles have no dependency-first ordering and local relaxation would grow forever.
-    if processed != affected.len() {
-        backfill_all_topo_depths(conn)?;
+    if depths.len() != states.len() {
+        return backfill_all_topo_depths(conn);
     }
-    Ok(())
-}
-
-fn compute_node_topo_depth(conn: &Connection, fnode: &str) -> Result<u32> {
-    let max_dep: Option<u32> = conn.query_row(
-        "SELECT MAX(m.topo_depth)
-         FROM mdoc_valid_edges e
-         LEFT JOIN mdocs m ON m.fnode = e.dst_fnode
-         WHERE e.src_fnode = ?",
-        [fnode],
-        |row| row.get::<_, Option<u32>>(0),
-    )?;
-    let has_deps: bool = conn.query_row(
-        "SELECT EXISTS (
-             SELECT 1 FROM mdoc_valid_edges e
-             WHERE e.src_fnode = ?
-         )",
-        [fnode],
-        |row| row.get(0),
-    )?;
-    Ok(if has_deps {
-        max_dep.unwrap_or(0) + 1
-    } else {
-        0
-    })
+    drop(compute_profile);
+    persist_topo_depths(conn, &depths)
 }
 
 pub(super) fn backfill_all_topo_depths(conn: &Connection) -> Result<()> {
@@ -230,10 +302,33 @@ pub(super) fn backfill_all_topo_depths(conn: &Connection) -> Result<()> {
 }
 
 fn persist_topo_depths(conn: &Connection, depths: &HashMap<String, u32>) -> Result<()> {
-    let mut stmt = conn.prepare("UPDATE mdocs SET topo_depth = ? WHERE fnode = ?")?;
-    for (fnode, depth) in depths {
-        stmt.execute(rusqlite::params![depth, fnode])?;
+    let _profile = crate::profile::scope("derived::persist_topo_depths");
+    conn.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS mdc_topo_updates (
+             fnode TEXT PRIMARY KEY,
+             depth INTEGER NOT NULL
+         ) WITHOUT ROWID;
+         DELETE FROM mdc_topo_updates;",
+    )?;
+    let rows = depths.iter().collect::<Vec<_>>();
+    for chunk in rows.chunks(CHUNK_SIZE) {
+        let placeholders = chunk.iter().map(|_| "(?,?)").collect::<Vec<_>>().join(",");
+        let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(chunk.len() * 2);
+        for (fnode, depth) in chunk {
+            params.push(fnode);
+            params.push(depth);
+        }
+        conn.execute(
+            &format!("INSERT INTO mdc_topo_updates (fnode, depth) VALUES {placeholders}"),
+            params.as_slice(),
+        )?;
     }
+    conn.execute(
+        "UPDATE mdocs
+         SET topo_depth = (SELECT depth FROM mdc_topo_updates u WHERE u.fnode = mdocs.fnode)
+         WHERE fnode IN (SELECT fnode FROM mdc_topo_updates)",
+        [],
+    )?;
     Ok(())
 }
 

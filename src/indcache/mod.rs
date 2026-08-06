@@ -279,10 +279,7 @@ impl IndCache {
             // Deletions can decrease ancestor depths; full backfill is needed.
             derived::backfill_all_topo_depths(&tx)?;
         } else {
-            // Additions/updates: incremental upward BFS per changed fnode.
-            for fnode in &changed_fnodes {
-                derived::refresh_topo_depth_upward_from(&tx, fnode)?;
-            }
+            derived::refresh_topo_depth_upward_from_many(&tx, &changed_fnodes)?;
         }
         crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
         tx.commit()?;
@@ -301,11 +298,19 @@ impl IndCache {
         if outcome.graph_changed {
             match (outcome.old_fnode.as_deref(), outcome.new_fnode.as_deref()) {
                 (Some(old), Some(new)) if old != new => {
-                    derived::refresh_topo_depth_upward_from(&tx, old)?;
-                    derived::refresh_topo_depth_upward_from(&tx, new)?;
+                    derived::refresh_topo_depth_upward_from_many(
+                        &tx,
+                        &HashSet::from([old.to_string(), new.to_string()]),
+                    )?;
                 }
-                (_, Some(new)) => derived::refresh_topo_depth_upward_from(&tx, new)?,
-                (Some(old), None) => derived::refresh_topo_depth_upward_from(&tx, old)?,
+                (_, Some(new)) => derived::refresh_topo_depth_upward_from_many(
+                    &tx,
+                    &HashSet::from([new.to_string()]),
+                )?,
+                (Some(old), None) => derived::refresh_topo_depth_upward_from_many(
+                    &tx,
+                    &HashSet::from([old.to_string()]),
+                )?,
                 (None, None) => derived::backfill_all_topo_depths(&tx)?,
             }
         }
@@ -421,9 +426,7 @@ impl IndCache {
         // rebuilt lazily from the dirty flag when roots are queried.
         {
             let _phase = crate::profile::scope("derived::refresh_reachable_topo");
-            for fnode in &upserted_fnodes {
-                derived::refresh_topo_depth_upward_from(&tx, fnode)?;
-            }
+            derived::refresh_topo_depth_upward_from_many(&tx, &upserted_fnodes)?;
         }
         crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
         let _commit = crate::profile::scope("sqlite::refresh_reachable_commit");
@@ -615,7 +618,7 @@ impl IndCache {
             }
         }
         if stale {
-            derived::refresh_topo_depth_upward_from(&tx, fnode)?;
+            derived::refresh_topo_depth_upward_from_many(&tx, &HashSet::from([fnode.to_string()]))?;
         }
         tx.commit()?;
         self.require_current_database()?;
