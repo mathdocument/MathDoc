@@ -80,8 +80,7 @@ pub(super) fn cmd_sync() -> Result<i32> {
     let mdcroot = require_mdcroot()?;
     let work_lock = crate::workspace::WorkspaceWorkLock::acquire(&mdcroot)?;
     let mutation_lock = work_lock.acquire_mutation_lock()?;
-    let mut cache = IndCache::open_under_mutation_lock(&mutation_lock)?;
-    cache.refresh_all()?;
+    let mut cache = IndCache::open_refreshed_under_mutation_lock(&mutation_lock)?;
     let total = cache.count()?;
     let draft = crate::workdraft::sync(&mutation_lock)?;
     cache.refresh_formal_statuses()?;

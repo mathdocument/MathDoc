@@ -115,11 +115,30 @@ impl IndCache {
     pub fn open(root: PathBuf) -> Result<Self> {
         let _profile = crate::profile::scope("IndCache::open");
         let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&root)?;
-        Self::open_under_mutation_lock(&mutation_lock)
+        Self::open_under_mutation_lock_with(&mutation_lock, false)
+    }
+
+    pub(crate) fn open_refreshed(root: PathBuf) -> Result<Self> {
+        let _profile = crate::profile::scope("IndCache::open_refreshed");
+        let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(&root)?;
+        Self::open_under_mutation_lock_with(&mutation_lock, true)
     }
 
     pub(crate) fn open_under_mutation_lock(
         mutation_lock: &crate::workspace::WorkspaceMutationLock,
+    ) -> Result<Self> {
+        Self::open_under_mutation_lock_with(mutation_lock, false)
+    }
+
+    pub(crate) fn open_refreshed_under_mutation_lock(
+        mutation_lock: &crate::workspace::WorkspaceMutationLock,
+    ) -> Result<Self> {
+        Self::open_under_mutation_lock_with(mutation_lock, true)
+    }
+
+    fn open_under_mutation_lock_with(
+        mutation_lock: &crate::workspace::WorkspaceMutationLock,
+        refresh: bool,
     ) -> Result<Self> {
         let root = mutation_lock.root()?.to_path_buf();
         let control_identity = mutation_lock.control_identity()?;
@@ -151,7 +170,11 @@ impl IndCache {
             conn,
         };
         cache.validate_mutation_lock(mutation_lock)?;
-        cache.bootstrap_if_needed()?;
+        if refresh {
+            cache.refresh_all()?;
+        } else {
+            cache.bootstrap_if_needed()?;
+        }
         cache.validate_mutation_lock(mutation_lock)?;
         Ok(cache)
     }
