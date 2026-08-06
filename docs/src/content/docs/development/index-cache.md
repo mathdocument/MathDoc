@@ -5,7 +5,7 @@ description: SQLite ownership, schemas, refresh paths, derived graph data, and c
 
 `IndCache` owns the SQLite database at `.mdc/index.db`, operational indexing and
 materialization transaction boundaries, and the conversion between filesystem state
-and indexed graph state. The current schema version is `19`; compatible schemas starting
+and indexed graph state. The current schema version is `20`; compatible schemas starting
 at version `17` are migrated transactionally in place, older managed schemas are rebuilt
 from `.mdoc` files, and newer schemas are rejected without mutation.
 The version 19 migration removes stored missing diagnostics and rebuilds valid in-degree
@@ -21,6 +21,21 @@ SQLite generation. SQLite's `SQLITE_FCNTL_HAS_MOVED` check also verifies that it
 connection did not open a different inode during a swap-and-restore race. Pure reads
 check the generation before and after querying. The cached `.mdc` directory identity is
 part of the same check, and cache opening revalidates the mutation lock around bootstrap.
+
+## Backend choice
+
+The index is a transactional, update-heavy graph cache rather than an analytical data
+warehouse. SQLite WAL permits separate CLI processes to read while one guarded writer
+commits incremental changes. DuckDB's in-process concurrency model requires all writers
+to live in one process, which would make `mdc serve` and independent CLI processes require
+a new database-owner daemon and IPC protocol. Its columnar scans also do not replace the
+point-update, ordered-adjacency, and prefix-resolution indexes used here. DuckDB may be
+appropriate for exported offline analytics, but it is not the primary workspace index.
+
+Large-workspace scaling therefore keeps the embedded transactional engine while reducing
+the work performed inside it: compact derived diagnostics, stable integer identities,
+indexed substring search, covering adjacency indexes, and bounded incremental graph
+maintenance.
 
 ## Internal boundaries
 
@@ -52,13 +67,14 @@ updates. Read-facing facades may transactionally materialize derived caches.
 | Object | Key columns | Purpose |
 | --- | --- | --- |
 | `mdoc_files` | `path`, `mtime_ns`, `size` | Change detection and stale path cleanup |
-| `mdocs` | `path`, `fnode`, `title`, `title_lc`, `topo_depth` | Search, resolution, persisted depth |
+| `mdocs` | integer `id`, unique `path`, `fnode`, generated `fnode_lc`, title, depth | Search, resolution, persisted depth |
+| `mdoc_search` | FTS5 trigram index over fnode and normalized title | Indexed substring search |
 | `mdoc_edges` | `src_path`, `src_fnode`, `dst_fnode`, `ord` | Ordered dependency edges |
 | `mdoc_issues` | `path`, `kind`, `ref_fnode`, `error` | Stored invalid and duplicate diagnostics |
 | `mdoc_missing_issues` | valid in-degree and claimant indexes | Derived missing-target diagnostics |
 | `mdoc_in_degree` | `fnode`, `in_degree` | Precomputed valid-source in-degree |
 | `mdoc_weak_component` | `fnode`, `component_size` | Weak component size per node |
-| `mdoc_index_state` | epoch, dirty flags, bootstrap, digest | Global materialization state |
+| `mdoc_index_state` | epoch, dirty flags, bootstrap, digest, document count | Global materialization state |
 | `mdoc_scc_result` | `graph_epoch`, `cycles_json` | Representative cycles for one epoch |
 
 `mdoc_valid_edges` is a schema-owned view. It includes `mdoc_edges` whose source path
@@ -72,8 +88,15 @@ rather than also being missing.
 
 `IndCache::search(query, limit)` is the canonical ranked search returning
 `NodeSummary`. Dependency candidate search reuses its patterns, ranking, and projection
-before applying dependency-specific filters. `all_node_summaries()` is the unbounded
-non-search query used by the full graph API.
+before applying dependency-specific filters. Terms of at least three characters use the
+FTS5 trigram index as a candidate prefilter, followed by the original literal matching
+and ranking predicates. The index omits position and column-size detail; queries combine
+their distinct trigrams and do not rely on FTS phrase semantics. FTS vocabulary counts
+bound the candidate set before use; terms whose rarest trigram still covers more than
+roughly one quarter of the document IDs use the linear fallback instead. One- and
+two-character terms also retain that compatibility scan. Explicit integer document IDs
+keep external-content FTS references stable across `VACUUM`. `all_node_summaries()` is
+the unbounded non-search query used by the full graph API.
 
 ## Fast discovery
 

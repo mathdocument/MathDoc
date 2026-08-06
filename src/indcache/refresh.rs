@@ -792,6 +792,10 @@ fn replace_index_rows(
             params.as_slice(),
         )?;
     }
+    conn.execute(
+        "UPDATE mdoc_index_state SET document_count = ? WHERE id = 1",
+        [i64::try_from(nodes.len()).unwrap_or(i64::MAX)],
+    )?;
     Ok(())
 }
 
@@ -994,6 +998,10 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
     for fnode in &identity_fnodes {
         refresh_duplicate_issues_for_fnode(conn, Some(fnode))?;
     }
+    let new_has_node = fnode_for_path(conn, &rel_path)?.is_some();
+    let old_count = if old_fnode.is_some() { 1 } else { 0 };
+    let new_count = if new_has_node { 1 } else { 0 };
+    adjust_document_count(conn, new_count - old_count)?;
     let new_has_blocking_issue = path_has_blocking_issue(conn, &rel_path)?;
 
     // Collect all fnodes whose in_degree may have changed
@@ -1048,6 +1056,9 @@ pub fn delete_indexed_path(conn: &Connection, stale_path: &str) -> Result<()> {
     conn.execute("DELETE FROM mdocs WHERE path = ?", [stale_path])?;
     conn.execute("DELETE FROM mdoc_edges WHERE src_path = ?", [stale_path])?;
     conn.execute("DELETE FROM mdoc_issues WHERE path = ?", [stale_path])?;
+    if old_fnode.is_some() {
+        adjust_document_count(conn, -1)?;
+    }
 
     refresh_duplicate_issues_for_fnode(conn, old_fnode.as_deref())?;
 
@@ -1075,6 +1086,18 @@ fn invalidate_index_digest(conn: &Connection) -> Result<()> {
         "UPDATE mdoc_index_state SET index_digest = '' WHERE id = 1",
         [],
     )?;
+    Ok(())
+}
+
+fn adjust_document_count(conn: &Connection, delta: i64) -> Result<()> {
+    if delta != 0 {
+        conn.execute(
+            "UPDATE mdoc_index_state
+             SET document_count = MAX(0, document_count + ?)
+             WHERE id = 1",
+            [delta],
+        )?;
+    }
     Ok(())
 }
 

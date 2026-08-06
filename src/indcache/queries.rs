@@ -964,8 +964,8 @@ pub fn resolve_ref_by_path(conn: &Connection, rel_path: &str) -> Result<Option<(
         .optional()?)
 }
 
-const SEARCH_MATCH_SQL: &str = "m.title_lc LIKE ? ESCAPE '\\' OR lower(m.fnode) LIKE ? ESCAPE '\\'";
-const SEARCH_ORDER_SQL: &str = "CASE WHEN lower(m.fnode) LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END,
+const SEARCH_MATCH_SQL: &str = "m.title_lc LIKE ? ESCAPE '\\' OR m.fnode_lc LIKE ? ESCAPE '\\'";
+const SEARCH_ORDER_SQL: &str = "CASE WHEN m.fnode_lc LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END,
      CASE WHEN instr(m.title_lc, ?) > 0 THEN instr(m.title_lc, ?) ELSE 999999 END,
      length(m.title),
      m.path";
@@ -984,6 +984,62 @@ fn search_patterns(query: &str) -> (String, String, String) {
     (query_lc, like, prefix_like)
 }
 
+fn fts5_query(query_lc: &str) -> Option<(Vec<String>, String)> {
+    if query_lc.contains('\0') {
+        return None;
+    }
+    let chars: Vec<char> = query_lc.chars().collect();
+    if chars.len() < 3 {
+        return None;
+    }
+
+    let mut seen = HashSet::new();
+    let terms: Vec<String> = chars
+        .windows(3)
+        .filter_map(|window| {
+            let trigram: String = window.iter().collect();
+            seen.insert(trigram.clone()).then_some(trigram)
+        })
+        .collect();
+    let expression = terms
+        .iter()
+        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    Some((terms, expression))
+}
+
+fn selective_fts5_query(conn: &Connection, query_lc: &str) -> Result<Option<String>> {
+    let Some((terms, expression)) = fts5_query(query_lc) else {
+        return Ok(None);
+    };
+    let placeholders = terms.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT COUNT(*), COALESCE(MIN(doc), 0),
+                (SELECT document_count FROM mdoc_index_state WHERE id = 1)
+         FROM mdoc_search_vocab
+         WHERE term IN ({placeholders})"
+    );
+    let (matched_terms, min_documents, document_count): (i64, i64, i64) =
+        conn.query_row(&sql, rusqlite::params_from_iter(&terms), |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+    let all_terms_present = matched_terms == i64::try_from(terms.len()).unwrap_or(i64::MAX);
+    let candidate_threshold = document_count.saturating_add(3) / 4;
+    Ok((!all_terms_present || min_documents <= candidate_threshold).then_some(expression))
+}
+
+fn search_index_predicate(fts_query: Option<&String>) -> &'static str {
+    if fts_query.is_some() {
+        "m.id IN (
+             SELECT rowid FROM mdoc_search
+             WHERE mdoc_search MATCH ?
+         ) AND"
+    } else {
+        ""
+    }
+}
+
 fn node_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NodeSummary> {
     Ok(NodeSummary {
         fnode: row.get(0)?,
@@ -995,28 +1051,31 @@ fn node_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NodeSummar
 }
 
 pub fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<NodeSummary>> {
+    let _profile = crate::profile::scope("queries::search");
     let (query_lc, like_pattern, prefix_pattern) = search_patterns(query);
+    let fts_query = selective_fts5_query(conn, &query_lc)?;
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
     let sql = format!(
         "SELECT {NODE_SUMMARY_COLUMNS_SQL}
          FROM mdocs m
-         WHERE {SEARCH_MATCH_SQL}
+         WHERE {} {SEARCH_MATCH_SQL}
          ORDER BY {SEARCH_ORDER_SQL}
-         LIMIT ?"
+         LIMIT ?",
+        search_index_predicate(fts_query.as_ref())
     );
+    let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(7);
+    if let Some(fts_query) = &fts_query {
+        params.push(fts_query);
+    }
+    params.push(&like_pattern);
+    params.push(&like_pattern);
+    params.push(&prefix_pattern);
+    params.push(&query_lc);
+    params.push(&query_lc);
+    params.push(&limit);
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
-        .query_map(
-            rusqlite::params![
-                like_pattern,
-                like_pattern,
-                prefix_pattern,
-                query_lc,
-                query_lc,
-                limit
-            ],
-            node_summary_from_row,
-        )?
+        .query_map(params.as_slice(), node_summary_from_row)?
         .collect::<rusqlite::Result<_>>()?;
     Ok(rows)
 }
@@ -1040,12 +1099,14 @@ pub fn dependency_candidates(
     query: &str,
     limit: usize,
 ) -> Result<DependencyCandidates> {
+    let _profile = crate::profile::scope("queries::dependency_candidates");
     let (query_lc, like_pattern, prefix_pattern) = search_patterns(query);
+    let fts_query = selective_fts5_query(conn, &query_lc)?;
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
     let sql = format!(
         "SELECT {NODE_SUMMARY_COLUMNS_SQL}
          FROM mdocs m
-         WHERE ({SEARCH_MATCH_SQL})
+         WHERE {} ({SEARCH_MATCH_SQL})
            AND m.fnode != ?
            AND NOT EXISTS (
                SELECT 1 FROM mdoc_valid_edges e
@@ -1056,28 +1117,30 @@ pub fn dependency_candidates(
                WHERE i.path = m.path AND i.kind IN ('invalid', 'duplicate')
            )
          ORDER BY {SEARCH_ORDER_SQL}
-         LIMIT ?"
+         LIMIT ?",
+        search_index_predicate(fts_query.as_ref())
     );
+    let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(9);
+    if let Some(fts_query) = &fts_query {
+        params.push(fts_query);
+    }
+    params.push(&like_pattern);
+    params.push(&like_pattern);
+    params.push(&source_fnode);
+    params.push(&source_fnode);
+    params.push(&prefix_pattern);
+    params.push(&query_lc);
+    params.push(&query_lc);
+    params.push(&limit);
     let mut stmt = conn.prepare(&sql)?;
     let nodes: Vec<NodeSummary> = stmt
-        .query_map(
-            rusqlite::params![
-                like_pattern,
-                like_pattern,
-                source_fnode,
-                source_fnode,
-                prefix_pattern,
-                query_lc,
-                query_lc,
-                limit
-            ],
-            node_summary_from_row,
-        )?
+        .query_map(params.as_slice(), node_summary_from_row)?
         .collect::<rusqlite::Result<_>>()?;
     let empty = if nodes.is_empty() {
         Some(dependency_candidates_empty(
             conn,
             source_fnode,
+            &query_lc,
             &like_pattern,
         )?)
     } else {
@@ -1089,8 +1152,10 @@ pub fn dependency_candidates(
 fn dependency_candidates_empty(
     conn: &Connection,
     source_fnode: &str,
+    query_lc: &str,
     like_pattern: &str,
 ) -> Result<DependencyCandidatesEmpty> {
+    let fts_query = selective_fts5_query(conn, query_lc)?;
     let sql = format!(
         "WITH matching(reason) AS (
              SELECT CASE
@@ -1106,14 +1171,15 @@ fn dependency_candidates_empty(
                  ELSE 'available'
              END
              FROM mdocs m
-             WHERE {SEARCH_MATCH_SQL}
+             WHERE {} {SEARCH_MATCH_SQL}
          )
          SELECT COUNT(*),
                 COALESCE(SUM(CASE WHEN reason = 'source' THEN 1 ELSE 0 END), 0),
                 COALESCE(SUM(CASE WHEN reason = 'existing' THEN 1 ELSE 0 END), 0),
                 COALESCE(SUM(CASE WHEN reason = 'invalid' THEN 1 ELSE 0 END), 0),
                 COALESCE(SUM(CASE WHEN reason = 'available' THEN 1 ELSE 0 END), 0)
-         FROM matching"
+         FROM matching",
+        search_index_predicate(fts_query.as_ref())
     );
     let (total, source, existing_dependencies, invalid_or_duplicate, available): (
         i64,
@@ -1121,10 +1187,17 @@ fn dependency_candidates_empty(
         i64,
         i64,
         i64,
-    ) = conn.query_row(
-        &sql,
-        rusqlite::params![source_fnode, source_fnode, like_pattern, like_pattern],
-        |row| {
+    ) = {
+        let mut params: Vec<&dyn rusqlite::types::ToSql> =
+            Vec::with_capacity(if fts_query.is_some() { 5 } else { 4 });
+        params.push(&source_fnode);
+        params.push(&source_fnode);
+        if let Some(fts_query) = &fts_query {
+            params.push(fts_query);
+        }
+        params.push(&like_pattern);
+        params.push(&like_pattern);
+        conn.query_row(&sql, params.as_slice(), |row| {
             Ok((
                 row.get(0)?,
                 row.get(1)?,
@@ -1132,8 +1205,8 @@ fn dependency_candidates_empty(
                 row.get(3)?,
                 row.get(4)?,
             ))
-        },
-    )?;
+        })?
+    };
     let as_usize = |count| usize::try_from(count).unwrap_or(usize::MAX);
 
     if total == 0 {
@@ -1157,7 +1230,7 @@ pub(super) fn exact_fnode_rows(
 ) -> Result<Vec<(String, String, String)>> {
     let fnode_lc = fnode.to_lowercase();
     let mut stmt =
-        conn.prepare("SELECT fnode, title, path FROM mdocs WHERE lower(fnode) = ? ORDER BY path")?;
+        conn.prepare("SELECT fnode, title, path FROM mdocs WHERE fnode_lc = ? ORDER BY path")?;
     let rows = stmt
         .query_map([fnode_lc], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
@@ -1189,8 +1262,8 @@ pub fn resolve_fnode_ref(
     let prefix_like = format!("{}%", escape_like_pattern(&query_lc));
     let mut stmt = conn.prepare(
         "SELECT fnode, title, path FROM mdocs
-         WHERE lower(fnode) = ? OR lower(fnode) LIKE ? ESCAPE '\\'
-         ORDER BY CASE WHEN lower(fnode) = ? THEN 0 ELSE 1 END, path",
+         WHERE fnode_lc = ? OR fnode_lc LIKE ? ESCAPE '\\'
+         ORDER BY CASE WHEN fnode_lc = ? THEN 0 ELSE 1 END, path",
     )?;
     let rows: Vec<(String, String, String)> = stmt
         .query_map(rusqlite::params![query_lc, prefix_like, query_lc], |r| {
@@ -1290,5 +1363,61 @@ mod tests {
         assert!(resolve_ref_by_path(&conn, "missing.mdoc").is_err());
         assert!(fnode_for_path(&conn, "missing.mdoc").is_err());
         assert!(path_has_blocking_issue(&conn, "missing.mdoc").is_err());
+    }
+
+    #[test]
+    fn fts5_queries_quote_user_input_and_skip_short_terms() {
+        assert_eq!(fts5_query("ab"), None);
+        assert_eq!(
+            fts5_query("a\"b"),
+            Some((vec!["a\"b".to_string()], "\"a\"\"b\"".to_string()))
+        );
+        assert_eq!(
+            fts5_query("ababa"),
+            Some((
+                vec!["aba".to_string(), "bab".to_string()],
+                "\"aba\" AND \"bab\"".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn fts5_prefilter_is_used_only_for_selective_terms() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let conn = crate::indcache::schema::open_db(&dir.path().join("index.db")).unwrap();
+        for index in 0..8 {
+            let title = if index == 7 {
+                "common title with rarexyz"
+            } else {
+                "common title"
+            };
+            conn.execute(
+                "INSERT INTO mdocs (path, fnode, title, title_lc) VALUES (?, ?, ?, ?)",
+                rusqlite::params![
+                    format!("node-{index}.mdoc"),
+                    format!("node-{index}"),
+                    title,
+                    title
+                ],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "UPDATE mdoc_index_state SET document_count = 8 WHERE id = 1",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(selective_fts5_query(&conn, "common").unwrap(), None);
+        assert!(selective_fts5_query(&conn, "rarexyz").unwrap().is_some());
+        assert!(selective_fts5_query(&conn, "absent").unwrap().is_some());
+
+        conn.execute_batch(
+            "DELETE FROM mdocs WHERE id <= 6;
+             UPDATE mdoc_index_state SET document_count = 2 WHERE id = 1;",
+        )
+        .unwrap();
+        assert_eq!(selective_fts5_query(&conn, "common").unwrap(), None);
+        assert!(selective_fts5_query(&conn, "rarexyz").unwrap().is_some());
     }
 }

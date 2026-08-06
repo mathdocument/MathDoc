@@ -2,20 +2,49 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 19;
+const SCHEMA_VERSION: i32 = 20;
 const FIRST_INCREMENTAL_SCHEMA_VERSION: i32 = 17;
 const MIN_SQLITE_VERSION_NUMBER: i32 = 3_051_003;
 
 const CREATE_SQL: &str = "
 CREATE TABLE IF NOT EXISTS mdocs (
-    path        TEXT    PRIMARY KEY,
+    id          INTEGER PRIMARY KEY,
+    path        TEXT    NOT NULL UNIQUE,
     fnode       TEXT    NOT NULL,
+    fnode_lc    TEXT    GENERATED ALWAYS AS (lower(fnode)) VIRTUAL,
     title       TEXT    NOT NULL,
     title_lc    TEXT    NOT NULL,
     topo_depth  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_mdocs_title_lc ON mdocs(title_lc);
 CREATE INDEX IF NOT EXISTS idx_mdocs_fnode    ON mdocs(fnode);
+CREATE INDEX IF NOT EXISTS idx_mdocs_fnode_lc ON mdocs(fnode_lc);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS mdoc_search USING fts5(
+    fnode_lc,
+    title_lc,
+    content = 'mdocs',
+    content_rowid = 'id',
+    tokenize = 'trigram case_sensitive 1',
+    detail = none,
+    columnsize = 0
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS mdoc_search_vocab USING fts5vocab(mdoc_search, 'row');
+CREATE TRIGGER IF NOT EXISTS mdocs_search_insert AFTER INSERT ON mdocs BEGIN
+    INSERT INTO mdoc_search(rowid, fnode_lc, title_lc)
+    VALUES (new.id, new.fnode_lc, new.title_lc);
+END;
+CREATE TRIGGER IF NOT EXISTS mdocs_search_delete AFTER DELETE ON mdocs BEGIN
+    INSERT INTO mdoc_search(mdoc_search, rowid, fnode_lc, title_lc)
+    VALUES ('delete', old.id, old.fnode_lc, old.title_lc);
+END;
+CREATE TRIGGER IF NOT EXISTS mdocs_search_update
+AFTER UPDATE OF fnode, title_lc ON mdocs BEGIN
+    INSERT INTO mdoc_search(mdoc_search, rowid, fnode_lc, title_lc)
+    VALUES ('delete', old.id, old.fnode_lc, old.title_lc);
+    INSERT INTO mdoc_search(rowid, fnode_lc, title_lc)
+    VALUES (new.id, new.fnode_lc, new.title_lc);
+END;
 
 CREATE TABLE IF NOT EXISTS mdoc_files (
     path        TEXT    PRIMARY KEY,
@@ -67,7 +96,8 @@ CREATE TABLE IF NOT EXISTS mdoc_index_state (
     bootstrapped         INTEGER NOT NULL DEFAULT 0,
     graph_epoch          INTEGER NOT NULL DEFAULT 0,
     weak_component_dirty INTEGER NOT NULL DEFAULT 1,
-    index_digest         TEXT    NOT NULL DEFAULT ''
+    index_digest         TEXT    NOT NULL DEFAULT '',
+    document_count       INTEGER NOT NULL DEFAULT 0 CHECK (document_count >= 0)
 );
 INSERT OR IGNORE INTO mdoc_index_state (id, bootstrapped) VALUES (1, 0);
 
@@ -101,6 +131,11 @@ CREATE TABLE IF NOT EXISTS mdoc_weak_component (
 ";
 
 const RESET_SQL: &str = "
+DROP TRIGGER IF EXISTS mdocs_search_update;
+DROP TRIGGER IF EXISTS mdocs_search_delete;
+DROP TRIGGER IF EXISTS mdocs_search_insert;
+DROP TABLE IF EXISTS mdoc_search_vocab;
+DROP TABLE IF EXISTS mdoc_search;
 DROP VIEW IF EXISTS mdoc_missing_issues;
 DROP VIEW IF EXISTS mdoc_valid_edges;
 DROP TABLE IF EXISTS mdoc_weak_component;
@@ -129,6 +164,30 @@ SELECT dst_fnode, COUNT(*)
 FROM mdoc_valid_edges
 GROUP BY dst_fnode
 HAVING COUNT(*) > 0;
+";
+
+const MIGRATE_19_TO_20_SQL: &str = "
+DROP VIEW IF EXISTS mdoc_missing_issues;
+ALTER TABLE mdocs RENAME TO mdocs_schema_19;
+CREATE TABLE mdocs (
+    id          INTEGER PRIMARY KEY,
+    path        TEXT    NOT NULL UNIQUE,
+    fnode       TEXT    NOT NULL,
+    fnode_lc    TEXT    GENERATED ALWAYS AS (lower(fnode)) VIRTUAL,
+    title       TEXT    NOT NULL,
+    title_lc    TEXT    NOT NULL,
+    topo_depth  INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO mdocs (path, fnode, title, title_lc, topo_depth)
+SELECT path, fnode, title, title_lc, topo_depth
+FROM mdocs_schema_19
+ORDER BY path;
+DROP TABLE mdocs_schema_19;
+ALTER TABLE mdoc_index_state
+    ADD COLUMN document_count INTEGER NOT NULL DEFAULT 0 CHECK (document_count >= 0);
+UPDATE mdoc_index_state
+SET document_count = (SELECT COUNT(*) FROM mdocs)
+WHERE id = 1;
 ";
 
 /// Open the database at `path` with WAL mode and apply the schema.
@@ -240,8 +299,19 @@ fn apply_schema(conn: &mut Connection) -> Result<()> {
         }
         if user_version == 18 {
             tx.execute_batch(MIGRATE_18_TO_19_SQL)?;
+            user_version = 19;
+        }
+        let rebuild_search = user_version == 19;
+        if rebuild_search {
+            tx.execute_batch(MIGRATE_19_TO_20_SQL)?;
         }
         tx.execute_batch(CREATE_SQL)?;
+        if rebuild_search {
+            tx.execute(
+                "INSERT INTO mdoc_search(mdoc_search) VALUES ('rebuild')",
+                [],
+            )?;
+        }
         tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     }
 
@@ -253,6 +323,30 @@ fn apply_schema(conn: &mut Connection) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    fn downgrade_mdocs_to_schema_nineteen(conn: &Connection) {
+        conn.execute_batch(
+            "DROP TRIGGER mdocs_search_update;
+             DROP TRIGGER mdocs_search_delete;
+             DROP TRIGGER mdocs_search_insert;
+             DROP TABLE mdoc_search_vocab;
+             DROP TABLE mdoc_search;
+             DROP VIEW mdoc_missing_issues;
+             ALTER TABLE mdocs RENAME TO mdocs_schema_20;
+             CREATE TABLE mdocs (
+                 path       TEXT PRIMARY KEY,
+                 fnode      TEXT NOT NULL,
+                 title      TEXT NOT NULL,
+                 title_lc   TEXT NOT NULL,
+                 topo_depth INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO mdocs (path, fnode, title, title_lc, topo_depth)
+             SELECT path, fnode, title, title_lc, topo_depth FROM mdocs_schema_20;
+             DROP TABLE mdocs_schema_20;
+             ALTER TABLE mdoc_index_state DROP COLUMN document_count;",
+        )
+        .unwrap();
+    }
 
     #[test]
     fn open_fresh_db() {
@@ -562,6 +656,7 @@ mod tests {
              DROP VIEW mdoc_missing_issues;
              DROP INDEX idx_mdoc_edges_src_dst;
              DROP INDEX idx_mdoc_edges_dst_src;
+             ALTER TABLE mdoc_index_state DROP COLUMN document_count;
              PRAGMA user_version = 17;",
         )
         .unwrap();
@@ -624,6 +719,7 @@ mod tests {
                   ('source.mdoc', 'missing', 'target-node', 'legacy missing target'),
                   ('bad.mdoc', 'invalid', 'bad-node', 'invalid node');
              DROP VIEW mdoc_missing_issues;
+             ALTER TABLE mdoc_index_state DROP COLUMN document_count;
              PRAGMA user_version = 18;",
         )
         .unwrap();
@@ -660,6 +756,105 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM mdoc_files", [], |row| row.get(0))
             .unwrap();
         assert_eq!(base_rows, 2);
+    }
+
+    #[test]
+    fn schema_nineteen_builds_the_search_index_without_discarding_rows() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("index.db");
+        let conn = open_db(&path).unwrap();
+        conn.execute_batch(
+            "INSERT INTO mdocs (path, fnode, title, title_lc)
+                  VALUES ('source.mdoc', 'SOURCE-NODE', 'Search Needle', 'search needle');",
+        )
+        .unwrap();
+        downgrade_mdocs_to_schema_nineteen(&conn);
+        conn.execute_batch("PRAGMA user_version = 19;").unwrap();
+        drop(conn);
+
+        let conn = open_db(&path).unwrap();
+
+        assert_eq!(checked_user_version(&conn).unwrap(), SCHEMA_VERSION);
+        let matched: String = conn
+            .query_row(
+                "SELECT m.path
+                 FROM mdoc_search s JOIN mdocs m ON m.id = s.rowid
+                 WHERE mdoc_search MATCH '\"nee\" AND \"eed\" AND \"edl\" AND \"dle\"'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(matched, "source.mdoc");
+        let identity: (i64, String) = conn
+            .query_row(
+                "SELECT id, fnode_lc FROM mdocs WHERE path = 'source.mdoc'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(identity.1, "source-node");
+
+        conn.execute_batch("VACUUM;").unwrap();
+        let id_after_vacuum: i64 = conn
+            .query_row(
+                "SELECT id FROM mdocs WHERE path = 'source.mdoc'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(id_after_vacuum, identity.0);
+        let still_indexed: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM mdoc_search
+                     WHERE mdoc_search MATCH '\"sou\" AND \"our\" AND \"urc\" AND \"rce\"'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(still_indexed);
+    }
+
+    #[test]
+    fn failed_search_index_migration_rolls_back_schema_creation() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("index.db");
+        let conn = open_db(&path).unwrap();
+        downgrade_mdocs_to_schema_nineteen(&conn);
+        conn.execute_batch(
+            "CREATE TABLE mdoc_search (value TEXT);
+             INSERT INTO mdoc_search VALUES ('preserve me');
+             PRAGMA user_version = 19;",
+        )
+        .unwrap();
+        drop(conn);
+
+        assert!(open_db(&path).is_err());
+
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(checked_user_version(&conn).unwrap(), 19);
+        let value: String = conn
+            .query_row("SELECT value FROM mdoc_search", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(value, "preserve me");
+        let primary_key: String = conn
+            .query_row(
+                "SELECT name FROM pragma_table_info('mdocs') WHERE pk = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(primary_key, "path");
+        let trigger_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema
+                 WHERE type = 'trigger' AND name LIKE 'mdocs_search_%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(trigger_count, 0);
     }
 
     #[test]
@@ -784,6 +979,20 @@ mod tests {
         assert!(
             plan.contains("idx_mdocs_fnode"),
             "missing-target lookup did not use the claimant index:\n{plan}"
+        );
+
+        let search_plan: String = conn
+            .query_row(
+                "EXPLAIN QUERY PLAN
+                 SELECT rowid FROM mdoc_search
+                 WHERE mdoc_search MATCH '\"nee\" AND \"eed\" AND \"edl\" AND \"dle\"'",
+                [],
+                |row| row.get(3),
+            )
+            .unwrap();
+        assert!(
+            search_plan.contains("VIRTUAL TABLE INDEX"),
+            "search lookup did not use the FTS5 index: {search_plan}"
         );
     }
 }

@@ -41,6 +41,17 @@ fn stored_missing_issue_count(cache: &IndCache) -> i64 {
         .unwrap()
 }
 
+fn indexed_document_count(cache: &IndCache) -> i64 {
+    rusqlite::Connection::open(index_path(cache))
+        .unwrap()
+        .query_row(
+            "SELECT document_count FROM mdoc_index_state WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
 fn topo_depth(cache: &IndCache, fnode: &str) -> u32 {
     cache.node_summary(fnode).unwrap().depth
 }
@@ -405,7 +416,7 @@ fn test_legacy_schema_is_rebuilt() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(primary_key, "path");
+    assert_eq!(primary_key, "id");
     let fnode_is_unique: bool = conn
         .query_row(
             "SELECT EXISTS (
@@ -487,6 +498,7 @@ fn test_search_treats_like_metacharacters_literally() {
         ("percent.mdoc", "percent-node", "Literal 100% Result"),
         ("underscore.mdoc", "underscore-node", "Literal_under Score"),
         ("slash.mdoc", "slash-node", "Literal\\Path"),
+        ("quote.mdoc", "quote-node", "Literal a\"b Phrase"),
         ("plain.mdoc", "plain-node", "Plain Result"),
     ] {
         write(
@@ -512,6 +524,16 @@ fn test_search_treats_like_metacharacters_literally() {
         "slash-node"
     );
     assert_eq!(cache.search("\\", usize::MAX).unwrap().len(), 1);
+    for (query, expected) in [
+        ("100%", "percent-node"),
+        ("al_under", "underscore-node"),
+        ("ral\\pa", "slash-node"),
+        ("a\"b", "quote-node"),
+    ] {
+        let results = cache.search(query, usize::MAX).unwrap();
+        assert_eq!(results.len(), 1, "unexpected results for {query:?}");
+        assert_eq!(results[0].fnode, expected);
+    }
 }
 
 #[test]
@@ -558,6 +580,7 @@ fn full_refresh_crosses_bulk_insert_boundaries() {
     assert_eq!(report.edges, 201);
     assert_eq!(report.missing.len(), 201);
     assert_eq!(stored_missing_issue_count(&cache), 0);
+    assert_eq!(indexed_document_count(&cache), 201);
 }
 
 #[test]
@@ -2091,17 +2114,20 @@ fn strong_refresh_applies_small_addition_and_deletion_deltas() {
     write(&target, "@fnode: target-node\n@title: Target\n");
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     assert!(cache.graph_check_report().unwrap().missing.is_empty());
+    assert_eq!(indexed_document_count(&cache), 2);
 
     std::fs::remove_file(&target).unwrap();
     cache.refresh_all().unwrap();
     let report = cache.graph_check_report().unwrap();
     assert_eq!(report.missing.len(), 1);
     assert_eq!(report.missing[0].fnode, "target-node");
+    assert_eq!(indexed_document_count(&cache), 1);
 
     write(&target, "@fnode: target-node\n@title: Restored\n");
     cache.refresh_all().unwrap();
     assert!(cache.graph_check_report().unwrap().missing.is_empty());
     assert_eq!(cache.node_summary("target-node").unwrap().title, "Restored");
+    assert_eq!(indexed_document_count(&cache), 2);
 }
 
 #[test]
@@ -2215,6 +2241,22 @@ fn test_noncanonical_case_variants_are_reported_invalid() {
 
     assert_eq!(report.invalid.len(), 3);
     assert!(report.cycles.is_empty());
+    assert!(cache
+        .search("node", usize::MAX)
+        .unwrap()
+        .iter()
+        .any(|node| node.fnode == "NODE"));
+    assert_eq!(
+        cache
+            .dependency_candidates("node", "NODE", 10)
+            .unwrap()
+            .empty,
+        Some(DependencyCandidatesEmpty::Excluded {
+            source: 1,
+            existing_dependencies: 0,
+            invalid_or_duplicate: 1,
+        })
+    );
 }
 
 // ── Dependency report ─────────────────────────────────────────────────────────
