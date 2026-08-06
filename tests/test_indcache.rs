@@ -1857,6 +1857,17 @@ fn full_refresh_skips_graph_rebuild_when_index_semantics_are_unchanged() {
 
     write(
         &source,
+        "@fnode: source-node\n@title: Renamed Source\n\n@src: text\nchanged body\n@end\n",
+    );
+    cache.refresh_all().unwrap();
+    assert_eq!(epoch(&cache), initial_epoch);
+    assert_eq!(
+        cache.node_summary("source-node").unwrap().title,
+        "Renamed Source"
+    );
+
+    write(
+        &source,
         "@fnode: source-node\n@title: Source\n\n@src: text\nchanged body\n@end\n",
     );
     cache.refresh_all().unwrap();
@@ -2021,6 +2032,32 @@ fn full_refresh_recognizes_an_incrementally_synchronized_index() {
             .collect::<Vec<_>>(),
         ["second-node"]
     );
+}
+
+#[test]
+fn strong_refresh_applies_small_addition_and_deletion_deltas() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    write(
+        &root.join("source.mdoc"),
+        "@fnode: source-node\n@title: Source\n\n@dep:\ntarget-node\n@end\n",
+    );
+    let target = root.join("target.mdoc");
+    write(&target, "@fnode: target-node\n@title: Target\n");
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    assert!(cache.graph_check_report().unwrap().missing.is_empty());
+
+    std::fs::remove_file(&target).unwrap();
+    cache.refresh_all().unwrap();
+    let report = cache.graph_check_report().unwrap();
+    assert_eq!(report.missing.len(), 1);
+    assert_eq!(report.missing[0].fnode, "target-node");
+
+    write(&target, "@fnode: target-node\n@title: Restored\n");
+    cache.refresh_all().unwrap();
+    assert!(cache.graph_check_report().unwrap().missing.is_empty());
+    assert_eq!(cache.node_summary("target-node").unwrap().title, "Restored");
 }
 
 #[test]

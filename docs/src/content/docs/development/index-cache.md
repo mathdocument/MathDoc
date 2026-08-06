@@ -88,9 +88,12 @@ A deterministic `index_digest` covers sorted paths, recovered identity, title,
 dependency order, and parse status, but not source block bodies.
 
 If the digest matches, existing node, edge, issue, in-degree, epoch, and derived rows are
-retained. If it differs, refresh constructs invalid, duplicate, and missing issues in
-memory, replaces base rows with multi-value inserts, rebuilds in-degree in one grouped
-query, and eagerly rebuilds topological depths and weak components.
+retained. If it differs, refresh streams the indexed and scanned semantics in path order.
+Up to 1,024 changed or stale paths use the same incremental maintenance as focused
+upserts; larger changes fall back to constructing global issues, replacing base rows with
+multi-value inserts, rebuilding in-degree, and eagerly rebuilding topological depths and
+weak components. The threshold bounds incremental statement and ancestor-update costs
+without making small edits rewrite the complete index.
 
 Graph changes invalidate the epoch-keyed SCC result; `graph_check_report()` rebuilds it
 lazily. Incremental path upserts and deletes clear `index_digest`; the next strong refresh

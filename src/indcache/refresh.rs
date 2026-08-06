@@ -23,11 +23,6 @@ pub fn refresh_search_index(conn: &Connection, root: &Path) -> Result<()> {
         let _phase = crate::profile::scope("refresh::scan_workspace");
         scan_workspace(root)?
     };
-    {
-        let _phase = crate::profile::scope("refresh::sync_file_states");
-        sync_file_states(conn, &files)?;
-    }
-
     let digest = {
         let _phase = crate::profile::scope("refresh::index_digest");
         index_digest(&files)
@@ -45,7 +40,17 @@ pub fn refresh_search_index(conn: &Connection, root: &Path) -> Result<()> {
     } else {
         false
     };
-    if !bootstrapped || !index_matches {
+    let delta = if bootstrapped && !index_matches {
+        let _phase = crate::profile::scope("refresh::semantic_delta_paths");
+        semantic_delta_paths(conn, &files)?
+    } else {
+        None
+    };
+    {
+        let _phase = crate::profile::scope("refresh::sync_file_states");
+        sync_file_states(conn, &files)?;
+    }
+    if !bootstrapped || (!index_matches && delta.is_none()) {
         let issues = {
             let _phase = crate::profile::scope("refresh::build_issues");
             build_issues(&files)
@@ -60,12 +65,48 @@ pub fn refresh_search_index(conn: &Connection, root: &Path) -> Result<()> {
         }
         super::derived::bump_graph_epoch(conn)?;
         super::derived::refresh_all_derived_data(conn)?;
+    } else if let Some((changed, stale)) = delta {
+        let _phase = crate::profile::scope("refresh::apply_semantic_delta");
+        apply_semantic_delta(conn, root, &files, &changed, &stale)?;
     }
     crate::formal::status::refresh_index_statuses(conn, root)?;
     conn.execute(
         "UPDATE mdoc_index_state SET bootstrapped = 1, index_digest = ? WHERE id = 1",
         [&digest],
     )?;
+    Ok(())
+}
+
+const MAX_STRONG_REFRESH_DELTA_PATHS: usize = 1024;
+
+fn apply_semantic_delta(
+    conn: &Connection,
+    root: &Path,
+    files: &[ScannedMdoc],
+    changed: &[usize],
+    stale: &[String],
+) -> Result<()> {
+    let mut topo_seeds = HashSet::new();
+    let mut deletion_changed_graph = false;
+    for path in stale {
+        let old_fnode = fnode_for_path(conn, path)?;
+        let old_had_blocking_issue = path_has_blocking_issue(conn, path)?;
+        delete_indexed_path(conn, path)?;
+        deletion_changed_graph |= old_fnode.is_some() || old_had_blocking_issue;
+    }
+    for index in changed {
+        let file = &files[*index];
+        let outcome = upsert_mdoc_row(conn, root, &root.join(&file.path))?;
+        if outcome.graph_changed {
+            topo_seeds.extend(outcome.old_fnode);
+            topo_seeds.extend(outcome.new_fnode);
+        }
+    }
+    if deletion_changed_graph {
+        super::derived::backfill_all_topo_depths(conn)?;
+    } else if !topo_seeds.is_empty() {
+        super::derived::refresh_topo_depth_upward_from_many(conn, &topo_seeds)?;
+    }
     Ok(())
 }
 
@@ -448,6 +489,143 @@ fn indexed_digest(conn: &Connection) -> Result<String> {
         hash_value(&mut digest, b"unexpected-node-row");
     }
     Ok(format!("{:x}", digest.finalize()))
+}
+
+fn semantic_delta_paths(
+    conn: &Connection,
+    files: &[ScannedMdoc],
+) -> Result<Option<(Vec<usize>, Vec<String>)>> {
+    fn read_next_edge(rows: &mut rusqlite::Rows<'_>) -> rusqlite::Result<Option<(String, String)>> {
+        rows.next()?
+            .map(|row| Ok((row.get(0)?, row.get(1)?)))
+            .transpose()
+    }
+
+    fn read_next_invalid(
+        rows: &mut rusqlite::Rows<'_>,
+    ) -> rusqlite::Result<Option<(String, String, String)>> {
+        rows.next()?
+            .map(|row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .transpose()
+    }
+
+    let mut file_stmt = conn.prepare(
+        "SELECT f.path, m.fnode, m.title
+         FROM mdoc_files f LEFT JOIN mdocs m ON m.path = f.path
+         ORDER BY f.path",
+    )?;
+    let mut edge_stmt =
+        conn.prepare("SELECT src_path, dst_fnode FROM mdoc_edges ORDER BY src_path, ord")?;
+    let mut invalid_stmt = conn.prepare(
+        "SELECT path, ref_fnode, error FROM mdoc_issues
+         WHERE kind = 'invalid' ORDER BY path, ref_fnode, error",
+    )?;
+    let mut file_rows = file_stmt.query([])?;
+    let mut edge_rows = edge_stmt.query([])?;
+    let mut invalid_rows = invalid_stmt.query([])?;
+    let mut next_edge = read_next_edge(&mut edge_rows)?;
+    let mut next_invalid = read_next_invalid(&mut invalid_rows)?;
+    let mut changed = Vec::new();
+    let mut stale = Vec::new();
+    let mut scan_index = 0;
+
+    while let Some(row) = file_rows.next()? {
+        let path: String = row.get(0)?;
+        while scan_index < files.len() && files[scan_index].path < path {
+            changed.push(scan_index);
+            scan_index += 1;
+            if changed.len() + stale.len() > MAX_STRONG_REFRESH_DELTA_PATHS {
+                return Ok(None);
+            }
+        }
+        let invalid = match next_invalid.as_ref() {
+            Some((invalid_path, ref_fnode, error)) if invalid_path == &path => {
+                let invalid = Some((ref_fnode.clone(), error.clone()));
+                next_invalid = read_next_invalid(&mut invalid_rows)?;
+                if next_invalid
+                    .as_ref()
+                    .is_some_and(|(invalid_path, _, _)| invalid_path == &path)
+                {
+                    return Ok(None);
+                }
+                invalid
+            }
+            Some((invalid_path, _, _)) if invalid_path < &path => return Ok(None),
+            _ => None,
+        };
+        if next_edge
+            .as_ref()
+            .is_some_and(|(source_path, _)| source_path < &path)
+        {
+            return Ok(None);
+        }
+        let mut dependencies = Vec::new();
+        while let Some((source_path, dependency)) = next_edge.as_ref() {
+            if source_path != &path {
+                break;
+            }
+            dependencies.push(dependency.clone());
+            next_edge = read_next_edge(&mut edge_rows)?;
+        }
+        let node = match (
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ) {
+            (Some(fnode), Some(title)) => Some((fnode, title, dependencies)),
+            (None, None) if dependencies.is_empty() => None,
+            _ => return Ok(None),
+        };
+        let current = IndexedFileSemantics { node, invalid };
+        if scan_index < files.len() && files[scan_index].path == path {
+            if current != scanned_file_semantics(&files[scan_index]) {
+                changed.push(scan_index);
+            }
+            scan_index += 1;
+        } else {
+            stale.push(path);
+        }
+        if changed.len() + stale.len() > MAX_STRONG_REFRESH_DELTA_PATHS {
+            return Ok(None);
+        }
+    }
+    if next_edge.is_some() || next_invalid.is_some() {
+        return Ok(None);
+    }
+    let has_orphaned_nodes: bool = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM mdocs m
+             WHERE NOT EXISTS (SELECT 1 FROM mdoc_files f WHERE f.path = m.path)
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_orphaned_nodes {
+        return Ok(None);
+    }
+    while scan_index < files.len() {
+        changed.push(scan_index);
+        scan_index += 1;
+        if changed.len() + stale.len() > MAX_STRONG_REFRESH_DELTA_PATHS {
+            return Ok(None);
+        }
+    }
+    Ok(Some((changed, stale)))
+}
+
+fn scanned_file_semantics(file: &ScannedMdoc) -> IndexedFileSemantics {
+    IndexedFileSemantics {
+        node: file.node.as_ref().map(|node| {
+            (
+                node.fnode.clone(),
+                node.title.clone(),
+                node.dependencies.clone(),
+            )
+        }),
+        invalid: file
+            .invalid
+            .as_ref()
+            .map(|issue| (issue.ref_fnode.clone(), issue.error.clone())),
+    }
 }
 
 fn hash_value(digest: &mut Sha256, value: &[u8]) {
