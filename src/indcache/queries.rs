@@ -40,68 +40,67 @@ pub fn referrer_items(
     target_fnode: &str,
     depth: i32,
 ) -> Result<Vec<DependencyItem>> {
+    let _profile = crate::profile::scope("queries::referrer_items");
     if depth < -1 {
         bail!("depth must be -1 (infinite) or >= 0");
     }
     if depth == 0 {
         return Ok(Vec::new());
     }
-    let reverse = reverse_graph(conn)?;
-    let nodes = node_lookup(conn)?;
-    let issues = issue_lookup(conn)?;
-
-    let mut items = Vec::new();
-    let mut seen: HashSet<&str> = HashSet::from([target_fnode]);
-    let mut queue: VecDeque<(&str, u32)> = reverse
-        .get(target_fnode)
+    let reached = if depth == -1 {
+        unbounded_reverse_bfs(conn, target_fnode)?
+    } else {
+        bounded_reverse_bfs(conn, target_fnode, depth as u32)?
+    };
+    let fnodes = reached
+        .iter()
+        .map(|(fnode, _)| fnode.as_str())
+        .collect::<Vec<_>>();
+    let nodes = node_lookup_for_fnodes(conn, &fnodes)?;
+    let issues = issue_lookup_for_fnodes(conn, &fnodes)?;
+    Ok(reached
         .into_iter()
-        .flat_map(|refs| refs.iter().map(|r| (r.as_str(), 1u32)))
-        .collect();
-
-    while let Some((fnode, item_depth)) = queue.pop_front() {
-        if !seen.insert(fnode) {
-            continue;
-        }
-        items.push(dependency_item(fnode, item_depth, &nodes, &issues));
-        if depth != -1 && item_depth as i32 >= depth {
-            continue;
-        }
-        for referrer in reverse.get(fnode).into_iter().flatten() {
-            if referrer != target_fnode {
-                queue.push_back((referrer.as_str(), item_depth + 1));
-            }
-        }
-    }
-    Ok(items)
+        .map(|(fnode, item_depth)| dependency_item(&fnode, item_depth, &nodes, &issues))
+        .collect())
 }
 
 /// BFS reachability check on `mdoc_edges`. Returns true if `to_fnode` is reachable from
 /// `from_fnode` (including the trivial case where they are equal).
 pub fn is_reachable(conn: &Connection, from_fnode: &str, to_fnode: &str) -> Result<bool> {
+    let _profile = crate::profile::scope("queries::is_reachable");
     if from_fnode == to_fnode {
         return Ok(true);
     }
+    Ok(conn.query_row(
+        "WITH RECURSIVE reachable(fnode) AS (
+             SELECT ?1
+             UNION
+             SELECT e.dst_fnode
+             FROM mdoc_valid_edges e
+             JOIN reachable r ON r.fnode = e.src_fnode
+         )
+         SELECT EXISTS(SELECT 1 FROM reachable WHERE fnode = ?2)",
+        rusqlite::params![from_fnode, to_fnode],
+        |row| row.get(0),
+    )?)
+}
+
+pub fn reverse_reachable_fnodes(conn: &Connection, target_fnode: &str) -> Result<HashSet<String>> {
+    let _profile = crate::profile::scope("queries::reverse_reachable_fnodes");
     let mut stmt = conn.prepare(
-        "SELECT dst_fnode
-         FROM mdoc_valid_edges
-         WHERE src_fnode = ?",
+        "WITH RECURSIVE reachable(fnode) AS (
+             SELECT ?1
+             UNION
+             SELECT e.src_fnode
+             FROM mdoc_valid_edges e
+             JOIN reachable r ON r.fnode = e.dst_fnode
+         )
+         SELECT fnode FROM reachable",
     )?;
-    let mut seen: HashSet<String> = HashSet::from([from_fnode.to_string()]);
-    let mut queue: VecDeque<String> = VecDeque::from([from_fnode.to_string()]);
-    while let Some(current) = queue.pop_front() {
-        let deps: Vec<String> = stmt
-            .query_map([&current], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        for dep in deps {
-            if dep == to_fnode {
-                return Ok(true);
-            }
-            if seen.insert(dep.clone()) {
-                queue.push_back(dep);
-            }
-        }
-    }
-    Ok(false)
+    let reached = stmt
+        .query_map([target_fnode], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(reached)
 }
 
 pub fn node_summary(conn: &Connection, fnode: &str) -> Result<NodeSummary> {
@@ -452,30 +451,6 @@ pub(super) fn valid_node_rows(conn: &Connection) -> Result<Vec<(String, String, 
     Ok(rows)
 }
 
-fn node_lookup(conn: &Connection) -> Result<HashMap<String, (String, String)>> {
-    Ok(valid_node_rows(conn)?
-        .into_iter()
-        .map(|(f, t, p)| (f, (t, p)))
-        .collect())
-}
-
-fn issue_lookup(conn: &Connection) -> Result<HashMap<String, GraphIssue>> {
-    let mut map: HashMap<String, GraphIssue> = HashMap::new();
-    let valid_fnodes: HashSet<String> = valid_node_rows(conn)?
-        .into_iter()
-        .map(|(fnode, _, _)| fnode)
-        .collect();
-    for issue in invalid_issue_rows(conn)? {
-        if !valid_fnodes.contains(&issue.fnode) {
-            map.entry(issue.fnode.clone()).or_insert(issue);
-        }
-    }
-    for issue in missing_issue_rows(conn)? {
-        map.entry(issue.fnode.clone()).or_insert(issue);
-    }
-    Ok(map)
-}
-
 pub(super) fn invalid_issue_rows(conn: &Connection) -> Result<Vec<GraphIssue>> {
     let mut stmt = conn.prepare(
         "SELECT path, ref_fnode, error FROM mdoc_issues
@@ -568,15 +543,149 @@ pub(super) fn dep_graph_snapshot(
     Ok(graph)
 }
 
-fn reverse_graph(conn: &Connection) -> Result<HashMap<String, Vec<String>>> {
-    let mut rev: HashMap<String, Vec<String>> = HashMap::new();
-    let mut stmt =
-        conn.prepare("SELECT src_fnode, dst_fnode FROM mdoc_valid_edges ORDER BY src_path, ord")?;
-    for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
-        let (src, dst) = row?;
-        rev.entry(dst).or_default().push(src);
+fn bounded_reverse_bfs(
+    conn: &Connection,
+    target_fnode: &str,
+    max_depth: u32,
+) -> Result<Vec<(String, u32)>> {
+    let mut reached = Vec::new();
+    let mut seen = HashSet::from([target_fnode.to_string()]);
+    let mut frontier = vec![target_fnode.to_string()];
+    for item_depth in 1..=max_depth {
+        let reverse = referrer_lookup_for_targets(conn, &frontier)?;
+        let mut next = Vec::new();
+        for target in &frontier {
+            for referrer in reverse.get(target).into_iter().flatten() {
+                if seen.insert(referrer.clone()) {
+                    reached.push((referrer.clone(), item_depth));
+                    next.push(referrer.clone());
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
     }
-    Ok(rev)
+    Ok(reached)
+}
+
+fn unbounded_reverse_bfs(conn: &Connection, target_fnode: &str) -> Result<Vec<(String, u32)>> {
+    const FULL_GRAPH_NODE_THRESHOLD: usize = 4096;
+    const FULL_GRAPH_DEPTH_THRESHOLD: u32 = 64;
+
+    let mut reached = Vec::new();
+    let mut seen = HashSet::from([target_fnode.to_string()]);
+    let mut frontier = vec![target_fnode.to_string()];
+    for item_depth in 1.. {
+        let reverse = referrer_lookup_for_targets(conn, &frontier)?;
+        let mut next = Vec::new();
+        for target in &frontier {
+            for referrer in reverse.get(target).into_iter().flatten() {
+                if seen.insert(referrer.clone()) {
+                    reached.push((referrer.clone(), item_depth));
+                    next.push(referrer.clone());
+                }
+            }
+        }
+        if next.is_empty() {
+            return Ok(reached);
+        }
+        if reached.len() >= FULL_GRAPH_NODE_THRESHOLD || item_depth >= FULL_GRAPH_DEPTH_THRESHOLD {
+            return Ok(reverse_bfs(target_fnode, &reverse_graph(conn)?));
+        }
+        frontier = next;
+    }
+    unreachable!("unbounded range exits only by returning")
+}
+
+fn referrer_lookup_for_targets(
+    conn: &Connection,
+    targets: &[String],
+) -> Result<HashMap<String, Vec<String>>> {
+    if targets.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let positions = targets
+        .iter()
+        .enumerate()
+        .map(|(position, fnode)| (fnode.as_str(), position))
+        .collect::<HashMap<_, _>>();
+    let mut rows = Vec::new();
+    for chunk in targets.chunks(CHUNK_SIZE) {
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT src_fnode, dst_fnode, src_path, ord
+             FROM mdoc_valid_edges
+             WHERE dst_fnode IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        for row in stmt.query_map(rusqlite::params_from_iter(chunk), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i32>(3)?,
+            ))
+        })? {
+            let (source, target, path, order) = row?;
+            rows.push((positions[target.as_str()], path, order, source, target));
+        }
+    }
+    rows.sort_unstable_by(|left, right| {
+        (&left.0, &left.1, &left.2).cmp(&(&right.0, &right.1, &right.2))
+    });
+    let mut result = targets
+        .iter()
+        .map(|target| (target.clone(), Vec::new()))
+        .collect::<HashMap<_, _>>();
+    for (_, _, _, source, target) in rows {
+        result
+            .get_mut(&target)
+            .expect("queried target was initialized")
+            .push(source);
+    }
+    Ok(result)
+}
+
+fn reverse_graph(conn: &Connection) -> Result<HashMap<String, Vec<String>>> {
+    let _profile = crate::profile::scope("queries::reverse_graph");
+    let mut reverse = HashMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT src_fnode, dst_fnode
+         FROM mdoc_valid_edges
+         ORDER BY src_path, ord",
+    )?;
+    for row in stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })? {
+        let (source, target) = row?;
+        reverse.entry(target).or_insert_with(Vec::new).push(source);
+    }
+    Ok(reverse)
+}
+
+fn reverse_bfs(target_fnode: &str, reverse: &HashMap<String, Vec<String>>) -> Vec<(String, u32)> {
+    let mut reached = Vec::new();
+    let mut seen = HashSet::from([target_fnode.to_string()]);
+    let mut queue = reverse
+        .get(target_fnode)
+        .into_iter()
+        .flatten()
+        .map(|fnode| (fnode.clone(), 1))
+        .collect::<VecDeque<_>>();
+    while let Some((fnode, item_depth)) = queue.pop_front() {
+        if !seen.insert(fnode.clone()) {
+            continue;
+        }
+        reached.push((fnode.clone(), item_depth));
+        for referrer in reverse.get(&fnode).into_iter().flatten() {
+            if referrer != target_fnode {
+                queue.push_back((referrer.clone(), item_depth + 1));
+            }
+        }
+    }
+    reached
 }
 
 fn node_lookup_for_fnodes(

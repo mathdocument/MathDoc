@@ -307,14 +307,12 @@ impl<'cache> DepGraph<'cache> {
 
         // Reject any dep that would create a cycle: adding root → dep_fnode creates
         // a cycle if dep_fnode can already reach root in the indexed graph.
-        for dep_fnode in &added {
-            if self.cache.is_reachable(dep_fnode, root)? {
-                bail!(
-                    "adding {} as a dependency of {} would create a cycle",
-                    short_fnode(dep_fnode),
-                    short_fnode(root)
-                );
-            }
+        if let Some(dep_fnode) = self.first_reaching_root(&added, root)? {
+            bail!(
+                "adding {} as a dependency of {} would create a cycle",
+                short_fnode(&dep_fnode),
+                short_fnode(root)
+            );
         }
 
         if !added.is_empty() {
@@ -430,7 +428,11 @@ impl<'cache> DepGraph<'cache> {
         }
 
         // Check both cycle sources before touching disk.
-        if self.cache.is_reachable(&new_node.fnode, &root)? {
+        let mut cycle_candidates = Vec::with_capacity(declared_dependencies.len() + 1);
+        cycle_candidates.push(new_node.fnode.clone());
+        cycle_candidates.extend(declared_dependencies.iter().cloned());
+        let cycle_source = self.first_reaching_root(&cycle_candidates, &root)?;
+        if cycle_source.as_deref() == Some(new_node.fnode.as_str()) {
             bail!(
                 "adding {} as a dependency of {} would create a cycle",
                 short_fnode(&new_node.fnode),
@@ -438,7 +440,7 @@ impl<'cache> DepGraph<'cache> {
             );
         }
         for dep_fnode in &declared_dependencies {
-            if self.cache.is_reachable(dep_fnode, &root)? {
+            if cycle_source.as_deref() == Some(dep_fnode.as_str()) {
                 bail!(
                     "adding {} as a dependency of {} would create a cycle \
                      (new node's dep {} already reaches root)",
@@ -464,6 +466,23 @@ impl<'cache> DepGraph<'cache> {
             }
         };
         Ok(!added.is_empty())
+    }
+
+    fn first_reaching_root(&self, candidates: &[String], root: &str) -> Result<Option<String>> {
+        match candidates {
+            [] => Ok(None),
+            [candidate] => self
+                .cache
+                .is_reachable(candidate, root)
+                .map(|reaches| reaches.then(|| candidate.clone())),
+            _ => {
+                let reaches_root = self.cache.reverse_reachable_fnodes(root)?;
+                Ok(candidates
+                    .iter()
+                    .find(|candidate| reaches_root.contains(*candidate))
+                    .cloned())
+            }
+        }
     }
 
     fn recover_failed_link(

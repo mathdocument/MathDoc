@@ -6,7 +6,7 @@ mod schema;
 
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::core::{
@@ -673,6 +673,12 @@ impl IndCache {
     pub fn is_reachable(&self, from_fnode: &str, to_fnode: &str) -> Result<bool> {
         self.with_current_database(|connection| {
             queries::is_reachable(connection, from_fnode, to_fnode)
+        })
+    }
+
+    pub(crate) fn reverse_reachable_fnodes(&self, target_fnode: &str) -> Result<HashSet<String>> {
+        self.with_current_database(|connection| {
+            queries::reverse_reachable_fnodes(connection, target_fnode)
         })
     }
 

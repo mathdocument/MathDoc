@@ -948,6 +948,54 @@ fn test_upsert_path_updates_cached_edges_and_missing_issues() {
 }
 
 #[test]
+fn set_based_referrer_traversal_preserves_depth_order_and_cycles() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    write(&root.join("leaf.mdoc"), "@fnode: leaf\n@title: Leaf\n");
+    write(
+        &root.join("a.mdoc"),
+        "@fnode: a\n@title: A\n\n@dep:\nleaf\nc\n@end\n",
+    );
+    write(
+        &root.join("b.mdoc"),
+        "@fnode: b\n@title: B\n\n@dep:\nleaf\n@end\n",
+    );
+    write(
+        &root.join("c.mdoc"),
+        "@fnode: c\n@title: C\n\n@dep:\na\n@end\n",
+    );
+    write(
+        &root.join("d.mdoc"),
+        "@fnode: d\n@title: D\n\n@dep:\nb\n@end\n",
+    );
+    let cache = IndCache::open(root.to_path_buf()).unwrap();
+
+    let refs = |depth| {
+        cache
+            .referrer_items("leaf", depth)
+            .unwrap()
+            .into_iter()
+            .map(|item| (item.fnode, item.depth))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(refs(1), [("a".into(), 1), ("b".into(), 1)]);
+    assert_eq!(
+        refs(2),
+        [
+            ("a".into(), 1),
+            ("b".into(), 1),
+            ("c".into(), 2),
+            ("d".into(), 2),
+        ]
+    );
+    assert_eq!(refs(-1), refs(2));
+    assert!(cache.is_reachable("c", "leaf").unwrap());
+    assert!(!cache.is_reachable("leaf", "c").unwrap());
+    assert!(cache.is_reachable("a", "a").unwrap());
+}
+
+#[test]
 fn partial_identity_issue_does_not_poison_a_valid_node_with_the_same_fnode() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
