@@ -11,7 +11,7 @@ use super::{cwd, print_workdraft_issues, require_mdcroot, BLD, DIM, GRN, RED, RS
 pub(super) fn cmd_work(source: String) -> Result<i32> {
     let mdcroot = require_mdcroot()?;
     let work_lock = crate::workspace::WorkspaceWorkLock::acquire(&mdcroot)?;
-    let (targets, sync_conflicted, source_fnode, formal_languages, manifest_snapshot) = {
+    let (mut cache, targets, sync_conflicted, source_fnode, formal_languages, manifest_snapshot) = {
         let mutation_lock = work_lock.acquire_mutation_lock()?;
         let mut cache = IndCache::open_refreshed_under_mutation_lock(&mutation_lock)?;
         let (source_fnode, _, source_path) = cache.resolve_ref(&source, Some(&cwd()))?;
@@ -43,6 +43,7 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
         let manifest_snapshot = crate::formal::attestation::snapshot(&mdcroot)?;
         work_lock.require_current()?;
         (
+            cache,
             targets,
             sync_conflicted,
             source_fnode,
@@ -114,7 +115,8 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
     work_lock.require_current()?;
 
     let mutation_lock = work_lock.acquire_mutation_lock()?;
-    let mut cache = IndCache::open_refreshed_under_mutation_lock(&mutation_lock)?;
+    cache.validate_mutation_lock(&mutation_lock)?;
+    cache.discover_workspace_changes()?;
     let (_, _, source_path) = cache.resolve_ref(&source_fnode, Some(&mdcroot))?;
     cache.upsert_path(&source_path)?;
     let attestation_errors = cache.publish_formal_attestations(
