@@ -70,9 +70,9 @@ impl SrcCompiler for CompilerLean {
                 "Lean source disappeared before compilation",
             ));
         };
-        let source_sha256 = crate::formal_status::content_digest(source_content);
+        let source_sha256 = crate::formal::status::content_digest(source_content);
         let environment =
-            match crate::formal_status::capture_environment(workspace.mdcroot(), "lean") {
+            match crate::formal::status::capture_environment(workspace.mdcroot(), "lean") {
                 Ok(Some(evidence)) => evidence,
                 Ok(None) => {
                     return without_receipt(CompilerRes::err(
@@ -122,7 +122,7 @@ impl SrcCompiler for CompilerLean {
                         &driver_snapshot,
                         source_sha256,
                         environment,
-                        match crate::formal_status::module_key(&relative) {
+                        match crate::formal::status::module_key(&relative) {
                             Ok(module) => module,
                             Err(error) => {
                                 return without_receipt(CompilerRes::err(error.to_string()))
@@ -166,9 +166,9 @@ fn collect_formal_receipt(
     source_snapshot: &crate::workspace::FileSnapshot,
     driver_snapshot: &crate::workspace::FileSnapshot,
     source_sha256: String,
-    environment: crate::formal_status::FormalEnvironmentEvidence,
+    environment: crate::formal::status::FormalEnvironmentEvidence,
     target_module: String,
-    compiler_identity: crate::formal_status::CompilerIdentityEvidence,
+    compiler_identity: crate::formal::status::CompilerIdentityEvidence,
     dependency_evidence: DependencyEvidence,
 ) -> Result<FormalCompilationReceipt> {
     let source = Path::new("Lib").join(relative);
@@ -192,7 +192,7 @@ fn collect_formal_receipt(
         language: "lean".to_string(),
         target_module,
         source_sha256,
-        artifact_sha256: crate::formal_status::file_digest(&req.mdcroot, &artifact)
+        artifact_sha256: crate::formal::status::file_digest(&req.mdcroot, &artifact)
             .context("hashing selected Lean artifact")?,
         environment_sha256: environment.digest().to_string(),
         compiler_path: compiler_identity.path().to_string(),
@@ -251,7 +251,7 @@ fn lean_compiler_identity(
     workspace: &CompilerWorkspace,
     lake: &Path,
     timeout_sec: u64,
-) -> Result<crate::formal_status::CompilerIdentityEvidence> {
+) -> Result<crate::formal::status::CompilerIdentityEvidence> {
     let (rtcode, stdout, stderr) = run_process(
         lake,
         ["env", "lean", "--print-prefix"],
@@ -274,7 +274,7 @@ fn lean_compiler_identity(
     if lines.len() != 1 {
         bail!("Lean compiler prefix query returned unexpected output");
     }
-    crate::formal_status::capture_compiler_identity(&Path::new(lines[0]).join("bin/lean"))
+    crate::formal::status::capture_compiler_identity(&Path::new(lines[0]).join("bin/lean"))
 }
 
 fn collect_dependency_evidence(
@@ -380,7 +380,7 @@ fn guarded_digest(
     let Some(content) = snapshot.content() else {
         return Ok(None);
     };
-    let digest = crate::formal_status::content_digest(content);
+    let digest = crate::formal::status::content_digest(content);
     if !snapshot.file_generation_unchanged(path)? {
         bail!(
             "Lean dependency artifact changed while reading: {}",
@@ -440,7 +440,7 @@ fn lean_dependency_paths(
             external_dependencies.insert(path);
             continue;
         };
-        let module = crate::formal_status::module_key(relative)?;
+        let module = crate::formal::status::module_key(relative)?;
         if let Some(existing) = workspace_dependencies.get(&module) {
             if existing != &path {
                 bail!("Lean dependency inspection returned ambiguous module {module}");

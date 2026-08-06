@@ -6,9 +6,12 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::compiler::FormalCompilationReceipt;
 use crate::core::FormalCodeStatus;
-use crate::formal_attestation::{self, FormalAttestation, FormalAttestationManifest};
 use crate::mdocnode::MdocNode;
-use crate::workspace::FileSnapshot;
+use crate::workspace::{FileSnapshot, FileSnapshotBatch, ReadFileSnapshot};
+
+use super::attestation::{
+    self as formal_attestation, FormalAttestation, FormalAttestationManifest,
+};
 
 pub(crate) const FORMAL_LANGUAGES: [&str; 2] = ["lean", "rocq"];
 
@@ -41,6 +44,12 @@ struct EvaluatedNode {
     rocq: LanguageState,
 }
 
+#[derive(Default)]
+struct EvaluationCaches {
+    external_input_digests: HashMap<String, String>,
+    environment_digests: HashMap<String, Option<String>>,
+}
+
 struct WorkspaceEvaluation {
     root: PathBuf,
     nodes: Vec<IndexedNode>,
@@ -53,7 +62,7 @@ struct WorkspaceEvaluation {
 enum InputGuard {
     Workspace {
         path: PathBuf,
-        snapshot: FileSnapshot,
+        snapshot: Option<ReadFileSnapshot>,
     },
     External {
         path: PathBuf,
@@ -109,6 +118,7 @@ impl WorkspaceEvaluation {
 }
 
 pub(crate) fn refresh_index_statuses(conn: &Connection, root: &Path) -> Result<()> {
+    let _profile = crate::profile::scope("formal_status::refresh_index_statuses");
     let loaded = match formal_attestation::load_for_status(root) {
         Ok(loaded) => loaded,
         Err(_) => return downgrade_verified_statuses(conn),
@@ -116,18 +126,20 @@ pub(crate) fn refresh_index_statuses(conn: &Connection, root: &Path) -> Result<(
     if loaded.manifest.nodes.is_empty() {
         return downgrade_verified_statuses(conn);
     }
-    let evaluation = match evaluate_workspace(conn, root, &loaded.manifest).and_then(|evaluation| {
-        evaluation.ensure_current()?;
-        ensure_unchanged_beneath(&loaded.snapshot, root, &loaded.path)?;
-        Ok(evaluation)
-    }) {
-        Ok(evaluation) => evaluation,
-        Err(error) if error.chain().any(|cause| cause.is::<rusqlite::Error>()) => {
-            return Err(error)
-        }
-        Err(_) => return downgrade_verified_statuses(conn),
-    };
+    let evaluation =
+        match evaluate_workspace(conn, root, &loaded.manifest, None).and_then(|evaluation| {
+            evaluation.ensure_current()?;
+            ensure_unchanged_beneath(&loaded.snapshot, root, &loaded.path)?;
+            Ok(evaluation)
+        }) {
+            Ok(evaluation) => evaluation,
+            Err(error) if error.chain().any(|cause| cause.is::<rusqlite::Error>()) => {
+                return Err(error)
+            }
+            Err(_) => return downgrade_verified_statuses(conn),
+        };
 
+    downgrade_verified_statuses(conn)?;
     let mut update = conn.prepare(
         "UPDATE mdoc_files SET lean_status = ?, rocq_status = ?
          WHERE path = ? AND (lean_status <> ? OR rocq_status <> ?)",
@@ -160,7 +172,8 @@ pub(crate) fn prepare_attestation(
     language: &str,
     receipt: &FormalCompilationReceipt,
 ) -> Result<FormalAttestation> {
-    let evaluation = evaluate_workspace(conn, root, manifest)?;
+    let _profile = crate::profile::scope("formal_status::prepare_attestation");
+    let evaluation = evaluate_workspace(conn, root, manifest, Some(fnode))?;
     let index = evaluation
         .index_by_fnode
         .get(fnode)
@@ -171,8 +184,9 @@ pub(crate) fn prepare_attestation(
         bail!("node has no archived {language} source block");
     }
     let mut guards = Vec::new();
-    let evidence =
-        current_evidence(root, node, language, &mut guards)?.map_err(anyhow::Error::msg)?;
+    let mut environment_digests = HashMap::new();
+    let evidence = current_evidence(root, node, language, &mut environment_digests, &mut guards)?
+        .map_err(anyhow::Error::msg)?;
     let target_module = module_key(Path::new(&node.rel_path))?;
     if receipt.language != language
         || receipt.target_module != target_module
@@ -201,6 +215,9 @@ pub(crate) fn prepare_attestation(
     }
     let mut dependencies = BTreeMap::new();
     for dependency in &evidence.dependencies {
+        if manifest.get(dependency, language).is_none() {
+            bail!("formal dependency is not verified for {language}: {dependency}");
+        }
         let dependency_index = evaluation
             .index_by_fnode
             .get(dependency)
@@ -257,12 +274,14 @@ fn evaluate_workspace(
     conn: &Connection,
     root: &Path,
     manifest: &FormalAttestationManifest,
+    required_fnode: Option<&str>,
 ) -> Result<WorkspaceEvaluation> {
+    let _profile = crate::profile::scope("formal_status::evaluate_workspace");
     let mut guards = Vec::new();
-    let nodes = load_indexed_nodes(conn, root, &mut guards)?;
-    let module_by_fnode = module_by_fnode(&nodes)?;
+    let nodes = load_indexed_nodes(conn, root, manifest, required_fnode, &mut guards)?;
+    let module_by_fnode = module_by_fnode(conn, &nodes)?;
     let mut states = Vec::with_capacity(nodes.len());
-    let mut external_input_digests = HashMap::new();
+    let mut caches = EvaluationCaches::default();
     for node in &nodes {
         states.push(EvaluatedNode {
             lean: evaluate_language(
@@ -271,7 +290,7 @@ fn evaluate_workspace(
                 "lean",
                 &module_by_fnode,
                 manifest,
-                &mut external_input_digests,
+                &mut caches,
                 &mut guards,
             )?,
             rocq: evaluate_language(
@@ -280,7 +299,7 @@ fn evaluate_workspace(
                 "rocq",
                 &module_by_fnode,
                 manifest,
-                &mut external_input_digests,
+                &mut caches,
                 &mut guards,
             )?,
         });
@@ -305,47 +324,93 @@ fn evaluate_workspace(
 fn load_indexed_nodes(
     conn: &Connection,
     root: &Path,
+    manifest: &FormalAttestationManifest,
+    required_fnode: Option<&str>,
     guards: &mut Vec<InputGuard>,
 ) -> Result<Vec<IndexedNode>> {
-    let mut stmt = conn.prepare(
-        "SELECT m.path, m.fnode
-         FROM mdocs m
-         WHERE NOT EXISTS (
-             SELECT 1 FROM mdoc_issues i
-             WHERE i.path = m.path AND i.kind IN ('invalid', 'duplicate')
-         )
-         ORDER BY m.path",
-    )?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut nodes = Vec::with_capacity(rows.len());
-    for (rel_path, expected_fnode) in rows {
-        let path = crate::workspace::resolve_mdoc_path(root, Path::new(&rel_path))?;
-        let snapshot = FileSnapshot::capture_beneath(root, &path)?;
-        let Some(content) = snapshot.content() else {
-            ensure_unchanged(&snapshot, &path)?;
-            bail!("indexed mdoc disappeared during formal status evaluation: {rel_path}");
-        };
-        let node = MdocNode::load_bytes(&path, content)?;
-        ensure_unchanged(&snapshot, &path)?;
-        if node.fnode != expected_fnode {
-            bail!(
-                "indexed mdoc identity changed: expected {expected_fnode}, found {}",
-                node.fnode
+    let _profile = crate::profile::scope("formal_status::load_indexed_nodes");
+    let mut required = manifest.nodes.keys().cloned().collect::<BTreeSet<_>>();
+    if let Some(fnode) = required_fnode {
+        required.insert(fnode.to_string());
+    }
+    if required.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let required = required.into_iter().collect::<Vec<_>>();
+    let mut rows = Vec::with_capacity(required.len());
+    for chunk in required.chunks(512) {
+        let placeholders = std::iter::repeat_n("?", chunk.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT m.path, m.fnode
+             FROM mdocs m
+             WHERE m.fnode IN ({placeholders})
+               AND NOT EXISTS (
+                   SELECT 1 FROM mdoc_issues i
+                   WHERE i.path = m.path AND i.kind IN ('invalid', 'duplicate')
+               )"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        rows.extend(
+            stmt.query_map(rusqlite::params_from_iter(chunk), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+        );
+    }
+    rows.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+
+    let worker_count = formal_worker_count(rows.len());
+    if worker_count == 0 {
+        return Ok(Vec::new());
+    }
+    let chunk_size = rows.len().div_ceil(worker_count);
+    let loaded = std::thread::scope(|scope| {
+        let mut workers = Vec::with_capacity(worker_count);
+        for chunk in rows.chunks(chunk_size) {
+            workers.push(
+                scope.spawn(move || -> Result<Vec<(IndexedNode, InputGuard)>> {
+                    let mut snapshots = FileSnapshotBatch::new(root)?;
+                    let mut loaded = Vec::with_capacity(chunk.len());
+                    for (rel_path, expected_fnode) in chunk {
+                        let path = crate::workspace::resolve_mdoc_path(root, Path::new(rel_path))?;
+                        let snapshot = snapshots.capture_read(&path)?.ok_or_else(|| {
+                            anyhow::anyhow!(
+                            "indexed mdoc disappeared during formal status evaluation: {rel_path}"
+                        )
+                        })?;
+                        let node = MdocNode::load_bytes(&path, snapshot.content())?;
+                        if node.fnode != *expected_fnode {
+                            bail!(
+                            "indexed mdoc identity changed: expected {expected_fnode}, found {}",
+                            node.fnode
+                        );
+                        }
+                        loaded.push((
+                            IndexedNode {
+                                fnode: expected_fnode.clone(),
+                                rel_path: rel_path.clone(),
+                                node,
+                            },
+                            InputGuard::Workspace {
+                                path,
+                                snapshot: Some(snapshot),
+                            },
+                        ));
+                    }
+                    snapshots.finish()?;
+                    Ok(loaded)
+                }),
             );
         }
-        guards.push(InputGuard::Workspace {
-            path: path.clone(),
-            snapshot,
-        });
-        nodes.push(IndexedNode {
-            fnode: expected_fnode,
-            rel_path,
-            node,
-        });
+        join_formal_workers(workers)
+    })?;
+    let mut nodes = Vec::with_capacity(loaded.len());
+    for (node, guard) in loaded {
+        nodes.push(node);
+        guards.push(guard);
     }
     Ok(nodes)
 }
@@ -356,7 +421,7 @@ fn evaluate_language(
     language: &str,
     module_by_fnode: &HashMap<String, String>,
     manifest: &FormalAttestationManifest,
-    external_input_digests: &mut HashMap<String, String>,
+    caches: &mut EvaluationCaches,
     guards: &mut Vec<InputGuard>,
 ) -> Result<LanguageState> {
     if node.node.source_block(language).is_none() {
@@ -371,7 +436,13 @@ fn evaluate_language(
             candidate: None,
         });
     };
-    let evidence = match current_evidence(root, node, language, guards) {
+    let evidence = match current_evidence(
+        root,
+        node,
+        language,
+        &mut caches.environment_digests,
+        guards,
+    ) {
         Ok(Ok(evidence)) => evidence,
         Ok(Err(_)) | Err(_) => {
             return Ok(LanguageState {
@@ -381,7 +452,8 @@ fn evaluate_language(
         }
     };
     let inputs_current =
-        attested_inputs_current(attestation, external_input_digests, guards).unwrap_or_default();
+        attested_inputs_current(attestation, &mut caches.external_input_digests, guards)
+            .unwrap_or_default();
     if !inputs_current {
         return Ok(LanguageState {
             status: FormalCodeStatus::Unverified,
@@ -431,12 +503,13 @@ fn current_evidence(
     root: &Path,
     node: &IndexedNode,
     language: &str,
+    environment_digests: &mut HashMap<String, Option<String>>,
     guards: &mut Vec<InputGuard>,
 ) -> Result<std::result::Result<CurrentEvidence, String>> {
     let block = node
         .node
         .source_block(language)
-        .expect("caller checked source block presence");
+        .ok_or_else(|| anyhow::anyhow!("indexed formal block presence is stale"))?;
     let relative = Path::new(&node.rel_path);
     let source_path = source_path(root, relative, language)?;
     let Some(source) = guarded_content(root, &source_path, guards)? else {
@@ -452,8 +525,11 @@ fn current_evidence(
     let Some(artifact) = guarded_content(root, &artifact_path, guards)? else {
         return Ok(Err(format!("{language} compiler artifact is missing")));
     };
-    let Some(environment_sha256) = environment_digest_internal(root, language, Some(guards))?
-    else {
+    if !environment_digests.contains_key(language) {
+        let digest = environment_digest_internal(root, language, Some(guards))?;
+        environment_digests.insert(language.to_string(), digest);
+    }
+    let Some(environment_sha256) = environment_digests.get(language).cloned().flatten() else {
         return Ok(Err(format!(
             "{language} compiler environment is incomplete or stale"
         )));
@@ -539,11 +615,43 @@ fn language_state_mut<'a>(
     }
 }
 
-fn module_by_fnode(nodes: &[IndexedNode]) -> Result<HashMap<String, String>> {
-    nodes
+fn module_by_fnode(conn: &Connection, nodes: &[IndexedNode]) -> Result<HashMap<String, String>> {
+    let mut modules = nodes
         .iter()
         .map(|node| Ok((node.fnode.clone(), module_key(Path::new(&node.rel_path))?)))
-        .collect()
+        .collect::<Result<HashMap<_, _>>>()?;
+    let missing = nodes
+        .iter()
+        .flat_map(|node| node.node.depens.iter())
+        .filter(|fnode| !modules.contains_key(*fnode))
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    for chunk in missing.chunks(512) {
+        let placeholders = std::iter::repeat_n("?", chunk.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT m.path, m.fnode
+             FROM mdocs m
+             WHERE m.fnode IN ({placeholders})
+               AND NOT EXISTS (
+                   SELECT 1 FROM mdoc_issues i
+                   WHERE i.path = m.path AND i.kind IN ('invalid', 'duplicate')
+               )"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(chunk), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (path, fnode) in rows {
+            modules.insert(fnode, module_key(Path::new(&path))?);
+        }
+    }
+    Ok(modules)
 }
 
 fn expected_workspace_modules(
@@ -664,9 +772,12 @@ fn guarded_content(
     path: &Path,
     guards: &mut Vec<InputGuard>,
 ) -> Result<Option<Vec<u8>>> {
-    let snapshot = FileSnapshot::capture_beneath(root, path)?;
-    let content = snapshot.content().map(ToOwned::to_owned);
-    ensure_unchanged_beneath(&snapshot, root, path)?;
+    let mut snapshots = FileSnapshotBatch::new(root)?;
+    let snapshot = snapshots.capture_read(path)?;
+    snapshots.finish()?;
+    let content = snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.content().to_vec());
     guards.push(InputGuard::Workspace {
         path: path.to_path_buf(),
         snapshot,
@@ -827,17 +938,6 @@ fn stable_content(root: &Path, path: &Path) -> Result<Option<Vec<u8>>> {
     Ok(content)
 }
 
-fn ensure_unchanged(snapshot: &FileSnapshot, path: &Path) -> Result<()> {
-    if snapshot.unchanged(path)? {
-        Ok(())
-    } else {
-        bail!(
-            "formal verification input changed while reading: {}",
-            path.display()
-        )
-    }
-}
-
 fn ensure_unchanged_beneath(snapshot: &FileSnapshot, root: &Path, path: &Path) -> Result<()> {
     if snapshot.unchanged_beneath(root, path)? {
         Ok(())
@@ -850,22 +950,92 @@ fn ensure_unchanged_beneath(snapshot: &FileSnapshot, root: &Path, path: &Path) -
 }
 
 fn ensure_guards(root: &Path, guards: &[InputGuard]) -> Result<()> {
+    let workspace = guards
+        .iter()
+        .filter_map(|guard| match guard {
+            InputGuard::Workspace { path, snapshot } => Some((path, snapshot)),
+            InputGuard::External { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    ensure_workspace_guards(root, &workspace)?;
     for guard in guards {
-        match guard {
-            InputGuard::Workspace { path, snapshot } => {
-                ensure_unchanged_beneath(snapshot, root, path)?;
-            }
-            InputGuard::External { path, snapshot } => {
-                if !snapshot.file_generation_unchanged(path)? {
-                    bail!(
-                        "formal compiler input changed while reading: {}",
-                        path.display()
-                    );
-                }
+        if let InputGuard::External { path, snapshot } = guard {
+            if !snapshot.file_generation_unchanged(path)? {
+                bail!(
+                    "formal compiler input changed while reading: {}",
+                    path.display()
+                );
             }
         }
     }
     Ok(())
+}
+
+fn ensure_workspace_guards(
+    root: &Path,
+    guards: &[(&PathBuf, &Option<ReadFileSnapshot>)],
+) -> Result<()> {
+    let _profile = crate::profile::scope("formal_status::ensure_workspace_guards");
+    let worker_count = formal_worker_count(guards.len());
+    if worker_count == 0 {
+        return Ok(());
+    }
+    let chunk_size = guards.len().div_ceil(worker_count);
+    std::thread::scope(|scope| {
+        let mut workers = Vec::with_capacity(worker_count);
+        for chunk in guards.chunks(chunk_size) {
+            workers.push(scope.spawn(move || -> Result<Vec<()>> {
+                let mut snapshots = FileSnapshotBatch::new(root)?;
+                for (path, expected) in chunk {
+                    let current = snapshots.capture_read(path)?;
+                    let unchanged = match expected {
+                        Some(expected) => expected.matches(current.as_ref()),
+                        None => current.is_none(),
+                    };
+                    if !unchanged {
+                        bail!(
+                            "formal verification input changed while reading: {}",
+                            path.display()
+                        );
+                    }
+                }
+                snapshots.finish()?;
+                Ok(Vec::new())
+            }));
+        }
+        join_formal_workers(workers).map(|_| ())
+    })
+}
+
+fn formal_worker_count(item_count: usize) -> usize {
+    std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1)
+        .min(12)
+        .min(item_count)
+}
+
+fn join_formal_workers<T>(
+    workers: Vec<std::thread::ScopedJoinHandle<'_, Result<Vec<T>>>>,
+) -> Result<Vec<T>> {
+    let mut result = Vec::new();
+    let mut first_error = None;
+    for worker in workers {
+        match worker.join() {
+            Ok(Ok(items)) => result.extend(items),
+            Ok(Err(error)) => {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+            Err(_) => {
+                if first_error.is_none() {
+                    first_error = Some(anyhow::anyhow!("formal snapshot worker panicked"));
+                }
+            }
+        }
+    }
+    first_error.map_or(Ok(result), Err)
 }
 
 fn source_path(root: &Path, relative: &Path, language: &str) -> Result<PathBuf> {
@@ -1085,6 +1255,70 @@ mod tests {
         assert_eq!(
             cache.formalization_status(&node.fnode).unwrap().lean,
             FormalCodeStatus::Unverified
+        );
+    }
+
+    #[test]
+    fn cache_open_discovers_unattested_formal_block_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        lean_environment(root);
+        let attested = lean_node(root, "attested.mdoc", "Attested", &[], "def value := 1\n");
+        let mut plain = MdocNode::new_at_path(&root.join("plain.mdoc"), "Plain");
+        plain
+            .upsert_source_block("text", "plain\n".to_string())
+            .unwrap();
+        write(&plain.path, &plain.render().unwrap());
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+        assert!(publish(&mut cache, root, &attested.fnode).is_empty());
+        drop(cache);
+
+        let metadata = std::fs::metadata(&plain.path).unwrap();
+        let modified = metadata.modified().unwrap();
+        plain.remove_source_block("text");
+        plain
+            .upsert_source_block("lean", "plain\n".to_string())
+            .unwrap();
+        let rendered = plain.render().unwrap();
+        assert_eq!(metadata.len(), rendered.len() as u64);
+        write(&plain.path, &rendered);
+        std::fs::File::options()
+            .write(true)
+            .open(&plain.path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        let cache = IndCache::open(root.to_path_buf()).unwrap();
+        assert_eq!(
+            cache.formalization_status(&plain.fnode).unwrap().lean,
+            FormalCodeStatus::Unverified
+        );
+        drop(cache);
+
+        let metadata = std::fs::metadata(&plain.path).unwrap();
+        let modified = metadata.modified().unwrap();
+        plain.remove_source_block("lean");
+        plain
+            .upsert_source_block("text", "plain\n".to_string())
+            .unwrap();
+        let rendered = plain.render().unwrap();
+        assert_eq!(metadata.len(), rendered.len() as u64);
+        write(&plain.path, &rendered);
+        std::fs::File::options()
+            .write(true)
+            .open(&plain.path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        let cache = IndCache::open(root.to_path_buf()).unwrap();
+        assert_eq!(
+            cache.formalization_status(&plain.fnode).unwrap().lean,
+            FormalCodeStatus::NoCode
+        );
+        assert_eq!(
+            cache.formalization_status(&attested.fnode).unwrap().lean,
+            FormalCodeStatus::Verified
         );
     }
 

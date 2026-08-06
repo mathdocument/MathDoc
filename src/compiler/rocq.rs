@@ -67,8 +67,8 @@ impl SrcCompiler for CompilerRocq {
                 "Rocq source disappeared before compilation",
             ));
         };
-        let source_sha256 = crate::formal_status::content_digest(source_content);
-        let compiler_identity = match crate::formal_status::capture_compiler_identity(&rocq) {
+        let source_sha256 = crate::formal::status::content_digest(source_content);
+        let compiler_identity = match crate::formal::status::capture_compiler_identity(&rocq) {
             Ok(identity) => identity,
             Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
         };
@@ -166,7 +166,7 @@ fn collect_formal_receipt(
     timeout_sec: u64,
     source_snapshot: &crate::workspace::FileSnapshot,
     source_sha256: String,
-    compiler_identity: crate::formal_status::CompilerIdentityEvidence,
+    compiler_identity: crate::formal::status::CompilerIdentityEvidence,
     dependency_evidence: DependencyEvidence,
 ) -> anyhow::Result<FormalCompilationReceipt> {
     let current_dependencies =
@@ -176,17 +176,17 @@ fn collect_formal_receipt(
     if !workspace.snapshot_unchanged(source_snapshot, &workspace.root().join(source))? {
         anyhow::bail!("Rocq source changed during compilation");
     }
-    let environment = crate::formal_status::capture_environment(workspace.mdcroot(), "rocq")
+    let environment = crate::formal::status::capture_environment(workspace.mdcroot(), "rocq")
         .context("capturing Rocq compiler environment")?
         .ok_or_else(|| anyhow::anyhow!("Rocq compiler environment is incomplete"))?;
     compiler_identity.ensure_current()?;
     environment.ensure_current()?;
-    let target_module = crate::formal_status::module_key(source.strip_prefix("Lib")?)?;
+    let target_module = crate::formal::status::module_key(source.strip_prefix("Lib")?)?;
     Ok(FormalCompilationReceipt {
         language: "rocq".to_string(),
         target_module,
         source_sha256,
-        artifact_sha256: crate::formal_status::file_digest(
+        artifact_sha256: crate::formal::status::file_digest(
             &req.mdcroot,
             &workspace.root().join(output),
         )
@@ -384,7 +384,7 @@ fn rocq_dependency_evidence(
         if relative.extension().and_then(|value| value.to_str()) != Some("vo") {
             continue;
         }
-        let module = crate::formal_status::module_key(relative)?;
+        let module = crate::formal::status::module_key(relative)?;
         let digest = guarded_digest(&artifact, &mut guards)?;
         if let Some(existing) = direct_dependencies.get(&module) {
             if existing != &digest {
@@ -409,7 +409,7 @@ fn guarded_digest(
     let content = snapshot.content().ok_or_else(|| {
         anyhow::anyhow!("Rocq dependency artifact is missing: {}", path.display())
     })?;
-    let digest = crate::formal_status::content_digest(content);
+    let digest = crate::formal::status::content_digest(content);
     if !snapshot.file_generation_unchanged(path)? {
         anyhow::bail!(
             "Rocq dependency artifact changed while reading: {}",

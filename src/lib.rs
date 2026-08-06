@@ -12,9 +12,7 @@ pub mod core;
 #[cfg(unix)]
 pub mod depgraph;
 #[cfg(unix)]
-pub(crate) mod formal_attestation;
-#[cfg(unix)]
-pub(crate) mod formal_status;
+pub(crate) mod formal;
 #[cfg(unix)]
 pub mod indcache;
 #[cfg(unix)]

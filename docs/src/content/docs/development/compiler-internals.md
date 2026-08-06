@@ -69,12 +69,13 @@ managed direct dependency artifacts, and external direct dependency artifacts. I
 that existed before compilation are generation-checked again afterward; machine-readable
 dependency output must be complete and untruncated.
 
-`src/formal_attestation.rs` persists versioned receipts, while `src/formal_status.rs`
+`src/formal/attestation.rs` persists versioned receipts, while `src/formal/status.rs`
 revalidates them against authoritative `.mdoc` blocks, mirrors, artifacts, environments,
-compiler inputs, and dependency tokens. Verification propagates with a linear graph
-walk. Snapshot guards cover the complete evaluation and the manifest generation captured
-before compilation. Evidence failures downgrade status; SQLite failures still propagate
-as infrastructure errors.
+compiler inputs, and dependency tokens. Status refresh reads only attested nodes and their
+indexed dependencies; nodes without attestations are downgraded in one database update.
+Verification propagates with a linear graph walk. Snapshot guards cover the complete
+evaluation and the manifest generation captured before compilation. Evidence failures
+downgrade status; SQLite failures still propagate as infrastructure errors.
 
 ## Subprocess control
 

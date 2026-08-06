@@ -53,11 +53,45 @@ pub fn refresh_search_index(conn: &Connection, root: &Path) -> Result<()> {
         super::derived::bump_graph_epoch(conn)?;
         super::derived::refresh_all_derived_data(conn)?;
     }
-    crate::formal_status::refresh_index_statuses(conn, root)?;
+    crate::formal::status::refresh_index_statuses(conn, root)?;
     conn.execute(
         "UPDATE mdoc_index_state SET bootstrapped = 1, index_digest = ? WHERE id = 1",
         [&digest],
     )?;
+    Ok(())
+}
+
+pub(super) fn refresh_formal_block_presence(conn: &Connection, root: &Path) -> Result<()> {
+    let _profile = crate::profile::scope("refresh::refresh_formal_block_presence");
+    let files = {
+        let _phase = crate::profile::scope("refresh::scan_formal_block_presence");
+        scan_workspace(root)?
+    };
+    let mut update = conn.prepare(
+        "UPDATE mdoc_files SET lean_status = ?, rocq_status = ?
+         WHERE path = ?
+           AND EXISTS (
+               SELECT 1 FROM mdocs m
+               WHERE m.path = mdoc_files.path AND m.fnode = ?
+                 AND NOT EXISTS (
+                     SELECT 1 FROM mdoc_issues i
+                     WHERE i.path = m.path AND i.kind IN ('invalid', 'duplicate')
+                 )
+           )
+           AND (lean_status <> ? OR rocq_status <> ?)",
+    )?;
+    for (file, node) in files.iter().filter_map(|file| {
+        file.invalid
+            .is_none()
+            .then(|| file.node.as_ref().map(|node| (file, node)))
+            .flatten()
+    }) {
+        let lean = formal_status_value(file.formal_status.lean);
+        let rocq = formal_status_value(file.formal_status.rocq);
+        update.execute(rusqlite::params![
+            lean, rocq, file.path, node.fnode, lean, rocq
+        ])?;
+    }
     Ok(())
 }
 

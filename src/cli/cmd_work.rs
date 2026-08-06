@@ -27,22 +27,21 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
             cache.invalidate_formal_attestations(
                 &mutation_lock,
                 &source_fnode,
-                &crate::formal_status::FORMAL_LANGUAGES.map(str::to_string),
+                &crate::formal::status::FORMAL_LANGUAGES.map(str::to_string),
             )?;
             crate::workdraft::targets(&mdcroot, &source_path)?
         };
-        cache.refresh_formal_statuses()?;
         let node = crate::mdocnode::MdocNode::load(&source_path)?;
         let formal_languages = targets
             .iter()
             .map(|(srctype, _)| srctype)
             .filter(|srctype| {
-                crate::formal_status::FORMAL_LANGUAGES.contains(&srctype.as_str())
+                crate::formal::status::FORMAL_LANGUAGES.contains(&srctype.as_str())
                     && node.source_block(srctype).is_some()
             })
             .cloned()
             .collect::<Vec<_>>();
-        let manifest_snapshot = crate::formal_attestation::snapshot(&mdcroot)?;
+        let manifest_snapshot = crate::formal::attestation::snapshot(&mdcroot)?;
         work_lock.require_current()?;
         (
             targets,

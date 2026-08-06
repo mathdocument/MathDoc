@@ -236,7 +236,17 @@ impl IndCache {
             tx.commit()?;
             self.require_current_database()?;
         } else {
-            self.refresh_formal_statuses()?;
+            let has_attestations = crate::formal::attestation::load_for_status(&self.root)
+                .is_ok_and(|loaded| !loaded.manifest.nodes.is_empty());
+            if has_attestations {
+                let tx = self.conn.transaction()?;
+                refresh::refresh_formal_block_presence(&tx, &self.root)?;
+                crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
+                tx.commit()?;
+                self.require_current_database()?;
+            } else {
+                self.refresh_formal_statuses()?;
+            }
         }
         Ok(())
     }
@@ -274,7 +284,7 @@ impl IndCache {
                 derived::refresh_topo_depth_upward_from(&tx, fnode)?;
             }
         }
-        crate::formal_status::refresh_index_statuses(&tx, &self.root)?;
+        crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
         tx.commit()?;
         self.require_current_database()?;
         Ok(())
@@ -299,7 +309,7 @@ impl IndCache {
                 (None, None) => derived::backfill_all_topo_depths(&tx)?,
             }
         }
-        crate::formal_status::refresh_index_statuses(&tx, &self.root)?;
+        crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
 
         tx.commit()?;
         self.require_current_database()?;
@@ -415,7 +425,7 @@ impl IndCache {
                 derived::refresh_topo_depth_upward_from(&tx, fnode)?;
             }
         }
-        crate::formal_status::refresh_index_statuses(&tx, &self.root)?;
+        crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
         let _commit = crate::profile::scope("sqlite::refresh_reachable_commit");
         tx.commit()?;
         self.require_current_database()?;
@@ -468,7 +478,7 @@ impl IndCache {
     pub(crate) fn refresh_formal_statuses(&mut self) -> Result<()> {
         self.require_current_database()?;
         let tx = self.conn.transaction()?;
-        crate::formal_status::refresh_index_statuses(&tx, &self.root)?;
+        crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
         tx.commit()?;
         self.require_current_database()?;
         Ok(())
@@ -481,11 +491,11 @@ impl IndCache {
         languages: &[String],
     ) -> Result<()> {
         self.validate_mutation_lock(mutation_lock)?;
-        let mut loaded = crate::formal_attestation::load(&self.root)?;
+        let mut loaded = crate::formal::attestation::load(&self.root)?;
         for language in languages {
             loaded.manifest.remove(fnode, language)?;
         }
-        crate::formal_attestation::save(&self.root, loaded)?;
+        crate::formal::attestation::save(&self.root, loaded)?;
         // Revocation is fail-safe: never restore a credential because the derived
         // SQLite status could not be refreshed.
         self.refresh_formal_statuses()
@@ -503,9 +513,9 @@ impl IndCache {
         )],
     ) -> Result<Vec<(String, String)>> {
         self.validate_mutation_lock(mutation_lock)?;
-        crate::formal_attestation::require_snapshot_current(&self.root, expected_manifest)?;
-        let mut loaded = crate::formal_attestation::load(&self.root)?;
-        crate::formal_attestation::require_snapshot_current(&self.root, expected_manifest)?;
+        crate::formal::attestation::require_snapshot_current(&self.root, expected_manifest)?;
+        let mut loaded = crate::formal::attestation::load(&self.root)?;
+        crate::formal::attestation::require_snapshot_current(&self.root, expected_manifest)?;
         let mut errors = Vec::new();
         let mut prepared = Vec::new();
         for (language, succeeded, receipt) in outcomes {
@@ -520,7 +530,7 @@ impl IndCache {
                 ));
                 continue;
             };
-            match crate::formal_status::prepare_attestation(
+            match crate::formal::status::prepare_attestation(
                 &self.conn,
                 &self.root,
                 &loaded.manifest,
@@ -567,9 +577,9 @@ impl IndCache {
 
     fn commit_formal_manifest(
         &mut self,
-        loaded: crate::formal_attestation::LoadedManifest,
+        loaded: crate::formal::attestation::LoadedManifest,
     ) -> Result<()> {
-        let applied = crate::formal_attestation::save(&self.root, loaded)?;
+        let applied = crate::formal::attestation::save(&self.root, loaded)?;
         let Err(error) = self.refresh_formal_statuses() else {
             return Ok(());
         };

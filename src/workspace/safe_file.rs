@@ -159,6 +159,18 @@ impl ReadFileSnapshot {
     pub(crate) fn identity(&self) -> &FileIdentity {
         &self.identity
     }
+
+    pub(crate) fn matches(&self, other: Option<&Self>) -> bool {
+        let Some(other) = other else {
+            return false;
+        };
+        self.content == other.content
+            && self.identity == other.identity
+            && same_read_generation(&self.metadata, &other.metadata)
+            && self.metadata.uid() == other.metadata.uid()
+            && self.metadata.gid() == other.metadata.gid()
+            && same_permissions(&self.metadata.permissions(), &other.metadata.permissions())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1043,6 +1055,7 @@ impl FileSnapshotBatch {
             .with_context(|| format!("verifying {}", path.display()))?;
         if !current_metadata.is_file()
             || current_metadata.nlink() > 1
+            || file_identity(&current_metadata) != file_identity(&final_metadata)
             || !same_read_generation(&final_metadata, &current_metadata)
         {
             return Err(FileConflict::new(path).into());
