@@ -549,6 +549,42 @@ fn full_refresh_crosses_bulk_insert_boundaries() {
 }
 
 #[test]
+fn incremental_upsert_batches_large_ordered_dependency_lists() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    let source = root.join("source.mdoc");
+    write(&source, "@fnode: source-node\n@title: Source\n");
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+
+    let dependencies: Vec<_> = (0..405).map(|index| format!("dep-{index:03}")).collect();
+    write(
+        &source,
+        &format!(
+            "@fnode: source-node\n@title: Source\n\n@dep:\n{}\n@end\n",
+            dependencies.join("\n")
+        ),
+    );
+    cache.upsert_path(&source).unwrap();
+
+    let connection = rusqlite::Connection::open(index_path(&cache)).unwrap();
+    let rows: Vec<(String, i64)> = connection
+        .prepare(
+            "SELECT dst_fnode, ord FROM mdoc_edges WHERE src_path = 'source.mdoc' ORDER BY ord",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(rows.len(), dependencies.len());
+    for (order, ((actual, stored_order), expected)) in rows.iter().zip(&dependencies).enumerate() {
+        assert_eq!(actual, expected);
+        assert_eq!(*stored_order, order as i64);
+    }
+}
+
+#[test]
 fn discovery_rejects_a_hard_link_added_after_indexing() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();

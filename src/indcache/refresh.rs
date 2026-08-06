@@ -788,13 +788,30 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
             cleanup_stale_fnode_paths(conn, &root_resolved, &head.fnode, &rel_path)?;
 
             upsert_search_row(conn, &rel_path, &head.fnode, &head.title)?;
-            for (order, dep_fnode) in head.depens.iter().enumerate() {
+            new_dst_fnodes.extend(head.depens.iter().cloned());
+            for (offset, dependencies) in head.depens.chunks(BULK_ROWS).enumerate() {
+                let placeholders = dependencies
+                    .iter()
+                    .map(|_| "(?,?,?,?)")
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let orders: Vec<i64> = (0..dependencies.len())
+                    .map(|index| (offset * BULK_ROWS + index) as i64)
+                    .collect();
+                let mut params: Vec<&dyn ToSql> = Vec::with_capacity(dependencies.len() * 4);
+                for (dependency, order) in dependencies.iter().zip(&orders) {
+                    params.push(&rel_path);
+                    params.push(&head.fnode);
+                    params.push(dependency);
+                    params.push(order);
+                }
                 conn.execute(
-                    "INSERT INTO mdoc_edges (src_path, src_fnode, dst_fnode, ord)
-                     VALUES (?, ?, ?, ?)",
-                    rusqlite::params![rel_path, head.fnode, dep_fnode, order as i64],
+                    &format!(
+                        "INSERT INTO mdoc_edges (src_path, src_fnode, dst_fnode, ord)
+                         VALUES {placeholders}"
+                    ),
+                    params.as_slice(),
                 )?;
-                new_dst_fnodes.insert(dep_fnode.clone());
             }
         }
         Err(e) => {
