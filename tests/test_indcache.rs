@@ -1910,6 +1910,84 @@ fn semantic_upsert_invalidates_digest_for_an_aba_full_refresh() {
 }
 
 #[test]
+fn full_refresh_recognizes_an_incrementally_synchronized_index() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    let source = root.join("source.mdoc");
+    write(
+        &source,
+        "@fnode: source-node\n@title: Source\n\n@dep:\nfirst-node\n@end\n",
+    );
+    write(
+        &root.join("first.mdoc"),
+        "@fnode: first-node\n@title: First\n",
+    );
+    write(
+        &root.join("second.mdoc"),
+        "@fnode: second-node\n@title: Second\n",
+    );
+    write(
+        &root.join("broken.mdoc"),
+        "@fnode: broken-node\n@title: Broken\n\n@dep:\ninvalid dependency\n@end\n",
+    );
+    write(&root.join("unknown.mdoc"), "not an mdoc\n");
+    write(
+        &root.join("duplicate-a.mdoc"),
+        "@fnode: duplicate-node\n@title: Duplicate A\n",
+    );
+    write(
+        &root.join("duplicate-b.mdoc"),
+        "@fnode: duplicate-node\n@title: Duplicate B\n",
+    );
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    write(
+        &source,
+        "@fnode: source-node\n@title: Source\n\n@dep:\nsecond-node\n@end\n",
+    );
+    cache.upsert_path(&source).unwrap();
+    let connection = rusqlite::Connection::open(index_path(&cache)).unwrap();
+    let epoch: i64 = connection
+        .query_row(
+            "SELECT graph_epoch FROM mdoc_index_state WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(connection);
+
+    cache.refresh_all().unwrap();
+
+    let connection = rusqlite::Connection::open(index_path(&cache)).unwrap();
+    let refreshed_epoch: i64 = connection
+        .query_row(
+            "SELECT graph_epoch FROM mdoc_index_state WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let digest: String = connection
+        .query_row(
+            "SELECT index_digest FROM mdoc_index_state WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(refreshed_epoch, epoch);
+    assert!(!digest.is_empty());
+    assert_eq!(
+        cache
+            .direct_dependency_summaries("source-node")
+            .unwrap()
+            .into_iter()
+            .map(|node| node.fnode)
+            .collect::<Vec<_>>(),
+        ["second-node"]
+    );
+}
+
+#[test]
 fn blocking_claimant_transition_refreshes_graph_caches_and_invalid_deletion_epoch() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();

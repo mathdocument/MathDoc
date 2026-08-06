@@ -37,7 +37,15 @@ pub fn refresh_search_index(conn: &Connection, root: &Path) -> Result<()> {
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    if !bootstrapped || old_digest != digest {
+    let index_matches = if old_digest == digest {
+        true
+    } else if bootstrapped && old_digest.is_empty() {
+        let _phase = crate::profile::scope("refresh::indexed_digest");
+        indexed_digest(conn)? == digest
+    } else {
+        false
+    };
+    if !bootstrapped || !index_matches {
         let issues = {
             let _phase = crate::profile::scope("refresh::build_issues");
             build_issues(&files)
@@ -335,6 +343,111 @@ fn index_digest(files: &[ScannedMdoc]) -> String {
         }
     }
     format!("{:x}", digest.finalize())
+}
+
+fn indexed_digest(conn: &Connection) -> Result<String> {
+    fn read_next_edge(rows: &mut rusqlite::Rows<'_>) -> rusqlite::Result<Option<(String, String)>> {
+        rows.next()?
+            .map(|row| Ok((row.get(0)?, row.get(1)?)))
+            .transpose()
+    }
+
+    fn read_next_invalid(
+        rows: &mut rusqlite::Rows<'_>,
+    ) -> rusqlite::Result<Option<(String, String, String)>> {
+        rows.next()?
+            .map(|row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .transpose()
+    }
+
+    let mut digest = Sha256::new();
+    hash_value(&mut digest, b"mathdoc-index-v1");
+    let mut file_stmt = conn.prepare(
+        "SELECT f.path, m.fnode, m.title
+         FROM mdoc_files f LEFT JOIN mdocs m ON m.path = f.path
+         ORDER BY f.path",
+    )?;
+    let mut edge_stmt =
+        conn.prepare("SELECT src_path, dst_fnode FROM mdoc_edges ORDER BY src_path, ord")?;
+    let mut invalid_stmt = conn.prepare(
+        "SELECT path, ref_fnode, error FROM mdoc_issues
+         WHERE kind = 'invalid' ORDER BY path, ref_fnode, error",
+    )?;
+    let mut file_rows = file_stmt.query([])?;
+    let mut edge_rows = edge_stmt.query([])?;
+    let mut invalid_rows = invalid_stmt.query([])?;
+    let mut next_edge = read_next_edge(&mut edge_rows)?;
+    let mut next_invalid = read_next_invalid(&mut invalid_rows)?;
+    while let Some(row) = file_rows.next()? {
+        let path: String = row.get(0)?;
+        hash_value(&mut digest, path.as_bytes());
+        while next_invalid
+            .as_ref()
+            .is_some_and(|(invalid_path, _, _)| invalid_path < &path)
+        {
+            hash_value(&mut digest, b"unexpected-invalid-row");
+            next_invalid = read_next_invalid(&mut invalid_rows)?;
+        }
+        let invalid = next_invalid
+            .as_ref()
+            .filter(|(invalid_path, _, _)| invalid_path == &path)
+            .map(|(_, ref_fnode, error)| (ref_fnode.clone(), error.clone()));
+        if invalid.is_some() {
+            next_invalid = read_next_invalid(&mut invalid_rows)?;
+            if next_invalid
+                .as_ref()
+                .is_some_and(|(invalid_path, _, _)| invalid_path == &path)
+            {
+                hash_value(&mut digest, b"duplicate-invalid-row");
+            }
+        }
+        match (
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ) {
+            (Some(fnode), Some(title)) => {
+                hash_value(&mut digest, b"node");
+                hash_value(&mut digest, fnode.as_bytes());
+                hash_value(&mut digest, title.as_bytes());
+                hash_value(&mut digest, &[u8::from(invalid.is_none())]);
+            }
+            (None, None) => hash_value(&mut digest, b"no-node"),
+            _ => hash_value(&mut digest, b"invalid-index-row"),
+        }
+        while next_edge
+            .as_ref()
+            .is_some_and(|(source_path, _)| source_path < &path)
+        {
+            hash_value(&mut digest, b"unexpected-edge-row");
+            next_edge = read_next_edge(&mut edge_rows)?;
+        }
+        while let Some((source_path, dependency)) = next_edge.as_ref() {
+            if source_path != &path {
+                break;
+            }
+            hash_value(&mut digest, dependency.as_bytes());
+            next_edge = read_next_edge(&mut edge_rows)?;
+        }
+        if let Some((ref_fnode, error)) = invalid {
+            hash_value(&mut digest, ref_fnode.as_bytes());
+            hash_value(&mut digest, error.as_bytes());
+        }
+    }
+    if next_edge.is_some() || next_invalid.is_some() {
+        hash_value(&mut digest, b"unexpected-index-row");
+    }
+    let has_orphaned_nodes: bool = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM mdocs m
+             WHERE NOT EXISTS (SELECT 1 FROM mdoc_files f WHERE f.path = m.path)
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_orphaned_nodes {
+        hash_value(&mut digest, b"unexpected-node-row");
+    }
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn hash_value(digest: &mut Sha256, value: &[u8]) {
