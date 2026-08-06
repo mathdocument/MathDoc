@@ -4,6 +4,7 @@ use std::path::Path;
 
 const SCHEMA_VERSION: i32 = 19;
 const FIRST_INCREMENTAL_SCHEMA_VERSION: i32 = 17;
+const MIN_SQLITE_VERSION_NUMBER: i32 = 3_051_003;
 
 const CREATE_SQL: &str = "
 CREATE TABLE IF NOT EXISTS mdocs (
@@ -132,6 +133,7 @@ HAVING COUNT(*) > 0;
 
 /// Open the database at `path` with WAL mode and apply the schema.
 pub fn open_db(path: &Path) -> Result<Connection> {
+    ensure_supported_sqlite()?;
     let file_name = path.file_name().ok_or_else(|| {
         anyhow::anyhow!("index database path has no file name: {}", path.display())
     })?;
@@ -165,6 +167,17 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             result => return result,
         }
     }
+}
+
+fn ensure_supported_sqlite() -> Result<()> {
+    let version = rusqlite::version_number();
+    if version < MIN_SQLITE_VERSION_NUMBER {
+        bail!(
+            "SQLite {} is unsupported; MathDoc requires 3.51.3 or newer",
+            rusqlite::version()
+        );
+    }
+    Ok(())
 }
 
 fn reject_multiply_linked_file(path: &Path, meta: &std::fs::Metadata) -> Result<()> {
@@ -253,6 +266,22 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn bundled_sqlite_has_required_engine_capabilities() {
+        ensure_supported_sqlite().unwrap();
+        assert!(rusqlite::version_number() >= MIN_SQLITE_VERSION_NUMBER);
+
+        let conn = Connection::open_in_memory().unwrap();
+        let fts5_enabled: bool = conn
+            .query_row(
+                "SELECT sqlite_compileoption_used('ENABLE_FTS5')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(fts5_enabled, "bundled SQLite must include FTS5");
     }
 
     #[test]

@@ -11,7 +11,9 @@ from `.mdoc` files, and newer schemas are rejected without mutation.
 The version 19 migration removes stored missing diagnostics and rebuilds valid in-degree
 before enabling their derived view.
 
-The connection enables WAL mode and foreign keys. It is opened without following
+MathDoc bundles SQLite and requires engine version 3.51.3 or newer so concurrent WAL
+readers cannot encounter older WAL-reset defects. The connection enables WAL mode and
+foreign keys. It is opened without following
 symlinks, and multiply linked database files are rejected. `IndCache` also keeps an open
 guard descriptor for the accepted `index.db` inode. Public operations and mutation
 boundaries reject a pathname replacement instead of continuing against a detached
