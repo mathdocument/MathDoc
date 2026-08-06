@@ -106,6 +106,31 @@ fn sync_exports_present_blocks_and_back_imports_mirror_edits() {
 }
 
 #[test]
+fn sync_writes_compact_v4_manifest_with_only_present_digests() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join(".mdc")).unwrap();
+    let node = make_node(root, "data/A.mdoc");
+    write_node(&node);
+
+    assert!(run_mdc(root, &["sync"]).status.success());
+
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join(".mdc/source-blocks.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["version"], 4);
+    let source = &manifest["sources"]["646174612f412e6d646f63"];
+    assert!(source.get("unknown").is_none());
+    let blocks = source["blocks"].as_object().unwrap();
+    assert_eq!(blocks.len(), 2);
+    assert!(blocks["lean"].as_str().is_some());
+    assert!(blocks["latex"].as_str().is_some());
+    assert!(!blocks.contains_key("text"));
+    assert!(!blocks.contains_key("python"));
+    assert!(!blocks.contains_key("rocq"));
+}
+
+#[test]
 fn sync_and_back_preserve_present_empty_and_absent_blocks() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -287,7 +312,7 @@ fn sync_migrates_sparse_mirrors_without_losing_absent_block_edits() {
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join(".mdc/source-blocks.json")).unwrap())
             .unwrap();
-    assert_eq!(manifest["version"], 3);
+    assert_eq!(manifest["version"], 4);
 
     let output = run_mdc(root, &["back"]);
     assert!(
@@ -319,6 +344,41 @@ fn sync_migrates_sparse_mirrors_without_losing_absent_block_edits() {
 }
 
 #[test]
+fn sync_migrates_sparse_v3_manifest_without_establishing_unknown_types() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".mdc")).unwrap();
+    std::fs::create_dir_all(root.join("data")).unwrap();
+    std::fs::write(root.join("data/A.mdoc"), "@title: invalid\n").unwrap();
+    let digest = "0000000000000000000000000000000000000000000000000000000000000000";
+    std::fs::write(
+        root.join(".mdc/source-blocks.json"),
+        format!(
+            r#"{{"version":3,"sources":{{"646174612f412e6d646f63":{{"blocks":{{"lean":{{"digest":"{digest}","present":true}}}}}}}}}}"#
+        ),
+    )
+    .unwrap();
+
+    let output = run_mdc(root, &["sync"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join(".mdc/source-blocks.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["version"], 4);
+    let source = &manifest["sources"]["646174612f412e6d646f63"];
+    assert_eq!(source["blocks"]["lean"], digest);
+    assert_eq!(
+        source["unknown"],
+        serde_json::json!(["latex", "python", "rocq", "text"])
+    );
+}
+
+#[test]
 fn sync_rejects_unknown_manifest_source_types() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -332,6 +392,38 @@ fn sync_rejects_unknown_manifest_source_types() {
     let output = run_mdc(root, &["sync"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("invalid source type"));
+}
+
+#[test]
+fn sync_rejects_invalid_v4_unknown_types_and_overlap() {
+    let digest = "0000000000000000000000000000000000000000000000000000000000000000";
+    for (source, expected) in [
+        (
+            r#"{"version":4,"sources":{"412e6d646f63":{"blocks":{},"unknown":["other"]}}}"#
+                .to_string(),
+            "invalid source type",
+        ),
+        (
+            format!(
+                r#"{{"version":4,"sources":{{"412e6d646f63":{{"blocks":{{"lean":"{digest}"}},"unknown":["lean"]}}}}}}"#
+            ),
+            "both present and unknown",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        std::fs::write(root.join(".mdc/source-blocks.json"), source).unwrap();
+
+        let output = run_mdc(root, &["sync"]);
+
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]
@@ -354,7 +446,7 @@ fn sync_rejects_noncanonical_manifest_encodings() {
         std::fs::write(
             root.join(".mdc/source-blocks.json"),
             format!(
-                r#"{{"version":3,"sources":{{"{source_id}":{{"blocks":{{"lean":{{"digest":"{digest}","present":true}}}}}}}}}}"#
+                r#"{{"version":4,"sources":{{"{source_id}":{{"blocks":{{"lean":"{digest}"}}}}}}}}"#
             ),
         )
         .unwrap();
@@ -368,6 +460,47 @@ fn sync_rejects_noncanonical_manifest_encodings() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+#[test]
+fn back_imports_new_mirror_for_v4_established_absence() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join(".mdc")).unwrap();
+    let node = MdocNode::new_at_path(&root.join("data/A.mdoc"), "Established absence");
+    write_node(&node);
+    std::fs::write(
+        root.join(".mdc/source-blocks.json"),
+        r#"{"version":4,"sources":{"646174612f412e6d646f63":{"blocks":{}}}}"#,
+    )
+    .unwrap();
+    let mirror = root.join(".mdc/python/Lib/data/A.py");
+    std::fs::create_dir_all(mirror.parent().unwrap()).unwrap();
+    std::fs::write(&mirror, "print('new')\n").unwrap();
+
+    let output = run_mdc(root, &["back"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_eq!(
+        MdocNode::load(&node.path)
+            .unwrap()
+            .source_block("python")
+            .unwrap()
+            .content,
+        "print('new')\n"
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join(".mdc/source-blocks.json")).unwrap())
+            .unwrap();
+    assert!(
+        manifest["sources"]["646174612f412e6d646f63"]["blocks"]["python"]
+            .as_str()
+            .is_some()
+    );
 }
 
 #[test]

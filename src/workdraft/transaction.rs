@@ -48,24 +48,14 @@ pub(super) fn apply_changes(
     validate_workspace()?;
     if writes.is_empty() && removals.is_empty() && renames.is_empty() && !manifest_changed {
         let _phase = crate::profile::scope("workdraft::validate_noop_inputs");
-        for chunk in inputs.chunks(2048) {
-            let paths: Vec<_> = chunk.iter().map(|(path, _)| path.clone()).collect();
-            let current = super::read_files_parallel(allowed_root, &paths)?;
-            for ((path, snapshot), current) in chunk.iter().zip(&current) {
-                if !snapshot.matches_read(current.as_ref()) {
-                    bail!("{} changed during source block operation", path.display());
-                }
-            }
-        }
+        validate_inputs_parallel(allowed_root, inputs, None, "during source block operation")?;
         ensure_unchanged(allowed_root, manifest.path, manifest.snapshot)?;
         validate_workspace()?;
         return Ok(());
     }
 
     let validate_profile = crate::profile::scope("workdraft::validate_inputs_before");
-    for (path, snapshot) in inputs {
-        ensure_unchanged(allowed_root, path, snapshot)?;
-    }
+    validate_inputs_parallel(allowed_root, inputs, None, "during source block operation")?;
     for write in &writes {
         ensure_unchanged(allowed_root, &write.path, &write.snapshot)?;
     }
@@ -127,17 +117,12 @@ pub(super) fn apply_changes(
             }
         }
         let validate_profile = crate::profile::scope("workdraft::validate_inputs_after");
-        for (path, snapshot) in inputs {
-            if write_paths.contains(path.as_path()) {
-                continue;
-            }
-            if !snapshot.unchanged_beneath(allowed_root, path)? {
-                bail!(
-                    "{} changed while source block writes were applied",
-                    path.display()
-                );
-            }
-        }
+        validate_inputs_parallel(
+            allowed_root,
+            inputs,
+            Some(&write_paths),
+            "while source block writes were applied",
+        )?;
         drop(validate_profile);
         if manifest_changed {
             validate_workspace()?;
@@ -170,6 +155,28 @@ pub(super) fn apply_changes(
 fn ensure_unchanged(allowed_root: &Path, path: &Path, snapshot: &FileSnapshot) -> Result<()> {
     if !snapshot.unchanged_beneath(allowed_root, path)? {
         bail!("{} changed during source block operation", path.display());
+    }
+    Ok(())
+}
+
+fn validate_inputs_parallel(
+    allowed_root: &Path,
+    inputs: &[(PathBuf, FileSnapshot)],
+    skip_paths: Option<&HashSet<&Path>>,
+    context: &str,
+) -> Result<()> {
+    for chunk in inputs.chunks(2048) {
+        let selected: Vec<_> = chunk
+            .iter()
+            .filter(|(path, _)| !skip_paths.is_some_and(|paths| paths.contains(path.as_path())))
+            .collect();
+        let paths: Vec<_> = selected.iter().map(|(path, _)| path.clone()).collect();
+        let current = super::read_files_parallel(allowed_root, &paths)?;
+        for ((path, snapshot), current) in selected.into_iter().zip(&current) {
+            if !snapshot.matches_read(current.as_ref()) {
+                bail!("{} changed {context}", path.display());
+            }
+        }
     }
     Ok(())
 }

@@ -11,7 +11,7 @@ use crate::mdocnode::MdocNode;
 use crate::workspace::{iter_mdoc_files, FileSnapshot, FileSnapshotBatch, ReadFileSnapshot};
 
 use manifest::{
-    decode_source_path, encode_source_path, parse_manifest, BlockBaseline, LoadedManifest,
+    decode_source_path, encode_source_path, parse_manifest, LoadedManifest, SourceBaseline,
     MANIFEST_NAME,
 };
 use mirror::{
@@ -128,13 +128,14 @@ const SYNC_SOURCE_BATCH: usize = 2048;
 const MAX_PARALLEL_WORKERS: usize = 12;
 
 fn reconcile<'a>(
-    baseline: &BlockBaseline,
+    baseline: &SourceBaseline,
+    srctype: &str,
     mdoc_content: &[u8],
     mdoc_present: bool,
     raw_content: Option<&'a [u8]>,
 ) -> Reconciliation<'a> {
-    let mdoc_changed = !baseline.matches_state(mdoc_content, mdoc_present);
-    let raw_changed = !baseline.matches_raw(raw_content);
+    let mdoc_changed = !baseline.matches_state(srctype, mdoc_content, mdoc_present);
+    let raw_changed = !baseline.matches_raw(srctype, raw_content);
     match (mdoc_changed, raw_changed) {
         (false, false) => Reconciliation::Unchanged,
         (true, false) => Reconciliation::MdocChanged,
@@ -262,9 +263,9 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                     }
                 }
 
-                if let Some(baseline) = source_baseline.blocks.get_mut(srctype) {
+                if !source_baseline.is_unknown(srctype) {
                     if needs_sparse_migration
-                        && !baseline.present
+                        && !source_baseline.is_present(srctype)
                         && !mdoc_present
                         && raw_content == Some(&[])
                     {
@@ -275,7 +276,13 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                         )?;
                         continue;
                     }
-                    match reconcile(baseline, mdoc_content, mdoc_present, raw_content) {
+                    match reconcile(
+                        source_baseline,
+                        srctype,
+                        mdoc_content,
+                        mdoc_present,
+                        raw_content,
+                    ) {
                         Reconciliation::Unchanged => {}
                         Reconciliation::MdocChanged => {
                             mirror_changes.queue(
@@ -285,7 +292,7 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                                 mdoc_content,
                                 mdoc_present,
                             )?;
-                            baseline.update(mdoc_content, mdoc_present);
+                            source_baseline.update(srctype, mdoc_content, mdoc_present);
                         }
                         Reconciliation::MirrorChanged(_) => dirty.push(issue(
                             &relative,
@@ -300,7 +307,7 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                                 raw_state.content.as_ref(),
                                 raw_state.present,
                             )?;
-                            baseline.update(mdoc_content, mdoc_present);
+                            source_baseline.update(srctype, mdoc_content, mdoc_present);
                         }
                         Reconciliation::Conflict => conflicts.push(issue(
                             &relative,
@@ -315,6 +322,7 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                             raw_path,
                             raw_content,
                         )?;
+                        source_baseline.update(srctype, mdoc_content, mdoc_present);
                     } else if raw_content.is_none() {
                         mirror_changes.queue(
                             srctype,
@@ -323,6 +331,9 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                             mdoc_content,
                             mdoc_present,
                         )?;
+                        source_baseline.update(srctype, mdoc_content, mdoc_present);
+                    } else if mdoc_present && raw_content == Some(mdoc_content) {
+                        source_baseline.update(srctype, mdoc_content, mdoc_present);
                     } else if raw_content != Some(mdoc_content) || !mdoc_present {
                         conflicts.push(issue(
                             &relative,
@@ -330,10 +341,6 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                             "source mirror has no baseline and differs from the mdoc block",
                         ));
                     }
-                    source_baseline.blocks.insert(
-                        srctype.to_string(),
-                        BlockBaseline::new(mdoc_content, mdoc_present),
-                    );
                 }
             }
             inputs.push((source_path, snapshot));
@@ -362,11 +369,11 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
             continue;
         }
         for srctype in builtin_srctypes() {
-            let Some(baseline) = source_baseline.blocks.get(srctype) else {
+            if source_baseline.is_unknown(srctype) {
                 continue;
-            };
+            }
             let Some((path, type_root)) = existing_output_path(&mdcroot, &source, srctype)? else {
-                source_baseline.blocks.remove(srctype);
+                source_baseline.forget(srctype);
                 continue;
             };
             let snapshot = FileSnapshot::capture_beneath(&mdcroot, &path)?;
@@ -374,19 +381,21 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                 .identity()
                 .and_then(|identity| desired_outputs.get(identity))
             {
-                if path != *desired_path && baseline.matches_raw(snapshot.content()) {
+                if path != *desired_path && source_baseline.matches_raw(srctype, snapshot.content())
+                {
                     renames.push(PreparedRename {
                         from: path,
                         to: desired_path.clone(),
                         snapshot,
                     });
                 }
-                source_baseline.blocks.remove(srctype);
+                source_baseline.forget(srctype);
                 continue;
             }
-            let clean_sparse_placeholder =
-                needs_sparse_migration && !baseline.present && snapshot.content() == Some(&[]);
-            if baseline.matches_raw(snapshot.content())
+            let clean_sparse_placeholder = needs_sparse_migration
+                && !source_baseline.is_present(srctype)
+                && snapshot.content() == Some(&[]);
+            if source_baseline.matches_raw(srctype, snapshot.content())
                 || clean_sparse_placeholder
                 || matches!(snapshot, FileSnapshot::Missing)
             {
@@ -398,7 +407,7 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                         recoverable: clean_sparse_placeholder,
                     });
                 }
-                source_baseline.blocks.remove(srctype);
+                source_baseline.forget(srctype);
             } else {
                 conflicts.push(issue(
                     &source,
@@ -407,7 +416,7 @@ pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                 ));
             }
         }
-        if !source_baseline.blocks.is_empty() {
+        if source_baseline.has_established_types() {
             new_manifest.sources.insert(source_id, source_baseline);
         }
     }
@@ -628,10 +637,13 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
             Ok(node) => node,
             Err(error) => {
                 let mut raw_dirty = false;
-                for (srctype, baseline) in &source_baseline.blocks {
+                for srctype in builtin_srctypes() {
+                    if source_baseline.is_unknown(srctype) {
+                        continue;
+                    }
                     let (raw_path, raw_snapshot) =
                         capture_existing_mirror(&mdcroot, &relative, srctype)?;
-                    if !baseline.matches_raw(raw_snapshot.content()) {
+                    if !source_baseline.matches_raw(srctype, raw_snapshot.content()) {
                         raw_dirty = true;
                         inputs.push((raw_path, raw_snapshot));
                         break;
@@ -653,11 +665,20 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
         };
 
         let mut node_changed = false;
-        for (srctype, baseline) in &mut source_baseline.blocks {
+        for srctype in builtin_srctypes() {
+            if source_baseline.is_unknown(srctype) {
+                continue;
+            }
             let (mdoc_content, mdoc_present) = block_state(&node, srctype);
             let (raw_path, raw_snapshot) = capture_existing_mirror(&mdcroot, &relative, srctype)?;
             let raw_content = raw_snapshot.content();
-            let raw_state = match reconcile(baseline, mdoc_content, mdoc_present, raw_content) {
+            let raw_state = match reconcile(
+                source_baseline,
+                srctype,
+                mdoc_content,
+                mdoc_present,
+                raw_content,
+            ) {
                 Reconciliation::Unchanged => {
                     inputs.push((raw_path, raw_snapshot));
                     continue;
@@ -700,8 +721,8 @@ pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> R
                 node_changed = true;
                 updated_blocks += 1;
             }
-            if !baseline.matches_state(content, present) {
-                baseline.update(content, present);
+            if !source_baseline.matches_state(srctype, content, present) {
+                source_baseline.update(srctype, content, present);
             }
             if present && raw_content != Some(content) {
                 let normalized_content = raw_state.content.into_owned();
