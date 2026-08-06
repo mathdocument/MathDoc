@@ -22,6 +22,10 @@ CREATE TABLE IF NOT EXISTS mdoc_files (
     lean_status INTEGER NOT NULL DEFAULT 0 CHECK (lean_status BETWEEN 0 AND 2),
     rocq_status INTEGER NOT NULL DEFAULT 0 CHECK (rocq_status BETWEEN 0 AND 2)
 );
+CREATE INDEX IF NOT EXISTS idx_mdoc_files_lean_verified
+    ON mdoc_files(lean_status) WHERE lean_status = 2;
+CREATE INDEX IF NOT EXISTS idx_mdoc_files_rocq_verified
+    ON mdoc_files(rocq_status) WHERE rocq_status = 2;
 
 CREATE TABLE IF NOT EXISTS mdoc_edges (
     src_path  TEXT    NOT NULL,
@@ -384,7 +388,9 @@ mod tests {
         let path = dir.path().join("index.db");
         let conn = open_db(&path).unwrap();
         conn.execute_batch(
-            "ALTER TABLE mdoc_files DROP COLUMN rocq_status;
+            "DROP INDEX idx_mdoc_files_lean_verified;
+             DROP INDEX idx_mdoc_files_rocq_verified;
+             ALTER TABLE mdoc_files DROP COLUMN rocq_status;
              ALTER TABLE mdoc_files DROP COLUMN lean_status;
              PRAGMA user_version = 16;",
         )
@@ -401,5 +407,26 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status_columns, 2);
+    }
+
+    #[test]
+    fn formal_verified_statuses_have_partial_indexes() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_db(&dir.path().join("index.db")).unwrap();
+
+        for (index, column) in [
+            ("idx_mdoc_files_lean_verified", "lean_status"),
+            ("idx_mdoc_files_rocq_verified", "rocq_status"),
+        ] {
+            let sql: String = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = ?",
+                    [index],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(sql.contains(column));
+            assert!(sql.contains("WHERE"));
+        }
     }
 }

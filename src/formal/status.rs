@@ -155,10 +155,11 @@ pub(crate) fn refresh_index_statuses(conn: &Connection, root: &Path) -> Result<(
 fn downgrade_verified_statuses(conn: &Connection) -> Result<()> {
     // Keep the index usable without retaining any previously verified state.
     conn.execute(
-        "UPDATE mdoc_files SET
-            lean_status = CASE WHEN lean_status = 0 THEN 0 ELSE 1 END,
-            rocq_status = CASE WHEN rocq_status = 0 THEN 0 ELSE 1 END
-         WHERE lean_status = 2 OR rocq_status = 2",
+        "UPDATE mdoc_files SET lean_status = 1 WHERE lean_status = 2",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE mdoc_files SET rocq_status = 1 WHERE rocq_status = 2",
         [],
     )?;
     Ok(())
