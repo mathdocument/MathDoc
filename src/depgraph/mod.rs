@@ -454,6 +454,7 @@ impl<'cache> DepGraph<'cache> {
         let receipt = self.cache.create_node(mutation_lock, &new_node)?;
         let fnode = new_node.fnode.clone();
         let new_path = new_node.path.clone();
+        let root_path = self.root.path.clone();
         let (added, _, _) = match self.add_direct_dependencies_locked(
             mutation_lock,
             &root,
@@ -462,7 +463,9 @@ impl<'cache> DepGraph<'cache> {
         ) {
             Ok(result) => result,
             Err(link_error) => {
-                return Err(self.recover_failed_link(&new_path, receipt, link_error));
+                return Err(
+                    self.recover_failed_link(&root_path, &snapshot, &new_path, receipt, link_error)
+                );
             }
         };
         Ok(!added.is_empty())
@@ -487,11 +490,27 @@ impl<'cache> DepGraph<'cache> {
 
     fn recover_failed_link(
         &mut self,
+        root_path: &Path,
+        root_snapshot: &crate::workspace::FileSnapshot,
         new_path: &Path,
         receipt: crate::workspace::AppliedWrite,
         link_error: anyhow::Error,
     ) -> anyhow::Error {
-        let rollback_result = receipt.rollback();
+        let root_still_original = root_snapshot
+            .unchanged_beneath(self.cache.root(), root_path)
+            .and_then(|unchanged| {
+                if unchanged {
+                    Ok(true)
+                } else {
+                    crate::workspace::FileSnapshot::capture_beneath(self.cache.root(), root_path)
+                        .map(|current| current.content() == root_snapshot.content())
+                }
+            });
+        let rollback_result = match root_still_original {
+            Ok(true) => receipt.rollback(),
+            Ok(false) => Ok(()),
+            Err(error) => Err(error),
+        };
         let index_result = self.cache.upsert_path(new_path);
         crate::workspace::PersistenceRecoveryError::from_attempts(
             link_error,
@@ -654,15 +673,60 @@ mod mutation_conflict_tests {
         created.fnode = "created-node".to_string();
         let mutation_lock = graph.cache.acquire_mutation_lock().unwrap();
         let receipt = graph.cache.create_node(&mutation_lock, &created).unwrap();
+        let root_path = graph.root.path.clone();
+        let root_snapshot = crate::workspace::FileSnapshot::capture(&root_path).unwrap();
 
         created.title = "External edit".to_string();
         std::fs::write(&path, created.render().unwrap()).unwrap();
 
-        let error = graph.recover_failed_link(&path, receipt, anyhow!("injected link failure"));
+        let error = graph.recover_failed_link(
+            &root_path,
+            &root_snapshot,
+            &path,
+            receipt,
+            anyhow!("injected link failure"),
+        );
 
         assert!(crate::workspace::error_has_file_conflict(&error));
         assert_eq!(MdocNode::load(&path).unwrap().title, "External edit");
         let summary = graph.cache.node_summary("created-node").unwrap();
         assert_eq!(summary.title, "External edit");
+    }
+
+    #[test]
+    fn committed_parent_link_keeps_created_child_after_lock_replacement() {
+        let (dir, mut cache, source_fnode, _target_fnode) = setup_graph(false);
+        let mut graph = DepGraph::from_ref(&mut cache, &source_fnode, None).unwrap();
+        let child_path = graph.cache.root().join("created.mdoc");
+        let mut child = MdocNode::new_at_path(&child_path, "Created");
+        child.fnode = "created-node".to_string();
+        let mutation_lock = graph.cache.acquire_mutation_lock().unwrap();
+        let lock_path = graph.cache.root().join(".mdc/mutation.lock");
+        let displaced_lock = dir.path().join("displaced-mutation.lock");
+        crate::workspace::set_test_hook(
+            crate::workspace::TestHookPoint::IndexAfterNodeUpsert,
+            move || {
+                crate::workspace::set_test_hook(
+                    crate::workspace::TestHookPoint::IndexAfterNodeUpsert,
+                    move || {
+                        std::fs::rename(&lock_path, displaced_lock).unwrap();
+                        std::fs::write(&lock_path, []).unwrap();
+                    },
+                );
+            },
+        );
+
+        let error = graph
+            .create_and_add_dependency_under_lock(&mutation_lock, child)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("uncertain lock"));
+        let parent = MdocNode::load(&graph.root.path).unwrap();
+        assert!(parent.depens.contains(&"created-node".to_string()));
+        assert_eq!(MdocNode::load(&child_path).unwrap().fnode, "created-node");
+        assert_eq!(
+            graph.cache.node_summary("created-node").unwrap().title,
+            "Created"
+        );
     }
 }
