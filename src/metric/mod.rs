@@ -5,26 +5,26 @@ use anyhow::{bail, Result};
 use crate::core::NodeDegrees;
 use crate::indcache::IndCache;
 
-pub struct MetricContext<'cache> {
+struct MetricContext<'cache> {
     cache: &'cache IndCache,
 }
 
 impl<'cache> MetricContext<'cache> {
-    pub fn new(cache: &'cache IndCache) -> Self {
+    fn new(cache: &'cache IndCache) -> Self {
         Self { cache }
     }
 
-    pub fn node_degrees(&self, fnode: &str) -> Result<NodeDegrees> {
+    fn node_degrees(&self, fnode: &str) -> Result<NodeDegrees> {
         self.cache.node_degrees(fnode)
     }
 }
 
-pub trait NodeMetric: Sync {
+trait NodeMetric: Sync {
     fn evaluate(&self, context: &MetricContext<'_>, fnode: &str) -> Result<f64>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NodeMetricKind {
+pub(crate) enum NodeMetricKind {
     Ior,
 }
 
@@ -52,7 +52,11 @@ impl NodeMetric for IorMetric {
 
 static IOR_METRIC: IorMetric = IorMetric;
 
-pub fn evaluate_node_metric(kind: NodeMetricKind, cache: &IndCache, fnode: &str) -> Result<f64> {
+pub(crate) fn evaluate_node_metric(
+    kind: NodeMetricKind,
+    cache: &IndCache,
+    fnode: &str,
+) -> Result<f64> {
     let metric = kind.implementation();
     let value = metric.evaluate(&MetricContext::new(cache), fnode)?;
     if !value.is_finite() {

@@ -18,16 +18,16 @@ use std::path::{Path, PathBuf};
 pub(crate) const ROCQ_CLEAN_MARKER_FILENAME: &str = ".mdc-clean-needed";
 pub(crate) const ROCQ_CLEAN_MARKER_CONTENT: &[u8] = b"Lib tree changed\n";
 
-// ── Public types ───────────────────────────────────────────────────────────────
+// ── Compiler contract ─────────────────────────────────────────────────────────
 
-pub type ProgressCallback = Box<dyn Fn(&str)>;
+pub(crate) type ProgressCallback = Box<dyn Fn(&str)>;
 
-pub struct CompilerReq {
-    pub mdcroot: PathBuf,
-    pub source: PathBuf,
+pub(crate) struct CompilerReq {
+    pub(crate) mdcroot: PathBuf,
+    pub(crate) source: PathBuf,
     /// Validated compiler settings with built-in defaults already applied.
-    pub config: crate::config::SrcConfig,
-    pub progress: Option<ProgressCallback>,
+    pub(crate) config: crate::config::SrcConfig,
+    pub(crate) progress: Option<ProgressCallback>,
 }
 
 impl CompilerReq {
@@ -50,16 +50,15 @@ impl CompilerReq {
     }
 }
 
-pub struct CompilerRes {
-    pub stdout: String,
-    pub stderr: String,
-    pub rtcode: i32,
-    pub interrupted: bool,
+pub(crate) struct CompilerRes {
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+    pub(crate) rtcode: i32,
+    pub(crate) interrupted: bool,
 }
 
 #[derive(Clone, Debug)]
-#[doc(hidden)]
-pub struct FormalCompilationReceipt {
+pub(crate) struct FormalCompilationReceipt {
     pub(crate) language: String,
     pub(crate) target_module: String,
     pub(crate) source_sha256: String,
@@ -74,7 +73,7 @@ pub struct FormalCompilationReceipt {
 }
 
 impl CompilerRes {
-    pub fn err(stderr: impl Into<String>) -> Self {
+    pub(crate) fn err(stderr: impl Into<String>) -> Self {
         CompilerRes {
             stdout: String::new(),
             stderr: stderr.into(),
@@ -83,7 +82,7 @@ impl CompilerRes {
         }
     }
 
-    pub fn err_code(stderr: impl Into<String>, rtcode: i32) -> Self {
+    fn err_code(stderr: impl Into<String>, rtcode: i32) -> Self {
         CompilerRes {
             stdout: String::new(),
             stderr: stderr.into(),
@@ -92,7 +91,7 @@ impl CompilerRes {
         }
     }
 
-    pub fn ok(stdout: impl Into<String>) -> Self {
+    fn ok(stdout: impl Into<String>) -> Self {
         CompilerRes {
             stdout: stdout.into(),
             stderr: String::new(),
@@ -101,12 +100,12 @@ impl CompilerRes {
         }
     }
 
-    pub fn is_success(&self) -> bool {
+    pub(crate) fn is_success(&self) -> bool {
         self.rtcode == 0
     }
 }
 
-pub trait SrcCompiler: Send + Sync {
+pub(crate) trait SrcCompiler: Send + Sync {
     fn srctype(&self) -> &str;
     fn compile(&self, req: &CompilerReq) -> CompilerRes;
 
@@ -121,12 +120,12 @@ pub trait SrcCompiler: Send + Sync {
 
 // ── Registry ──────────────────────────────────────────────────────────────────
 
-pub struct CompilerRegistry {
+pub(crate) struct CompilerRegistry {
     compilers: HashMap<String, Box<dyn SrcCompiler>>,
 }
 
 impl CompilerRegistry {
-    pub fn default_registry() -> Self {
+    pub(crate) fn default_registry() -> Self {
         let mut m: HashMap<String, Box<dyn SrcCompiler>> = HashMap::new();
         for c in [
             Box::new(text::CompilerText) as Box<dyn SrcCompiler>,
@@ -147,7 +146,7 @@ impl CompilerRegistry {
         CompilerRegistry { compilers: m }
     }
 
-    pub fn resolve(&self, srctype: &str) -> Option<&dyn SrcCompiler> {
+    pub(crate) fn resolve(&self, srctype: &str) -> Option<&dyn SrcCompiler> {
         self.compilers
             .get(&srctype.to_ascii_lowercase())
             .map(|b| b.as_ref())

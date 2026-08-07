@@ -2,9 +2,11 @@
 compile_error!("mathdoc currently supports Unix platforms only");
 
 #[cfg(unix)]
-pub mod cli;
+mod cli;
 #[cfg(unix)]
-pub mod compiler;
+pub use cli::run;
+#[cfg(unix)]
+pub(crate) mod compiler;
 #[cfg(unix)]
 pub mod config;
 #[cfg(unix)]
@@ -18,7 +20,7 @@ pub mod indcache;
 #[cfg(unix)]
 pub mod mdocnode;
 #[cfg(unix)]
-pub mod metric;
+pub(crate) mod metric;
 #[cfg(unix)]
 pub(crate) mod profile;
 #[cfg(unix)]

@@ -57,7 +57,7 @@ pub fn find_mdcroot(start: &Path) -> Option<PathBuf> {
 
 /// Canonicalize a workspace root and require its `.mdc` control path to be a
 /// real directory rather than a symlink.
-pub fn validate_mdcroot(root: &Path) -> Result<PathBuf> {
+pub(crate) fn validate_mdcroot(root: &Path) -> Result<PathBuf> {
     let root = root
         .canonicalize()
         .with_context(|| format!("canonicalizing workspace root {}", root.display()))?;

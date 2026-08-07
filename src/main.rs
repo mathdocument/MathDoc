@@ -1,3 +1,3 @@
 fn main() {
-    std::process::exit(mathdoc::cli::run());
+    std::process::exit(mathdoc::run());
 }
