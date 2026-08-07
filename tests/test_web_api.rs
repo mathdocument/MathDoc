@@ -1084,6 +1084,8 @@ async fn put_title_updates_title() {
 
     let (_, roots) = get_json(&app, "/api/graph/roots").await;
     let fnode = roots.as_array().unwrap()[0]["fnode"].as_str().unwrap();
+    let (status, _) = get_json(&app, "/api/search?q=Theorem").await;
+    assert_eq!(status, StatusCode::OK);
 
     let (status, val) = send_json(
         &app,
@@ -1094,6 +1096,11 @@ async fn put_title_updates_title() {
     .await;
     assert_eq!(status, StatusCode::OK, "val={val}");
     assert_eq!(val["title"], "Renamed Title");
+
+    let (status, search) = get_json(&app, "/api/search?q=Renamed%20Title").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(search.as_array().unwrap().len(), 1);
+    assert_eq!(search[0]["fnode"], fnode);
 
     // Reject empty.
     let (status, val) = send_json(

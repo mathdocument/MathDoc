@@ -299,6 +299,25 @@ fn with_cache<R>(
     Ok(f(&mut cache)?)
 }
 
+fn refresh_search_index(state: &AppState, cache: &mut IndCache) -> anyhow::Result<()> {
+    let due = state
+        .search_discovery
+        .lock()
+        .map_err(|_| anyhow::anyhow!("search discovery mutex poisoned"))?
+        .is_due(std::time::Instant::now());
+    if !due {
+        return Ok(());
+    }
+
+    cache.discover_workspace_changes()?;
+    state
+        .search_discovery
+        .lock()
+        .map_err(|_| anyhow::anyhow!("search discovery mutex poisoned"))?
+        .last_completed = Some(std::time::Instant::now());
+    Ok(())
+}
+
 fn lock_until<'a, T>(
     mutex: &'a std::sync::Mutex<T>,
     deadline: std::time::Instant,
@@ -416,7 +435,7 @@ pub(super) async fn search(
     spawn_blocking_api(move || {
         let limit = q.n.min(MAX_SEARCH_RESULTS);
         let out = with_cache(&state, |c| {
-            c.discover_workspace_changes()?;
+            refresh_search_index(&state, c)?;
             c.search(&q.q, limit)
         })?;
         Ok(Json(out))
@@ -595,7 +614,7 @@ pub(super) async fn node_dependency_candidates(
             .cache
             .lock()
             .map_err(|_| anyhow::anyhow!("cache mutex poisoned"))?;
-        cache.discover_workspace_changes()?;
+        refresh_search_index(&state, &mut cache)?;
         let (fnode, _, _) = cache
             .resolve_ref(&fnode, Some(cache.root()))
             .map_err(ApiError::from_resolve)?;
@@ -1038,6 +1057,38 @@ mod tests {
 
         let error = load_node_generation(&mut cache, &fnode, &path).unwrap_err();
         assert_eq!(error.into_response().status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn search_discovery_gate_skips_bursts_and_retries_failures() {
+        let (_dir, state, path, _) = setup_state();
+        let root = path.parent().unwrap();
+        {
+            let mut cache = state.cache.lock().unwrap();
+            refresh_search_index(&state, &mut cache).unwrap();
+        }
+
+        let alias = root.join("alias.mdoc");
+        std::fs::hard_link(&path, &alias).unwrap();
+        {
+            let mut cache = state.cache.lock().unwrap();
+            refresh_search_index(&state, &mut cache).unwrap();
+        }
+
+        let expired = std::time::Instant::now() - super::super::SEARCH_DISCOVERY_INTERVAL;
+        state.search_discovery.lock().unwrap().last_completed = Some(expired);
+        {
+            let mut cache = state.cache.lock().unwrap();
+            assert!(refresh_search_index(&state, &mut cache).is_err());
+        }
+        assert_eq!(
+            state.search_discovery.lock().unwrap().last_completed,
+            Some(expired)
+        );
+
+        std::fs::remove_file(alias).unwrap();
+        let mut cache = state.cache.lock().unwrap();
+        refresh_search_index(&state, &mut cache).unwrap();
     }
 
     #[test]
