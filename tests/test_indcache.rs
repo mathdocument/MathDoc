@@ -139,6 +139,37 @@ fn test_refresh_all_preserves_index_when_subtree_is_unreadable() {
     assert_eq!(indexed_fnode_count(&cache, "locked-node"), 1);
 }
 
+#[cfg(unix)]
+#[test]
+fn focused_reconciliation_preserves_inaccessible_cached_claimants() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    let locked = root.join("locked");
+    write(
+        &locked.join("node.mdoc"),
+        "@fnode: guarded-node\n@title: Guarded\n",
+    );
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    let competing = root.join("competing.mdoc");
+    write(&competing, "@fnode: guarded-node\n@title: Competing\n");
+
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let reconciliation = cache.reconcile_fnode_paths("guarded-node");
+    let upsert = cache.upsert_path(&competing);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(reconciliation.is_err());
+    assert!(upsert.is_err());
+    assert_eq!(indexed_fnode_count(&cache, "guarded-node"), 1);
+    assert_eq!(
+        cache.node_summary("guarded-node").unwrap().rel_path,
+        "locked/node.mdoc"
+    );
+}
+
 #[test]
 fn test_refresh_all_detects_subnanosecond_mtime_change() {
     let dir = tempfile::TempDir::new().unwrap();

@@ -879,11 +879,12 @@ impl IndCache {
         let mut paths = Vec::new();
         let mut stale = false;
         for (_, _, rel_path) in rows {
-            if let Ok(path) = refresh::validate_cached_mdoc_path(&self.root, &rel_path) {
-                paths.push(path);
-            } else {
-                refresh::delete_indexed_path(&tx, &rel_path)?;
-                stale = true;
+            match refresh::current_cached_mdoc_path(&self.root, &rel_path)? {
+                Some(path) => paths.push(path),
+                None => {
+                    refresh::delete_indexed_path(&tx, &rel_path)?;
+                    stale = true;
+                }
             }
         }
         if stale {
@@ -1046,7 +1047,7 @@ impl IndCache {
             .ok_or_else(|| ResolveRefError::NotFound(raw_ref.to_string()))?;
         let mut rows = Vec::new();
         for (fnode, title, rel_path) in untrusted_rows {
-            if let Some(path) = self.valid_cached_path(&rel_path) {
+            if let Some(path) = self.valid_cached_path(&rel_path)? {
                 rows.push((fnode, title, rel_path, path));
             }
         }
@@ -1106,7 +1107,7 @@ impl IndCache {
 
             let mut rows = Vec::new();
             for (fnode, title, rel_path) in queries::exact_title_rows(connection, raw_ref)? {
-                if let Some(path) = self.valid_cached_path(&rel_path) {
+                if let Some(path) = self.valid_cached_path(&rel_path)? {
                     rows.push((fnode, title, rel_path, path));
                 }
             }
@@ -1143,8 +1144,8 @@ impl IndCache {
 
     // ── Private helpers ──────────────────────────────────────────────────────
 
-    fn valid_cached_path(&self, rel_path: &str) -> Option<PathBuf> {
-        refresh::validate_cached_mdoc_path(&self.root, rel_path).ok()
+    fn valid_cached_path(&self, rel_path: &str) -> Result<Option<PathBuf>> {
+        refresh::current_cached_mdoc_path(&self.root, rel_path)
     }
 
     /// If `raw_ref` looks like a path, try to resolve it to an existing file.

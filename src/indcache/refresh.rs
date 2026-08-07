@@ -924,7 +924,15 @@ pub(super) fn refresh_reachable_from_path(
     Ok(affected_fnodes)
 }
 
-pub(super) fn validate_cached_mdoc_path(root: &Path, rel_path: &str) -> Result<PathBuf> {
+pub(super) fn current_cached_mdoc_path(root: &Path, rel_path: &str) -> Result<Option<PathBuf>> {
+    match validate_cached_mdoc_path(root, rel_path) {
+        Ok(path) => Ok(Some(path)),
+        Err(error) if cached_path_error_is_stale(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn validate_cached_mdoc_path(root: &Path, rel_path: &str) -> Result<PathBuf> {
     let rel_path = Path::new(rel_path);
     if rel_path.is_absolute() {
         bail!("cached mdoc path must be relative: {}", rel_path.display());
@@ -938,6 +946,19 @@ pub(super) fn validate_cached_mdoc_path(root: &Path, rel_path: &str) -> Result<P
         );
     }
     Ok(resolved)
+}
+
+fn cached_path_error_is_stale(error: &anyhow::Error) -> bool {
+    let mut io_errors = error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>());
+    match io_errors.next() {
+        None => true,
+        Some(first) => {
+            first.kind() == std::io::ErrorKind::NotFound
+                && io_errors.all(|error| error.kind() == std::io::ErrorKind::NotFound)
+        }
+    }
 }
 
 /// Upsert a single .mdoc file: update metadata, parse, rebuild edges and issues.
@@ -1380,7 +1401,7 @@ fn cleanup_stale_fnode_paths(
         })?
         .collect::<rusqlite::Result<_>>()?;
     for stale_rel in stale_paths {
-        if validate_cached_mdoc_path(root, &stale_rel).is_err() {
+        if current_cached_mdoc_path(root, &stale_rel)?.is_none() {
             delete_indexed_path(conn, &stale_rel)?;
         }
     }
