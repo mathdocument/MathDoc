@@ -1023,12 +1023,8 @@ fn back_with_cache(
     let mut index_refreshed = false;
     if updated_mdocs != 0 {
         if let Some(cache) = cache.as_deref_mut() {
-            if updated_paths.len() == 1 {
-                cache.discover_workspace_changes()?;
-                cache.upsert_path(&updated_paths[0])?;
-            } else {
-                cache.refresh_all()?;
-            }
+            cache.discover_workspace_changes()?;
+            cache.upsert_paths(&updated_paths)?;
             index_refreshed = true;
         }
     }

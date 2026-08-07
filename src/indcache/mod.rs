@@ -548,30 +548,40 @@ impl IndCache {
 
     /// Upsert a single file path and update its topo depths.
     pub fn upsert_path(&mut self, file_path: &Path) -> Result<()> {
-        self.require_current_database()?;
-        let file_path = crate::workspace::resolve_mdoc_path(&self.root, file_path)?;
-        let tx = self.conn.transaction()?;
-        let outcome = refresh::upsert_mdoc_row(&tx, &self.root, &file_path)?;
+        self.upsert_paths(&[file_path.to_path_buf()])
+    }
 
-        // A rename affects both ancestors of the old token and the new node.
-        if outcome.graph_changed {
-            match (outcome.old_fnode.as_deref(), outcome.new_fnode.as_deref()) {
-                (Some(old), Some(new)) if old != new => {
-                    derived::refresh_topo_depth_upward_from_many(
-                        &tx,
-                        &HashSet::from([old.to_string(), new.to_string()]),
-                    )?;
-                }
-                (_, Some(new)) => derived::refresh_topo_depth_upward_from_many(
-                    &tx,
-                    &HashSet::from([new.to_string()]),
-                )?,
-                (Some(old), None) => derived::refresh_topo_depth_upward_from_many(
-                    &tx,
-                    &HashSet::from([old.to_string()]),
-                )?,
-                (None, None) => derived::backfill_all_topo_depths(&tx)?,
+    /// Upsert known file paths in one transaction and refresh their shared ancestors once.
+    pub(crate) fn upsert_paths(&mut self, file_paths: &[PathBuf]) -> Result<()> {
+        self.require_current_database()?;
+        if file_paths.is_empty() {
+            return Ok(());
+        }
+        let mut seen = HashSet::with_capacity(file_paths.len());
+        let mut resolved_paths = Vec::with_capacity(file_paths.len());
+        for file_path in file_paths {
+            let resolved = crate::workspace::resolve_mdoc_path(&self.root, file_path)?;
+            if seen.insert(resolved.clone()) {
+                resolved_paths.push(resolved);
             }
+        }
+        let tx = self.conn.transaction()?;
+        let mut changed_fnodes = HashSet::new();
+        let mut needs_full_topo_backfill = false;
+        for file_path in resolved_paths {
+            let outcome = refresh::upsert_mdoc_row(&tx, &self.root, &file_path)?;
+            if outcome.graph_changed {
+                if outcome.old_fnode.is_none() && outcome.new_fnode.is_none() {
+                    needs_full_topo_backfill = true;
+                }
+                changed_fnodes.extend(outcome.old_fnode);
+                changed_fnodes.extend(outcome.new_fnode);
+            }
+        }
+        if needs_full_topo_backfill {
+            derived::backfill_all_topo_depths(&tx)?;
+        } else {
+            derived::refresh_topo_depth_upward_from_many(&tx, &changed_fnodes)?;
         }
         crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
 

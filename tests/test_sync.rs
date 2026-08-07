@@ -117,6 +117,53 @@ fn sync_exports_present_blocks_and_back_imports_mirror_edits() {
 }
 
 #[test]
+fn back_imports_multiple_mdocs_and_clears_index_recovery_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join(".mdc")).unwrap();
+    let first = make_node(root, "data/A.mdoc");
+    let second = make_node(root, "data/B.mdoc");
+    write_node(&first);
+    write_node(&second);
+    assert!(run_mdc(root, &["sync"]).status.success());
+
+    std::fs::write(root.join(".mdc/lean/Lib/data/A.lean"), "#check Int\n").unwrap();
+    std::fs::write(root.join(".mdc/lean/Lib/data/B.lean"), "#check Bool\n").unwrap();
+    let output = run_mdc(root, &["back"]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        MdocNode::load(&first.path)
+            .unwrap()
+            .source_block("lean")
+            .unwrap()
+            .content,
+        "#check Int\n"
+    );
+    assert_eq!(
+        MdocNode::load(&second.path)
+            .unwrap()
+            .source_block("lean")
+            .unwrap()
+            .content,
+        "#check Bool\n"
+    );
+    let dirty: bool = rusqlite::Connection::open(root.join(".mdc/index.db"))
+        .unwrap()
+        .query_row(
+            "SELECT index_dirty FROM mdoc_workdraft_state WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!dirty);
+}
+
+#[test]
 fn sync_observation_cache_detects_same_size_same_mtime_mdoc_edits() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
