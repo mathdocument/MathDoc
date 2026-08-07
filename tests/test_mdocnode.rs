@@ -259,6 +259,28 @@ fn test_render_rejects_unrepresentable_dependencies_and_metadata() {
 }
 
 #[test]
+fn test_load_rejects_unrepresentable_metadata_keys() {
+    let dir = tempfile::TempDir::new().unwrap();
+    for (index, header) in [
+        r#"@src: text "bad key=value""#,
+        r#"@src: text " bad=value""#,
+        r#"@src: text "bad'key=value""#,
+        r#"@src: text 'bad"key=value'"#,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = dir.path().join(format!("invalid-metadata-{index}.mdoc"));
+        write_file(
+            &path,
+            &format!("@fnode: metadata-node-{index}\n@title: Metadata\n\n{header}\n@end\n"),
+        );
+
+        assert!(MdocNode::load(&path).is_err(), "accepted header: {header}");
+    }
+}
+
+#[test]
 fn test_load_rejects_path_traversing_srctype() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("unsafe.mdoc");

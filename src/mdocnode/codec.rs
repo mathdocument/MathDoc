@@ -306,7 +306,7 @@ fn validate_for_render(node: &MdocNode) -> Result<()> {
             bail!("duplicate srctype '{}'", block.srctype);
         }
         for (key, value) in &block.metadata {
-            validate_single_line("src metadata key", key)?;
+            validate_metadata_key(key)?;
             validate_no_controls(&format!("src metadata value for '{key}'"), value)?;
         }
 
@@ -343,6 +343,17 @@ fn validate_single_line(field: &str, value: &str) -> Result<()> {
 fn validate_no_controls(field: &str, value: &str) -> Result<()> {
     if value.chars().any(char::is_control) {
         bail!("{field} must not contain control characters");
+    }
+    Ok(())
+}
+
+fn validate_metadata_key(key: &str) -> Result<()> {
+    validate_single_line("src metadata key", key)?;
+    if key
+        .chars()
+        .any(|character| character.is_whitespace() || matches!(character, '=' | '\'' | '"'))
+    {
+        bail!("src metadata key contains characters that cannot be represented in an @src header");
     }
     Ok(())
 }
@@ -384,9 +395,8 @@ fn parse_src_header(
 
     for token in &tokens[1..] {
         match token.split_once('=') {
-            Some((key, value)) if !key.trim().is_empty() => {
-                let key = key.trim();
-                validate_single_line("src metadata key", key)?;
+            Some((key, value)) if !key.is_empty() => {
+                validate_metadata_key(key)?;
                 validate_no_controls(&format!("src metadata value for '{key}'"), value)?;
                 if metadata.contains_key(key) {
                     bail!(
