@@ -146,11 +146,7 @@ pub(super) fn cmd_back() -> Result<i32> {
         let mut cache = IndCache::open_under_mutation_lock(&mutation_lock)?;
         cache.discover_workspace_changes()?;
         let report = crate::workdraft::back_cached(&mutation_lock, &mut cache)?;
-        if report.updated_mdocs != 0 && !report.index_refreshed {
-            cache.refresh_all()?;
-        } else {
-            cache.refresh_formal_statuses()?;
-        }
+        cache.refresh_formal_statuses()?;
         work_lock.require_current()?;
         report
     };

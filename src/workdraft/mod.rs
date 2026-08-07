@@ -45,7 +45,6 @@ pub(crate) struct SyncReport {
 pub(crate) struct BackReport {
     pub updated_blocks: usize,
     pub updated_mdocs: usize,
-    pub index_refreshed: bool,
     pub conflicts: Vec<Issue>,
     pub warnings: Vec<Issue>,
 }
@@ -1069,7 +1068,6 @@ fn back_with_cache(
     Ok(BackReport {
         updated_blocks,
         updated_mdocs,
-        index_refreshed,
         conflicts,
         warnings,
     })
