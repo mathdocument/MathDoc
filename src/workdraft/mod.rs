@@ -787,6 +787,7 @@ fn back_with_cache(
         }
     }
     if manifest.sources.is_empty() {
+        require_fast_path_current(mutation_lock, &mdcroot, &manifest_path, &manifest_snapshot)?;
         return Ok(BackReport::default());
     }
     let source_files = {
@@ -1478,6 +1479,41 @@ fn issue(path: &Path, srctype: Option<&str>, message: impl Into<String>) -> Issu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_manifest_back_rejects_a_replaced_mutation_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let control = root.join(".mdc");
+        std::fs::create_dir(&control).unwrap();
+        std::fs::write(
+            control.join(MANIFEST_NAME),
+            b"{\"version\":4,\"sources\":{}}\n",
+        )
+        .unwrap();
+        let lock = crate::workspace::WorkspaceMutationLock::acquire(&root).unwrap();
+        let lock_path = control.join("mutation.lock");
+        let displaced = control.join("displaced.lock");
+        crate::workspace::set_test_hook(
+            crate::workspace::TestHookPoint::ReadAfterContent,
+            move || {
+                std::fs::rename(&lock_path, displaced).unwrap();
+                std::fs::write(lock_path, b"replacement").unwrap();
+            },
+        );
+
+        let error = match back(&lock) {
+            Ok(_) => panic!("replaced mutation lock should reject back"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error
+                .chain()
+                .any(|cause| cause.is::<crate::workspace::WorkspaceGenerationError>()),
+            "unexpected error: {error:#}"
+        );
+    }
 
     #[test]
     fn back_rejects_a_mirror_changed_after_reconciliation() {
