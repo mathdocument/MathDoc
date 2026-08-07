@@ -2,7 +2,7 @@ use anyhow::{bail, Result};
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet, VecDeque};
 
-pub(crate) const CHUNK_SIZE: usize = 500;
+pub(super) const CHUNK_SIZE: usize = 500;
 
 use crate::core::{
     representative_cycles, DependencyCandidates, DependencyCandidatesEmpty, DependencyItem,
@@ -12,17 +12,21 @@ use crate::core::{
 
 // ── Public query functions ──────────────────────────────────────────────────
 
-pub fn issue_for_fnode(conn: &Connection, fnode: &str) -> Result<Option<GraphIssue>> {
+pub(super) fn issue_for_fnode(conn: &Connection, fnode: &str) -> Result<Option<GraphIssue>> {
     Ok(issue_lookup_for_fnodes(conn, &[fnode])?.remove(fnode))
 }
 
-pub fn ref_item_for_fnode(conn: &Connection, fnode: &str, depth: u32) -> Result<DependencyItem> {
+pub(super) fn ref_item_for_fnode(
+    conn: &Connection,
+    fnode: &str,
+    depth: u32,
+) -> Result<DependencyItem> {
     Ok(ref_items_for_fnodes(conn, &[fnode], depth)?
         .pop()
         .expect("one requested reference item"))
 }
 
-pub fn ref_items_for_fnodes(
+pub(super) fn ref_items_for_fnodes(
     conn: &Connection,
     fnodes: &[&str],
     depth: u32,
@@ -35,7 +39,7 @@ pub fn ref_items_for_fnodes(
         .collect())
 }
 
-pub fn referrer_items(
+pub(super) fn referrer_items(
     conn: &Connection,
     target_fnode: &str,
     depth: i32,
@@ -66,7 +70,7 @@ pub fn referrer_items(
 
 /// BFS reachability check on `mdoc_edges`. Returns true if `to_fnode` is reachable from
 /// `from_fnode` (including the trivial case where they are equal).
-pub fn is_reachable(conn: &Connection, from_fnode: &str, to_fnode: &str) -> Result<bool> {
+pub(super) fn is_reachable(conn: &Connection, from_fnode: &str, to_fnode: &str) -> Result<bool> {
     let _profile = crate::profile::scope("queries::is_reachable");
     if from_fnode == to_fnode {
         return Ok(true);
@@ -85,7 +89,10 @@ pub fn is_reachable(conn: &Connection, from_fnode: &str, to_fnode: &str) -> Resu
     )?)
 }
 
-pub fn reverse_reachable_fnodes(conn: &Connection, target_fnode: &str) -> Result<HashSet<String>> {
+pub(super) fn reverse_reachable_fnodes(
+    conn: &Connection,
+    target_fnode: &str,
+) -> Result<HashSet<String>> {
     let _profile = crate::profile::scope("queries::reverse_reachable_fnodes");
     let mut stmt = conn.prepare(
         "WITH RECURSIVE reachable(fnode) AS (
@@ -103,7 +110,7 @@ pub fn reverse_reachable_fnodes(conn: &Connection, target_fnode: &str) -> Result
     Ok(reached)
 }
 
-pub fn node_summary(conn: &Connection, fnode: &str) -> Result<NodeSummary> {
+pub(super) fn node_summary(conn: &Connection, fnode: &str) -> Result<NodeSummary> {
     let sql = format!(
         "SELECT {NODE_SUMMARY_COLUMNS_SQL}
          FROM mdocs m
@@ -132,7 +139,7 @@ pub fn node_summary(conn: &Connection, fnode: &str) -> Result<NodeSummary> {
     bail!("duplicate fnode: {fnode}")
 }
 
-pub fn node_degrees(conn: &Connection, fnode: &str) -> Result<NodeDegrees> {
+pub(super) fn node_degrees(conn: &Connection, fnode: &str) -> Result<NodeDegrees> {
     let mut stmt = conn.prepare(
         "SELECT COALESCE(id.in_degree, 0),
                 (SELECT COUNT(*) FROM mdoc_valid_edges e WHERE e.src_fnode = m.fnode)
@@ -157,7 +164,7 @@ pub fn node_degrees(conn: &Connection, fnode: &str) -> Result<NodeDegrees> {
     })
 }
 
-pub fn formalization_status(conn: &Connection, fnode: &str) -> Result<FormalizationStatus> {
+pub(super) fn formalization_status(conn: &Connection, fnode: &str) -> Result<FormalizationStatus> {
     let mut stmt = conn.prepare(
         "SELECT f.lean_status, f.rocq_status
          FROM mdocs m
@@ -190,7 +197,7 @@ fn decode_formal_status(value: i64) -> rusqlite::Result<FormalCodeStatus> {
 
 /// Direct referrers with all list metadata in one query.
 /// Referrers whose own file is invalid/duplicate are excluded.
-pub fn direct_referrer_summaries(
+pub(super) fn direct_referrer_summaries(
     conn: &Connection,
     target_fnode: &str,
 ) -> Result<Vec<NodeSummary>> {
@@ -209,7 +216,7 @@ pub fn direct_referrer_summaries(
     Ok(rows)
 }
 
-pub fn dependency_report(
+pub(super) fn dependency_report(
     conn: &Connection,
     root_fnode: &str,
     depth: i32,
@@ -220,14 +227,14 @@ pub fn dependency_report(
     dependency_report_inner(conn, root_fnode, depth, false)
 }
 
-pub fn leaf_dependency_report(
+pub(super) fn leaf_dependency_report(
     conn: &Connection,
     root_fnode: &str,
 ) -> Result<DependencyTraversalReport> {
     dependency_report_inner(conn, root_fnode, -1, true)
 }
 
-pub fn direct_dependency_summaries(
+pub(super) fn direct_dependency_summaries(
     conn: &Connection,
     root_fnode: &str,
 ) -> Result<Vec<NodeSummary>> {
@@ -240,7 +247,7 @@ pub fn direct_dependency_summaries(
     summaries_for_items(conn, items, &report.issues_by_fnode)
 }
 
-pub fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>> {
+pub(super) fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>> {
     // Valid root nodes: join with component table and read persisted topo_depth — no graph load.
     let valid_roots: Vec<(String, String, String, u32, u32)> = {
         let mut stmt = conn.prepare(
@@ -333,7 +340,10 @@ pub fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>> {
     Ok(items)
 }
 
-pub fn graph_check_report(conn: &Connection, cycles: Vec<Vec<String>>) -> Result<GraphCheckReport> {
+pub(super) fn graph_check_report(
+    conn: &Connection,
+    cycles: Vec<Vec<String>>,
+) -> Result<GraphCheckReport> {
     let nodes: i64 = conn.query_row("SELECT COUNT(*) FROM mdoc_files", [], |r| r.get(0))?;
     let edges: i64 = conn.query_row(
         "SELECT COALESCE(SUM(in_degree), 0) FROM mdoc_in_degree",
@@ -912,7 +922,7 @@ fn topo_depth_lookup_for_fnodes(
 
 // ── Helper to resolve a path reference from the DB ──────────────────────────
 
-pub fn lookup_by_fnode(
+pub(super) fn lookup_by_fnode(
     conn: &Connection,
     fnodes: &[&str],
 ) -> Result<HashMap<String, (String, String)>> {
@@ -954,7 +964,10 @@ pub fn lookup_by_fnode(
     Ok(result)
 }
 
-pub fn resolve_ref_by_path(conn: &Connection, rel_path: &str) -> Result<Option<(String, String)>> {
+pub(super) fn resolve_ref_by_path(
+    conn: &Connection,
+    rel_path: &str,
+) -> Result<Option<(String, String)>> {
     Ok(conn
         .query_row(
             "SELECT fnode, title FROM mdocs WHERE path = ?",
@@ -1050,7 +1063,7 @@ fn node_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NodeSummar
     })
 }
 
-pub fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<NodeSummary>> {
+pub(super) fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<NodeSummary>> {
     let _profile = crate::profile::scope("queries::search");
     let (query_lc, like_pattern, prefix_pattern) = search_patterns(query);
     let fts_query = selective_fts5_query(conn, &query_lc)?;
@@ -1080,7 +1093,7 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<NodeSu
     Ok(rows)
 }
 
-pub fn all_node_summaries(conn: &Connection) -> Result<Vec<NodeSummary>> {
+pub(super) fn all_node_summaries(conn: &Connection) -> Result<Vec<NodeSummary>> {
     let sql = format!(
         "SELECT {NODE_SUMMARY_COLUMNS_SQL}
          FROM mdocs m
@@ -1093,7 +1106,7 @@ pub fn all_node_summaries(conn: &Connection) -> Result<Vec<NodeSummary>> {
     Ok(rows)
 }
 
-pub fn dependency_candidates(
+pub(super) fn dependency_candidates(
     conn: &Connection,
     source_fnode: &str,
     query: &str,
@@ -1237,7 +1250,7 @@ pub(super) fn exact_fnode_rows(
     Ok(rows)
 }
 
-pub fn is_bootstrapped(conn: &Connection) -> Result<bool> {
+pub(super) fn is_bootstrapped(conn: &Connection) -> Result<bool> {
     let row: i32 = conn.query_row(
         "SELECT bootstrapped FROM mdoc_index_state WHERE id = 1",
         [],
@@ -1246,7 +1259,7 @@ pub fn is_bootstrapped(conn: &Connection) -> Result<bool> {
     Ok(row != 0)
 }
 
-pub fn fnode_for_path(conn: &Connection, rel_path: &str) -> Result<Option<String>> {
+pub(super) fn fnode_for_path(conn: &Connection, rel_path: &str) -> Result<Option<String>> {
     Ok(conn
         .query_row("SELECT fnode FROM mdocs WHERE path = ?", [rel_path], |r| {
             r.get::<_, String>(0)
@@ -1254,7 +1267,7 @@ pub fn fnode_for_path(conn: &Connection, rel_path: &str) -> Result<Option<String
         .optional()?)
 }
 
-pub fn resolve_fnode_ref(
+pub(super) fn resolve_fnode_ref(
     conn: &Connection,
     raw_ref: &str,
 ) -> Result<Option<Vec<(String, String, String)>>> {
@@ -1277,7 +1290,10 @@ pub fn resolve_fnode_ref(
     }
 }
 
-pub fn exact_title_rows(conn: &Connection, title: &str) -> Result<Vec<(String, String, String)>> {
+pub(super) fn exact_title_rows(
+    conn: &Connection,
+    title: &str,
+) -> Result<Vec<(String, String, String)>> {
     let mut stmt = conn.prepare(
         "SELECT fnode, title, path FROM mdocs
          WHERE title_lc = ?
@@ -1302,11 +1318,11 @@ fn escape_like_pattern(value: &str) -> String {
     escaped
 }
 
-pub fn mdoc_count(conn: &Connection) -> Result<u32> {
+pub(super) fn mdoc_count(conn: &Connection) -> Result<u32> {
     Ok(conn.query_row("SELECT COUNT(*) FROM mdocs", [], |r| r.get::<_, i64>(0))? as u32)
 }
 
-pub fn path_has_blocking_issue(conn: &Connection, rel_path: &str) -> Result<bool> {
+pub(super) fn path_has_blocking_issue(conn: &Connection, rel_path: &str) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS (
              SELECT 1 FROM mdoc_issues
@@ -1317,7 +1333,10 @@ pub fn path_has_blocking_issue(conn: &Connection, rel_path: &str) -> Result<bool
     )?)
 }
 
-pub fn edge_targets_for_source_path(conn: &Connection, src_path: &str) -> Result<Vec<String>> {
+pub(super) fn edge_targets_for_source_path(
+    conn: &Connection,
+    src_path: &str,
+) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT dst.fnode
          FROM mdoc_edges e
@@ -1331,7 +1350,7 @@ pub fn edge_targets_for_source_path(conn: &Connection, src_path: &str) -> Result
     Ok(rows)
 }
 
-pub fn path_for_fnode_if_unique(conn: &Connection, fnode: &str) -> Result<Option<String>> {
+pub(super) fn path_for_fnode_if_unique(conn: &Connection, fnode: &str) -> Result<Option<String>> {
     let mut stmt = conn.prepare("SELECT path FROM mdocs WHERE fnode = ? ORDER BY path LIMIT 2")?;
     let paths: Vec<String> = stmt
         .query_map([fnode], |r| r.get::<_, String>(0))?
@@ -1345,7 +1364,7 @@ pub fn path_for_fnode_if_unique(conn: &Connection, fnode: &str) -> Result<Option
 
 /// All dependency edges from non-blocking source documents, as `(src_fnode, dst_fnode)`.
 /// Used by `mdc serve`'s force-graph view to render the full workspace graph.
-pub fn all_valid_edges(conn: &Connection) -> Result<Vec<(String, String)>> {
+pub(super) fn all_valid_edges(conn: &Connection) -> Result<Vec<(String, String)>> {
     let mut stmt = conn.prepare(
         "SELECT src_fnode, dst_fnode
          FROM mdoc_valid_edges

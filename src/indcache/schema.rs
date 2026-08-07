@@ -255,7 +255,7 @@ DROP TABLE mdoc_edges_schema_20;
 ";
 
 /// Open the database at `path` with WAL mode and apply the schema.
-pub fn open_db(path: &Path) -> Result<Connection> {
+pub(super) fn open_db(path: &Path) -> Result<Connection> {
     ensure_supported_sqlite()?;
     let file_name = path.file_name().ok_or_else(|| {
         anyhow::anyhow!("index database path has no file name: {}", path.display())

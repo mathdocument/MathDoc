@@ -17,7 +17,7 @@ use crate::workspace::{iter_mdoc_files, to_rel_path, FileSnapshotBatch};
 // ── Public write functions ────────────────────────────────────────────────────
 
 /// Full workspace scan: reparse every file and delete stale paths.
-pub fn refresh_search_index(conn: &Connection, root: &Path) -> Result<()> {
+pub(super) fn refresh_search_index(conn: &Connection, root: &Path) -> Result<()> {
     let _profile = crate::profile::scope("refresh::refresh_search_index");
     let files = {
         let _phase = crate::profile::scope("refresh::scan_workspace");
@@ -879,7 +879,7 @@ fn rebuild_in_degree(conn: &Connection) -> Result<()> {
 
 /// Upsert the root path and all reachable dependencies up to `depth` hops (-1 = infinite).
 /// Returns the fnodes of all successfully upserted files (for incremental topo updates).
-pub fn refresh_reachable_from_path(
+pub(super) fn refresh_reachable_from_path(
     conn: &Connection,
     root: &Path,
     root_path: &Path,
@@ -924,7 +924,7 @@ pub fn refresh_reachable_from_path(
     Ok(affected_fnodes)
 }
 
-pub(crate) fn validate_cached_mdoc_path(root: &Path, rel_path: &str) -> Result<PathBuf> {
+pub(super) fn validate_cached_mdoc_path(root: &Path, rel_path: &str) -> Result<PathBuf> {
     let rel_path = Path::new(rel_path);
     if rel_path.is_absolute() {
         bail!("cached mdoc path must be relative: {}", rel_path.display());
@@ -941,7 +941,11 @@ pub(crate) fn validate_cached_mdoc_path(root: &Path, rel_path: &str) -> Result<P
 }
 
 /// Upsert a single .mdoc file: update metadata, parse, rebuild edges and issues.
-pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Result<UpsertOutcome> {
+pub(super) fn upsert_mdoc_row(
+    conn: &Connection,
+    root: &Path,
+    file_path: &Path,
+) -> Result<UpsertOutcome> {
     let root_resolved = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let file_path = crate::workspace::resolve_mdoc_path(&root_resolved, file_path)?;
     let rel_path = to_rel_path(&root_resolved, &file_path);
@@ -1130,7 +1134,7 @@ fn upsert_file_state(
 }
 
 /// Remove all index entries for a path (file deleted or moved).
-pub fn delete_indexed_path(conn: &Connection, stale_path: &str) -> Result<()> {
+pub(super) fn delete_indexed_path(conn: &Connection, stale_path: &str) -> Result<()> {
     let old_fnode = fnode_for_path(conn, stale_path)?;
     let old_had_blocking_issue = path_has_blocking_issue(conn, stale_path)?;
     let old_symbol_ids = symbol_ids_for_source_path(conn, stale_path)?;
@@ -1319,7 +1323,7 @@ fn indexed_file_state(conn: &Connection, rel_path: &str) -> Result<Option<(i64, 
     .map_err(Into::into)
 }
 
-pub(crate) fn metadata_state(meta: &std::fs::Metadata) -> Result<(i64, i64)> {
+pub(super) fn metadata_state(meta: &std::fs::Metadata) -> Result<(i64, i64)> {
     let modified = meta
         .modified()
         .context("reading file modification time")?
