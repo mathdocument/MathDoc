@@ -465,7 +465,7 @@ pub(super) async fn node_detail(
         let cache_fields = (|| {
             Ok::<_, anyhow::Error>((
                 cache.node_summary(&fnode)?,
-                cache.formalization_status(&fnode)?,
+                cache.indexed_formalization_status(&fnode)?,
             ))
         })();
         ensure_snapshot_unchanged(&snapshot, &abs_path)?;
@@ -496,7 +496,7 @@ pub(super) async fn node_view(
         let cache_fields = (|| {
             Ok::<_, anyhow::Error>((
                 cache.node_summary(&fnode)?,
-                cache.formalization_status(&fnode)?,
+                cache.indexed_formalization_status(&fnode)?,
                 cache.direct_referrer_summaries(&fnode)?,
                 cache.direct_dependency_summaries(&fnode)?,
             ))
@@ -770,7 +770,7 @@ fn current_node_detail(
 ) -> ApiResult<Json<NodeDetail>> {
     let (snapshot, node) = load_node_generation(cache, fnode, abs_path)?;
     let summary = cache.node_summary(fnode)?;
-    let formalization = cache.formalization_status(fnode)?;
+    let formalization = cache.indexed_formalization_status(fnode)?;
     ensure_snapshot_unchanged(&snapshot, abs_path)?;
     Ok(Json(node_detail_from_generation(
         summary,
@@ -785,7 +785,7 @@ fn node_detail_from_committed_cache(
     node: &MdocNode,
 ) -> anyhow::Result<NodeDetail> {
     let summary = cache.node_summary(&node.fnode)?;
-    let formalization = cache.formalization_status(&node.fnode)?;
+    let formalization = cache.indexed_formalization_status(&node.fnode)?;
     Ok(NodeDetail {
         fnode: node.fnode.clone(),
         title: node.title.clone(),

@@ -726,6 +726,10 @@ impl IndCache {
                 self.upsert_path(&path)?;
             }
         }
+        self.indexed_formalization_status(fnode)
+    }
+
+    pub(crate) fn indexed_formalization_status(&self, fnode: &str) -> Result<FormalizationStatus> {
         self.with_current_database(|connection| queries::formalization_status(connection, fnode))
     }
 
