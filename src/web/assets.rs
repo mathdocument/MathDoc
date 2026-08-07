@@ -14,7 +14,7 @@ pub struct WebAssets;
 
 /// Serve an embedded asset by path. Falls back to `index.html` for any
 /// unknown path so the SPA can do client-side routing.
-pub fn serve_asset(uri: Uri) -> Response {
+pub(super) fn serve_asset(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
 
     // Direct file match first.

@@ -24,7 +24,7 @@ use super::AppState;
 ///
 /// `bind` — `host:port`; port `0` picks a free port.
 /// `open_browser` — if true, open the default browser once listening.
-pub async fn serve(
+pub(crate) async fn serve(
     cache: IndCache,
     bind: &str,
     open_browser: bool,
@@ -176,7 +176,7 @@ async fn require_local_host(request: Request, next: Next) -> Response {
 
 /// Parse a numeric loopback socket address. Remote binding is intentionally
 /// unsupported because the Web API has no authentication layer.
-pub fn validate_bind(bind: &str) -> Result<SocketAddr> {
+fn validate_bind(bind: &str) -> Result<SocketAddr> {
     let addr: SocketAddr = bind
         .parse()
         .with_context(|| format!("bind address must be a numeric IP socket address: {bind}"))?;

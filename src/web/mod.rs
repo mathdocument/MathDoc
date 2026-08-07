@@ -1,4 +1,5 @@
-pub mod api;
+mod api;
+#[cfg(not(feature = "dev-web"))]
 pub mod assets;
 pub mod server;
 
@@ -13,8 +14,8 @@ use crate::indcache::IndCache;
 /// write transactions, including file loading, cycle checks, saves, and reindexing.
 #[derive(Clone)]
 pub struct AppState {
-    pub cache: Arc<std::sync::Mutex<IndCache>>,
-    pub mutation_lock: Arc<std::sync::Mutex<()>>,
+    cache: Arc<std::sync::Mutex<IndCache>>,
+    mutation_lock: Arc<std::sync::Mutex<()>>,
 }
 
 impl AppState {

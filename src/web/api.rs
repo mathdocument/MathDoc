@@ -30,33 +30,33 @@ macro_rules! bail {
 
 /// Full node detail returned by `GET /api/node/:fnode`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NodeDetail {
-    pub fnode: String,
-    pub title: String,
-    pub rel_path: String,
-    pub broken: bool,
-    pub depth: u32,
+pub(super) struct NodeDetail {
+    fnode: String,
+    title: String,
+    rel_path: String,
+    broken: bool,
+    depth: u32,
     /// Digest of the exact `.mdoc` generation represented by this response.
-    pub revision: String,
+    revision: String,
     /// Direct dependency fnodes (in source order, deduplicated).
-    pub depens: Vec<String>,
-    pub blocks: Vec<crate::mdocnode::SrcBlock>,
-    pub formalization: FormalizationStatus,
+    depens: Vec<String>,
+    blocks: Vec<crate::mdocnode::SrcBlock>,
+    formalization: FormalizationStatus,
 }
 
 /// Focused node data needed by the three-column browser in one response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NodeView {
-    pub node: NodeDetail,
-    pub referrers: Vec<NodeSummary>,
-    pub children: Vec<NodeSummary>,
+pub(super) struct NodeView {
+    node: NodeDetail,
+    referrers: Vec<NodeSummary>,
+    children: Vec<NodeSummary>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct SearchQuery {
-    pub q: String,
+pub(super) struct SearchQuery {
+    q: String,
     #[serde(default = "default_n")]
-    pub n: usize,
+    n: usize,
 }
 fn default_n() -> usize {
     200
@@ -64,23 +64,23 @@ fn default_n() -> usize {
 const MAX_SEARCH_RESULTS: usize = 200;
 
 #[derive(Debug, Serialize)]
-pub struct ResolveResponse {
-    pub fnode: String,
-    pub title: String,
-    pub rel_path: String,
+pub(super) struct ResolveResponse {
+    fnode: String,
+    title: String,
+    rel_path: String,
 }
 
 /// Full workspace graph: nodes + edges, for the force-directed view.
 #[derive(Debug, Serialize)]
-pub struct GraphFull {
-    pub nodes: Vec<NodeSummary>,
-    pub edges: Vec<GraphEdge>,
+pub(super) struct GraphFull {
+    nodes: Vec<NodeSummary>,
+    edges: Vec<GraphEdge>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct GraphEdge {
-    pub source: String,
-    pub target: String,
+pub(super) struct GraphEdge {
+    source: String,
+    target: String,
 }
 
 // ── Error handling ────────────────────────────────────────────────────────────
@@ -95,7 +95,7 @@ enum ApiErrorKind {
 }
 
 #[derive(Debug)]
-pub struct ApiError {
+pub(super) struct ApiError {
     kind: ApiErrorKind,
     public_message: String,
     detail: anyhow::Error,
@@ -238,11 +238,14 @@ impl IntoResponse for ApiError {
 
 type ApiResult<T> = Result<T, ApiError>;
 
-pub async fn api_not_found() -> Response {
+pub(super) async fn api_not_found() -> Response {
     json_error_response(StatusCode::NOT_FOUND, "API route not found")
 }
 
-pub async fn normalize_error_response(request: axum::extract::Request, next: Next) -> Response {
+pub(super) async fn normalize_error_response(
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
     let response = next.run(request).await;
     if !response.status().is_client_error() && !response.status().is_server_error() {
         return response;
@@ -348,7 +351,9 @@ fn resolve_with_cache(
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
-pub async fn graph_roots(State(state): State<AppState>) -> ApiResult<Json<Vec<GraphRootItem>>> {
+pub(super) async fn graph_roots(
+    State(state): State<AppState>,
+) -> ApiResult<Json<Vec<GraphRootItem>>> {
     spawn_blocking_api(move || {
         let _profile = crate::profile::scope("web::api::graph_roots");
         let roots = with_cache(&state, |c| {
@@ -360,7 +365,9 @@ pub async fn graph_roots(State(state): State<AppState>) -> ApiResult<Json<Vec<Gr
     .await
 }
 
-pub async fn graph_check(State(state): State<AppState>) -> ApiResult<Json<GraphCheckReport>> {
+pub(super) async fn graph_check(
+    State(state): State<AppState>,
+) -> ApiResult<Json<GraphCheckReport>> {
     spawn_blocking_api(move || {
         let report = with_cache(&state, |c| {
             c.refresh_all()?;
@@ -372,7 +379,7 @@ pub async fn graph_check(State(state): State<AppState>) -> ApiResult<Json<GraphC
 }
 
 /// Full workspace graph for the force-directed view: all valid nodes + edges.
-pub async fn graph_full(State(state): State<AppState>) -> ApiResult<Json<GraphFull>> {
+pub(super) async fn graph_full(State(state): State<AppState>) -> ApiResult<Json<GraphFull>> {
     spawn_blocking_api(move || {
         let _profile = crate::profile::scope("web::api::graph_full");
         let (nodes, edges) = with_cache(&state, |c| {
@@ -398,7 +405,7 @@ pub async fn graph_full(State(state): State<AppState>) -> ApiResult<Json<GraphFu
     .await
 }
 
-pub async fn search(
+pub(super) async fn search(
     State(state): State<AppState>,
     Query(q): Query<SearchQuery>,
 ) -> ApiResult<Json<Vec<NodeSummary>>> {
@@ -414,11 +421,11 @@ pub async fn search(
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ResolveQuery {
-    pub r#ref: String,
+pub(super) struct ResolveQuery {
+    r#ref: String,
 }
 
-pub async fn resolve_ref(
+pub(super) async fn resolve_ref(
     State(state): State<AppState>,
     Query(q): Query<ResolveQuery>,
 ) -> ApiResult<Json<ResolveResponse>> {
@@ -439,7 +446,7 @@ pub async fn resolve_ref(
     .await
 }
 
-pub async fn node_detail(
+pub(super) async fn node_detail(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
 ) -> ApiResult<Json<NodeDetail>> {
@@ -469,7 +476,7 @@ pub async fn node_detail(
     .await
 }
 
-pub async fn node_view(
+pub(super) async fn node_view(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
 ) -> ApiResult<Json<NodeView>> {
@@ -506,7 +513,7 @@ pub async fn node_view(
     .await
 }
 
-pub async fn node_children(
+pub(super) async fn node_children(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
 ) -> ApiResult<Json<Vec<NodeSummary>>> {
@@ -573,7 +580,7 @@ fn node_detail_from_generation(
     }
 }
 
-pub async fn node_dependency_candidates(
+pub(super) async fn node_dependency_candidates(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
     Query(q): Query<SearchQuery>,
@@ -598,7 +605,7 @@ pub async fn node_dependency_candidates(
 
 /// Replace a single srctype block's content on the focused node.
 /// If the block does not yet exist, it is appended.
-pub async fn node_put_block(
+pub(super) async fn node_put_block(
     State(state): State<AppState>,
     Path((fnode, srctype)): Path<(String, String)>,
     Json(body): Json<BlockBody>,
@@ -625,7 +632,7 @@ pub async fn node_put_block(
 }
 
 /// Delete a single srctype block from the focused node.
-pub async fn node_delete_block(
+pub(super) async fn node_delete_block(
     State(state): State<AppState>,
     Path((fnode, srctype)): Path<(String, String)>,
     headers: HeaderMap,
@@ -671,7 +678,7 @@ pub async fn node_delete_block(
 }
 
 /// Update the @title of the focused node.
-pub async fn node_put_title(
+pub(super) async fn node_put_title(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
     Json(body): Json<TitleBody>,
@@ -700,23 +707,23 @@ pub async fn node_put_title(
 // ── Write helpers ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
-pub struct BlockBody {
-    pub content: String,
+pub(super) struct BlockBody {
+    content: String,
     #[serde(default)]
-    pub expected_revision: Option<String>,
+    expected_revision: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct TitleBody {
-    pub title: String,
+pub(super) struct TitleBody {
+    title: String,
     #[serde(default)]
-    pub expected_revision: Option<String>,
+    expected_revision: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RevisionBody {
+pub(super) struct RevisionBody {
     #[serde(default)]
-    pub expected_revision: Option<String>,
+    expected_revision: Option<String>,
 }
 
 /// The five built-in srctypes. Rejecting unknown srctypes keeps the work/back
@@ -829,13 +836,13 @@ fn save_and_index(
 // ── Dependency mutation handlers ──────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
-pub struct AddDepBody {
-    pub dep_fnode: String,
+pub(super) struct AddDepBody {
+    dep_fnode: String,
 }
 
 /// Add a direct dependency to the focused node. Cycles are rejected by
 /// DepGraph::add_direct_dependencies.
-pub async fn node_add_dep(
+pub(super) async fn node_add_dep(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
     Json(body): Json<AddDepBody>,
@@ -870,12 +877,12 @@ pub async fn node_add_dep(
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RmDepBody {
-    pub dep_fnodes: Vec<String>,
+pub(super) struct RmDepBody {
+    dep_fnodes: Vec<String>,
 }
 
 /// Remove direct dependencies from the focused node.
-pub async fn node_rm_deps(
+pub(super) async fn node_rm_deps(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
     Json(body): Json<RmDepBody>,
@@ -905,17 +912,17 @@ pub async fn node_rm_deps(
 }
 
 #[derive(Debug, Deserialize)]
-pub struct NewNodeBody {
-    pub title: String,
+pub(super) struct NewNodeBody {
+    title: String,
     /// Optional relative path (without .mdoc suffix). Defaults to {fnode}.mdoc.
-    pub file: Option<String>,
+    file: Option<String>,
     /// If set, the new node is added as a direct dependency of this node.
-    pub parent_fnode: Option<String>,
+    parent_fnode: Option<String>,
 }
 
 /// Create a new .mdoc file. If `parent_fnode` is given, also add it as a
 /// dependency of that node (cycle-checked, atomic via DepGraph).
-pub async fn node_new(
+pub(super) async fn node_new(
     State(state): State<AppState>,
     Json(body): Json<NewNodeBody>,
 ) -> ApiResult<Json<NodeDetail>> {
