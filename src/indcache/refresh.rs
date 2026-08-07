@@ -948,7 +948,6 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
     let old_fnode = fnode_for_path(conn, &rel_path)?;
     let old_had_blocking_issue = path_has_blocking_issue(conn, &rel_path)?;
     let old_semantics = indexed_file_semantics(conn, &rel_path)?;
-    let old_symbol_ids = symbol_ids_for_source_path(conn, &rel_path)?;
 
     let mut source_snapshots = FileSnapshotBatch::new(&root_resolved)?;
     let source_snapshot = source_snapshots.capture_read(&file_path)?;
@@ -966,8 +965,32 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
     };
     let content = source_snapshot.content();
     let (mtime_ns, size) = metadata_state(source_snapshot.metadata())?;
+    // Strict structural parse and tolerant identity fallback both use this one
+    // captured byte generation.
+    let parse_result = MdocHead::load_bytes(&file_path, content);
+    let formal_status = match &parse_result {
+        Ok(node) => block_presence_status(node),
+        Err(_) => FormalizationStatus::default(),
+    };
+    let file_state = (
+        mtime_ns,
+        size,
+        formal_status_value(formal_status.lean),
+        formal_status_value(formal_status.rocq),
+    );
+    let new_semantics = parsed_file_semantics(&parse_result, content);
+    if !old_had_blocking_issue && old_semantics == new_semantics {
+        if indexed_file_state(conn, &rel_path)? != Some(file_state) {
+            upsert_file_state(conn, &rel_path, file_state)?;
+        }
+        return Ok(UpsertOutcome {
+            graph_changed: false,
+            old_fnode: old_fnode.clone(),
+            new_fnode: old_fnode,
+        });
+    }
 
-    // Snapshot old edge targets before clearing
+    let old_symbol_ids = symbol_ids_for_source_path(conn, &rel_path)?;
     let old_dst_fnodes: HashSet<String> = {
         let mut stmt = conn.prepare(
             "SELECT dst.fnode
@@ -980,30 +1003,7 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
             .collect::<rusqlite::Result<_>>()?;
         rows
     };
-    // Strict structural parse and tolerant identity fallback both use this one
-    // captured byte generation.
-    let parse_result = MdocHead::load_bytes(&file_path, content);
-    let formal_status = match &parse_result {
-        Ok(node) => block_presence_status(node),
-        Err(_) => FormalizationStatus::default(),
-    };
-    conn.execute(
-        "INSERT INTO mdoc_files
-           (path, mtime_ns, size, lean_status, rocq_status)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(path) DO UPDATE SET
-             mtime_ns = excluded.mtime_ns,
-             size = excluded.size,
-             lean_status = excluded.lean_status,
-             rocq_status = excluded.rocq_status",
-        rusqlite::params![
-            rel_path,
-            mtime_ns,
-            size,
-            formal_status_value(formal_status.lean),
-            formal_status_value(formal_status.rocq)
-        ],
-    )?;
+    upsert_file_state(conn, &rel_path, file_state)?;
     conn.execute("DELETE FROM mdoc_edges WHERE src_path = ?", [&rel_path])?;
     conn.execute("DELETE FROM mdoc_issues WHERE path = ?", [&rel_path])?;
     let new_fnode: Option<String>;
@@ -1108,6 +1108,25 @@ pub fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Resu
         new_fnode,
         graph_changed,
     })
+}
+
+fn upsert_file_state(
+    conn: &Connection,
+    rel_path: &str,
+    (mtime_ns, size, lean_status, rocq_status): (i64, i64, i64, i64),
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO mdoc_files
+           (path, mtime_ns, size, lean_status, rocq_status)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(path) DO UPDATE SET
+             mtime_ns = excluded.mtime_ns,
+             size = excluded.size,
+             lean_status = excluded.lean_status,
+             rocq_status = excluded.rocq_status",
+        rusqlite::params![rel_path, mtime_ns, size, lean_status, rocq_status,],
+    )?;
+    Ok(())
 }
 
 /// Remove all index entries for a path (file deleted or moved).
@@ -1266,6 +1285,38 @@ fn indexed_file_semantics(conn: &Connection, rel_path: &str) -> Result<IndexedFi
         )
         .optional()?;
     Ok(IndexedFileSemantics { node, invalid })
+}
+
+fn parsed_file_semantics(parse_result: &Result<MdocHead>, content: &[u8]) -> IndexedFileSemantics {
+    match parse_result {
+        Ok(head) => IndexedFileSemantics {
+            node: Some((head.fnode.clone(), head.title.clone(), head.depens.clone())),
+            invalid: None,
+        },
+        Err(error) => {
+            let identity = MdocIdentity::from_bytes(content);
+            IndexedFileSemantics {
+                node: identity
+                    .complete()
+                    .map(|(fnode, title)| (fnode.to_string(), title.to_string(), Vec::new())),
+                invalid: Some((
+                    identity.fnode.unwrap_or_else(|| "<unknown>".into()),
+                    error.to_string(),
+                )),
+            }
+        }
+    }
+}
+
+fn indexed_file_state(conn: &Connection, rel_path: &str) -> Result<Option<(i64, i64, i64, i64)>> {
+    conn.query_row(
+        "SELECT mtime_ns, size, lean_status, rocq_status
+         FROM mdoc_files WHERE path = ?",
+        [rel_path],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 pub(crate) fn metadata_state(meta: &std::fs::Metadata) -> Result<(i64, i64)> {

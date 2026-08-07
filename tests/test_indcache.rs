@@ -1840,6 +1840,28 @@ fn test_reachable_refresh_propagates_old_fnode_after_rename() {
 }
 
 #[test]
+fn reachable_refresh_detects_same_metadata_semantic_edits() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    let source = root.join("source.mdoc");
+    let dependency = root.join("dependency.mdoc");
+    write(
+        &source,
+        "@fnode: source-node\n@title: Source\n\n@dep:\ndep-node\n@end\n",
+    );
+    write(&dependency, "@fnode: dep-node\n@title: Before\n");
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    cache.refresh_all().unwrap();
+    rewrite_preserving_mtime_and_size(&dependency, "@fnode: dep-node\n@title: After!\n", false);
+
+    cache.refresh_reachable_from_path(&source, -1).unwrap();
+
+    assert_eq!(cache.node_summary("dep-node").unwrap().title, "After!");
+}
+
+#[test]
 fn test_upsert_path_removes_stale_entry_after_parent_directory_deletion() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();

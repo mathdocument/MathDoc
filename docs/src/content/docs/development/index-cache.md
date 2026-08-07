@@ -137,6 +137,11 @@ fast path; callers that monitor compiler artifacts directly must request formal 
 A deterministic `index_digest` covers sorted paths, recovered identity, title,
 dependency order, and parse status, but not source block bodies.
 
+Focused and reachable refreshes also retain strong byte reads. When the parsed identity,
+title, ordered dependencies, parse error, file state, and blocking status are unchanged,
+they preserve the existing search, edge, issue, and derived rows instead of replaying
+equivalent SQLite writes. Metadata or formal-presence changes still update file state.
+
 If the digest matches, existing node, edge, issue, in-degree, epoch, and derived rows are
 retained. If it differs, refresh streams the indexed and scanned semantics in path order.
 Up to 1,024 changed or stale paths use the same incremental maintenance as focused
