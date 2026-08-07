@@ -343,12 +343,7 @@ fn rocq_dependency_evidence(
             .to_string(),
         guarded_digest(&prelude, &mut guards)?,
     );
-    for token in stdout
-        .split_once(':')
-        .map(|(_, dependencies)| dependencies)
-        .unwrap_or_default()
-        .split_whitespace()
-    {
+    for token in parse_dependency_output(&stdout)? {
         let path = PathBuf::from(token.trim_end_matches('\\'));
         let path = if path.is_absolute() {
             path
@@ -399,6 +394,27 @@ fn rocq_dependency_evidence(
         external_dependencies,
         guards,
     })
+}
+
+fn parse_dependency_output(stdout: &str) -> anyhow::Result<Vec<&str>> {
+    let (targets, dependencies) = stdout
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("Rocq dependency output has no target separator"))?;
+    if !targets.split_whitespace().any(|target| {
+        Path::new(target.trim_end_matches('\\'))
+            .extension()
+            .and_then(|extension| extension.to_str())
+            == Some("vo")
+    }) {
+        anyhow::bail!("Rocq dependency output has no .vo target");
+    }
+    if dependencies.contains(':') {
+        anyhow::bail!("Rocq dependency output contains multiple target rules");
+    }
+    Ok(dependencies
+        .split_whitespace()
+        .filter(|token| !token.bytes().all(|byte| byte == b'\\'))
+        .collect())
 }
 
 fn guarded_digest(
@@ -547,6 +563,18 @@ mod tests {
             srctype: "rocq".to_string(),
             root_generation,
         }
+    }
+
+    #[test]
+    fn dependency_output_requires_a_target_rule() {
+        assert!(parse_dependency_output("malformed output\n").is_err());
+        assert!(parse_dependency_output("target.glob: Lib/Target.v\n").is_err());
+        assert!(parse_dependency_output("Target.vo:\nOther.vo: Other.v\n").is_err());
+        assert_eq!(
+            parse_dependency_output("Lib/Target.vo: Lib/Target.v \\\n build/Dependency.vo\n")
+                .unwrap(),
+            ["Lib/Target.v", "build/Dependency.vo"]
+        );
     }
 
     #[test]

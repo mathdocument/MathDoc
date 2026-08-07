@@ -101,6 +101,10 @@ if [ "$1" = "compile" ]; then
   exit 0
 fi
 if [ "$1" = "dep" ]; then
+  if [ "${MDC_TEST_ROCQ_MALFORMED_DEP:-0}" = "1" ]; then
+    printf 'malformed dependency output\n'
+    exit 0
+  fi
   source=""
   for value in "$@"; do
     case "$value" in Lib/*.v) source="$value" ;; esac
@@ -154,7 +158,7 @@ fn run_mdc_with_failures(
     lake_fails: bool,
     rocq_fails: bool,
 ) -> Output {
-    run_mdc_with_options(root, bin, args, lake_fails, rocq_fails, false)
+    run_mdc_with_options(root, bin, args, lake_fails, rocq_fails, false, false)
 }
 
 fn run_mdc_with_options(
@@ -163,6 +167,7 @@ fn run_mdc_with_options(
     args: &[&str],
     lake_fails: bool,
     rocq_fails: bool,
+    malformed_rocq_dep: bool,
     tamper_driver: bool,
 ) -> Output {
     let original_path = std::env::var_os("PATH").unwrap_or_default();
@@ -174,6 +179,10 @@ fn run_mdc_with_options(
         .env("PATH", std::env::join_paths(paths).unwrap())
         .env("MDC_TEST_LAKE_FAIL", if lake_fails { "1" } else { "0" })
         .env("MDC_TEST_ROCQ_FAIL", if rocq_fails { "1" } else { "0" })
+        .env(
+            "MDC_TEST_ROCQ_MALFORMED_DEP",
+            if malformed_rocq_dep { "1" } else { "0" },
+        )
         .env(
             "MDC_TEST_LAKE_TAMPER_DRIVER",
             if tamper_driver { "1" } else { "0" },
@@ -363,6 +372,37 @@ fn successful_rocq_work_publishes_an_attestation() {
 }
 
 #[test]
+fn rocq_work_rejects_malformed_dependency_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let bin = init_workspace(root);
+    let mut node = MdocNode::new_at_path(&root.join("rocq.mdoc"), "Rocq");
+    node.blocks.push(SrcBlock {
+        srctype: "rocq".to_string(),
+        content: "Theorem trivial : True. Proof. exact I. Qed.\n".to_string(),
+        metadata: HashMap::new(),
+    });
+    write(&node.path, &node.render().unwrap());
+
+    let output = run_mdc_with_options(
+        root,
+        &bin,
+        &["work", "rocq.mdoc"],
+        false,
+        false,
+        true,
+        false,
+    );
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("target separator"));
+    assert_eq!(
+        formal_status(root, &node.fnode, "rocq"),
+        FormalCodeStatus::Unverified
+    );
+}
+
+#[test]
 fn formal_languages_publish_independently() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -441,6 +481,7 @@ fn work_rejects_a_driver_changed_during_lean_compilation() {
         root,
         &bin,
         &["work", "driver-race.mdoc"],
+        false,
         false,
         false,
         true,
