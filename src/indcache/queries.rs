@@ -993,6 +993,16 @@ const NODE_SUMMARY_COLUMNS_SQL: &str = "m.fnode, m.title, m.path,
        WHERE i.path = m.path AND i.kind IN ('invalid', 'duplicate')
      ),
      m.topo_depth";
+const EXISTING_DEPENDENCIES_SQL: &str = "
+    SELECT dst.fnode
+    FROM mdoc_symbols src
+    JOIN mdoc_edges e ON e.src_symbol_id = src.id
+    JOIN mdoc_symbols dst ON dst.id = e.dst_symbol_id
+    WHERE src.fnode = ?
+      AND NOT EXISTS (
+          SELECT 1 FROM mdoc_issues i
+          WHERE i.path = e.src_path AND i.kind IN ('invalid', 'duplicate')
+      )";
 
 fn search_patterns(query: &str) -> (String, String, String) {
     let query_lc = query.to_lowercase();
@@ -1125,12 +1135,9 @@ pub(super) fn dependency_candidates(
         "SELECT {NODE_SUMMARY_COLUMNS_SQL}
          FROM mdocs m
          WHERE {} ({SEARCH_MATCH_SQL})
-           AND m.fnode != ?
-           AND NOT EXISTS (
-               SELECT 1 FROM mdoc_valid_edges e
-               WHERE e.src_fnode = ? AND e.dst_fnode = m.fnode
-           )
-           AND NOT EXISTS (
+            AND m.fnode != ?
+            AND m.fnode NOT IN ({EXISTING_DEPENDENCIES_SQL})
+            AND NOT EXISTS (
                SELECT 1 FROM mdoc_issues i
                WHERE i.path = m.path AND i.kind IN ('invalid', 'duplicate')
            )
@@ -1178,10 +1185,7 @@ fn dependency_candidates_empty(
         "WITH matching(reason) AS (
              SELECT CASE
                  WHEN m.fnode = ? THEN 'source'
-                 WHEN EXISTS (
-                     SELECT 1 FROM mdoc_valid_edges e
-                     WHERE e.src_fnode = ? AND e.dst_fnode = m.fnode
-                 ) THEN 'existing'
+                 WHEN m.fnode IN ({EXISTING_DEPENDENCIES_SQL}) THEN 'existing'
                  WHEN EXISTS (
                      SELECT 1 FROM mdoc_issues i
                      WHERE i.path = m.path AND i.kind IN ('invalid', 'duplicate')
