@@ -338,7 +338,11 @@ fn with_workspace_mutation<R>(
         crate::workspace::WorkspaceMutationLock::acquire_with_timeout(&root, remaining)?;
     let mut cache = lock_until(&state.cache, deadline, "cache")?;
     cache.validate_mutation_lock(&mutation_lock)?;
-    f(&mut cache, &mutation_lock)
+    let result = f(&mut cache, &mutation_lock);
+    if result.is_ok() {
+        cache.validate_mutation_lock(&mutation_lock)?;
+    }
+    result
 }
 
 fn resolve_with_cache(
@@ -751,14 +755,12 @@ fn mutate_node(
         }
         mutate(&mut node)?;
         save_and_index(cache, mutation_lock, &node, &snapshot)?;
-        Ok(committed_node_detail(cache, &node))
+        committed_node_detail(cache, &node)
     })
 }
 
-/// Once persistence and indexing succeed, response construction is infallible:
-/// callers receive the committed node even if optional derived metadata is unavailable.
-fn committed_node_detail(cache: &mut IndCache, node: &MdocNode) -> Json<NodeDetail> {
-    Json(node_detail_from_committed_cache(cache, node))
+fn committed_node_detail(cache: &mut IndCache, node: &MdocNode) -> ApiResult<Json<NodeDetail>> {
+    Ok(Json(node_detail_from_committed_cache(cache, node)?))
 }
 
 fn current_node_detail(
@@ -778,22 +780,23 @@ fn current_node_detail(
     )))
 }
 
-fn node_detail_from_committed_cache(cache: &mut IndCache, node: &MdocNode) -> NodeDetail {
-    let summary = cache.node_summary(&node.fnode).ok();
-    let formalization = cache.formalization_status(&node.fnode).unwrap_or_default();
-    let broken = summary.as_ref().map(|item| item.broken).unwrap_or(true);
-    let depth = summary.map(|item| item.depth).unwrap_or(0);
-    NodeDetail {
+fn node_detail_from_committed_cache(
+    cache: &mut IndCache,
+    node: &MdocNode,
+) -> anyhow::Result<NodeDetail> {
+    let summary = cache.node_summary(&node.fnode)?;
+    let formalization = cache.formalization_status(&node.fnode)?;
+    Ok(NodeDetail {
         fnode: node.fnode.clone(),
         title: node.title.clone(),
         rel_path: to_rel_path(cache.root(), &node.path),
-        broken,
-        depth,
+        broken: summary.broken,
+        depth: summary.depth,
         revision: rendered_node_revision(node),
         depens: node.depens.clone(),
         blocks: node.blocks.clone(),
         formalization,
-    }
+    })
 }
 
 fn snapshot_revision(snapshot: &crate::workspace::FileSnapshot) -> String {
@@ -869,7 +872,7 @@ pub(super) async fn node_add_dep(
             if unchanged {
                 current_node_detail(cache, &node.fnode, &node.path)
             } else {
-                Ok(committed_node_detail(cache, &node))
+                committed_node_detail(cache, &node)
             }
         })
     })
@@ -905,7 +908,7 @@ pub(super) async fn node_rm_deps(
             }
             let node = graph.root_node().clone();
             drop(graph);
-            Ok(committed_node_detail(cache, &node))
+            committed_node_detail(cache, &node)
         })
     })
     .await
@@ -955,7 +958,7 @@ pub(super) async fn node_new(
                 // dep — they want to see it appear in the children column).
                 let node = graph.root_node().clone();
                 drop(graph);
-                Ok(committed_node_detail(cache, &node))
+                committed_node_detail(cache, &node)
             } else {
                 // Standalone new node, no parent.
                 let graph = crate::depgraph::DepGraph::create_root_under_lock(
@@ -968,7 +971,7 @@ pub(super) async fn node_new(
                 .map_err(ApiError::rejected)?;
                 let node = graph.root_node().clone();
                 drop(graph);
-                Ok(committed_node_detail(cache, &node))
+                committed_node_detail(cache, &node)
             }
         })
     })
@@ -1102,6 +1105,47 @@ mod tests {
             )
             .into_response()
             .status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
+    fn successful_workspace_mutation_revalidates_the_lock() {
+        let (dir, state, _path, _fnode) = setup_state();
+        let root = state.cache.lock().unwrap().root().to_path_buf();
+        let lock_path = root.join(".mdc/mutation.lock");
+        let displaced_lock = dir.path().join("displaced-mutation.lock");
+
+        let error = with_workspace_mutation(
+            &state,
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
+            |_cache, _mutation_lock| {
+                std::fs::rename(&lock_path, displaced_lock).unwrap();
+                std::fs::write(&lock_path, []).unwrap();
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.into_response().status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
+    fn committed_detail_propagates_index_generation_failure() {
+        let (dir, state, path, _fnode) = setup_state();
+        let mut cache = state.cache.lock().unwrap();
+        let node = MdocNode::load(&path).unwrap();
+        let db_path = cache.root().join(".mdc/index.db");
+        std::fs::rename(&db_path, dir.path().join("displaced-index.db")).unwrap();
+        std::fs::write(&db_path, []).unwrap();
+
+        let error = committed_node_detail(&mut cache, &node).unwrap_err();
+
+        assert_eq!(
+            error.into_response().status(),
             StatusCode::INTERNAL_SERVER_ERROR
         );
     }
@@ -1276,7 +1320,7 @@ mod tests {
             .unwrap();
         let node = graph.root_node().clone();
         drop(graph);
-        let detail = committed_node_detail(&mut cache, &node).0;
+        let detail = committed_node_detail(&mut cache, &node).unwrap().0;
 
         assert_eq!(detail.depens, vec![target_fnode.clone()]);
         assert_eq!(MdocNode::load(&path).unwrap().depens, vec![target_fnode]);
