@@ -461,7 +461,7 @@ impl IndCache {
             self.require_current_database()?;
         } else {
             let has_attestations = crate::formal::attestation::load_for_status(&self.root)
-                .is_ok_and(|loaded| !loaded.manifest.nodes.is_empty());
+                .is_ok_and(|loaded| loaded.manifest.has_attestations());
             if has_attestations {
                 let tx = self.conn.transaction()?;
                 refresh::refresh_formal_block_presence(&tx, &self.root)?;
@@ -708,7 +708,18 @@ impl IndCache {
         self.with_current_database(|connection| queries::node_degrees(connection, fnode))
     }
 
-    pub fn formalization_status(&self, fnode: &str) -> Result<FormalizationStatus> {
+    pub fn formalization_status(&mut self, fnode: &str) -> Result<FormalizationStatus> {
+        let has_attestations = crate::formal::attestation::load_for_status(&self.root)
+            .is_ok_and(|loaded| loaded.manifest.has_attestations());
+        if !has_attestations {
+            let rel_path = self.with_current_database(|connection| {
+                queries::path_for_fnode_if_unique(connection, fnode)
+            })?;
+            if let Some(rel_path) = rel_path {
+                let path = self.root.join(rel_path);
+                self.upsert_path(&path)?;
+            }
+        }
         self.with_current_database(|connection| queries::formalization_status(connection, fnode))
     }
 

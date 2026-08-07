@@ -34,11 +34,73 @@ fn cache_reports_no_code_without_formal_blocks() {
     let node = MdocNode::new_at_path(&root.join("plain.mdoc"), "Plain node");
     write(&node.path, &node.render().unwrap());
 
-    let cache = IndCache::open(root.to_path_buf()).unwrap();
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
 
     assert_eq!(
         cache.formalization_status(&node.fnode).unwrap(),
         FormalizationStatus::default()
+    );
+}
+
+#[test]
+fn status_query_reconciles_unattested_same_metadata_block_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir(root.join(".mdc")).unwrap();
+    let mut node = MdocNode::new_at_path(&root.join("plain.mdoc"), "Plain node");
+    node.upsert_source_block("text", "plain\n".to_string())
+        .unwrap();
+    write(&node.path, &node.render().unwrap());
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    assert_eq!(
+        cache.formalization_status(&node.fnode).unwrap().lean,
+        FormalCodeStatus::NoCode
+    );
+    drop(cache);
+
+    let metadata = fs::metadata(&node.path).unwrap();
+    let modified = metadata.modified().unwrap();
+    node.remove_source_block("text");
+    node.upsert_source_block("lean", "plain\n".to_string())
+        .unwrap();
+    let rendered = node.render().unwrap();
+    assert_eq!(metadata.len(), rendered.len() as u64);
+    write(&node.path, &rendered);
+    fs::File::options()
+        .write(true)
+        .open(&node.path)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    assert!(!root.join(".mdc/formal-attestations.json").exists());
+    assert_eq!(
+        cache.formalization_status(&node.fnode).unwrap().lean,
+        FormalCodeStatus::Unverified
+    );
+    drop(cache);
+
+    let metadata = fs::metadata(&node.path).unwrap();
+    let modified = metadata.modified().unwrap();
+    node.remove_source_block("lean");
+    node.upsert_source_block("text", "plain\n".to_string())
+        .unwrap();
+    let rendered = node.render().unwrap();
+    assert_eq!(metadata.len(), rendered.len() as u64);
+    write(&node.path, &rendered);
+    fs::File::options()
+        .write(true)
+        .open(&node.path)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    assert_eq!(
+        cache.formalization_status(&node.fnode).unwrap().lean,
+        FormalCodeStatus::NoCode
     );
 }
 

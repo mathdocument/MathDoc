@@ -1290,7 +1290,7 @@ mod tests {
             .unwrap()
             .set_times(std::fs::FileTimes::new().set_modified(modified))
             .unwrap();
-        let cache = IndCache::open(root.to_path_buf()).unwrap();
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
         assert_eq!(
             cache.formalization_status(&plain.fnode).unwrap().lean,
             FormalCodeStatus::Unverified
@@ -1312,7 +1312,7 @@ mod tests {
             .unwrap()
             .set_times(std::fs::FileTimes::new().set_modified(modified))
             .unwrap();
-        let cache = IndCache::open(root.to_path_buf()).unwrap();
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
         assert_eq!(
             cache.formalization_status(&plain.fnode).unwrap().lean,
             FormalCodeStatus::NoCode
@@ -1341,17 +1341,20 @@ mod tests {
             &root.join(".mdc/formal-attestations.json"),
             "{ this is not valid json }\n",
         );
+        let mut edited = MdocNode::load(&node.path).unwrap();
+        edited.remove_source_block("lean");
+        write(&edited.path, &edited.render().unwrap());
         drop(cache);
 
         let mut reopened = IndCache::open(root.to_path_buf()).unwrap();
         assert_eq!(
             reopened.formalization_status(&node.fnode).unwrap().lean,
-            FormalCodeStatus::Unverified
+            FormalCodeStatus::NoCode
         );
         reopened.discover_workspace_changes().unwrap();
         assert_eq!(
             reopened.formalization_status(&node.fnode).unwrap().lean,
-            FormalCodeStatus::Unverified
+            FormalCodeStatus::NoCode
         );
     }
 

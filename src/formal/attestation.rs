@@ -48,6 +48,12 @@ pub(crate) struct LoadedManifest {
 }
 
 impl FormalAttestationManifest {
+    pub(crate) fn has_attestations(&self) -> bool {
+        self.nodes
+            .values()
+            .any(|node| node.lean.is_some() || node.rocq.is_some())
+    }
+
     pub(crate) fn get(&self, fnode: &str, language: &str) -> Option<&FormalAttestation> {
         let node = self.nodes.get(fnode)?;
         match language {
@@ -235,4 +241,17 @@ fn validate_digest(field: &str, language: &str, digest: &str, path: &Path) -> Re
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FormalAttestationManifest;
+
+    #[test]
+    fn empty_node_entries_are_not_attestations() {
+        let manifest: FormalAttestationManifest =
+            serde_json::from_str(r#"{"version":1,"nodes":{"node":{}}}"#).unwrap();
+
+        assert!(!manifest.has_attestations());
+    }
 }
