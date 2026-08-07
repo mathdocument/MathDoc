@@ -272,7 +272,6 @@ pub(super) fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>>
         rows
     };
 
-    let invalid_issues = invalid_issue_rows(conn)?;
     let mut items: Vec<GraphRootItem> = valid_roots
         .into_iter()
         .map(
@@ -287,46 +286,51 @@ pub(super) fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>>
         )
         .collect();
 
-    if !invalid_issues.is_empty() {
-        let fnodes_with_incoming: HashSet<String> = {
-            let mut stmt = conn.prepare("SELECT fnode FROM mdoc_in_degree WHERE in_degree > 0")?;
-            let rows = stmt
-                .query_map([], |row| row.get::<_, String>(0))?
-                .collect::<rusqlite::Result<_>>()?;
-            rows
-        };
-        let component_sizes: HashMap<String, u32> = {
-            let mut stmt = conn.prepare("SELECT fnode, component_size FROM mdoc_weak_component")?;
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
-                })?
-                .collect::<rusqlite::Result<_>>()?;
-            rows
-        };
-        let valid_fnodes: HashSet<String> = valid_node_rows(conn)?
-            .into_iter()
-            .map(|(fnode, _, _)| fnode)
-            .collect();
-        let mut broken_paths = HashSet::new();
-        for issue in &invalid_issues {
-            if valid_fnodes.contains(&issue.fnode) || !broken_paths.insert(issue.rel_path.as_str())
-            {
-                continue;
-            }
-            let is_placeholder = issue.fnode.starts_with('<') && issue.fnode.ends_with('>');
-            if !is_placeholder && fnodes_with_incoming.contains(&issue.fnode) {
-                continue;
-            }
-            items.push(GraphRootItem {
-                fnode: issue.fnode.clone(),
-                title: issue.title.clone(),
-                rel_path: issue.rel_path.clone(),
-                component_size: component_sizes.get(&issue.fnode).copied().unwrap_or(1),
-                broken: true,
-                topo_depth: 0,
-            });
+    let mut stmt = conn.prepare(
+        "SELECT issue.ref_fnode, issue.path, COALESCE(component.component_size, 1)
+         FROM mdoc_issues issue
+         LEFT JOIN mdoc_in_degree degree ON degree.fnode = issue.ref_fnode
+         LEFT JOIN mdoc_weak_component component ON component.fnode = issue.ref_fnode
+         WHERE issue.kind IN ('invalid', 'duplicate')
+           AND NOT EXISTS (
+             SELECT 1 FROM mdocs claimant
+             WHERE claimant.fnode = issue.ref_fnode
+               AND NOT EXISTS (
+                 SELECT 1 FROM mdoc_issues blocking
+                 WHERE blocking.path = claimant.path
+                   AND blocking.kind IN ('invalid', 'duplicate')
+               )
+           )
+           AND (
+             (substr(issue.ref_fnode, 1, 1) = '<'
+              AND substr(issue.ref_fnode, -1, 1) = '>')
+             OR COALESCE(degree.in_degree, 0) = 0
+           )
+         ORDER BY issue.path,
+                  CASE WHEN issue.kind = 'invalid' THEN 0 ELSE 1 END,
+                  issue.ref_fnode, issue.error",
+    )?;
+    let mut broken_paths = HashSet::new();
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, u32>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (fnode, rel_path, component_size) = row?;
+        if !broken_paths.insert(rel_path.clone()) {
+            continue;
         }
+        items.push(GraphRootItem {
+            fnode,
+            title: "<invalid>".to_string(),
+            rel_path,
+            component_size,
+            broken: true,
+            topo_depth: 0,
+        });
     }
 
     // Primary: most depended-upon (deepest topo) first; secondary: largest component.
