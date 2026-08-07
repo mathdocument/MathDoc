@@ -132,9 +132,10 @@ time is stored as `secs * 1_000_000_000 + subsec_nanos`.
 Receipt-backed formal status is revalidated on cache open, strong refresh, focused node
 upsert, and explicit formal-status refresh. No-change metadata discovery remains a graph
 fast path; callers that monitor compiler artifacts directly must request formal refresh.
-When no usable work attestations exist, a formal-status query strongly reconciles the
-requested document so unattested block presence cannot remain stale after a same-metadata
-external edit without requiring a full workspace scan on every cache open.
+Cache open strongly rereads only nodes named by usable work attestations. A formal-status
+query strongly reconciles a requested node without an attestation, so unattested block
+presence cannot remain stale after a same-metadata external edit without requiring a full
+workspace scan on every cache open.
 
 ## Strong refresh
 

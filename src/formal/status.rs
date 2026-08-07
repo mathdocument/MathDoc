@@ -1312,7 +1312,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_open_discovers_unattested_formal_block_changes() {
+    fn status_queries_discover_unattested_formal_block_changes() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir(root.join(".mdc")).unwrap();
@@ -1373,6 +1373,35 @@ mod tests {
             cache.formalization_status(&attested.fnode).unwrap().lean,
             FormalCodeStatus::Verified
         );
+    }
+
+    #[test]
+    fn cache_open_does_not_scan_unattested_nodes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        lean_environment(root);
+        let attested = lean_node(root, "attested.mdoc", "Attested", &[], "def value := 1\n");
+        let plain = MdocNode::new_at_path(&root.join("plain.mdoc"), "Plain");
+        write(&plain.path, &plain.render().unwrap());
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+        assert!(publish(&mut cache, root, &attested.fnode).is_empty());
+        drop(cache);
+
+        std::fs::set_permissions(&plain.path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let reopened = IndCache::open(root.to_path_buf()).unwrap();
+        assert_eq!(
+            reopened
+                .indexed_formalization_status(&attested.fnode)
+                .unwrap()
+                .lean,
+            FormalCodeStatus::Verified
+        );
+        drop(reopened);
+
+        std::fs::set_permissions(&plain.path, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
 
     #[test]

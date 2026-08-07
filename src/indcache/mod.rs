@@ -460,18 +460,7 @@ impl IndCache {
             tx.commit()?;
             self.validate_formal_status_commit(formal_validation)?;
         } else {
-            let has_attestations = crate::formal::attestation::load_for_status(&self.root)
-                .is_ok_and(|loaded| loaded.manifest.has_attestations());
-            if has_attestations {
-                let tx = self.conn.transaction()?;
-                refresh::refresh_formal_block_presence(&tx, &self.root)?;
-                let formal_validation =
-                    crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
-                tx.commit()?;
-                self.validate_formal_status_commit(formal_validation)?;
-            } else {
-                self.refresh_formal_statuses()?;
-            }
+            self.refresh_formal_statuses()?;
         }
         Ok(())
     }
@@ -715,9 +704,9 @@ impl IndCache {
     }
 
     pub fn formalization_status(&mut self, fnode: &str) -> Result<FormalizationStatus> {
-        let has_attestations = crate::formal::attestation::load_for_status(&self.root)
-            .is_ok_and(|loaded| loaded.manifest.has_attestations());
-        if !has_attestations {
+        let has_attestation = crate::formal::attestation::load_for_status(&self.root)
+            .is_ok_and(|loaded| loaded.manifest.has_attestation_for(fnode));
+        if !has_attestation {
             let rel_path = self.with_current_database(|connection| {
                 queries::path_for_fnode_if_unique(connection, fnode)
             })?;

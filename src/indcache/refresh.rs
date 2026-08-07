@@ -113,40 +113,6 @@ fn apply_semantic_delta(
     Ok(())
 }
 
-pub(super) fn refresh_formal_block_presence(conn: &Connection, root: &Path) -> Result<()> {
-    let _profile = crate::profile::scope("refresh::refresh_formal_block_presence");
-    let files = {
-        let _phase = crate::profile::scope("refresh::scan_formal_block_presence");
-        scan_workspace(root)?
-    };
-    let mut update = conn.prepare(
-        "UPDATE mdoc_files SET lean_status = ?, rocq_status = ?
-         WHERE path = ?
-           AND EXISTS (
-               SELECT 1 FROM mdocs m
-               WHERE m.path = mdoc_files.path AND m.fnode = ?
-                 AND NOT EXISTS (
-                     SELECT 1 FROM mdoc_issues i
-                     WHERE i.path = m.path AND i.kind IN ('invalid', 'duplicate')
-                 )
-           )
-           AND (lean_status <> ? OR rocq_status <> ?)",
-    )?;
-    for (file, node) in files.iter().filter_map(|file| {
-        file.invalid
-            .is_none()
-            .then(|| file.node.as_ref().map(|node| (file, node)))
-            .flatten()
-    }) {
-        let lean = formal_status_value(file.formal_status.lean);
-        let rocq = formal_status_value(file.formal_status.rocq);
-        update.execute(rusqlite::params![
-            lean, rocq, file.path, node.fnode, lean, rocq
-        ])?;
-    }
-    Ok(())
-}
-
 const BULK_ROWS: usize = 200;
 const SCAN_BATCH: usize = 2048;
 const MAX_SCAN_WORKERS: usize = 12;

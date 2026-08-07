@@ -54,6 +54,12 @@ impl FormalAttestationManifest {
             .any(|node| node.lean.is_some() || node.rocq.is_some())
     }
 
+    pub(crate) fn has_attestation_for(&self, fnode: &str) -> bool {
+        self.nodes
+            .get(fnode)
+            .is_some_and(|node| node.lean.is_some() || node.rocq.is_some())
+    }
+
     pub(crate) fn get(&self, fnode: &str, language: &str) -> Option<&FormalAttestation> {
         let node = self.nodes.get(fnode)?;
         match language {
@@ -253,5 +259,6 @@ mod tests {
             serde_json::from_str(r#"{"version":1,"nodes":{"node":{}}}"#).unwrap();
 
         assert!(!manifest.has_attestations());
+        assert!(!manifest.has_attestation_for("node"));
     }
 }
