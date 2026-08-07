@@ -120,6 +120,7 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
     let (_, _, source_path) = cache.resolve_ref(&source_fnode, Some(&mdcroot))?;
     cache.upsert_path(&source_path)?;
     let attestation_errors = cache.publish_formal_attestations(
+        &work_lock,
         &mutation_lock,
         &manifest_snapshot,
         &source_fnode,

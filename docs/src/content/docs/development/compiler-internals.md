@@ -80,6 +80,8 @@ dependency output must be complete and untruncated.
 revalidates them against authoritative `.mdoc` blocks, mirrors, artifacts, environments,
 compiler inputs, and dependency tokens. Status refresh reads only attested nodes and their
 indexed dependencies; nodes without attestations are downgraded in one database update.
+Receipt publication revalidates both work-lock and mutation-lock generations around the
+manifest and status commit, rolling back the manifest if either generation changes.
 Verification propagates with a linear graph walk. Snapshot guards cover the complete
 evaluation and the manifest generation captured before compilation. Inputs that support
 a `Verified` result are checked again after the SQLite commit; a failed post-commit check

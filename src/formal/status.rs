@@ -1247,10 +1247,12 @@ mod tests {
         fnode: &str,
         receipt: FormalCompilationReceipt,
     ) -> Vec<(String, String)> {
-        let lock = crate::workspace::WorkspaceMutationLock::acquire(root).unwrap();
+        let work_lock = crate::workspace::WorkspaceWorkLock::acquire(root).unwrap();
+        let lock = work_lock.acquire_mutation_lock().unwrap();
         let manifest_snapshot = formal_attestation::snapshot(root).unwrap();
         cache
             .publish_formal_attestations(
+                &work_lock,
                 &lock,
                 &manifest_snapshot,
                 fnode,
@@ -1522,7 +1524,8 @@ mod tests {
         let node = lean_node(root, "leaf.mdoc", "Leaf", &[], "def leaf : Nat := 1\n");
         let mut cache = IndCache::open(root.to_path_buf()).unwrap();
         let receipt = lean_receipt(&mut cache, root, &node.fnode);
-        let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(root).unwrap();
+        let work_lock = crate::workspace::WorkspaceWorkLock::acquire(root).unwrap();
+        let mutation_lock = work_lock.acquire_mutation_lock().unwrap();
         let expected_manifest = formal_attestation::snapshot(root).unwrap();
         let lock_path = root.join(".mdc/mutation.lock");
         let displaced_lock = root.join("displaced-mutation.lock");
@@ -1536,6 +1539,49 @@ mod tests {
 
         let error = cache
             .publish_formal_attestations(
+                &work_lock,
+                &mutation_lock,
+                &expected_manifest,
+                &node.fnode,
+                &[("lean".to_string(), true, Some(receipt))],
+            )
+            .unwrap_err();
+
+        assert!(error
+            .chain()
+            .any(|cause| cause.is::<crate::workspace::WorkspaceGenerationError>()));
+        assert!(!root.join(".mdc/formal-attestations.json").exists());
+        assert_eq!(
+            cache.formalization_status(&node.fnode).unwrap().lean,
+            FormalCodeStatus::Unverified
+        );
+    }
+
+    #[test]
+    fn publication_rolls_back_after_work_lock_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        lean_environment(root);
+        let node = lean_node(root, "leaf.mdoc", "Leaf", &[], "def leaf : Nat := 1\n");
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+        let receipt = lean_receipt(&mut cache, root, &node.fnode);
+        let work_lock = crate::workspace::WorkspaceWorkLock::acquire(root).unwrap();
+        let mutation_lock = work_lock.acquire_mutation_lock().unwrap();
+        let expected_manifest = formal_attestation::snapshot(root).unwrap();
+        let lock_path = root.join(".mdc/work.lock");
+        let displaced_lock = root.join("displaced-work.lock");
+        crate::workspace::set_test_hook(
+            crate::workspace::TestHookPoint::WriteAfterPersistence,
+            move || {
+                std::fs::rename(&lock_path, displaced_lock).unwrap();
+                write(&lock_path, "replacement lock");
+            },
+        );
+
+        let error = cache
+            .publish_formal_attestations(
+                &work_lock,
                 &mutation_lock,
                 &expected_manifest,
                 &node.fnode,
@@ -1563,7 +1609,8 @@ mod tests {
         let artifact = lean_artifact_path(root, Path::new("leaf.mdoc"));
         let mut cache = IndCache::open(root.to_path_buf()).unwrap();
         let receipt = lean_receipt(&mut cache, root, &node.fnode);
-        let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(root).unwrap();
+        let work_lock = crate::workspace::WorkspaceWorkLock::acquire(root).unwrap();
+        let mutation_lock = work_lock.acquire_mutation_lock().unwrap();
         let expected_manifest = formal_attestation::snapshot(root).unwrap();
         let changed_artifact = artifact.clone();
         crate::workspace::set_test_hook(
@@ -1573,6 +1620,7 @@ mod tests {
 
         let error = cache
             .publish_formal_attestations(
+                &work_lock,
                 &mutation_lock,
                 &expected_manifest,
                 &node.fnode,
@@ -1663,7 +1711,8 @@ mod tests {
         let node = lean_node(root, "leaf.mdoc", "Leaf", &[], "def leaf : Nat := 1\n");
         let mut cache = IndCache::open(root.to_path_buf()).unwrap();
         let receipt = lean_receipt(&mut cache, root, &node.fnode);
-        let lock = crate::workspace::WorkspaceMutationLock::acquire(root).unwrap();
+        let work_lock = crate::workspace::WorkspaceWorkLock::acquire(root).unwrap();
+        let lock = work_lock.acquire_mutation_lock().unwrap();
         let expected_manifest = formal_attestation::snapshot(root).unwrap();
         write(
             &root.join(".mdc/formal-attestations.json"),
@@ -1672,6 +1721,7 @@ mod tests {
 
         let error = cache
             .publish_formal_attestations(
+                &work_lock,
                 &lock,
                 &expected_manifest,
                 &node.fnode,
@@ -1810,10 +1860,12 @@ mod tests {
             module_key(Path::new("extra.mdoc")).unwrap(),
             file_digest(root, &lean_artifact_path(root, Path::new("extra.mdoc"))).unwrap(),
         );
-        let lock = crate::workspace::WorkspaceMutationLock::acquire(root).unwrap();
+        let work_lock = crate::workspace::WorkspaceWorkLock::acquire(root).unwrap();
+        let lock = work_lock.acquire_mutation_lock().unwrap();
         let manifest_snapshot = formal_attestation::snapshot(root).unwrap();
         let errors = cache
             .publish_formal_attestations(
+                &work_lock,
                 &lock,
                 &manifest_snapshot,
                 &parent.fnode,
@@ -1821,6 +1873,7 @@ mod tests {
             )
             .unwrap();
         drop(lock);
+        drop(work_lock);
         assert!(errors[0].1.contains("exactly match"));
         let errors = publish(&mut cache, root, &missing_formal.fnode);
         assert!(errors[0].1.contains("not verified"));

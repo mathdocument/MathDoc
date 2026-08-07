@@ -775,6 +775,7 @@ impl IndCache {
 
     pub(crate) fn publish_formal_attestations(
         &mut self,
+        work_lock: &crate::workspace::WorkspaceWorkLock,
         mutation_lock: &crate::workspace::WorkspaceMutationLock,
         expected_manifest: &crate::workspace::FileSnapshot,
         fnode: &str,
@@ -784,7 +785,7 @@ impl IndCache {
             Option<crate::compiler::FormalCompilationReceipt>,
         )],
     ) -> Result<Vec<(String, String)>> {
-        self.validate_mutation_lock(mutation_lock)?;
+        self.validate_formal_publication_locks(work_lock, mutation_lock)?;
         crate::formal::attestation::require_snapshot_current(&self.root, expected_manifest)?;
         let mut loaded = crate::formal::attestation::load(&self.root)?;
         crate::formal::attestation::require_snapshot_current(&self.root, expected_manifest)?;
@@ -817,7 +818,7 @@ impl IndCache {
                 Err(error) => errors.push((language.clone(), error.to_string())),
             }
         }
-        self.commit_formal_manifest(mutation_lock, loaded)?;
+        self.commit_formal_manifest(work_lock, mutation_lock, loaded)?;
         let status = match self.formalization_status(fnode) {
             Ok(status) => status,
             Err(error) => {
@@ -844,20 +845,21 @@ impl IndCache {
         if !failed_prepared.is_empty() {
             self.invalidate_formal_attestations(mutation_lock, fnode, &failed_prepared)?;
         }
-        self.validate_mutation_lock(mutation_lock)?;
+        self.validate_formal_publication_locks(work_lock, mutation_lock)?;
         Ok(errors)
     }
 
     fn commit_formal_manifest(
         &mut self,
+        work_lock: &crate::workspace::WorkspaceWorkLock,
         mutation_lock: &crate::workspace::WorkspaceMutationLock,
         loaded: crate::formal::attestation::LoadedManifest,
     ) -> Result<()> {
-        self.validate_mutation_lock(mutation_lock)?;
+        self.validate_formal_publication_locks(work_lock, mutation_lock)?;
         let applied = crate::formal::attestation::save(&self.root, loaded)?;
         let commit_result = self
             .refresh_formal_statuses()
-            .and_then(|_| self.validate_mutation_lock(mutation_lock));
+            .and_then(|_| self.validate_formal_publication_locks(work_lock, mutation_lock));
         let Err(error) = commit_result else {
             return Ok(());
         };
@@ -871,6 +873,15 @@ impl IndCache {
             "restore the formal attestation manifest",
             "repair formal statuses",
         ))
+    }
+
+    fn validate_formal_publication_locks(
+        &self,
+        work_lock: &crate::workspace::WorkspaceWorkLock,
+        mutation_lock: &crate::workspace::WorkspaceMutationLock,
+    ) -> Result<()> {
+        self.validate_mutation_lock(mutation_lock)?;
+        work_lock.validate_identity(&self.root, self.control_identity)
     }
 
     #[cfg(test)]

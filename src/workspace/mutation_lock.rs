@@ -238,6 +238,28 @@ impl WorkspaceWorkLock {
         }
         Ok(())
     }
+
+    pub(crate) fn validate_identity(
+        &self,
+        expected_root: &Path,
+        expected_control_identity: (u64, u64),
+    ) -> Result<()> {
+        self.require_current()?;
+        if self.root != expected_root {
+            bail!(
+                "workspace work lock root {} does not match cache root {}",
+                self.root.display(),
+                expected_root.display()
+            );
+        }
+        if self.control_identity != expected_control_identity {
+            bail!(
+                "workspace work lock control directory does not match the cache for {}",
+                expected_root.display()
+            );
+        }
+        Ok(())
+    }
 }
 
 fn opened_lock_generation(file: &File, path: &Path, name: &str) -> Result<LockFileGeneration> {
