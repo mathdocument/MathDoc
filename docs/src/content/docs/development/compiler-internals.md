@@ -81,8 +81,10 @@ revalidates them against authoritative `.mdoc` blocks, mirrors, artifacts, envir
 compiler inputs, and dependency tokens. Status refresh reads only attested nodes and their
 indexed dependencies; nodes without attestations are downgraded in one database update.
 Verification propagates with a linear graph walk. Snapshot guards cover the complete
-evaluation and the manifest generation captured before compilation. Evidence failures
-downgrade status; SQLite failures still propagate as infrastructure errors.
+evaluation and the manifest generation captured before compilation. Inputs that support
+a `Verified` result are checked again after the SQLite commit; a failed post-commit check
+downgrades every verified row in a repair transaction. Evidence failures downgrade status;
+SQLite failures still propagate as infrastructure errors.
 
 ## Subprocess control
 

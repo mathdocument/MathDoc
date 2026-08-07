@@ -17,7 +17,10 @@ use crate::workspace::{iter_mdoc_files, to_rel_path, FileSnapshotBatch};
 // ── Public write functions ────────────────────────────────────────────────────
 
 /// Full workspace scan: reparse every file and delete stale paths.
-pub(super) fn refresh_search_index(conn: &Connection, root: &Path) -> Result<()> {
+pub(super) fn refresh_search_index(
+    conn: &Connection,
+    root: &Path,
+) -> Result<crate::formal::status::FormalStatusValidation> {
     let _profile = crate::profile::scope("refresh::refresh_search_index");
     let files = {
         let _phase = crate::profile::scope("refresh::scan_workspace");
@@ -69,12 +72,12 @@ pub(super) fn refresh_search_index(conn: &Connection, root: &Path) -> Result<()>
         let _phase = crate::profile::scope("refresh::apply_semantic_delta");
         apply_semantic_delta(conn, root, &files, &changed, &stale)?;
     }
-    crate::formal::status::refresh_index_statuses(conn, root)?;
+    let formal_validation = crate::formal::status::refresh_index_statuses(conn, root)?;
     conn.execute(
         "UPDATE mdoc_index_state SET bootstrapped = 1, index_digest = ? WHERE id = 1",
         [&digest],
     )?;
-    Ok(())
+    Ok(formal_validation)
 }
 
 const MAX_STRONG_REFRESH_DELTA_PATHS: usize = 1024;

@@ -59,6 +59,18 @@ struct WorkspaceEvaluation {
     guards: Vec<InputGuard>,
 }
 
+#[derive(Default)]
+pub(crate) struct FormalStatusValidation {
+    evidence: Option<FormalStatusEvidence>,
+}
+
+struct FormalStatusEvidence {
+    root: PathBuf,
+    guards: Vec<InputGuard>,
+    manifest_path: PathBuf,
+    manifest_snapshot: FileSnapshot,
+}
+
 enum InputGuard {
     Workspace {
         path: PathBuf,
@@ -117,14 +129,35 @@ impl WorkspaceEvaluation {
     }
 }
 
-pub(crate) fn refresh_index_statuses(conn: &Connection, root: &Path) -> Result<()> {
+impl FormalStatusValidation {
+    pub(crate) fn ensure_current(&self) -> Result<()> {
+        let Some(evidence) = &self.evidence else {
+            return Ok(());
+        };
+        ensure_guards(&evidence.root, &evidence.guards)?;
+        ensure_unchanged_beneath(
+            &evidence.manifest_snapshot,
+            &evidence.root,
+            &evidence.manifest_path,
+        )
+    }
+}
+
+pub(crate) fn refresh_index_statuses(
+    conn: &Connection,
+    root: &Path,
+) -> Result<FormalStatusValidation> {
     let _profile = crate::profile::scope("formal_status::refresh_index_statuses");
     let loaded = match formal_attestation::load_for_status(root) {
         Ok(loaded) => loaded,
-        Err(_) => return downgrade_verified_statuses(conn),
+        Err(_) => {
+            downgrade_verified_statuses(conn)?;
+            return Ok(FormalStatusValidation::default());
+        }
     };
-    if loaded.manifest.nodes.is_empty() {
-        return downgrade_verified_statuses(conn);
+    if !loaded.manifest.has_attestations() {
+        downgrade_verified_statuses(conn)?;
+        return Ok(FormalStatusValidation::default());
     }
     let evaluation =
         match evaluate_workspace(conn, root, &loaded.manifest, None).and_then(|evaluation| {
@@ -136,7 +169,10 @@ pub(crate) fn refresh_index_statuses(conn: &Connection, root: &Path) -> Result<(
             Err(error) if error.chain().any(|cause| cause.is::<rusqlite::Error>()) => {
                 return Err(error)
             }
-            Err(_) => return downgrade_verified_statuses(conn),
+            Err(_) => {
+                downgrade_verified_statuses(conn)?;
+                return Ok(FormalStatusValidation::default());
+            }
         };
 
     downgrade_verified_statuses(conn)?;
@@ -149,10 +185,24 @@ pub(crate) fn refresh_index_statuses(conn: &Connection, root: &Path) -> Result<(
         let rocq = status_value(state.rocq.status);
         update.execute(rusqlite::params![lean, rocq, node.rel_path, lean, rocq,])?;
     }
-    Ok(())
+    let evidence = if evaluation.states.iter().any(|state| {
+        state.lean.status == FormalCodeStatus::Verified
+            || state.rocq.status == FormalCodeStatus::Verified
+    }) {
+        Some(FormalStatusEvidence {
+            root: evaluation.root,
+            guards: evaluation.guards,
+            manifest_path: loaded.path,
+            manifest_snapshot: loaded.snapshot,
+        })
+    } else {
+        None
+    };
+    crate::workspace::run_test_hook(crate::workspace::TestHookPoint::FormalStatusAfterEvaluation);
+    Ok(FormalStatusValidation { evidence })
 }
 
-fn downgrade_verified_statuses(conn: &Connection) -> Result<()> {
+pub(crate) fn downgrade_verified_statuses(conn: &Connection) -> Result<()> {
     // Keep the index usable without retaining any previously verified state.
     conn.execute(
         "UPDATE mdoc_files SET lean_status = 1 WHERE lean_status = 2",
@@ -1497,6 +1547,72 @@ mod tests {
             .chain()
             .any(|cause| cause.is::<crate::workspace::WorkspaceGenerationError>()));
         assert!(!root.join(".mdc/formal-attestations.json").exists());
+        assert_eq!(
+            cache.formalization_status(&node.fnode).unwrap().lean,
+            FormalCodeStatus::Unverified
+        );
+    }
+
+    #[test]
+    fn publication_rolls_back_evidence_changed_after_status_evaluation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        lean_environment(root);
+        let node = lean_node(root, "leaf.mdoc", "Leaf", &[], "def leaf : Nat := 1\n");
+        let artifact = lean_artifact_path(root, Path::new("leaf.mdoc"));
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+        let receipt = lean_receipt(&mut cache, root, &node.fnode);
+        let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(root).unwrap();
+        let expected_manifest = formal_attestation::snapshot(root).unwrap();
+        let changed_artifact = artifact.clone();
+        crate::workspace::set_test_hook(
+            crate::workspace::TestHookPoint::FormalStatusAfterEvaluation,
+            move || write(&changed_artifact, "raced artifact"),
+        );
+
+        let error = cache
+            .publish_formal_attestations(
+                &mutation_lock,
+                &expected_manifest,
+                &node.fnode,
+                &[("lean".to_string(), true, Some(receipt))],
+            )
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("formal verification input changed"));
+        assert!(!root.join(".mdc/formal-attestations.json").exists());
+        write(&artifact, "artifact for leaf.mdoc");
+        cache.refresh_formal_statuses().unwrap();
+        assert_eq!(
+            cache.formalization_status(&node.fnode).unwrap().lean,
+            FormalCodeStatus::Unverified
+        );
+    }
+
+    #[test]
+    fn post_commit_evidence_change_downgrades_verified_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        lean_environment(root);
+        let node = lean_node(root, "leaf.mdoc", "Leaf", &[], "def leaf : Nat := 1\n");
+        let artifact = lean_artifact_path(root, Path::new("leaf.mdoc"));
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+        assert!(publish(&mut cache, root, &node.fnode).is_empty());
+        let changed_artifact = artifact.clone();
+        crate::workspace::set_test_hook(
+            crate::workspace::TestHookPoint::FormalStatusAfterEvaluation,
+            move || write(&changed_artifact, "raced artifact"),
+        );
+
+        let error = cache.refresh_formal_statuses().unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("formal verification input changed"));
         assert_eq!(
             cache.formalization_status(&node.fnode).unwrap().lean,
             FormalCodeStatus::Unverified

@@ -455,19 +455,20 @@ impl IndCache {
         self.require_current_database()?;
         if !queries::is_bootstrapped(&self.conn)? {
             let tx = self.conn.transaction()?;
-            refresh::refresh_search_index(&tx, &self.root)?;
+            let formal_validation = refresh::refresh_search_index(&tx, &self.root)?;
             let _commit = crate::profile::scope("sqlite::bootstrap_commit");
             tx.commit()?;
-            self.require_current_database()?;
+            self.validate_formal_status_commit(formal_validation)?;
         } else {
             let has_attestations = crate::formal::attestation::load_for_status(&self.root)
                 .is_ok_and(|loaded| loaded.manifest.has_attestations());
             if has_attestations {
                 let tx = self.conn.transaction()?;
                 refresh::refresh_formal_block_presence(&tx, &self.root)?;
-                crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
+                let formal_validation =
+                    crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
                 tx.commit()?;
-                self.require_current_database()?;
+                self.validate_formal_status_commit(formal_validation)?;
             } else {
                 self.refresh_formal_statuses()?;
             }
@@ -480,11 +481,10 @@ impl IndCache {
         let _profile = crate::profile::scope("IndCache::refresh_all");
         self.require_current_database()?;
         let tx = self.conn.transaction()?;
-        refresh::refresh_search_index(&tx, &self.root)?;
+        let formal_validation = refresh::refresh_search_index(&tx, &self.root)?;
         let _commit = crate::profile::scope("sqlite::refresh_all_commit");
         tx.commit()?;
-        self.require_current_database()?;
-        Ok(())
+        self.validate_formal_status_commit(formal_validation)
     }
 
     /// Discover additions, deletions, and metadata changes using the metadata fast path.
@@ -505,10 +505,9 @@ impl IndCache {
         } else {
             derived::refresh_topo_depth_upward_from_many(&tx, &changed_fnodes)?;
         }
-        crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
+        let formal_validation = crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
         tx.commit()?;
-        self.require_current_database()?;
-        Ok(())
+        self.validate_formal_status_commit(formal_validation)
     }
 
     /// Upsert a single file path and update its topo depths.
@@ -548,11 +547,10 @@ impl IndCache {
         } else {
             derived::refresh_topo_depth_upward_from_many(&tx, &changed_fnodes)?;
         }
-        crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
+        let formal_validation = crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
 
         tx.commit()?;
-        self.require_current_database()?;
-        Ok(())
+        self.validate_formal_status_commit(formal_validation)
     }
 
     /// Create a node and index it as one recoverable operation.
@@ -662,11 +660,10 @@ impl IndCache {
             let _phase = crate::profile::scope("derived::refresh_reachable_topo");
             derived::refresh_topo_depth_upward_from_many(&tx, &upserted_fnodes)?;
         }
-        crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
+        let formal_validation = crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
         let _commit = crate::profile::scope("sqlite::refresh_reachable_commit");
         tx.commit()?;
-        self.require_current_database()?;
-        Ok(())
+        self.validate_formal_status_commit(formal_validation)
     }
 
     // ── Read queries ─────────────────────────────────────────────────────────
@@ -726,10 +723,33 @@ impl IndCache {
     pub(crate) fn refresh_formal_statuses(&mut self) -> Result<()> {
         self.require_current_database()?;
         let tx = self.conn.transaction()?;
-        crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
+        let formal_validation = crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
         tx.commit()?;
+        self.validate_formal_status_commit(formal_validation)
+    }
+
+    fn validate_formal_status_commit(
+        &mut self,
+        validation: crate::formal::status::FormalStatusValidation,
+    ) -> Result<()> {
         self.require_current_database()?;
-        Ok(())
+        let Err(error) = validation.ensure_current() else {
+            return Ok(());
+        };
+        let repair = (|| {
+            self.require_current_database()?;
+            let tx = self.conn.transaction()?;
+            crate::formal::status::downgrade_verified_statuses(&tx)?;
+            tx.commit()?;
+            self.require_current_database()
+        })();
+        Err(crate::workspace::PersistenceRecoveryError::from_attempts(
+            error,
+            Ok(()),
+            repair,
+            "discard formal status validation",
+            "downgrade formal statuses",
+        ))
     }
 
     pub(crate) fn invalidate_formal_attestations(
