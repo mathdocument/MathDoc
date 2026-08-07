@@ -1604,7 +1604,11 @@ fn atomic_replace_inner(
 #[cfg(test)]
 fn atomic_remove(path: &Path, expected: &FileSnapshot) -> Result<Option<AppliedWrite>> {
     if matches!(expected, FileSnapshot::Missing) {
-        return Ok(None);
+        return if expected.unchanged(path)? {
+            Ok(None)
+        } else {
+            Err(FileConflict::new(path).into())
+        };
     }
     let binding = DirectoryBinding::open(path)?;
     atomic_remove_inner(path, expected, binding)
@@ -1616,7 +1620,11 @@ fn atomic_remove_beneath(
     expected: &FileSnapshot,
 ) -> Result<Option<AppliedWrite>> {
     if matches!(expected, FileSnapshot::Missing) {
-        return Ok(None);
+        return if expected.unchanged_beneath(root, path)? {
+            Ok(None)
+        } else {
+            Err(FileConflict::new(path).into())
+        };
     }
     run_test_hook(TestHookPoint::RemoveBeforeDirectoryBinding);
     let binding = DirectoryBinding::open_beneath(root, path)?;
@@ -3120,6 +3128,24 @@ mod tests {
             std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    #[test]
+    fn missing_snapshot_remove_rejects_a_created_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("generated.lean");
+        let snapshot = FileSnapshot::Missing;
+        std::fs::write(&path, "external").unwrap();
+
+        let error = snapshot.remove_beneath(&root, &path).unwrap_err();
+
+        assert_file_conflict(&error);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+        assert!(FileSnapshot::Missing
+            .remove_beneath(&root, &root.join("missing/generated.lean"))
+            .unwrap()
+            .is_none());
     }
 
     #[test]
