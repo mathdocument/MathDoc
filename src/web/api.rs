@@ -29,7 +29,7 @@ macro_rules! bail {
 // ── DTOs ──────────────────────────────────────────────────────────────────────
 
 /// Full node detail returned by `GET /api/node/:fnode`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(super) struct NodeDetail {
     fnode: String,
     title: String,
@@ -45,7 +45,7 @@ pub(super) struct NodeDetail {
 }
 
 /// Focused node data needed by the three-column browser in one response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(super) struct NodeView {
     node: NodeDetail,
     referrers: Vec<NodeSummary>,
