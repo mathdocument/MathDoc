@@ -369,7 +369,7 @@ struct DirectoryBinding {
     directory: std::fs::File,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct DirectoryBindingSnapshot {
     parent: PathBuf,
     target: CString,
@@ -1466,6 +1466,14 @@ impl AppliedRename {
 }
 
 impl AppliedWrite {
+    pub(crate) fn require_current(&self) -> Result<()> {
+        let binding = self.binding.clone().reopen(&self.path)?;
+        if !binding.is_current()? {
+            return Err(FileConflict::new(&self.path).into());
+        }
+        require_generation(&self.path, &binding, binding.target_name(), &self.after)
+    }
+
     pub(crate) fn rollback(self) -> Result<()> {
         let binding = self.binding.reopen(&self.path)?;
         if !binding.is_current()? {

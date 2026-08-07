@@ -618,7 +618,15 @@ impl IndCache {
                             path.display()
                         )
                     })?;
-                return Ok(applied);
+                match applied.require_current().with_context(|| {
+                    format!(
+                        "node file changed after its index update: {}",
+                        path.display()
+                    )
+                }) {
+                    Ok(()) => return Ok(applied),
+                    Err(error) => error,
+                }
             }
             Err(error) => error,
         };
@@ -1259,6 +1267,39 @@ mod mutation_boundary_tests {
         cache.discover_workspace_changes().unwrap();
 
         assert_eq!(cache.node_summary(&node.fnode).unwrap().title, "Recreated");
+    }
+
+    #[test]
+    fn post_index_external_edit_is_preserved_and_reindexed() {
+        let workspace = workspace();
+        let root = workspace.path();
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+        let mutation_lock = cache.acquire_mutation_lock().unwrap();
+        let path = root.join("node.mdoc");
+        let mut node = MdocNode::new_at_path(&path, "Requested");
+        node.fnode = "requested-node".to_string();
+        let mut external = MdocNode::new_at_path(&path, "External");
+        external.fnode = "external-node".to_string();
+        let external_content = external.render().unwrap();
+        crate::workspace::set_test_hook(
+            crate::workspace::TestHookPoint::IndexAfterNodeUpsert,
+            move || std::fs::write(path, external_content).unwrap(),
+        );
+
+        let error = cache.create_node(&mutation_lock, &node).unwrap_err();
+
+        assert!(error
+            .downcast_ref::<crate::workspace::PersistenceRecoveryError>()
+            .is_some_and(|error| error.has_file_conflict()));
+        assert_eq!(
+            MdocNode::load(&external.path).unwrap().fnode,
+            external.fnode
+        );
+        assert_eq!(
+            cache.node_summary(&external.fnode).unwrap().title,
+            "External"
+        );
+        assert!(cache.node_summary(&node.fnode).is_err());
     }
 
     #[test]
