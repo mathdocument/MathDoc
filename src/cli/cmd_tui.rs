@@ -283,11 +283,17 @@ impl TuiApp {
     }
 
     fn load_view(&mut self, fnode: &str) -> Result<()> {
-        let f = self
-            .cache
-            .resolve_ref(fnode, None)
-            .map(|(fnode, _, _)| fnode)
-            .unwrap_or_else(|_| fnode.to_string());
+        let f = match self.cache.resolve_ref(fnode, None) {
+            Ok((fnode, _, _)) => fnode,
+            Err(error)
+                if error
+                    .downcast_ref::<crate::indcache::ResolveRefError>()
+                    .is_some() =>
+            {
+                fnode.to_string()
+            }
+            Err(error) => return Err(error),
+        };
         self.focused = self.cache.node_summary(&f)?;
 
         self.referrers = {
@@ -2023,5 +2029,28 @@ mod tests {
         let (message, success, _) = app.notify.as_ref().unwrap();
         assert!(!success);
         assert!(message.contains("edit failed"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_view_propagates_cached_path_infrastructure_errors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        let locked = root.join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        let path = locked.join("node.mdoc");
+        let node = crate::mdocnode::MdocNode::new_at_path(&path, "Locked");
+        let fnode = node.fnode.clone();
+        std::fs::write(&path, node.render().unwrap()).unwrap();
+        let cache = crate::indcache::IndCache::open(root.to_path_buf()).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = TuiApp::new(cache, fnode);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(result.is_err());
     }
 }
