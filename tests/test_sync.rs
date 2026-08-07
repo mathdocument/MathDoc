@@ -260,6 +260,7 @@ fn sync_writes_compact_v4_manifest_with_only_present_digests() {
     write_node(&node);
 
     assert!(run_mdc(root, &["sync"]).status.success());
+    assert!(run_mdc(root, &["sync"]).status.success());
 
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join(".mdc/source-blocks.json")).unwrap())
@@ -274,6 +275,54 @@ fn sync_writes_compact_v4_manifest_with_only_present_digests() {
     assert!(!blocks.contains_key("text"));
     assert!(!blocks.contains_key("python"));
     assert!(!blocks.contains_key("rocq"));
+
+    let connection = rusqlite::Connection::open(root.join(".mdc/index.db")).unwrap();
+    let (rows, absent): (u32, u32) = connection
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(present = 0), 0)
+             FROM mdoc_workdraft_observations",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((rows, absent), (3, 0));
+}
+
+#[test]
+fn dense_observation_cache_is_rewritten_sparsely() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join(".mdc")).unwrap();
+    let node = make_node(root, "data/A.mdoc");
+    write_node(&node);
+    assert!(run_mdc(root, &["sync"]).status.success());
+    assert!(run_mdc(root, &["sync"]).status.success());
+
+    let connection = rusqlite::Connection::open(root.join(".mdc/index.db")).unwrap();
+    connection
+        .execute(
+            "UPDATE mdoc_workdraft_observations SET present = 0 WHERE srctype = 'lean'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let output = run_mdc(root, &["back"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let connection = rusqlite::Connection::open(root.join(".mdc/index.db")).unwrap();
+    let (rows, absent): (u32, u32) = connection
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(present = 0), 0)
+             FROM mdoc_workdraft_observations",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((rows, absent), (3, 0));
 }
 
 #[test]
@@ -774,6 +823,7 @@ fn back_creates_and_deletes_blocks_from_mirrors() {
     let node = make_node(root, "data/A.mdoc");
     write_node(&node);
     assert!(run_mdc(root, &["sync"]).status.success());
+    assert!(run_mdc(root, &["sync"]).status.success());
 
     let python = root.join(".mdc/python/Lib/data/A.py");
     std::fs::create_dir_all(python.parent().unwrap()).unwrap();
@@ -799,6 +849,18 @@ fn back_creates_and_deletes_blocks_from_mirrors() {
     );
     assert!(saved.blocks.iter().all(|block| block.srctype != "lean"));
     assert!(!lean.exists());
+    let connection = rusqlite::Connection::open(root.join(".mdc/index.db")).unwrap();
+    let observed_types = connection
+        .prepare(
+            "SELECT srctype FROM mdoc_workdraft_observations
+             WHERE source_id = '646174612f412e6d646f63' ORDER BY srctype",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(observed_types, ["", "latex", "python"]);
     assert!(run_mdc(root, &["sync"]).status.success());
 }
 

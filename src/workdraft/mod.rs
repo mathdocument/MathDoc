@@ -82,6 +82,7 @@ struct ObservationSpec {
     source_id: String,
     srctype: String,
     path: PathBuf,
+    expected_present: bool,
 }
 
 struct MirrorChanges<'a> {
@@ -1087,16 +1088,20 @@ fn check_observation_cache(
     let Some(specs) = observation_specs(root, manifest, source_files)? else {
         return Ok(None);
     };
-    if cached.files.len() != specs.len() {
-        return Ok(None);
-    }
+    let source_file_count = manifest
+        .sources
+        .values()
+        .map(|source| source.blocks.len())
+        .sum::<usize>();
     if cached.valid_mdocs != manifest.sources.len()
-        || cached.source_files
-            != manifest
-                .sources
-                .values()
-                .map(|source| source.blocks.len())
-                .sum::<usize>()
+        || cached.source_files != source_file_count
+        || cached.files.len() != manifest.sources.len() + source_file_count
+        || specs.iter().any(|spec| {
+            cached
+                .files
+                .contains_key(&(spec.source_id.clone(), spec.srctype.clone()))
+                != spec.expected_present
+        })
     {
         return Ok(None);
     }
@@ -1104,10 +1109,11 @@ fn check_observation_cache(
     let stats = stat_files_parallel_batched(root, &paths, SYNC_SOURCE_BATCH * 6)?;
     let mut changed = BTreeSet::new();
     for (spec, stat) in specs.iter().zip(stats) {
-        if cached
+        let cached_stat = cached
             .files
-            .get(&(spec.source_id.clone(), spec.srctype.clone()))
-            != Some(&stat)
+            .get(&(spec.source_id.clone(), spec.srctype.clone()));
+        if (spec.expected_present && cached_stat != stat.as_ref())
+            || (!spec.expected_present && stat.is_some())
         {
             changed.insert(spec.source_id.clone());
         }
@@ -1165,13 +1171,21 @@ fn store_observation_cache(
                 .ok_or_else(|| {
                     anyhow::anyhow!("missing validated observation for {}", spec.path.display())
                 })?;
-            Ok(crate::indcache::WorkdraftObservation {
-                source_id: spec.source_id,
-                srctype: spec.srctype,
-                stat,
-            })
+            if spec.expected_present != stat.is_some() {
+                bail!("unexpected source presence for {}", spec.path.display());
+            }
+            Ok(spec
+                .expected_present
+                .then_some(crate::indcache::WorkdraftObservation {
+                    source_id: spec.source_id,
+                    srctype: spec.srctype,
+                    stat,
+                }))
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect();
     let digest = serialized_manifest_digest(manifest)?;
     cache.store_workdraft_observations(&digest, valid_mdocs, source_file_count, observations)
 }
@@ -1203,12 +1217,14 @@ fn update_observation_cache(
             source_id: source_id.clone(),
             srctype: String::new(),
             path: root.join(&relative),
+            expected_present: true,
         });
         for srctype in builtin_srctypes() {
             specs.push(ObservationSpec {
                 source_id: source_id.clone(),
                 srctype: srctype.to_string(),
                 path: output_path(root, &relative, srctype),
+                expected_present: baseline.blocks.contains_key(srctype),
             });
         }
     }
@@ -1246,10 +1262,13 @@ fn update_observation_cache(
     let observations = specs
         .into_iter()
         .zip(snapshots)
-        .map(|(spec, snapshot)| crate::indcache::WorkdraftObservation {
-            source_id: spec.source_id,
-            srctype: spec.srctype,
-            stat: snapshot.as_ref().map(ReadFileSnapshot::stat_snapshot),
+        .filter_map(|(spec, snapshot)| {
+            spec.expected_present
+                .then_some(crate::indcache::WorkdraftObservation {
+                    source_id: spec.source_id,
+                    srctype: spec.srctype,
+                    stat: snapshot.as_ref().map(ReadFileSnapshot::stat_snapshot),
+                })
         })
         .collect();
     let digest = serialized_manifest_digest(manifest)?;
@@ -1287,12 +1306,14 @@ fn observation_specs(
             source_id: source_id.clone(),
             srctype: String::new(),
             path: source_path.clone(),
+            expected_present: true,
         });
         for srctype in builtin_srctypes() {
             specs.push(ObservationSpec {
                 source_id: source_id.clone(),
                 srctype: srctype.to_string(),
                 path: output_path(root, relative, srctype),
+                expected_present: baseline.blocks.contains_key(srctype),
             });
         }
     }

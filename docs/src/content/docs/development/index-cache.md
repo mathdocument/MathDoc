@@ -98,12 +98,14 @@ rather than also being missing.
 The workdraft observation cache is not the synchronization baseline;
 `.mdc/source-blocks.json` remains authoritative. Observations are stored only after a
 conflict-free reconciliation and are accepted only when that manifest's SHA-256 digest
-and complete source inventory still match. Each mdoc and each of its five possible
-mirrors records presence, device/inode, size, mtime, ctime, mode, uid, and gid. Safe
-descriptor-relative `fstatat` batches compare those generations without rereading file
-bodies. A mismatch identifies the affected sources, which are then reread, reconciled,
-and validated byte-for-byte. Missing cache state, legacy manifests, source-set changes,
-or malformed observations fall back to full reconciliation.
+and complete source inventory still match. Each mdoc and each manifest-present mirror
+stores device/inode, size, mtime, ctime, mode, uid, and gid; absent mirrors are implied by
+the matching manifest generation instead of occupying database rows. Safe descriptor-relative
+`fstatat` batches still check all five candidate mirror paths without rereading file bodies,
+so a newly created mirror invalidates the implied absence. A mismatch identifies the affected
+sources, which are then reread, reconciled, and validated byte-for-byte. Missing cache state,
+legacy or dense observations, source-set changes, or malformed observations fall back to full
+reconciliation.
 
 `IndCache::search(query, limit)` is the canonical ranked search returning
 `NodeSummary`. Dependency candidate search reuses its patterns, ranking, and projection

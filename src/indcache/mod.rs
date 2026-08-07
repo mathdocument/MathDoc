@@ -113,7 +113,7 @@ pub struct IndCache {
 pub(crate) struct WorkdraftObservationCache {
     pub(crate) valid_mdocs: usize,
     pub(crate) source_files: usize,
-    pub(crate) files: HashMap<(String, String), Option<crate::workspace::FileStatSnapshot>>,
+    pub(crate) files: HashMap<(String, String), crate::workspace::FileStatSnapshot>,
 }
 
 pub(crate) struct WorkdraftObservation {
@@ -217,30 +217,30 @@ impl IndCache {
                     mtime, mtime_nsec, ctime, ctime_nsec, mode, uid, gid
              FROM mdoc_workdraft_observations",
         )?;
-        let files = stmt
+        let rows = stmt
             .query_map([], |row| {
                 let source_id: String = row.get(0)?;
                 let srctype: String = row.get(1)?;
                 let present: bool = row.get(2)?;
-                let stat = if present {
-                    Some(crate::workspace::FileStatSnapshot {
-                        device: row.get::<_, i64>(3)? as u64,
-                        inode: row.get::<_, i64>(4)? as u64,
-                        size: row.get::<_, i64>(5)? as u64,
-                        mtime: row.get(6)?,
-                        mtime_nsec: row.get(7)?,
-                        ctime: row.get(8)?,
-                        ctime_nsec: row.get(9)?,
-                        mode: row.get::<_, i64>(10)? as u32,
-                        uid: row.get::<_, i64>(11)? as u32,
-                        gid: row.get::<_, i64>(12)? as u32,
-                    })
-                } else {
-                    None
+                let stat = crate::workspace::FileStatSnapshot {
+                    device: row.get::<_, i64>(3)? as u64,
+                    inode: row.get::<_, i64>(4)? as u64,
+                    size: row.get::<_, i64>(5)? as u64,
+                    mtime: row.get(6)?,
+                    mtime_nsec: row.get(7)?,
+                    ctime: row.get(8)?,
+                    ctime_nsec: row.get(9)?,
+                    mode: row.get::<_, i64>(10)? as u32,
+                    uid: row.get::<_, i64>(11)? as u32,
+                    gid: row.get::<_, i64>(12)? as u32,
                 };
-                Ok(((source_id, srctype), stat))
+                Ok(((source_id, srctype), present, stat))
             })?
-            .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if rows.iter().any(|(_, present, _)| !present) {
+            return Ok(None);
+        }
+        let files = rows.into_iter().map(|(key, _, stat)| (key, stat)).collect();
         self.require_current_database()?;
         Ok(Some(WorkdraftObservationCache {
             valid_mdocs: valid_mdocs as usize,
@@ -324,50 +324,38 @@ impl IndCache {
         let tx = self.conn.transaction()?;
         if replace_all {
             tx.execute("DELETE FROM mdoc_workdraft_observations", [])?;
-        }
-        let conflict_clause = if replace_all {
-            ""
         } else {
-            " ON CONFLICT(source_id, srctype) DO UPDATE SET
-                 present = excluded.present,
-                 device = excluded.device,
-                 inode = excluded.inode,
-                 size = excluded.size,
-                 mtime = excluded.mtime,
-                 mtime_nsec = excluded.mtime_nsec,
-                 ctime = excluded.ctime,
-                 ctime_nsec = excluded.ctime_nsec,
-                 mode = excluded.mode,
-                 uid = excluded.uid,
-                 gid = excluded.gid"
-        };
-        let sql = format!(
-            "INSERT INTO mdoc_workdraft_observations
-               (source_id, srctype, present, device, inode, size,
-                mtime, mtime_nsec, ctime, ctime_nsec, mode, uid, gid)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?){conflict_clause}"
-        );
+            let source_ids = observations
+                .iter()
+                .map(|observation| observation.source_id.as_str())
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            for chunk in source_ids.chunks(queries::CHUNK_SIZE) {
+                let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                tx.execute(
+                    &format!(
+                        "DELETE FROM mdoc_workdraft_observations
+                         WHERE source_id IN ({placeholders})"
+                    ),
+                    rusqlite::params_from_iter(chunk.iter().copied()),
+                )?;
+            }
+        }
         {
-            let mut write = tx.prepare(&sql)?;
+            let mut write = tx.prepare(
+                "INSERT INTO mdoc_workdraft_observations
+                   (source_id, srctype, present, device, inode, size,
+                    mtime, mtime_nsec, ctime, ctime_nsec, mode, uid, gid)
+                 VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )?;
             for observation in observations {
-                let stat = observation
-                    .stat
-                    .unwrap_or(crate::workspace::FileStatSnapshot {
-                        device: 0,
-                        inode: 0,
-                        size: 0,
-                        mtime: 0,
-                        mtime_nsec: 0,
-                        ctime: 0,
-                        ctime_nsec: 0,
-                        mode: 0,
-                        uid: 0,
-                        gid: 0,
-                    });
+                let Some(stat) = observation.stat else {
+                    continue;
+                };
                 write.execute(rusqlite::params![
                     observation.source_id,
                     observation.srctype,
-                    observation.stat.is_some(),
                     stat.device as i64,
                     stat.inode as i64,
                     stat.size as i64,
