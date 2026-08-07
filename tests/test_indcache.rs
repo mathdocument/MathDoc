@@ -191,6 +191,32 @@ fn test_refresh_all_detects_subnanosecond_mtime_change() {
 }
 
 #[test]
+fn index_accepts_file_timestamps_before_the_unix_epoch() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    let path = root.join("historic.mdoc");
+    write(&path, "@fnode: historic-node\n@title: Historic\n");
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(std::time::UNIX_EPOCH - std::time::Duration::from_secs(1)),
+        )
+        .unwrap();
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    cache.discover_workspace_changes().unwrap();
+
+    assert_eq!(
+        cache.node_summary("historic-node").unwrap().title,
+        "Historic"
+    );
+}
+
+#[test]
 fn malformed_block_fallback_ignores_embedded_fake_headers() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();

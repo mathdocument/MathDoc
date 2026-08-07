@@ -3,8 +3,8 @@ use rusqlite::{Connection, OptionalExtension, ToSql};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::Metadata;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
 use crate::core::{FormalCodeStatus, FormalizationStatus};
 use crate::indcache::queries::{
@@ -1345,13 +1345,12 @@ fn indexed_file_state(conn: &Connection, rel_path: &str) -> Result<Option<(i64, 
 }
 
 pub(super) fn metadata_state(meta: &std::fs::Metadata) -> Result<(i64, i64)> {
-    let modified = meta
-        .modified()
-        .context("reading file modification time")?
-        .duration_since(UNIX_EPOCH)
-        .context("file modification time predates the Unix epoch")?;
-    let mtime_ns = modified.as_secs() as i64 * 1_000_000_000 + modified.subsec_nanos() as i64;
-    let size = meta.len() as i64;
+    let mtime_ns = i128::from(meta.mtime())
+        .checked_mul(1_000_000_000)
+        .and_then(|seconds| seconds.checked_add(i128::from(meta.mtime_nsec())))
+        .and_then(|nanoseconds| i64::try_from(nanoseconds).ok())
+        .context("file modification time is outside the supported nanosecond range")?;
+    let size = i64::try_from(meta.len()).context("file size exceeds the index range")?;
     Ok((mtime_ns, size))
 }
 
