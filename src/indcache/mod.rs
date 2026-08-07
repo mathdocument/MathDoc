@@ -743,10 +743,14 @@ impl IndCache {
         for language in languages {
             loaded.manifest.remove(fnode, language)?;
         }
+        self.validate_mutation_lock(mutation_lock)?;
         crate::formal::attestation::save(&self.root, loaded)?;
         // Revocation is fail-safe: never restore a credential because the derived
         // SQLite status could not be refreshed.
-        self.refresh_formal_statuses()
+        let refresh_result = self.refresh_formal_statuses();
+        let lock_result = self.validate_mutation_lock(mutation_lock);
+        refresh_result?;
+        lock_result
     }
 
     pub(crate) fn publish_formal_attestations(
@@ -793,7 +797,7 @@ impl IndCache {
                 Err(error) => errors.push((language.clone(), error.to_string())),
             }
         }
-        self.commit_formal_manifest(loaded)?;
+        self.commit_formal_manifest(mutation_lock, loaded)?;
         let status = match self.formalization_status(fnode) {
             Ok(status) => status,
             Err(error) => {
@@ -820,15 +824,21 @@ impl IndCache {
         if !failed_prepared.is_empty() {
             self.invalidate_formal_attestations(mutation_lock, fnode, &failed_prepared)?;
         }
+        self.validate_mutation_lock(mutation_lock)?;
         Ok(errors)
     }
 
     fn commit_formal_manifest(
         &mut self,
+        mutation_lock: &crate::workspace::WorkspaceMutationLock,
         loaded: crate::formal::attestation::LoadedManifest,
     ) -> Result<()> {
+        self.validate_mutation_lock(mutation_lock)?;
         let applied = crate::formal::attestation::save(&self.root, loaded)?;
-        let Err(error) = self.refresh_formal_statuses() else {
+        let commit_result = self
+            .refresh_formal_statuses()
+            .and_then(|_| self.validate_mutation_lock(mutation_lock));
+        let Err(error) = commit_result else {
             return Ok(());
         };
         let Some(applied) = applied else {

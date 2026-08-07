@@ -1464,6 +1464,81 @@ mod tests {
     }
 
     #[test]
+    fn publication_rolls_back_after_mutation_lock_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        lean_environment(root);
+        let node = lean_node(root, "leaf.mdoc", "Leaf", &[], "def leaf : Nat := 1\n");
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+        let receipt = lean_receipt(&mut cache, root, &node.fnode);
+        let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(root).unwrap();
+        let expected_manifest = formal_attestation::snapshot(root).unwrap();
+        let lock_path = root.join(".mdc/mutation.lock");
+        let displaced_lock = root.join("displaced-mutation.lock");
+        crate::workspace::set_test_hook(
+            crate::workspace::TestHookPoint::WriteAfterPersistence,
+            move || {
+                std::fs::rename(&lock_path, displaced_lock).unwrap();
+                write(&lock_path, "replacement lock");
+            },
+        );
+
+        let error = cache
+            .publish_formal_attestations(
+                &mutation_lock,
+                &expected_manifest,
+                &node.fnode,
+                &[("lean".to_string(), true, Some(receipt))],
+            )
+            .unwrap_err();
+
+        assert!(error
+            .chain()
+            .any(|cause| cause.is::<crate::workspace::WorkspaceGenerationError>()));
+        assert!(!root.join(".mdc/formal-attestations.json").exists());
+        assert_eq!(
+            cache.formalization_status(&node.fnode).unwrap().lean,
+            FormalCodeStatus::Unverified
+        );
+    }
+
+    #[test]
+    fn revocation_reports_mutation_lock_replacement_without_restoring_attestation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        lean_environment(root);
+        let node = lean_node(root, "leaf.mdoc", "Leaf", &[], "def leaf : Nat := 1\n");
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+        assert!(publish(&mut cache, root, &node.fnode).is_empty());
+        let mutation_lock = crate::workspace::WorkspaceMutationLock::acquire(root).unwrap();
+        let lock_path = root.join(".mdc/mutation.lock");
+        let displaced_lock = root.join("displaced-mutation.lock");
+        crate::workspace::set_test_hook(
+            crate::workspace::TestHookPoint::WriteAfterPersistence,
+            move || {
+                std::fs::rename(&lock_path, displaced_lock).unwrap();
+                write(&lock_path, "replacement lock");
+            },
+        );
+
+        let error = cache
+            .invalidate_formal_attestations(&mutation_lock, &node.fnode, &["lean".to_string()])
+            .unwrap_err();
+
+        assert!(error
+            .chain()
+            .any(|cause| cause.is::<crate::workspace::WorkspaceGenerationError>()));
+        let loaded = formal_attestation::load(cache.root()).unwrap();
+        assert!(loaded.manifest.get(&node.fnode, "lean").is_none());
+        assert_eq!(
+            cache.formalization_status(&node.fnode).unwrap().lean,
+            FormalCodeStatus::Unverified
+        );
+    }
+
+    #[test]
     fn publication_rejects_manifest_changes_during_compilation() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
