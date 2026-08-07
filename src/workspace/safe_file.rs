@@ -913,10 +913,18 @@ impl FileSnapshot {
         let mut content = Vec::new();
         file.read_to_end(&mut content)
             .with_context(|| format!("reading {}", path.display()))?;
+        let preserved = PreservedMetadata::capture(path, &file, &metadata)?;
+        let final_metadata = file
+            .metadata()
+            .with_context(|| format!("reinspecting {}", path.display()))?;
+        if !preserved.matches_file_metadata(&final_metadata) {
+            return Err(FileConflict::new(path).into());
+        }
+        require_current_read_generation(directory_fd, name, path, &metadata, &final_metadata)?;
         Ok(Self::File {
             content,
-            metadata: PreservedMetadata::capture(path, &file, &metadata)?,
-            identity: file_identity(&metadata),
+            metadata: preserved,
+            identity: file_identity(&final_metadata),
         })
     }
 
@@ -1083,20 +1091,13 @@ impl FileSnapshotBatch {
         let final_metadata = file
             .metadata()
             .with_context(|| format!("reinspecting {}", path.display()))?;
-        if !same_read_generation(&metadata, &final_metadata) {
-            return Err(FileConflict::new(path).into());
-        }
-        run_test_hook(TestHookPoint::ReadAfterContent);
-        let current = entry_stat(directory_fd, &file_name).map_err(|error| {
-            anyhow::Error::from(FileConflict::new(path))
-                .context(format!("could not verify {}: {error}", path.display()))
-        })?;
-        if !stat_is_regular(&current)
-            || current.st_nlink > 1
-            || !metadata_matches_stat(&final_metadata, &current)
-        {
-            return Err(FileConflict::new(path).into());
-        }
+        require_current_read_generation(
+            directory_fd,
+            &file_name,
+            path,
+            &metadata,
+            &final_metadata,
+        )?;
         Ok(Some(ReadFileSnapshot {
             content,
             identity: file_identity(&final_metadata),
@@ -1358,6 +1359,30 @@ fn same_read_generation(left: &std::fs::Metadata, right: &std::fs::Metadata) -> 
         && left.mtime_nsec() == right.mtime_nsec()
         && left.ctime() == right.ctime()
         && left.ctime_nsec() == right.ctime_nsec()
+}
+
+fn require_current_read_generation(
+    directory_fd: RawFd,
+    name: &CStr,
+    path: &Path,
+    initial: &std::fs::Metadata,
+    final_metadata: &std::fs::Metadata,
+) -> Result<()> {
+    if !same_read_generation(initial, final_metadata) {
+        return Err(FileConflict::new(path).into());
+    }
+    run_test_hook(TestHookPoint::ReadAfterContent);
+    let current = entry_stat(directory_fd, name).map_err(|error| {
+        anyhow::Error::from(FileConflict::new(path))
+            .context(format!("could not verify {}: {error}", path.display()))
+    })?;
+    if !stat_is_regular(&current)
+        || current.st_nlink > 1
+        || !metadata_matches_stat(final_metadata, &current)
+    {
+        return Err(FileConflict::new(path).into());
+    }
+    Ok(())
 }
 
 fn entry_stat(directory_fd: RawFd, name: &CStr) -> std::io::Result<libc::stat> {
@@ -2783,6 +2808,40 @@ mod tests {
             error_has_file_conflict(error),
             "expected FileConflict, got: {error:#}"
         );
+    }
+
+    #[test]
+    fn full_snapshot_rejects_final_entry_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node.mdoc");
+        let replacement = dir.path().join("replacement.mdoc");
+        std::fs::write(&path, "before").unwrap();
+        std::fs::write(&replacement, "after").unwrap();
+        let hook_path = path.clone();
+        set_test_hook(TestHookPoint::ReadAfterContent, move || {
+            std::fs::rename(replacement, hook_path).unwrap();
+        });
+
+        let error = FileSnapshot::capture(&path).unwrap_err();
+
+        assert_file_conflict(&error);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "after");
+    }
+
+    #[test]
+    fn full_snapshot_rejects_in_place_write_after_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node.mdoc");
+        std::fs::write(&path, "before").unwrap();
+        let hook_path = path.clone();
+        set_test_hook(TestHookPoint::ReadAfterContent, move || {
+            std::fs::write(hook_path, "after").unwrap();
+        });
+
+        let error = FileSnapshot::capture(&path).unwrap_err();
+
+        assert_file_conflict(&error);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "after");
     }
 
     #[test]
