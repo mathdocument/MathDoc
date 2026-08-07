@@ -86,7 +86,6 @@ impl SrcCompiler for CompilerLean {
             Err(error) => return without_receipt(process_error_result(error, 1)),
         };
         let dependency_evidence = match collect_dependency_evidence(
-            req,
             &workspace,
             &lake,
             &Path::new("Lib").join(&relative),
@@ -173,7 +172,7 @@ fn collect_formal_receipt(
 ) -> Result<FormalCompilationReceipt> {
     let source = Path::new("Lib").join(relative);
     let current_dependencies =
-        collect_dependency_evidence(req, workspace, lake, &source, timeout_sec, true)
+        collect_dependency_evidence(workspace, lake, &source, timeout_sec, true)
             .context("revalidating Lean dependencies")?;
     dependency_evidence.ensure_matches(&current_dependencies)?;
     if !workspace.snapshot_unchanged(source_snapshot, &workspace.lib_root().join(relative))? {
@@ -278,7 +277,6 @@ fn lean_compiler_identity(
 }
 
 fn collect_dependency_evidence(
-    _req: &CompilerReq,
     workspace: &CompilerWorkspace,
     lake: &Path,
     source: &Path,
