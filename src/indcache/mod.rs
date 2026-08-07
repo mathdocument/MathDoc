@@ -496,6 +496,7 @@ impl IndCache {
             self.require_current_database()?;
             return Ok(());
         }
+        crate::workspace::run_test_hook(crate::workspace::TestHookPoint::DiscoveryBeforeApply);
         let tx = self.conn.transaction()?;
         let (changed_fnodes, has_deletion) =
             discovery::apply_workspace_changes(&tx, &self.root, changes)?;
@@ -1236,6 +1237,28 @@ mod mutation_boundary_tests {
 
     fn write_node(node: &MdocNode) {
         std::fs::write(&node.path, node.render().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn discovery_indexes_a_stale_candidate_recreated_before_apply() {
+        let workspace = workspace();
+        let root = workspace.path();
+        let path = root.join("node.mdoc");
+        let mut node = MdocNode::new_at_path(&path, "Original");
+        node.fnode = "recreated-node".to_string();
+        write_node(&node);
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        node.title = "Recreated".to_string();
+        let replacement = node.render().unwrap();
+        crate::workspace::set_test_hook(
+            crate::workspace::TestHookPoint::DiscoveryBeforeApply,
+            move || std::fs::write(path, replacement).unwrap(),
+        );
+
+        cache.discover_workspace_changes().unwrap();
+
+        assert_eq!(cache.node_summary(&node.fnode).unwrap().title, "Recreated");
     }
 
     #[test]

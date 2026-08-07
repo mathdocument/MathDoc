@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
-use super::refresh::{delete_indexed_path, metadata_state, upsert_mdoc_row};
+use super::refresh::{
+    current_cached_mdoc_path, delete_indexed_path, metadata_state, upsert_mdoc_row,
+};
 
 type FileState = (i64, i64);
 const MAX_METADATA_WORKERS: usize = 12;
@@ -65,11 +67,22 @@ pub(super) fn apply_workspace_changes(
         }
     }
 
-    for stale_path in &changes.stale_paths {
-        delete_indexed_path(conn, stale_path)?;
+    let mut has_deletion = false;
+    for stale_path in changes.stale_paths {
+        if let Some(file_path) = current_cached_mdoc_path(root, &stale_path)? {
+            let outcome = upsert_mdoc_row(conn, root, &file_path)?;
+            has_deletion |= outcome.new_fnode.is_none();
+            if outcome.graph_changed {
+                changed_fnodes.extend(outcome.old_fnode);
+                changed_fnodes.extend(outcome.new_fnode);
+            }
+        } else {
+            delete_indexed_path(conn, &stale_path)?;
+            has_deletion = true;
+        }
     }
 
-    Ok((changed_fnodes, !changes.stale_paths.is_empty()))
+    Ok((changed_fnodes, has_deletion))
 }
 
 fn orphaned_index_paths(conn: &Connection) -> Result<Vec<String>> {

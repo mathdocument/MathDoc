@@ -719,6 +719,7 @@ pub(crate) enum TestHookPoint {
     IndexBeforeConnectionOpen,
     IndexAfterConnectionOpen,
     IndexAfterNodeUpsert,
+    DiscoveryBeforeApply,
     FormalStatusAfterEvaluation,
     ReadAfterContent,
     WriteBeforeDirectoryBinding,
