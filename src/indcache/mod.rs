@@ -287,61 +287,13 @@ impl IndCache {
         source_files: usize,
         observations: Vec<WorkdraftObservation>,
     ) -> Result<()> {
-        self.require_current_database()?;
-        let tx = self.conn.transaction()?;
-        tx.execute("DELETE FROM mdoc_workdraft_observations", [])?;
-        {
-            let mut insert = tx.prepare(
-                "INSERT INTO mdoc_workdraft_observations
-                   (source_id, srctype, present, device, inode, size,
-                    mtime, mtime_nsec, ctime, ctime_nsec, mode, uid, gid)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )?;
-            for observation in observations {
-                let stat = observation
-                    .stat
-                    .unwrap_or(crate::workspace::FileStatSnapshot {
-                        device: 0,
-                        inode: 0,
-                        size: 0,
-                        mtime: 0,
-                        mtime_nsec: 0,
-                        ctime: 0,
-                        ctime_nsec: 0,
-                        mode: 0,
-                        uid: 0,
-                        gid: 0,
-                    });
-                insert.execute(rusqlite::params![
-                    observation.source_id,
-                    observation.srctype,
-                    observation.stat.is_some(),
-                    stat.device as i64,
-                    stat.inode as i64,
-                    stat.size as i64,
-                    stat.mtime,
-                    stat.mtime_nsec,
-                    stat.ctime,
-                    stat.ctime_nsec,
-                    i64::from(stat.mode),
-                    i64::from(stat.uid),
-                    i64::from(stat.gid),
-                ])?;
-            }
-        }
-        tx.execute(
-            "UPDATE mdoc_workdraft_state
-             SET manifest_digest = ?, valid_mdocs = ?, source_files = ?
-             WHERE id = 1",
-            rusqlite::params![
-                manifest_digest.as_slice(),
-                i64::try_from(valid_mdocs).unwrap_or(i64::MAX),
-                i64::try_from(source_files).unwrap_or(i64::MAX),
-            ],
-        )?;
-        tx.commit()?;
-        self.require_current_database()?;
-        Ok(())
+        self.write_workdraft_observations(
+            manifest_digest,
+            valid_mdocs,
+            source_files,
+            observations,
+            true,
+        )
     }
 
     pub(crate) fn update_workdraft_observations(
@@ -351,27 +303,52 @@ impl IndCache {
         source_files: usize,
         observations: Vec<WorkdraftObservation>,
     ) -> Result<()> {
+        self.write_workdraft_observations(
+            manifest_digest,
+            valid_mdocs,
+            source_files,
+            observations,
+            false,
+        )
+    }
+
+    fn write_workdraft_observations(
+        &mut self,
+        manifest_digest: &[u8; 32],
+        valid_mdocs: usize,
+        source_files: usize,
+        observations: Vec<WorkdraftObservation>,
+        replace_all: bool,
+    ) -> Result<()> {
         self.require_current_database()?;
         let tx = self.conn.transaction()?;
+        if replace_all {
+            tx.execute("DELETE FROM mdoc_workdraft_observations", [])?;
+        }
+        let conflict_clause = if replace_all {
+            ""
+        } else {
+            " ON CONFLICT(source_id, srctype) DO UPDATE SET
+                 present = excluded.present,
+                 device = excluded.device,
+                 inode = excluded.inode,
+                 size = excluded.size,
+                 mtime = excluded.mtime,
+                 mtime_nsec = excluded.mtime_nsec,
+                 ctime = excluded.ctime,
+                 ctime_nsec = excluded.ctime_nsec,
+                 mode = excluded.mode,
+                 uid = excluded.uid,
+                 gid = excluded.gid"
+        };
+        let sql = format!(
+            "INSERT INTO mdoc_workdraft_observations
+               (source_id, srctype, present, device, inode, size,
+                mtime, mtime_nsec, ctime, ctime_nsec, mode, uid, gid)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?){conflict_clause}"
+        );
         {
-            let mut upsert = tx.prepare(
-                "INSERT INTO mdoc_workdraft_observations
-                   (source_id, srctype, present, device, inode, size,
-                    mtime, mtime_nsec, ctime, ctime_nsec, mode, uid, gid)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(source_id, srctype) DO UPDATE SET
-                    present = excluded.present,
-                    device = excluded.device,
-                    inode = excluded.inode,
-                    size = excluded.size,
-                    mtime = excluded.mtime,
-                    mtime_nsec = excluded.mtime_nsec,
-                    ctime = excluded.ctime,
-                    ctime_nsec = excluded.ctime_nsec,
-                    mode = excluded.mode,
-                    uid = excluded.uid,
-                    gid = excluded.gid",
-            )?;
+            let mut write = tx.prepare(&sql)?;
             for observation in observations {
                 let stat = observation
                     .stat
@@ -387,7 +364,7 @@ impl IndCache {
                         uid: 0,
                         gid: 0,
                     });
-                upsert.execute(rusqlite::params![
+                write.execute(rusqlite::params![
                     observation.source_id,
                     observation.srctype,
                     observation.stat.is_some(),
