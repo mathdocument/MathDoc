@@ -248,6 +248,7 @@ pub(super) fn direct_dependency_summaries(
 }
 
 pub(super) fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>> {
+    let _profile = crate::profile::scope("queries::global_root_items");
     // Valid root nodes: join with component table and read persisted topo_depth — no graph load.
     let valid_roots: Vec<(String, String, String, u32, u32)> = {
         let mut stmt = conn.prepare(
@@ -261,8 +262,7 @@ pub(super) fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>>
                  SELECT 1 FROM mdoc_issues
                  WHERE mdoc_issues.path = m.path
                    AND mdoc_issues.kind IN ('invalid', 'duplicate')
-               )
-             ORDER BY m.path, m.fnode",
+               )",
         )?;
         let rows: Vec<_> = stmt
             .query_map([], |r| {
@@ -272,28 +272,7 @@ pub(super) fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>>
         rows
     };
 
-    let fnodes_with_incoming: HashSet<String> = {
-        let mut stmt = conn.prepare("SELECT fnode FROM mdoc_in_degree WHERE in_degree > 0")?;
-        let rows: HashSet<String> = stmt
-            .query_map([], |r| r.get::<_, String>(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        rows
-    };
-
-    let component_sizes: HashMap<String, u32> = {
-        let mut stmt = conn.prepare("SELECT fnode, component_size FROM mdoc_weak_component")?;
-        let rows: HashMap<String, u32> = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        rows
-    };
-
     let invalid_issues = invalid_issue_rows(conn)?;
-    let valid_fnodes: HashSet<String> = valid_node_rows(conn)?
-        .into_iter()
-        .map(|(fnode, _, _)| fnode)
-        .collect();
-
     let mut items: Vec<GraphRootItem> = valid_roots
         .into_iter()
         .map(
@@ -308,24 +287,46 @@ pub(super) fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>>
         )
         .collect();
 
-    let mut broken_paths = HashSet::new();
-    for issue in &invalid_issues {
-        if valid_fnodes.contains(&issue.fnode) || !broken_paths.insert(issue.rel_path.as_str()) {
-            continue;
+    if !invalid_issues.is_empty() {
+        let fnodes_with_incoming: HashSet<String> = {
+            let mut stmt = conn.prepare("SELECT fnode FROM mdoc_in_degree WHERE in_degree > 0")?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            rows
+        };
+        let component_sizes: HashMap<String, u32> = {
+            let mut stmt = conn.prepare("SELECT fnode, component_size FROM mdoc_weak_component")?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            rows
+        };
+        let valid_fnodes: HashSet<String> = valid_node_rows(conn)?
+            .into_iter()
+            .map(|(fnode, _, _)| fnode)
+            .collect();
+        let mut broken_paths = HashSet::new();
+        for issue in &invalid_issues {
+            if valid_fnodes.contains(&issue.fnode) || !broken_paths.insert(issue.rel_path.as_str())
+            {
+                continue;
+            }
+            let is_placeholder = issue.fnode.starts_with('<') && issue.fnode.ends_with('>');
+            if !is_placeholder && fnodes_with_incoming.contains(&issue.fnode) {
+                continue;
+            }
+            items.push(GraphRootItem {
+                fnode: issue.fnode.clone(),
+                title: issue.title.clone(),
+                rel_path: issue.rel_path.clone(),
+                component_size: component_sizes.get(&issue.fnode).copied().unwrap_or(1),
+                broken: true,
+                topo_depth: 0,
+            });
         }
-        let is_placeholder = issue.fnode.starts_with('<') && issue.fnode.ends_with('>');
-        if !is_placeholder && fnodes_with_incoming.contains(&issue.fnode) {
-            continue;
-        }
-        let size = component_sizes.get(&issue.fnode).copied().unwrap_or(1);
-        items.push(GraphRootItem {
-            fnode: issue.fnode.clone(),
-            title: issue.title.clone(),
-            rel_path: issue.rel_path.clone(),
-            component_size: size,
-            broken: true,
-            topo_depth: 0,
-        });
     }
 
     // Primary: most depended-upon (deepest topo) first; secondary: largest component.
