@@ -194,9 +194,15 @@ fn direct_dependency_items_refresh_external_breakage() {
     write_node(&missing);
     let invalid = make_node(root, "Invalid", "text", "invalid");
     write_node(&invalid);
+    let mut live_a = make_node(root, "Live A", "text", "live a");
+    write_node(&live_a);
+    let mut live_b = make_node(root, "Live B", "text", "live b");
+    write_node(&live_b);
     let mut src = make_node(root, "Src", "text", "src");
     src.add_dependency(&missing.fnode);
     src.add_dependency(&invalid.fnode);
+    src.add_dependency(&live_a.fnode);
+    src.add_dependency(&live_b.fnode);
     write_node(&src);
 
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
@@ -204,6 +210,10 @@ fn direct_dependency_items_refresh_external_breakage() {
     let mut graph = DepGraph::from_ref(&mut cache, &src.fnode, None).unwrap();
     fs::remove_file(&missing.path).unwrap();
     make_invalid(&invalid.path);
+    live_a.title = "Live A Revised".to_string();
+    live_b.title = "Live B Revised".to_string();
+    write_node(&live_a);
+    write_node(&live_b);
     let conn = rusqlite::Connection::open(db_path).unwrap();
     conn.execute_batch(
         "INSERT INTO mdocs (path, fnode, title, title_lc, topo_depth)
@@ -217,6 +227,8 @@ fn direct_dependency_items_refresh_external_breakage() {
     let items = graph.direct_dependency_items().unwrap();
     assert_eq!(items[0].title, "<missing>");
     assert_eq!(items[1].title, "<invalid>");
+    assert_eq!(items[2].title, "Live A Revised");
+    assert_eq!(items[3].title, "Live B Revised");
 }
 
 #[test]

@@ -135,12 +135,14 @@ impl<'cache> DepGraph<'cache> {
 
     pub fn direct_dependency_items(&mut self) -> Result<Vec<DependencyItem>> {
         let fnodes = dedupe_keep_order(&self.root.depens);
+        let mut paths_to_upsert = Vec::with_capacity(fnodes.len());
         for fnode in &fnodes {
             let paths = self.cache.reconcile_fnode_paths(fnode)?;
             if let [path] = paths.as_slice() {
-                self.cache.upsert_path(path)?;
+                paths_to_upsert.push(path.clone());
             }
         }
+        self.cache.upsert_paths(&paths_to_upsert)?;
         self.cache.ref_items_for_fnodes(&fnodes, 1)
     }
 
