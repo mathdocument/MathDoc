@@ -339,7 +339,7 @@ impl<'cache> DepGraph<'cache> {
                 duplicate_fnode_error(self.cache.root(), exact_fnode, &paths)
             ),
         };
-        let rel_path = to_rel_path(self.cache.root(), path);
+        let rel_path = crate::workspace::to_indexed_rel_path(self.cache.root(), path)?;
         if self.cache.path_has_blocking_issue(&rel_path)? {
             bail!("dependency target must be valid: {exact_fnode}");
         }

@@ -1267,11 +1267,7 @@ impl IndCache {
                     if meta.file_type().is_symlink() || !meta.is_file() {
                         bail!("mdoc path is not a regular file: {}", candidate.display());
                     }
-                    let rel_path = resolved
-                        .strip_prefix(&self.root)
-                        .expect("resolved mdoc path belongs to the cache root")
-                        .to_string_lossy()
-                        .into_owned();
+                    let rel_path = crate::workspace::to_indexed_rel_path(&self.root, &resolved)?;
                     return Ok(Some((resolved, rel_path)));
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

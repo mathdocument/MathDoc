@@ -10,6 +10,33 @@ fn setup(root: &Path) {
     fs::create_dir_all(root.join(".mdc")).unwrap();
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn refresh_rejects_lossy_non_utf8_path_collisions() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    write(
+        &root.join("node-\u{fffd}.mdoc"),
+        "@fnode: utf8-node\n@title: UTF-8 Node\n",
+    );
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    let non_utf8 = root.join(OsString::from_vec(b"node-\xff.mdoc".to_vec()));
+    write(&non_utf8, "@fnode: byte-node\n@title: Byte Path Node\n");
+
+    let error = cache.refresh_all().unwrap_err();
+
+    assert!(error.to_string().contains("valid UTF-8"), "{error:#}");
+    assert_eq!(
+        cache.node_summary("utf8-node").unwrap().rel_path,
+        "node-\u{fffd}.mdoc"
+    );
+    assert!(cache.resolve_ref("byte-node", None).is_err());
+}
+
 fn write(path: &Path, content: &str) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).unwrap();

@@ -145,7 +145,7 @@ fn scan_workspace_metadata(root: &Path) -> Result<Vec<(PathBuf, String, FileStat
                             }
                             Ok((
                                 file_path.clone(),
-                                crate::workspace::to_rel_path(root, file_path),
+                                crate::workspace::to_indexed_rel_path(root, file_path)?,
                                 metadata_state(&metadata)?,
                             ))
                         })

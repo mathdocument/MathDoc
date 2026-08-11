@@ -135,6 +135,24 @@ pub fn to_rel_path(root: &Path, path: &Path) -> String {
         .unwrap_or_else(|_| path.to_string_lossy().into_owned())
 }
 
+/// Convert an mdoc path to the reversible UTF-8 key used by the index.
+pub(crate) fn to_indexed_rel_path(root: &Path, path: &Path) -> Result<String> {
+    let relative = path.strip_prefix(root).map_err(|_| {
+        anyhow::anyhow!(
+            "mdoc path {} is outside workspace {}",
+            path.display(),
+            root.display()
+        )
+    })?;
+    let relative = relative.to_str().ok_or_else(|| {
+        anyhow::anyhow!(
+            "mdoc path must be valid UTF-8 for indexing: {}",
+            path.display()
+        )
+    })?;
+    Ok(relative.to_string())
+}
+
 /// Resolve a `.mdoc` path without allowing it to escape the workspace, enter
 /// `.mdc`, traverse symlinks, or cross into a nested workspace.
 pub(crate) fn resolve_mdoc_path(root: &Path, file_path: &Path) -> Result<PathBuf> {
@@ -263,6 +281,27 @@ fn validate_workspace_relative_path(relative: &Path, original: &Path) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn indexed_path_keys_reject_lossy_non_utf8_collisions() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let root = Path::new("/workspace");
+        let non_utf8 = root.join(OsString::from_vec(b"node-\xff.mdoc".to_vec()));
+        let replacement = root.join("node-\u{fffd}.mdoc");
+
+        assert_eq!(
+            to_rel_path(root, &non_utf8),
+            to_rel_path(root, &replacement)
+        );
+        assert!(to_indexed_rel_path(root, &non_utf8).is_err());
+        assert_eq!(
+            to_indexed_rel_path(root, &replacement).unwrap(),
+            "node-\u{fffd}.mdoc"
+        );
+    }
 
     #[cfg(unix)]
     #[test]

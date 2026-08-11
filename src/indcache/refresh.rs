@@ -12,7 +12,7 @@ use crate::indcache::queries::{
     path_has_blocking_issue, CHUNK_SIZE,
 };
 use crate::mdocnode::{MdocHead, MdocIdentity};
-use crate::workspace::{iter_mdoc_files, to_rel_path, FileSnapshotBatch};
+use crate::workspace::{iter_mdoc_files, to_indexed_rel_path, FileSnapshotBatch};
 
 // ── Public write functions ────────────────────────────────────────────────────
 
@@ -220,7 +220,7 @@ fn scan_workspace_batch(root: &Path, paths: &[PathBuf]) -> Result<Vec<ScannedMdo
 }
 
 fn scan_mdoc(root: &Path, path: &Path, content: &[u8], metadata: &Metadata) -> Result<ScannedMdoc> {
-    let path_string = to_rel_path(root, path);
+    let path_string = to_indexed_rel_path(root, path)?;
     let (mtime_ns, size) = metadata_state(metadata)?;
 
     match MdocHead::load_bytes(path, content) {
@@ -866,7 +866,7 @@ pub(super) fn refresh_reachable_from_path(
 
     while let Some((file_path, item_depth)) = queue.pop_front() {
         let file_path = crate::workspace::resolve_mdoc_path(root, &file_path)?;
-        let rel_path = to_rel_path(root, &file_path);
+        let rel_path = to_indexed_rel_path(root, &file_path)?;
         if !seen.insert(rel_path.clone()) {
             continue;
         }
@@ -938,7 +938,7 @@ pub(super) fn upsert_mdoc_row(
 ) -> Result<UpsertOutcome> {
     let root_resolved = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let file_path = crate::workspace::resolve_mdoc_path(&root_resolved, file_path)?;
-    let rel_path = to_rel_path(&root_resolved, &file_path);
+    let rel_path = to_indexed_rel_path(&root_resolved, &file_path)?;
     let old_fnode = fnode_for_path(conn, &rel_path)?;
     let old_had_blocking_issue = path_has_blocking_issue(conn, &rel_path)?;
     let old_semantics = indexed_file_semantics(conn, &rel_path)?;
