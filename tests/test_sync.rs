@@ -213,7 +213,7 @@ fn back_observation_cache_detects_same_size_same_mtime_mirror_edits() {
 }
 
 #[test]
-fn back_repairs_an_index_update_interrupted_after_reconciliation() {
+fn ordinary_cache_open_repairs_an_index_update_interrupted_after_reconciliation() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     std::fs::create_dir(root.join(".mdc")).unwrap();
@@ -231,7 +231,7 @@ fn back_repairs_an_index_update_interrupted_after_reconciliation() {
         .unwrap();
     drop(connection);
 
-    let output = run_mdc(root, &["back"]);
+    let output = run_mdc(root, &["search", "Source Mirror"]);
     assert!(
         output.status.success(),
         "{}",

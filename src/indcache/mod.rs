@@ -182,7 +182,9 @@ impl IndCache {
             conn,
         };
         cache.validate_mutation_lock(mutation_lock)?;
-        if refresh {
+        if cache.workdraft_index_is_dirty()? {
+            cache.recover_workdraft_index()?;
+        } else if refresh {
             cache.refresh_all()?;
         } else {
             cache.bootstrap_if_needed()?;
