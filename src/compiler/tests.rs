@@ -291,7 +291,7 @@ fn test_latex_compiles_hello_world() {
     assert!(mdcroot.join(".mdc/latex/Main.pdf").is_file());
     assert_eq!(
         std::fs::read_to_string(mdcroot.join(".mdc/latex/Lib.tex")).unwrap(),
-        "\\input{\"Lib/node.tex\"}\n"
+        "\\input{\\detokenize{Lib/node.tex}}\n"
     );
     assert!(mdcroot.join(".mdc/latex/Main.tex").is_file());
 }
@@ -321,6 +321,28 @@ fn test_latex_rejects_source_changed_during_compilation() {
     assert!(result
         .stderr
         .contains("LaTeX source changed during compilation"));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_latex_compiles_tex_active_source_path() {
+    if which::which("latexmk").is_err() || which::which("xelatex").is_err() {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let mdcroot = tmp.path();
+    let source = mdcroot.join(".mdc/latex/Lib/active_&$^~.tex");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "Active path.\n").unwrap();
+    let mut request = make_req(mdcroot, "latex");
+    request.source = source;
+
+    let result = CompilerRegistry::default_registry()
+        .resolve("latex")
+        .unwrap()
+        .compile(&request);
+
+    assert!(result.is_success(), "{}", result.stderr);
 }
 
 #[cfg(unix)]

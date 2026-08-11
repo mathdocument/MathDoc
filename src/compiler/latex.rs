@@ -150,10 +150,10 @@ fn ensure_workspace(workspace: &CompilerWorkspace, relative: &Path) -> Result<()
     let input = relative
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("LaTeX source path is not valid UTF-8"))?;
-    if input.contains(['\n', '\r', '"', '{', '}', '%']) {
+    if input.contains(['\n', '\r', '"', '{', '}', '%', '\\', '#']) {
         bail!("LaTeX source path cannot be represented safely in Lib.tex: {input:?}");
     }
-    let driver = format!("\\input{{\"Lib/{input}\"}}\n");
+    let driver = format!("\\input{{\\detokenize{{Lib/{input}}}}}\n");
     let driver_path = workspace.root().join(DRIVER_FILE);
     let driver_snapshot = workspace.snapshot(&driver_path)?;
     let main_path = workspace.root().join(MAIN_FILE);
@@ -229,7 +229,20 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(root.join(DRIVER_FILE)).unwrap(),
-            "\\input{\"Lib/notes/theorem.tex\"}\n"
+            "\\input{\\detokenize{Lib/notes/theorem.tex}}\n"
+        );
+    }
+
+    #[test]
+    fn workspace_detokenizes_tex_active_path_characters() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = test_workspace(&dir);
+
+        ensure_workspace(&workspace, Path::new("notes/a_&$^~.tex")).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(workspace.root().join(DRIVER_FILE)).unwrap(),
+            "\\input{\\detokenize{Lib/notes/a_&$^~.tex}}\n"
         );
     }
 
@@ -276,14 +289,16 @@ mod tests {
 
     #[test]
     fn invalid_source_path_does_not_leave_generated_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let workspace = test_workspace(&dir);
+        for path in ["bad%.tex", "bad#.tex", "bad\\name.tex"] {
+            let dir = tempfile::tempdir().unwrap();
+            let workspace = test_workspace(&dir);
 
-        let error = ensure_workspace(&workspace, Path::new("bad%.tex")).unwrap_err();
+            let error = ensure_workspace(&workspace, Path::new(path)).unwrap_err();
 
-        assert!(error.to_string().contains("cannot be represented safely"));
-        assert!(!workspace.root().join(MAIN_FILE).exists());
-        assert!(!workspace.root().join(DRIVER_FILE).exists());
+            assert!(error.to_string().contains("cannot be represented safely"));
+            assert!(!workspace.root().join(MAIN_FILE).exists());
+            assert!(!workspace.root().join(DRIVER_FILE).exists());
+        }
     }
 
     #[test]
