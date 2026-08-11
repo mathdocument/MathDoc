@@ -158,6 +158,16 @@ pub(super) fn parse_manifest(snapshot: &FileSnapshot, path: &Path) -> Result<Loa
             needs_sparse_migration: false,
         });
     };
+    if let Ok(manifest) = serde_json::from_slice::<SourceBlockManifest>(content) {
+        if manifest.version == MANIFEST_VERSION {
+            validate_manifest(&manifest, path)?;
+            return Ok(LoadedManifest {
+                manifest,
+                legacy_sources: BTreeSet::new(),
+                needs_sparse_migration: false,
+            });
+        }
+    }
     let value: serde_json::Value = serde_json::from_slice(content)
         .with_context(|| format!("reading source block manifest {}", path.display()))?;
     match value.get("version").and_then(serde_json::Value::as_u64) {
