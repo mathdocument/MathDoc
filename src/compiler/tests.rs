@@ -298,6 +298,33 @@ fn test_latex_compiles_hello_world() {
 
 #[cfg(unix)]
 #[test]
+fn test_latex_rejects_source_changed_during_compilation() {
+    if which::which("latexmk").is_err() || which::which("xelatex").is_err() {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let mdcroot = tmp.path();
+    std::fs::create_dir_all(mdcroot.join(".mdc")).unwrap();
+    write_source(mdcroot, "latex", "Original source.\n");
+    let source = test_source_path(mdcroot, "latex");
+    crate::workspace::set_test_hook(
+        crate::workspace::TestHookPoint::ProcessAfterCwdOpen,
+        move || std::fs::write(source, "Replacement source.\n").unwrap(),
+    );
+
+    let result = CompilerRegistry::default_registry()
+        .resolve("latex")
+        .unwrap()
+        .compile(&make_req(mdcroot, "latex"));
+
+    assert!(!result.is_success());
+    assert!(result
+        .stderr
+        .contains("LaTeX source changed during compilation"));
+}
+
+#[cfg(unix)]
+#[test]
 fn test_lean_compiles_hello_world() {
     if which::which("lake").is_err() {
         return;

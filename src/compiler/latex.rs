@@ -3,7 +3,7 @@ use super::{
     SrcCompiler,
 };
 use anyhow::{bail, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub(super) struct CompilerLatex;
 
@@ -35,13 +35,17 @@ impl SrcCompiler for CompilerLatex {
             Ok(workspace) => workspace,
             Err(error) => return CompilerRes::err(error.to_string()),
         };
-        let (_, relative) = match workspace.lib_source(req) {
+        let (lib_root, relative) = match workspace.lib_source(req) {
             Ok(source) => source,
             Err(error) => return CompilerRes::err(error.to_string()),
         };
         if let Err(error) = ensure_workspace(&workspace, &relative) {
             return CompilerRes::err(error.to_string());
         }
+        let inputs = match LatexInputSnapshots::capture(&workspace, lib_root.join(&relative)) {
+            Ok(inputs) => inputs,
+            Err(error) => return CompilerRes::err(error.to_string()),
+        };
         let workspace_root = workspace.root();
         let pdf_path = workspace_root.join("Main.pdf");
         let args = [
@@ -66,6 +70,9 @@ impl SrcCompiler for CompilerLatex {
                         interrupted: false,
                     };
                 }
+                if let Err(error) = inputs.require_current(&workspace) {
+                    return CompilerRes::err(error.to_string());
+                }
                 if !pdf_path.is_file() {
                     return CompilerRes::err(format!(
                         "latexmk succeeded but pdf not found: {}",
@@ -81,6 +88,62 @@ impl SrcCompiler for CompilerLatex {
             Err(e) => process_error_result(e, 127),
         }
     }
+}
+
+struct LatexInputSnapshots {
+    source_path: PathBuf,
+    source: crate::workspace::FileSnapshot,
+    driver: crate::workspace::FileSnapshot,
+    main: crate::workspace::FileSnapshot,
+}
+
+impl LatexInputSnapshots {
+    fn capture(workspace: &CompilerWorkspace, source_path: PathBuf) -> Result<Self> {
+        let source = required_snapshot(workspace, &source_path, "LaTeX source")?;
+        let driver = required_snapshot(
+            workspace,
+            &workspace.root().join(DRIVER_FILE),
+            "LaTeX build driver",
+        )?;
+        let main = required_snapshot(
+            workspace,
+            &workspace.root().join(MAIN_FILE),
+            "LaTeX main file",
+        )?;
+        Ok(Self {
+            source_path,
+            source,
+            driver,
+            main,
+        })
+    }
+
+    fn require_current(&self, workspace: &CompilerWorkspace) -> Result<()> {
+        let driver_path = workspace.root().join(DRIVER_FILE);
+        let main_path = workspace.root().join(MAIN_FILE);
+        for (snapshot, path, label) in [
+            (&self.source, self.source_path.as_path(), "LaTeX source"),
+            (&self.driver, driver_path.as_path(), "LaTeX build driver"),
+            (&self.main, main_path.as_path(), "LaTeX main file"),
+        ] {
+            if !workspace.snapshot_unchanged(snapshot, path)? {
+                bail!("{label} changed during compilation");
+            }
+        }
+        Ok(())
+    }
+}
+
+fn required_snapshot(
+    workspace: &CompilerWorkspace,
+    path: &Path,
+    label: &str,
+) -> Result<crate::workspace::FileSnapshot> {
+    let snapshot = workspace.snapshot(path)?;
+    if snapshot.content().is_none() {
+        bail!("{label} disappeared before compilation");
+    }
+    Ok(snapshot)
 }
 
 fn ensure_workspace(workspace: &CompilerWorkspace, relative: &Path) -> Result<()> {
@@ -181,6 +244,34 @@ mod tests {
             std::fs::read_to_string(workspace.root().join(MAIN_FILE)).unwrap(),
             DEFAULT_MAIN
         );
+    }
+
+    #[test]
+    fn input_snapshots_detect_source_driver_and_main_changes() {
+        for (changed, expected) in [
+            ("source", "LaTeX source changed"),
+            ("driver", "LaTeX build driver changed"),
+            ("main", "LaTeX main file changed"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let workspace = test_workspace(&dir);
+            let source = workspace.lib_root().join("node.tex");
+            std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+            std::fs::write(&source, "original\n").unwrap();
+            ensure_workspace(&workspace, Path::new("node.tex")).unwrap();
+            let inputs = LatexInputSnapshots::capture(&workspace, source.clone()).unwrap();
+            let changed_path = match changed {
+                "source" => source,
+                "driver" => workspace.root().join(DRIVER_FILE),
+                "main" => workspace.root().join(MAIN_FILE),
+                _ => unreachable!(),
+            };
+
+            std::fs::write(changed_path, "changed\n").unwrap();
+
+            let error = inputs.require_current(&workspace).unwrap_err();
+            assert!(error.to_string().contains(expected));
+        }
     }
 
     #[test]
