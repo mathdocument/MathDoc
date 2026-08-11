@@ -894,27 +894,44 @@ impl IndCache {
     }
 
     pub fn reconcile_fnode_paths(&mut self, fnode: &str) -> Result<Vec<PathBuf>> {
+        let mut paths = self.reconcile_fnode_paths_many(&[fnode])?;
+        Ok(paths
+            .remove(fnode)
+            .expect("single-fnode reconciliation returns its requested key"))
+    }
+
+    pub(crate) fn reconcile_fnode_paths_many(
+        &mut self,
+        fnodes: &[&str],
+    ) -> Result<HashMap<String, Vec<PathBuf>>> {
         self.require_current_database()?;
         let tx = self.conn.transaction()?;
-        let rows = queries::exact_fnode_rows(&tx, fnode)?;
-        let mut paths = Vec::new();
-        let mut stale = false;
-        for (_, _, rel_path) in rows {
-            match refresh::current_cached_mdoc_path(&self.root, &rel_path)? {
-                Some(path) => paths.push(path),
-                None => {
-                    refresh::delete_indexed_path(&tx, &rel_path)?;
-                    stale = true;
+        let mut paths_by_fnode = HashMap::with_capacity(fnodes.len());
+        let mut changed_fnodes = HashSet::new();
+        for &fnode in fnodes {
+            if paths_by_fnode.contains_key(fnode) {
+                continue;
+            }
+            let rows = queries::exact_fnode_rows(&tx, fnode)?;
+            let mut paths = Vec::new();
+            for (_, _, rel_path) in rows {
+                match refresh::current_cached_mdoc_path(&self.root, &rel_path)? {
+                    Some(path) => paths.push(path),
+                    None => {
+                        refresh::delete_indexed_path(&tx, &rel_path)?;
+                        changed_fnodes.insert(fnode.to_string());
+                    }
                 }
             }
+            paths_by_fnode.insert(fnode.to_string(), paths);
         }
-        let formal_validation = if stale {
-            derived::refresh_topo_depth_upward_from_many(&tx, &HashSet::from([fnode.to_string()]))?;
+        let formal_validation = if changed_fnodes.is_empty() {
+            None
+        } else {
+            derived::refresh_topo_depth_upward_from_many(&tx, &changed_fnodes)?;
             Some(crate::formal::status::refresh_index_statuses(
                 &tx, &self.root,
             )?)
-        } else {
-            None
         };
         tx.commit()?;
         if let Some(formal_validation) = formal_validation {
@@ -922,7 +939,7 @@ impl IndCache {
         } else {
             self.require_current_database()?;
         }
-        Ok(paths)
+        Ok(paths_by_fnode)
     }
 
     pub fn lookup_by_fnode(&self, fnodes: &[&str]) -> Result<HashMap<String, (String, String)>> {
