@@ -1560,7 +1560,7 @@ fn atomic_replace_inner(
 
     if !binding.is_current()? {
         if let Some(quarantine) = &mut previous {
-            let _ = quarantine.restore(binding.target_name());
+            return conflict_with_restoration(path, &binding, quarantine);
         }
         return Err(FileConflict::new(path).into());
     }
@@ -1579,17 +1579,32 @@ fn atomic_replace_inner(
     drop(temp);
 
     run_test_hook(TestHookPoint::WriteAfterPersistence);
-    let after = FileSnapshot::capture_at(&binding, binding.target_name()).map_err(|error| {
-        anyhow::Error::from(FileConflict::new(path)).context(format!(
-            "could not verify the persisted generation of {}: {error}",
-            path.display()
-        ))
-    })?;
-    if !written.matches(&after) || !binding.is_current()? {
-        if written.matches(&after) {
-            let _ = undo_persisted_write(path, &binding, &written, previous.as_mut());
+    let after = match FileSnapshot::capture_at(&binding, binding.target_name()) {
+        Ok(after) => after,
+        Err(error) => {
+            return conflict_with_preserved_quarantine(path, &binding, previous.as_ref()).map_err(
+                |conflict| {
+                    conflict.context(format!(
+                        "could not verify the persisted generation of {}: {error}",
+                        path.display()
+                    ))
+                },
+            )
         }
-        return Err(FileConflict::new(path).into());
+    };
+    if !written.matches(&after) {
+        return conflict_with_preserved_quarantine(path, &binding, previous.as_ref());
+    }
+    if !binding.is_current()? {
+        let conflict = anyhow::Error::from(FileConflict::new(path));
+        let rollback = undo_persisted_write(path, &binding, &written, previous.as_mut());
+        return Err(PersistenceRecoveryError::from_attempts(
+            conflict,
+            rollback,
+            Ok(()),
+            "restore the previous file generation",
+            "repair persisted file state",
+        ));
     }
 
     binding.require_current(path)?;
@@ -1805,6 +1820,21 @@ fn conflict_with_restoration<T>(
             quarantine_path.display(),
             path.display()
         ))),
+    }
+}
+
+fn conflict_with_preserved_quarantine<T>(
+    path: &Path,
+    binding: &DirectoryBinding,
+    quarantine: Option<&QuarantinedEntry<'_>>,
+) -> Result<T> {
+    let conflict = anyhow::Error::from(FileConflict::new(path));
+    match quarantine {
+        Some(quarantine) => Err(conflict.context(format!(
+            "previous generation preserved at {}",
+            binding.display_path(quarantine.name())
+        ))),
+        None => Err(conflict),
     }
 }
 
@@ -3252,6 +3282,35 @@ mod tests {
         let message = format!("{error:#}");
         assert!(message.contains(&quarantine.display().to_string()));
         assert!(message.contains("restoring"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"external");
+        assert_eq!(std::fs::read(quarantine).unwrap(), b"before");
+    }
+
+    #[test]
+    fn replacement_mismatch_reports_the_preserved_previous_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node.mdoc");
+        std::fs::write(&path, b"before").unwrap();
+        let snapshot = FileSnapshot::capture(&path).unwrap();
+        let hook_path = path.clone();
+        set_test_hook(TestHookPoint::WriteAfterPersistence, move || {
+            std::fs::write(hook_path, b"external").unwrap();
+        });
+
+        let error = snapshot.replace(&path, b"after").unwrap_err();
+
+        assert_file_conflict(&error);
+        let quarantine = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .as_bytes()
+                    .starts_with(b".mdc-quarantine-")
+            })
+            .unwrap();
+        assert!(format!("{error:#}").contains(&quarantine.display().to_string()));
         assert_eq!(std::fs::read(&path).unwrap(), b"external");
         assert_eq!(std::fs::read(quarantine).unwrap(), b"before");
     }
