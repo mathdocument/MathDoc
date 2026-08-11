@@ -735,6 +735,7 @@ pub(crate) enum TestHookPoint {
     WriteAfterInitialVerification,
     WriteAfterTempCreation,
     WriteBeforePersistence,
+    WriteAfterQuarantine,
     WriteAfterPersistence,
 }
 
@@ -1551,6 +1552,7 @@ fn atomic_replace_inner(
     let mut previous = if matches!(expected, FileSnapshot::File { .. }) {
         let mut quarantine = QuarantinedEntry::take(&binding, binding.target_name())?;
         require_quarantined_generation(path, &binding, &mut quarantine, expected)?;
+        run_test_hook(TestHookPoint::WriteAfterQuarantine);
         Some(quarantine)
     } else {
         None
@@ -1563,11 +1565,14 @@ fn atomic_replace_inner(
         return Err(FileConflict::new(path).into());
     }
     if let Err(error) = temp.persist(binding.target_name()) {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            if let Some(quarantine) = &mut previous {
+                return conflict_with_restoration(path, &binding, quarantine);
+            }
+            return Err(FileConflict::new(path).into());
+        }
         if let Some(quarantine) = &mut previous {
             let _ = quarantine.restore(binding.target_name());
-        }
-        if error.kind() == std::io::ErrorKind::AlreadyExists {
-            return Err(FileConflict::new(path).into());
         }
         return Err(error).with_context(|| format!("persisting {}", path.display()));
     }
@@ -3218,6 +3223,37 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(preserved, vec![b"generated".to_vec()]);
         assert!(std::fs::read_dir(&parent).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn replacement_conflict_reports_a_failed_quarantine_restoration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node.mdoc");
+        std::fs::write(&path, b"before").unwrap();
+        let snapshot = FileSnapshot::capture(&path).unwrap();
+        let hook_path = path.clone();
+        set_test_hook(TestHookPoint::WriteAfterQuarantine, move || {
+            std::fs::write(hook_path, b"external").unwrap();
+        });
+
+        let error = snapshot.replace(&path, b"after").unwrap_err();
+
+        assert_file_conflict(&error);
+        let quarantine = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .as_bytes()
+                    .starts_with(b".mdc-quarantine-")
+            })
+            .unwrap();
+        let message = format!("{error:#}");
+        assert!(message.contains(&quarantine.display().to_string()));
+        assert!(message.contains("restoring"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"external");
+        assert_eq!(std::fs::read(quarantine).unwrap(), b"before");
     }
 
     #[test]
