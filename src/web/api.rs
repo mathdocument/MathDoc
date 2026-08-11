@@ -166,6 +166,14 @@ impl ApiError {
         }
     }
 
+    fn invalid_node(detail: anyhow::Error) -> Self {
+        Self::new(
+            ApiErrorKind::Validation,
+            "node is structurally invalid",
+            detail,
+        )
+    }
+
     fn from_resolve(detail: anyhow::Error) -> Self {
         match detail.downcast_ref::<crate::indcache::ResolveRefError>() {
             Some(crate::indcache::ResolveRefError::NotFound(_)) => {
@@ -837,7 +845,7 @@ fn snapshot_node(
     let content = snapshot
         .content()
         .ok_or_else(|| anyhow::anyhow!("mdoc file disappeared: {}", abs_path.display()))?;
-    let node = MdocNode::load_bytes(abs_path, content)?;
+    let node = MdocNode::load_bytes(abs_path, content).map_err(ApiError::invalid_node)?;
     Ok((snapshot, node))
 }
 

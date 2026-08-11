@@ -847,6 +847,32 @@ async fn node_detail_repairs_index_after_external_fnode_change() {
     assert_eq!(detail["title"], "Main Theorem");
 }
 
+#[tokio::test]
+async fn node_detail_and_view_classify_malformed_nodes_as_validation_errors() {
+    let dir = TempDir::new().unwrap();
+    let (root, app) = build_app(&dir);
+    let (_, roots) = get_json(&app, "/api/graph/roots").await;
+    let main = roots
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["title"] == "Main Theorem")
+        .unwrap();
+    let fnode = main["fnode"].as_str().unwrap();
+    let path = root.join(main["rel_path"].as_str().unwrap());
+    std::fs::write(
+        path,
+        format!("@fnode: {fnode}\n@title: Main Theorem\n@unknown: value\n"),
+    )
+    .unwrap();
+
+    for suffix in ["", "/view"] {
+        let (status, value) = get_json(&app, &format!("/api/node/{fnode}{suffix}")).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(value["error"], "node is structurally invalid");
+    }
+}
+
 // ── Write endpoint tests ──────────────────────────────────────────────────────
 
 #[tokio::test]
