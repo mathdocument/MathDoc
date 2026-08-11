@@ -113,7 +113,41 @@ pub struct IndCache {
 pub(crate) struct WorkdraftObservationCache {
     pub(crate) valid_mdocs: usize,
     pub(crate) source_files: usize,
-    pub(crate) files: HashMap<(String, String), crate::workspace::FileStatSnapshot>,
+    files: HashMap<
+        String,
+        [Option<crate::workspace::FileStatSnapshot>; crate::config::BUILTIN_SRCTYPE_COUNT + 1],
+    >,
+}
+
+impl WorkdraftObservationCache {
+    pub(crate) fn file_count(&self) -> usize {
+        self.files
+            .values()
+            .flat_map(|observations| observations.iter())
+            .filter(|stat| stat.is_some())
+            .count()
+    }
+
+    pub(crate) fn contains(&self, source_id: &str, srctype: &str) -> bool {
+        self.stat(source_id, srctype).is_some()
+    }
+
+    pub(crate) fn stat(
+        &self,
+        source_id: &str,
+        srctype: &str,
+    ) -> Option<&crate::workspace::FileStatSnapshot> {
+        let slot = workdraft_observation_slot(srctype)?;
+        self.files.get(source_id)?.get(slot)?.as_ref()
+    }
+}
+
+fn workdraft_observation_slot(srctype: &str) -> Option<usize> {
+    if srctype.is_empty() {
+        Some(0)
+    } else {
+        crate::config::builtin_srctype_index(srctype).map(|index| index + 1)
+    }
 }
 
 pub(crate) struct WorkdraftObservation {
@@ -242,7 +276,18 @@ impl IndCache {
         if rows.iter().any(|(_, present, _)| !present) {
             return Ok(None);
         }
-        let files = rows.into_iter().map(|(key, _, stat)| (key, stat)).collect();
+        let mut files = HashMap::new();
+        for ((source_id, srctype), _, stat) in rows {
+            let Some(slot) = workdraft_observation_slot(&srctype) else {
+                return Ok(None);
+            };
+            let observations = files
+                .entry(source_id)
+                .or_insert([None; crate::config::BUILTIN_SRCTYPE_COUNT + 1]);
+            if observations[slot].replace(stat).is_some() {
+                return Ok(None);
+            }
+        }
         self.require_current_database()?;
         Ok(Some(WorkdraftObservationCache {
             valid_mdocs: valid_mdocs as usize,

@@ -55,6 +55,14 @@ const BUILTIN_SRCTYPES: [BuiltinSrctype; 5] = [
     },
 ];
 
+pub(crate) const BUILTIN_SRCTYPE_COUNT: usize = BUILTIN_SRCTYPES.len();
+
+pub(crate) fn builtin_srctype_index(srctype: &str) -> Option<usize> {
+    BUILTIN_SRCTYPES
+        .iter()
+        .position(|known| known.name == srctype)
+}
+
 fn builtin_descriptor(srctype: &str) -> Option<&'static BuiltinSrctype> {
     BUILTIN_SRCTYPES
         .iter()
