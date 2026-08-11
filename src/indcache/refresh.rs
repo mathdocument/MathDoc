@@ -983,7 +983,8 @@ pub(super) fn upsert_mdoc_row(
             new_fnode: old_fnode,
         });
     }
-    if !old_had_blocking_issue {
+    if !old_had_blocking_issue && old_semantics.invalid.is_none() && new_semantics.invalid.is_none()
+    {
         if let (
             Some((old_fnode, _, old_dependencies)),
             Some((new_fnode, new_title, new_dependencies)),
