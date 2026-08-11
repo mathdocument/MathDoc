@@ -1571,10 +1571,26 @@ fn atomic_replace_inner(
             }
             return Err(FileConflict::new(path).into());
         }
+        let primary = anyhow::Error::from(error).context(format!("persisting {}", path.display()));
         if let Some(quarantine) = &mut previous {
-            let _ = quarantine.restore(binding.target_name());
+            let quarantine_path = binding.path_for(quarantine.name());
+            let restoration = quarantine
+                .restore(binding.target_name())
+                .map_err(anyhow::Error::from);
+            let restoration_action = format!(
+                "restore the previous generation from {} to {}",
+                quarantine_path.display(),
+                path.display()
+            );
+            return Err(PersistenceRecoveryError::from_attempts(
+                primary,
+                restoration,
+                Ok(()),
+                &restoration_action,
+                "repair persisted file state",
+            ));
         }
-        return Err(error).with_context(|| format!("persisting {}", path.display()));
+        return Err(primary);
     }
     drop(temp);
 
@@ -3312,6 +3328,42 @@ mod tests {
             .unwrap();
         assert!(format!("{error:#}").contains(&quarantine.display().to_string()));
         assert_eq!(std::fs::read(&path).unwrap(), b"external");
+        assert_eq!(std::fs::read(quarantine).unwrap(), b"before");
+    }
+
+    #[test]
+    fn persistence_failure_reports_a_failed_previous_generation_restore() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node.mdoc");
+        std::fs::write(&path, b"before").unwrap();
+        let snapshot = FileSnapshot::capture(&path).unwrap();
+        let hook_parent = dir.path().to_path_buf();
+        set_test_hook(TestHookPoint::WriteAfterQuarantine, move || {
+            std::fs::set_permissions(&hook_parent, std::fs::Permissions::from_mode(0o555)).unwrap();
+        });
+
+        let result = snapshot.replace(&path, b"after");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let error = result.unwrap_err();
+
+        assert!(error_has_infrastructure_failure(&error), "{error:#}");
+        assert!(error
+            .chain()
+            .any(|cause| cause.downcast_ref::<PersistenceRecoveryError>().is_some()));
+        let quarantine = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .as_bytes()
+                    .starts_with(b".mdc-quarantine-")
+            })
+            .unwrap();
+        assert!(format!("{error:#}").contains(&quarantine.display().to_string()));
+        assert!(!path.exists());
         assert_eq!(std::fs::read(quarantine).unwrap(), b"before");
     }
 
