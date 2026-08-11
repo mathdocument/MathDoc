@@ -983,6 +983,24 @@ pub(super) fn upsert_mdoc_row(
             new_fnode: old_fnode,
         });
     }
+    if !old_had_blocking_issue {
+        if let (
+            Some((old_fnode, _, old_dependencies)),
+            Some((new_fnode, new_title, new_dependencies)),
+        ) = (&old_semantics.node, &new_semantics.node)
+        {
+            if old_fnode == new_fnode && old_dependencies == new_dependencies {
+                upsert_file_state(conn, &rel_path, file_state)?;
+                upsert_search_row(conn, &rel_path, new_fnode, new_title)?;
+                invalidate_index_digest(conn)?;
+                return Ok(UpsertOutcome {
+                    graph_changed: false,
+                    old_fnode: Some(old_fnode.clone()),
+                    new_fnode: Some(new_fnode.clone()),
+                });
+            }
+        }
+    }
 
     let old_symbol_ids = symbol_ids_for_source_path(conn, &rel_path)?;
     let old_dst_fnodes: HashSet<String> = {

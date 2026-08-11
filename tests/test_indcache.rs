@@ -2070,6 +2070,61 @@ fn full_refresh_skips_graph_rebuild_when_index_semantics_are_unchanged() {
 }
 
 #[test]
+fn title_only_upsert_does_not_rewrite_graph_tables() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    let source = root.join("source.mdoc");
+    write(
+        &source,
+        "@fnode: source-node\n@title: Source\n\n@dep:\ntarget-node\n@end\n",
+    );
+    write(
+        &root.join("target.mdoc"),
+        "@fnode: target-node\n@title: Target\n",
+    );
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    let connection = rusqlite::Connection::open(index_path(&cache)).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE graph_write_log (table_name TEXT NOT NULL);
+             CREATE TRIGGER log_edge_insert AFTER INSERT ON mdoc_edges BEGIN
+               INSERT INTO graph_write_log VALUES ('mdoc_edges');
+             END;
+             CREATE TRIGGER log_edge_delete AFTER DELETE ON mdoc_edges BEGIN
+               INSERT INTO graph_write_log VALUES ('mdoc_edges');
+             END;
+             CREATE TRIGGER log_issue_delete AFTER DELETE ON mdoc_issues BEGIN
+               INSERT INTO graph_write_log VALUES ('mdoc_issues');
+             END;
+             CREATE TRIGGER log_degree_insert AFTER INSERT ON mdoc_in_degree BEGIN
+               INSERT INTO graph_write_log VALUES ('mdoc_in_degree');
+             END;
+             CREATE TRIGGER log_degree_update AFTER UPDATE ON mdoc_in_degree BEGIN
+               INSERT INTO graph_write_log VALUES ('mdoc_in_degree');
+             END;
+             CREATE TRIGGER log_degree_delete AFTER DELETE ON mdoc_in_degree BEGIN
+               INSERT INTO graph_write_log VALUES ('mdoc_in_degree');
+             END;",
+        )
+        .unwrap();
+    drop(connection);
+
+    write(
+        &source,
+        "@fnode: source-node\n@title: Renamed\n\n@dep:\ntarget-node\n@end\n",
+    );
+    cache.upsert_path(&source).unwrap();
+
+    assert_eq!(cache.node_summary("source-node").unwrap().title, "Renamed");
+    let writes: i64 = rusqlite::Connection::open(index_path(&cache))
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM graph_write_log", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(writes, 0);
+}
+
+#[test]
 fn unchanged_reachable_refresh_preserves_the_workspace_digest() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
