@@ -74,13 +74,7 @@ pub(super) struct ResolveResponse {
 #[derive(Debug, Serialize)]
 pub(super) struct GraphFull {
     nodes: Vec<NodeSummary>,
-    edges: Vec<GraphEdge>,
-}
-
-#[derive(Debug, Serialize)]
-pub(super) struct GraphEdge {
-    source: String,
-    target: String,
+    edges: Vec<[usize; 2]>,
 }
 
 // ── Error handling ────────────────────────────────────────────────────────────
@@ -446,13 +440,20 @@ pub(super) async fn graph_full(
                 .filter(|item| !item.broken)
                 .collect();
             let edges_raw = c.all_valid_edges()?;
-            // Filter edges to only those whose both endpoints are in the node set.
-            let known: std::collections::HashSet<&str> =
-                nodes.iter().map(|n| n.fnode.as_str()).collect();
-            let edges: Vec<GraphEdge> = edges_raw
+            // Encode only edges whose endpoints remain in the filtered node array.
+            let node_indexes: std::collections::HashMap<&str, usize> = nodes
+                .iter()
+                .enumerate()
+                .map(|(index, node)| (node.fnode.as_str(), index))
+                .collect();
+            let edges: Vec<[usize; 2]> = edges_raw
                 .into_iter()
-                .filter(|(s, d)| known.contains(s.as_str()) && known.contains(d.as_str()))
-                .map(|(source, target)| GraphEdge { source, target })
+                .filter_map(|(source, target)| {
+                    Some([
+                        *node_indexes.get(source.as_str())?,
+                        *node_indexes.get(target.as_str())?,
+                    ])
+                })
                 .collect();
             Ok::<_, anyhow::Error>((nodes, edges))
         })?;

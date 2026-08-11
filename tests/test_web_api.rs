@@ -1941,6 +1941,8 @@ async fn graph_full_returns_nodes_and_edges() {
     let edges = val["edges"].as_array().unwrap();
     assert_eq!(nodes.len(), 2, "both valid nodes should be present");
     assert_eq!(edges.len(), 1, "one edge Main → Background");
-    assert_eq!(edges[0]["source"], main["fnode"]);
-    assert_eq!(edges[0]["target"], bg["fnode"]);
+    let source = edges[0][0].as_u64().unwrap() as usize;
+    let target = edges[0][1].as_u64().unwrap() as usize;
+    assert_eq!(nodes[source]["fnode"], main["fnode"]);
+    assert_eq!(nodes[target]["fnode"], bg["fnode"]);
 }

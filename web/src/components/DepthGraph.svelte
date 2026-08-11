@@ -103,7 +103,10 @@
       isRoot: false,
       isLeaf: false,
     }));
-    links = data.edges.map((edge) => ({ source: edge.source, target: edge.target }));
+    links = data.edges.map(([source, target]) => ({
+      source: nodes[source]!.id,
+      target: nodes[target]!.id,
+    }));
     computeMetadata(nodes, links);
     applyStaticGraphLayout();
   }

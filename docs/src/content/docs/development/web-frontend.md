@@ -70,7 +70,7 @@ responses use these shapes:
 | --- | --- |
 | `graph/roots` | `GraphRootItem[]` |
 | `graph/check` | `{ nodes, edges, missing, invalid, cycles }` |
-| `graph/full` | `{ nodes: NodeSummary[], edges: { source, target }[] }` |
+| `graph/full` | `{ nodes: NodeSummary[], edges: [sourceIndex, targetIndex][] }` |
 | `search`, `node/:fnode/children` | `NodeSummary[]` |
 | `resolve` | `{ fnode, title, rel_path }` |
 | `node/:fnode` | `NodeDetail` |
@@ -94,8 +94,8 @@ and source blocks containing `srctype`, `content`, and `metadata`. Root items us
 - Candidate search excludes the source node, existing direct dependencies, and invalid
   or duplicate nodes. Its empty reason distinguishes no match, excluded matches, and an
   available match hidden by the result limit.
-- `/api/graph/full` includes only non-broken nodes and edges whose endpoints remain in
-  that set.
+- `/api/graph/full` includes only non-broken nodes. Edge pairs index directly into that
+  node array, and both endpoints are guaranteed to exist.
 - The graph component is always mounted but defers full graph retrieval, static layout
   calculation, and canvas rendering until first activation. Layout is deterministic,
   grouped by descending topological depth, and ordered by title then fnode within a

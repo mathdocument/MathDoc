@@ -61,10 +61,7 @@ export interface ResolveResponse {
   rel_path: string;
 }
 
-export interface GraphEdge {
-  source: string;
-  target: string;
-}
+export type GraphEdge = [sourceIndex: number, targetIndex: number];
 
 export interface GraphFull {
   nodes: NodeInfo[];
