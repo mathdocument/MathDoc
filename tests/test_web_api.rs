@@ -819,6 +819,34 @@ async fn node_detail_and_view_refresh_same_fnode_file_generation() {
     assert_eq!(children[0]["title"], "Background Lemma");
 }
 
+#[tokio::test]
+async fn node_detail_repairs_index_after_external_fnode_change() {
+    let dir = TempDir::new().unwrap();
+    let (root, app) = build_app(&dir);
+    let (_, roots) = get_json(&app, "/api/graph/roots").await;
+    let main = roots
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["title"] == "Main Theorem")
+        .unwrap();
+    let old_fnode = main["fnode"].as_str().unwrap();
+    let main_path = root.join(main["rel_path"].as_str().unwrap());
+    let new_fnode = make_node(&root, "Replacement").fnode;
+
+    rewrite_preserving_mtime_and_size(&main_path, |node| {
+        node.fnode = new_fnode.clone();
+    });
+
+    let (status, _) = get_json(&app, &format!("/api/node/{old_fnode}")).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    let (status, detail) = get_json(&app, &format!("/api/node/{new_fnode}")).await;
+    assert_eq!(status, StatusCode::OK, "detail={detail}");
+    assert_eq!(detail["fnode"], new_fnode);
+    assert_eq!(detail["title"], "Main Theorem");
+}
+
 // ── Write endpoint tests ──────────────────────────────────────────────────────
 
 #[tokio::test]

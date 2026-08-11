@@ -559,9 +559,6 @@ fn load_node_generation(
     abs_path: &std::path::Path,
 ) -> ApiResult<(crate::workspace::FileSnapshot, MdocNode)> {
     let (snapshot, node) = snapshot_node(abs_path)?;
-    if node.fnode != fnode {
-        return Err(ApiError::generation_conflict(fnode, &node.fnode));
-    }
 
     // This is deliberately a strong single-path upsert: discovery's metadata
     // fast path cannot detect every external edit.
@@ -570,6 +567,9 @@ fn load_node_generation(
         return Err(error.into());
     }
     ensure_snapshot_unchanged(&snapshot, abs_path)?;
+    if node.fnode != fnode {
+        return Err(ApiError::generation_conflict(fnode, &node.fnode));
+    }
     Ok((snapshot, node))
 }
 
@@ -765,10 +765,7 @@ fn mutate_node(
     with_workspace_mutation(state, deadline, |cache, mutation_lock| {
         let (fnode, _, abs_path) =
             resolve_with_cache(cache, raw_ref).map_err(ApiError::from_resolve)?;
-        let (snapshot, mut node) = snapshot_node(&abs_path)?;
-        if node.fnode != fnode {
-            bail!("fnode mismatch when updating node");
-        }
+        let (snapshot, mut node) = load_node_generation(cache, &fnode, &abs_path)?;
         if expected_revision.is_some_and(|expected| expected != snapshot_revision(&snapshot)) {
             return Err(ApiError::stale_client_revision(&abs_path));
         }
@@ -1057,6 +1054,11 @@ mod tests {
 
         let error = load_node_generation(&mut cache, &fnode, &path).unwrap_err();
         assert_eq!(error.into_response().status(), StatusCode::CONFLICT);
+        assert!(cache.node_summary(&fnode).is_err());
+        assert_eq!(
+            cache.node_summary("replacement-node").unwrap().title,
+            "Replacement"
+        );
     }
 
     #[test]
