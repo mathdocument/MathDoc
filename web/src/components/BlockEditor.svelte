@@ -91,6 +91,9 @@
           backgroundColor: "var(--mdc-code-bg)",
           color: "var(--mdc-code-fg)",
         },
+        "&.cm-focused": {
+          outline: "none",
+        },
         ".cm-content": { caretColor: "var(--mdc-accent)" },
         ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--mdc-accent)" },
         "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
