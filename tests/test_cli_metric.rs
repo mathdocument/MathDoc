@@ -63,6 +63,7 @@ fn ior_uses_valid_source_degrees_and_prints_only_the_value() {
     );
     let stderr = String::from_utf8(profiled.stderr).unwrap();
     assert!(stderr.contains("profile (inclusive elapsed):"));
+    assert!(stderr.contains("IndCache::open_refreshed"));
     assert!(stderr.contains("IndCache::refresh_all"));
     assert!(stderr.contains("refresh::scan_workspace"));
 }
