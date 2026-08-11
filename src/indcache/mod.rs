@@ -908,11 +908,20 @@ impl IndCache {
                 }
             }
         }
-        if stale {
+        let formal_validation = if stale {
             derived::refresh_topo_depth_upward_from_many(&tx, &HashSet::from([fnode.to_string()]))?;
-        }
+            Some(crate::formal::status::refresh_index_statuses(
+                &tx, &self.root,
+            )?)
+        } else {
+            None
+        };
         tx.commit()?;
-        self.require_current_database()?;
+        if let Some(formal_validation) = formal_validation {
+            self.validate_formal_status_commit(formal_validation)?;
+        } else {
+            self.require_current_database()?;
+        }
         Ok(paths)
     }
 

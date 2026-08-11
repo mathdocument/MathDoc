@@ -275,6 +275,51 @@ fn work_attestations_follow_strict_dependencies_and_propagate_changes() {
 }
 
 #[test]
+fn claimant_reconciliation_downgrades_attested_referrers() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let bin = init_workspace(root);
+    let dependency = formal_node(
+        root,
+        "dep.mdoc",
+        "Dependency",
+        &[],
+        "def value : Nat := 1\n",
+        None,
+    );
+    let parent = formal_node(
+        root,
+        "parent.mdoc",
+        "Parent",
+        std::slice::from_ref(&dependency.fnode),
+        "import Lib.dep\n#check value\n",
+        None,
+    );
+    assert!(run_mdc(root, &bin, &["work", "dep.mdoc"], false)
+        .status
+        .success());
+    assert!(run_mdc(root, &bin, &["work", "parent.mdoc"], false)
+        .status
+        .success());
+
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    assert_eq!(
+        cache.formalization_status(&parent.fnode).unwrap().lean,
+        FormalCodeStatus::Verified
+    );
+    std::fs::remove_file(&dependency.path).unwrap();
+
+    assert!(cache
+        .reconcile_fnode_paths(&dependency.fnode)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        cache.formalization_status(&parent.fnode).unwrap().lean,
+        FormalCodeStatus::Unverified
+    );
+}
+
+#[test]
 fn work_rejects_import_mismatches_and_invalidates_failed_retries() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
