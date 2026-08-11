@@ -283,30 +283,51 @@ impl TuiApp {
     }
 
     fn load_view(&mut self, fnode: &str) -> Result<()> {
-        let f = match self.cache.resolve_ref(fnode, None) {
-            Ok((fnode, _, _)) => fnode,
+        let (f, generation) = match self.cache.resolve_ref(fnode, None) {
+            Ok((fnode, _, abs_path)) => {
+                let snapshot = crate::workspace::FileSnapshot::capture(&abs_path)?;
+                let content = snapshot.content().ok_or_else(|| {
+                    anyhow::anyhow!("mdoc file disappeared: {}", abs_path.display())
+                })?;
+                let node = crate::mdocnode::MdocNode::load_bytes(&abs_path, content)?;
+                if let Err(error) = self.cache.upsert_path(&abs_path) {
+                    if snapshot.unchanged(&abs_path)? {
+                        return Err(error);
+                    }
+                    anyhow::bail!("{} changed while loading its TUI view", abs_path.display());
+                }
+                if !snapshot.unchanged(&abs_path)? || node.fnode != fnode {
+                    anyhow::bail!("{} changed while loading its TUI view", abs_path.display());
+                }
+                (fnode, Some((snapshot, node, abs_path)))
+            }
             Err(error)
                 if error
                     .downcast_ref::<crate::indcache::ResolveRefError>()
                     .is_some() =>
             {
-                fnode.to_string()
+                (fnode.to_string(), None)
             }
             Err(error) => return Err(error),
         };
-        self.focused = self.cache.node_summary(&f)?;
-
-        self.referrers = {
+        let fields = (|| {
+            let focused = self.cache.node_summary(&f)?;
             let mut v = self.cache.direct_referrer_summaries(&f)?;
             v.sort_by_key(|n| std::cmp::Reverse(n.depth));
-            v
-        };
+            let mut children = self.cache.direct_dependency_summaries(&f)?;
+            children.sort_by_key(|n| std::cmp::Reverse(n.depth));
+            Ok::<_, anyhow::Error>((focused, v, children))
+        })();
+        if let Some((snapshot, _, abs_path)) = &generation {
+            if !snapshot.unchanged(abs_path)? {
+                anyhow::bail!("{} changed while loading its TUI view", abs_path.display());
+            }
+        }
+        let (focused, referrers, children) = fields?;
 
-        self.children = {
-            let mut v = self.cache.direct_dependency_summaries(&f)?;
-            v.sort_by_key(|n| std::cmp::Reverse(n.depth));
-            v
-        };
+        self.focused = focused;
+        self.referrers = referrers;
+        self.children = children;
 
         self.ref_offset = 0;
         self.child_offset = 0;
@@ -314,28 +335,21 @@ impl TuiApp {
         self.in_preview = false;
         self.preview_offset = 0;
 
-        self.preview_lines = if !self.focused.rel_path.is_empty() {
-            let root = self.cache.root();
-            let abs = root.join(&self.focused.rel_path);
-            match crate::mdocnode::MdocNode::load(&abs) {
-                Ok(node) => {
-                    let mut lines: Vec<String> = Vec::new();
-                    for (i, block) in node.blocks.iter().enumerate() {
-                        if i > 0 {
-                            lines.push(String::new());
-                        }
-                        lines.push(format!("@src: {}", block.srctype));
-                        for line in block.content.lines() {
-                            lines.push(line.to_string());
-                        }
+        self.preview_lines = generation
+            .map(|(_, node, _)| {
+                let mut lines = Vec::new();
+                for (i, block) in node.blocks.iter().enumerate() {
+                    if i > 0 {
+                        lines.push(String::new());
                     }
-                    lines
+                    lines.push(format!("@src: {}", block.srctype));
+                    for line in block.content.lines() {
+                        lines.push(line.to_string());
+                    }
                 }
-                Err(_) => vec![],
-            }
-        } else {
-            vec![]
-        };
+                lines
+            })
+            .unwrap_or_default();
 
         Ok(())
     }
@@ -1981,6 +1995,50 @@ mod tests {
         let mut cache = crate::indcache::IndCache::open(dir.path().to_path_buf()).unwrap();
 
         assert_eq!(default_start_fnode(&mut cache).unwrap(), "a-node");
+    }
+
+    #[test]
+    fn load_view_strongly_refreshes_focused_metadata_and_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        let child_a = crate::mdocnode::MdocNode::new_at_path(&root.join("a.mdoc"), "Child A");
+        let child_b = crate::mdocnode::MdocNode::new_at_path(&root.join("b.mdoc"), "Child B");
+        std::fs::write(&child_a.path, child_a.render().unwrap()).unwrap();
+        std::fs::write(&child_b.path, child_b.render().unwrap()).unwrap();
+        let path = root.join("source.mdoc");
+        let mut source = crate::mdocnode::MdocNode::new_at_path(&path, "Old Title");
+        source.depens.push(child_a.fnode.clone());
+        source.blocks.push(crate::mdocnode::SrcBlock {
+            srctype: "text".to_string(),
+            content: "old body\n".to_string(),
+            metadata: std::collections::HashMap::new(),
+        });
+        let original = source.render().unwrap();
+        std::fs::write(&path, &original).unwrap();
+        let cache = crate::indcache::IndCache::open(root.to_path_buf()).unwrap();
+        let mut app = TuiApp::new(cache, source.fnode.clone()).unwrap();
+
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        source.title = "New Title".to_string();
+        source.depens = vec![child_b.fnode.clone()];
+        source.blocks[0].content = "new body\n".to_string();
+        let revised = source.render().unwrap();
+        assert_eq!(revised.len(), original.len());
+        std::fs::write(&path, revised).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+
+        app.load_view(&source.fnode).unwrap();
+
+        assert_eq!(app.focused.title, "New Title");
+        assert_eq!(app.children.len(), 1);
+        assert_eq!(app.children[0].fnode, child_b.fnode);
+        assert!(app.preview_lines.iter().any(|line| line == "new body"));
     }
 
     fn test_app() -> (tempfile::TempDir, TuiApp, std::path::PathBuf) {
