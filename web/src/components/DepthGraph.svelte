@@ -103,10 +103,7 @@
       isRoot: false,
       isLeaf: false,
     }));
-    const idSet = new Set(nodes.map((node) => node.id));
-    links = data.edges
-      .filter((edge) => idSet.has(edge.source) && idSet.has(edge.target))
-      .map((edge) => ({ source: edge.source, target: edge.target }));
+    links = data.edges.map((edge) => ({ source: edge.source, target: edge.target }));
     computeMetadata(nodes, links);
     applyStaticGraphLayout();
   }
