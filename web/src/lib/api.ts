@@ -66,14 +66,17 @@ function mutateNode(
 
 export const api = {
   roots: () => req<GraphRootItem[]>("/api/graph/roots"),
-  full: () => req<GraphFull>("/api/graph/full"),
+  full: (fresh = false) => req<GraphFull>(`/api/graph/full${fresh ? "?fresh=true" : ""}`),
   search: (q: string, n = 200) =>
     req<NodeInfo[]>(`/api/search?q=${encodeURIComponent(q)}&n=${n}`),
   resolve: (ref: string) =>
     req<ResolveResponse>(`/api/resolve?ref=${encodeURIComponent(ref)}`),
-  node: (fnode: string) => req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}`),
-  nodeView: (fnode: string) =>
-    req<NodeView>(`/api/node/${encodeURIComponent(fnode)}/view`),
+  node: (fnode: string, fresh = false) =>
+    req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}${fresh ? "?fresh=true" : ""}`),
+  nodeView: (fnode: string, fresh = false) =>
+    req<NodeView>(
+      `/api/node/${encodeURIComponent(fnode)}/view${fresh ? "?fresh=true" : ""}`,
+    ),
   children: (fnode: string) =>
     req<NodeInfo[]>(`/api/node/${encodeURIComponent(fnode)}/children`),
   dependencyCandidates: (fnode: string, q: string, n = 50) =>

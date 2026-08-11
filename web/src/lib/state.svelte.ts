@@ -162,6 +162,7 @@ export async function navigate(
     historyIndex?: number;
     historyEntries?: string[];
     browserHistory?: BrowserHistoryMode;
+    forceDiscovery?: boolean;
   } = {},
 ): Promise<boolean> {
   if (!opts.skipUnsavedGuard && !confirmDiscardDrafts()) return false;
@@ -177,7 +178,7 @@ export async function navigate(
   // The old content stays on screen until the View Transition snapshot
   // is taken (inside withViewTransition's callback), so there's no flash.
   try {
-    const view = await api.nodeView(fnode);
+    const view = await api.nodeView(fnode, opts.forceDiscovery);
 
     let committed = false;
     const apply = () => {

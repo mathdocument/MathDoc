@@ -131,7 +131,7 @@
     const request = ++graphRequest;
     try {
       loadError = null;
-      const data = await api.full();
+      const data = await api.full(true);
       if (request !== graphRequest) return false;
       loadError = null;
       installGraph(data);

@@ -196,6 +196,7 @@
       pushHistory: false,
       skipTransition: true,
       skipUnsavedGuard,
+      forceDiscovery: true,
     });
   }
 
@@ -241,7 +242,7 @@
     const targetFnode = forceSelectedFnode;
     const request = ++forceLoadRequest;
     try {
-      const node = await api.node(targetFnode);
+      const node = await api.node(targetFnode, true);
       if (request !== forceLoadRequest || forceSelectedFnode !== targetFnode) return false;
       if (unsavedDraftRevision() !== confirmedDraftRevision) return false;
       forceEditorRevision++;

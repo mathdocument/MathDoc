@@ -848,6 +848,21 @@ async fn node_detail_repairs_index_after_external_fnode_change() {
 }
 
 #[tokio::test]
+async fn fresh_node_read_discovers_external_nodes() {
+    let dir = TempDir::new().unwrap();
+    let (root, app) = build_app(&dir);
+    let (status, _) = get_json(&app, "/api/graph/roots").await;
+    assert_eq!(status, StatusCode::OK);
+    let external = make_node(&root, "External Node");
+    let fnode = external.fnode.clone();
+    write_node(&external);
+
+    let (status, detail) = get_json(&app, &format!("/api/node/{fnode}?fresh=true")).await;
+    assert_eq!(status, StatusCode::OK, "detail={detail}");
+    assert_eq!(detail["title"], "External Node");
+}
+
+#[tokio::test]
 async fn node_detail_and_view_classify_malformed_nodes_as_validation_errors() {
     let dir = TempDir::new().unwrap();
     let (root, app) = build_app(&dir);

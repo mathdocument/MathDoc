@@ -50,9 +50,9 @@ POST   /api/node/:fnode/dep/rm                { dep_fnodes: [] }
 POST   /api/node/new                          { title, file?, parent_fnode? }
 ```
 
-The general and dependency-candidate search endpoints share a one-second workspace
-discovery gate so a typing burst does not repeatedly walk every `.mdoc`. The first search
-and the first search after the gate expires still discover external filesystem changes;
+Read endpoints share a one-second workspace discovery gate so navigation and typing bursts
+do not repeatedly walk every `.mdoc`. The first read and the first read after the gate
+expires still discover external filesystem changes. Explicit refreshes use `fresh=true`,
 successful web mutations update the shared index immediately, and discovery failures do
 not advance the gate.
 

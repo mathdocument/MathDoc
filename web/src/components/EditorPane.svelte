@@ -180,7 +180,7 @@
     const request = ++refreshRequest;
     refreshError = null;
     try {
-      const fresh = await api.node(targetFnode);
+      const fresh = await api.node(targetFnode, true);
       if (request !== refreshRequest || load.kind !== "ready" ||
         load.node.fnode !== targetFnode) return;
       if (unsavedDraftRevision() !== confirmedDraftRevision) return;

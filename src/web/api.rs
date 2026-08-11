@@ -307,21 +307,32 @@ fn with_cache<R>(
     Ok(f(&mut cache)?)
 }
 
-fn refresh_search_index(state: &AppState, cache: &mut IndCache) -> anyhow::Result<()> {
-    let due = state
-        .search_discovery
-        .lock()
-        .map_err(|_| anyhow::anyhow!("search discovery mutex poisoned"))?
-        .is_due(std::time::Instant::now());
+fn refresh_read_index(
+    state: &AppState,
+    cache: &mut IndCache,
+    required_after: Option<std::time::Instant>,
+) -> anyhow::Result<()> {
+    let due = {
+        let gate = state
+            .read_discovery
+            .lock()
+            .map_err(|_| anyhow::anyhow!("read discovery mutex poisoned"))?;
+        match required_after {
+            Some(started) => gate
+                .last_completed
+                .is_none_or(|completed| completed < started),
+            None => gate.is_due(std::time::Instant::now()),
+        }
+    };
     if !due {
         return Ok(());
     }
 
     cache.discover_workspace_changes()?;
     state
-        .search_discovery
+        .read_discovery
         .lock()
-        .map_err(|_| anyhow::anyhow!("search discovery mutex poisoned"))?
+        .map_err(|_| anyhow::anyhow!("read discovery mutex poisoned"))?
         .last_completed = Some(std::time::Instant::now());
     Ok(())
 }
@@ -380,6 +391,16 @@ fn resolve_with_cache(
     cache.resolve_ref(raw, Some(cache.root()))
 }
 
+fn resolve_with_read_cache(
+    state: &AppState,
+    cache: &mut IndCache,
+    raw: &str,
+    required_after: Option<std::time::Instant>,
+) -> anyhow::Result<(String, String, std::path::PathBuf)> {
+    refresh_read_index(state, cache, required_after)?;
+    cache.resolve_ref(raw, Some(cache.root()))
+}
+
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 pub(super) async fn graph_roots(
@@ -388,7 +409,7 @@ pub(super) async fn graph_roots(
     spawn_blocking_api(move || {
         let _profile = crate::profile::scope("web::api::graph_roots");
         let roots = with_cache(&state, |c| {
-            c.discover_workspace_changes()?;
+            refresh_read_index(&state, c, None)?;
             c.global_root_items()
         })?;
         Ok(Json(roots))
@@ -410,11 +431,15 @@ pub(super) async fn graph_check(
 }
 
 /// Full workspace graph for the force-directed view: all valid nodes + edges.
-pub(super) async fn graph_full(State(state): State<AppState>) -> ApiResult<Json<GraphFull>> {
+pub(super) async fn graph_full(
+    State(state): State<AppState>,
+    Query(fresh): Query<FreshQuery>,
+) -> ApiResult<Json<GraphFull>> {
+    let required_after = fresh.fresh.then(std::time::Instant::now);
     spawn_blocking_api(move || {
         let _profile = crate::profile::scope("web::api::graph_full");
         let (nodes, edges) = with_cache(&state, |c| {
-            c.discover_workspace_changes()?;
+            refresh_read_index(&state, c, required_after)?;
             let nodes: Vec<NodeSummary> = c
                 .all_node_summaries()?
                 .into_iter()
@@ -443,7 +468,7 @@ pub(super) async fn search(
     spawn_blocking_api(move || {
         let limit = q.n.min(MAX_SEARCH_RESULTS);
         let out = with_cache(&state, |c| {
-            refresh_search_index(&state, c)?;
+            refresh_read_index(&state, c, None)?;
             c.search(&q.q, limit)
         })?;
         Ok(Json(out))
@@ -456,6 +481,12 @@ pub(super) struct ResolveQuery {
     r#ref: String,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct FreshQuery {
+    #[serde(default)]
+    fresh: bool,
+}
+
 pub(super) async fn resolve_ref(
     State(state): State<AppState>,
     Query(q): Query<ResolveQuery>,
@@ -465,8 +496,8 @@ pub(super) async fn resolve_ref(
             .cache
             .lock()
             .map_err(|_| anyhow::anyhow!("cache mutex poisoned"))?;
-        let (fnode, title, abs_path) =
-            resolve_with_cache(&mut cache, &q.r#ref).map_err(ApiError::from_resolve)?;
+        let (fnode, title, abs_path) = resolve_with_read_cache(&state, &mut cache, &q.r#ref, None)
+            .map_err(ApiError::from_resolve)?;
         let rel_path = to_rel_path(cache.root(), &abs_path);
         Ok(Json(ResolveResponse {
             fnode,
@@ -480,14 +511,17 @@ pub(super) async fn resolve_ref(
 pub(super) async fn node_detail(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
+    Query(fresh): Query<FreshQuery>,
 ) -> ApiResult<Json<NodeDetail>> {
+    let required_after = fresh.fresh.then(std::time::Instant::now);
     spawn_blocking_api(move || {
         let mut cache = state
             .cache
             .lock()
             .map_err(|_| anyhow::anyhow!("cache mutex poisoned"))?;
         let (fnode, _, abs_path) =
-            resolve_with_cache(&mut cache, &fnode).map_err(ApiError::from_resolve)?;
+            resolve_with_read_cache(&state, &mut cache, &fnode, required_after)
+                .map_err(ApiError::from_resolve)?;
         let (snapshot, node) = load_node_generation(&mut cache, &fnode, &abs_path)?;
         let cache_fields = (|| {
             Ok::<_, anyhow::Error>((
@@ -510,7 +544,9 @@ pub(super) async fn node_detail(
 pub(super) async fn node_view(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
+    Query(fresh): Query<FreshQuery>,
 ) -> ApiResult<Json<NodeView>> {
+    let required_after = fresh.fresh.then(std::time::Instant::now);
     spawn_blocking_api(move || {
         let _profile = crate::profile::scope("web::api::node_view");
         let mut cache = state
@@ -518,7 +554,8 @@ pub(super) async fn node_view(
             .lock()
             .map_err(|_| anyhow::anyhow!("cache mutex poisoned"))?;
         let (fnode, _, abs_path) =
-            resolve_with_cache(&mut cache, &fnode).map_err(ApiError::from_resolve)?;
+            resolve_with_read_cache(&state, &mut cache, &fnode, required_after)
+                .map_err(ApiError::from_resolve)?;
         let (snapshot, node) = load_node_generation(&mut cache, &fnode, &abs_path)?;
         let cache_fields = (|| {
             Ok::<_, anyhow::Error>((
@@ -553,8 +590,8 @@ pub(super) async fn node_children(
             .cache
             .lock()
             .map_err(|_| anyhow::anyhow!("cache mutex poisoned"))?;
-        let (fnode, _, _) =
-            resolve_with_cache(&mut cache, &fnode).map_err(ApiError::from_resolve)?;
+        let (fnode, _, _) = resolve_with_read_cache(&state, &mut cache, &fnode, None)
+            .map_err(ApiError::from_resolve)?;
         let out = cache.direct_dependency_summaries(&fnode)?;
         Ok(Json(out))
     })
@@ -622,7 +659,7 @@ pub(super) async fn node_dependency_candidates(
             .cache
             .lock()
             .map_err(|_| anyhow::anyhow!("cache mutex poisoned"))?;
-        refresh_search_index(&state, &mut cache)?;
+        refresh_read_index(&state, &mut cache, None)?;
         let (fnode, _, _) = cache
             .resolve_ref(&fnode, Some(cache.root()))
             .map_err(ApiError::from_resolve)?;
@@ -1070,35 +1107,35 @@ mod tests {
     }
 
     #[test]
-    fn search_discovery_gate_skips_bursts_and_retries_failures() {
+    fn read_discovery_gate_skips_bursts_and_retries_forced_failures() {
         let (_dir, state, path, _) = setup_state();
         let root = path.parent().unwrap();
         {
             let mut cache = state.cache.lock().unwrap();
-            refresh_search_index(&state, &mut cache).unwrap();
+            refresh_read_index(&state, &mut cache, None).unwrap();
         }
 
         let alias = root.join("alias.mdoc");
         std::fs::hard_link(&path, &alias).unwrap();
         {
             let mut cache = state.cache.lock().unwrap();
-            refresh_search_index(&state, &mut cache).unwrap();
+            refresh_read_index(&state, &mut cache, None).unwrap();
         }
 
-        let expired = std::time::Instant::now() - super::super::SEARCH_DISCOVERY_INTERVAL;
-        state.search_discovery.lock().unwrap().last_completed = Some(expired);
+        let completed = state.read_discovery.lock().unwrap().last_completed;
+        let required_after = std::time::Instant::now();
         {
             let mut cache = state.cache.lock().unwrap();
-            assert!(refresh_search_index(&state, &mut cache).is_err());
+            assert!(refresh_read_index(&state, &mut cache, Some(required_after)).is_err());
         }
         assert_eq!(
-            state.search_discovery.lock().unwrap().last_completed,
-            Some(expired)
+            state.read_discovery.lock().unwrap().last_completed,
+            completed
         );
 
         std::fs::remove_file(alias).unwrap();
         let mut cache = state.cache.lock().unwrap();
-        refresh_search_index(&state, &mut cache).unwrap();
+        refresh_read_index(&state, &mut cache, Some(required_after)).unwrap();
     }
 
     #[test]
