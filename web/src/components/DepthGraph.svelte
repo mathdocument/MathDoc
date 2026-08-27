@@ -478,7 +478,7 @@
 
   function onPointerDown(e: PointerEvent) {
     const canvas = canvasEl;
-    if (!canvas || e.button !== 0) return;
+    if (!canvas || e.button !== 0 || !e.isPrimary || activePointerId !== null) return;
     activePointerId = e.pointerId;
     canvas.setPointerCapture(e.pointerId);
     const rect = canvas.getBoundingClientRect();
@@ -500,7 +500,7 @@
     const y = e.clientY - rect.top;
 
     if (mouseMode === "pan" && panStart) {
-      mouseMoved = Math.hypot(x - panStart.x, y - panStart.y) > 3;
+      if (!mouseMoved) mouseMoved = Math.hypot(x - panStart.x, y - panStart.y) > 3;
       if (mouseMoved) {
         viewX = panStart.viewX + (x - panStart.x);
         viewY = panStart.viewY + (y - panStart.y);
@@ -534,7 +534,11 @@
     panStart = null;
     pressedNode = null;
     mouseMoved = false;
-    canvas.style.cursor = findNodeAt(x, y) ? "pointer" : "grab";
+    const node = e && !cancelled ? findNodeAt(x, y) : null;
+    const hoverChanged = (node?.id ?? null) !== (hoveredNode?.id ?? null);
+    hoveredNode = node;
+    canvas.style.cursor = node ? "pointer" : "grab";
+    if (hoverChanged) requestRender();
     if (activePointerId !== null && canvas.hasPointerCapture(activePointerId)) {
       canvas.releasePointerCapture(activePointerId);
     }
@@ -547,6 +551,13 @@
 
   function onPointerCancel(e: PointerEvent) {
     if (e.pointerId === activePointerId) finishPointer(e, true);
+  }
+
+  function onPointerLeave() {
+    if (mouseMode !== "idle" || !hoveredNode) return;
+    hoveredNode = null;
+    if (canvasEl) canvasEl.style.cursor = "grab";
+    requestRender();
   }
 
   function onWheel(e: WheelEvent) {
@@ -752,6 +763,7 @@
     onpointermove={onPointerMove}
     onpointerup={onPointerUp}
     onpointercancel={onPointerCancel}
+    onpointerleave={onPointerLeave}
   ></canvas>
   <button class="ctrl-btn reset-btn" onclick={() => fitToNodes()} title="Fit graph to view">
     <Maximize2 size={14} strokeWidth={1.8} />
