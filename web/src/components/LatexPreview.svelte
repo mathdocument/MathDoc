@@ -127,10 +127,15 @@
       }
       if (/^\\end\{(?:itemize|enumerate)\}$/.test(trimmed)) {
         closeParagraph();
-        if (stack.length > 1) stack.pop();
+        if (current().tagName === "LI") stack.pop();
+        if (stack.length > 1 && /^(?:UL|OL)$/.test(current().tagName)) stack.pop();
         continue;
       }
       const item = trimmed.match(/^\\item(?:\[([^\]]+)\])?\s*(.*)$/);
+      if (item && current().tagName === "LI") {
+        closeParagraph();
+        stack.pop();
+      }
       if (item && /^(?:UL|OL)$/.test(current().tagName)) {
         closeParagraph();
         const listItem = document.createElement("li");
@@ -142,8 +147,6 @@
         current().append(listItem);
         stack.push(listItem);
         if (item[2]) appendText(item[2]);
-        closeParagraph();
-        stack.pop();
         continue;
       }
 
