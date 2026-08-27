@@ -32,6 +32,7 @@
   let readyReported = false;
   const readyBlocks = new Set<string>();
   let BlockEditorComponent = $state<typeof import("./BlockEditor.svelte").default | null>(null);
+  let blockEditorPromise: Promise<typeof import("./BlockEditor.svelte").default> | null = null;
   let editorLoadError: string | null = $state(null);
   let alive = true;
 
@@ -88,18 +89,29 @@
     if (readyBlocks.size === load.node.blocks.length) reportReady();
   }
 
-  onMount(() => {
-    if (load.kind !== "ready" || load.node.blocks.length === 0) {
-      reportReady();
-      return;
-    }
-    void import("./BlockEditor.svelte").then((module) => {
-      if (alive) BlockEditorComponent = module.default;
+  function ensureBlockEditorLoaded() {
+    if (BlockEditorComponent || blockEditorPromise) return;
+    editorLoadError = null;
+    blockEditorPromise = import("./BlockEditor.svelte").then((module) => module.default);
+    void blockEditorPromise.then((component) => {
+      if (alive) BlockEditorComponent = component;
     }).catch((error) => {
       if (!alive) return;
       editorLoadError = errMsg(error);
       reportReady();
+    }).finally(() => {
+      blockEditorPromise = null;
     });
+  }
+
+  onMount(() => {
+    if (load.kind !== "ready" || load.node.blocks.length === 0) {
+      reportReady();
+    }
+  });
+
+  $effect(() => {
+    if (load.kind === "ready" && load.node.blocks.length > 0) ensureBlockEditorLoaded();
   });
 
   // Reset title editing state when the displayed node changes.
