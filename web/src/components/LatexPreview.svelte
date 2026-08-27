@@ -32,9 +32,36 @@
   }
 
   function unwrapTitle(value: string): string {
-    return value
-      .replace(/\\(?:textbf|textit|emph|texttt)\{([^{}]*)\}/g, "$1")
-      .replace(/\\([%&#_$])/g, "$1");
+    let unwrapped = value;
+    let previous: string;
+    do {
+      previous = unwrapped;
+      unwrapped = unwrapped.replace(/\\(?:textbf|textit|emph|texttt)\{([^{}]*)\}/g, "$1");
+    } while (unwrapped !== previous);
+    return unwrapped.replace(/\\([%&#_$])/g, "$1");
+  }
+
+  function parseHeading(line: string): { level: string; title: string; trailing: string } | null {
+    const start = line.match(/^\\(section|subsection|subsubsection|paragraph)\*?\{/);
+    if (!start) return null;
+    const titleStart = start[0].length;
+    let depth = 1;
+    for (let index = titleStart; index < line.length; index++) {
+      const character = line[index];
+      if (character !== "{" && character !== "}") continue;
+      let slashes = 0;
+      for (let previous = index - 1; previous >= 0 && line[previous] === "\\"; previous--) slashes++;
+      if (slashes % 2 !== 0) continue;
+      depth += character === "{" ? 1 : -1;
+      if (depth === 0) {
+        return {
+          level: start[1]!,
+          title: line.slice(titleStart, index),
+          trailing: line.slice(index + 1).trimStart(),
+        };
+      }
+    }
+    return null;
   }
 
   function buildDocument(root: HTMLElement, latex: string) {
@@ -71,7 +98,7 @@
       }
       if (/^\\(?:begin|end)\{document\}$/.test(trimmed)) continue;
 
-      const heading = trimmed.match(/^\\(section|subsection|subsubsection|paragraph)\*?\{([^{}]*)\}\s*(.*)$/);
+      const heading = parseHeading(trimmed);
       if (heading) {
         closeParagraph();
         const levels: Record<string, string> = {
@@ -80,10 +107,10 @@
           subsubsection: "h4",
           paragraph: "h5",
         };
-        const element = document.createElement(levels[heading[1]!]!);
-        element.textContent = unwrapTitle(heading[2]!);
+        const element = document.createElement(levels[heading.level]!);
+        element.textContent = unwrapTitle(heading.title);
         current().append(element);
-        if (heading[3]) appendText(heading[3]);
+        if (heading.trailing) appendText(heading.trailing);
         continue;
       }
 
