@@ -1,9 +1,11 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, tick } from "svelte";
   import {
     AlertTriangle,
     ChevronDown,
     ChevronRight,
+    Code2,
+    Eye,
     Save as SaveIcon,
     Trash2,
     Zap,
@@ -29,6 +31,7 @@
   import { shikiHighlight } from "../lib/cm-shiki";
   import { getHighlighter, srctypeToLang } from "../lib/shiki";
   import { removeDraft, setDraftDirty, setMutationPending } from "../lib/unsaved";
+  import LatexPreview from "./LatexPreview.svelte";
 
   interface Props {
     fnode: string;
@@ -50,6 +53,8 @@
   let error: string | null = $state(null);
   let expanded = $state(true);
   let shikiError: string | null = $state(null);
+  let previewing = $state(false);
+  let previewSource = $state("");
   let alive = false;
   const draftId = Symbol("block draft");
   const mutationId = Symbol("block mutation");
@@ -245,6 +250,18 @@
 
   function toggleExpand() { expanded = !expanded; }
 
+  async function toggleLatexPreview() {
+    if (block.srctype !== "latex") return;
+    if (previewing) {
+      previewing = false;
+      await tick();
+      editorView?.requestMeasure();
+      return;
+    }
+    previewSource = editorView?.state.doc.toString() ?? block.content;
+    previewing = true;
+  }
+
   onDestroy(() => {
     alive = false;
     removeDraft(draftId);
@@ -269,6 +286,7 @@
     if (identityChanged) {
       saving = false;
       deleting = false;
+      previewing = false;
     }
     error = null;
     lastSavedContent = nextContent;
@@ -300,14 +318,35 @@
     {#if deleting}<span class="saving">deleting…</span>{/if}
     {#if error}<span class="error" title={error}><AlertTriangle size={14} strokeWidth={1.9} /></span>{/if}
     {#if shikiError}<span class="error" title={`highlight: ${shikiError}`}><Zap size={14} strokeWidth={1.9} /></span>{/if}
+    {#if block.srctype === "latex"}
+      <button
+        class="preview-toggle"
+        class:active={previewing}
+        onclick={() => void toggleLatexPreview()}
+        disabled={!expanded}
+        aria-pressed={previewing}
+        title={previewing ? "Return to LaTeX editor" : "Render LaTeX preview"}
+      >
+        {#if previewing}<Code2 size={14} strokeWidth={1.8} /><span>Edit</span>
+        {:else}<Eye size={14} strokeWidth={1.8} /><span>Preview</span>{/if}
+      </button>
+    {/if}
     <button class="icon-btn expand" onclick={toggleExpand} title={expanded ? "Collapse" : "Expand"} aria-label={expanded ? "Collapse block" : "Expand block"}>
       {#if expanded}<ChevronDown size={15} strokeWidth={1.9} />{:else}<ChevronRight size={15} strokeWidth={1.9} />{/if}
     </button>
     <button class="save" onclick={save} disabled={!dirty || saving || deleting} title="Save (Ctrl/⌘+S)"><SaveIcon size={13} strokeWidth={1.9} />Save</button>
     <button class="delete" onclick={onDelete} disabled={saving || deleting} title="Delete block" aria-label="Delete block"><Trash2 size={14} strokeWidth={1.8} /></button>
   </header>
-  <div class="editor-host" class:expanded class:collapsed={!expanded} bind:this={host}>
+  <div
+    class="editor-host"
+    class:expanded
+    class:collapsed={!expanded || previewing}
+    bind:this={host}
+  >
   </div>
+  {#if previewing && expanded}
+    <LatexPreview source={previewSource} />
+  {/if}
   {#if error}<div class="error-bar">{error}</div>{/if}
 </article>
 
@@ -383,7 +422,7 @@
   }
   .saving { color: var(--mdc-muted); font-family: var(--mdc-mono); font-size: 0.64rem; }
   .error { display: inline-flex; color: var(--mdc-error); cursor: help; }
-  .save, .delete, .icon-btn {
+  .save, .delete, .icon-btn, .preview-toggle {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -403,6 +442,16 @@
   .delete {
     width: 27px;
     padding: 0;
+  }
+  .preview-toggle.active,
+  .preview-toggle:hover:not(:disabled) {
+    color: var(--mdc-accent-up);
+    background: color-mix(in srgb, var(--mdc-accent-up) 12%, transparent);
+    border-color: color-mix(in srgb, var(--mdc-accent-up) 28%, transparent);
+  }
+  .preview-toggle:disabled {
+    opacity: 0.35;
+    cursor: default;
   }
   .save:disabled { opacity: 0.32; cursor: default; }
   .save:not(:disabled) {

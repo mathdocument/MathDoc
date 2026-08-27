@@ -18,11 +18,13 @@
     "@lucide/svelte": "^1.27.0",
     "@shikijs/langs": "^4.2.0",
     "@shikijs/themes": "^4.2.0",
+    "katex": "^0.18.4",
     "shiki": "^4.2.0"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
     "@tsconfig/svelte": "^5.0.4",
+    "@types/katex": "^0.16.8",
     "svelte": "^5.19.0",
     "svelte-check": "^4.1.4",
     "tslib": "^2.8.1",
