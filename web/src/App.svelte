@@ -450,6 +450,8 @@
           historyEntries: opts.historyEntries,
           browserHistory: opts.browserHistory,
         });
+        appState.navigationError = null;
+        appState.failedNavigationFnode = null;
         committed = true;
       }, "force-editor");
       return committed;
@@ -471,6 +473,8 @@
           historyEntries: opts.historyEntries,
           browserHistory: opts.browserHistory,
         });
+        appState.navigationError = null;
+        appState.failedNavigationFnode = null;
         committed = true;
       }, "force-editor");
       return committed;
@@ -683,7 +687,8 @@
       <button onclick={() => {
         if (appState.failedNavigationFnode) {
           const target = appState.failedNavigationFnode;
-          void navigate(target, { pushHistory: appState.load.kind !== "ready" });
+          if (view === "force") void onForceSelect(target);
+          else void navigate(target);
         } else {
           void refreshView();
         }
