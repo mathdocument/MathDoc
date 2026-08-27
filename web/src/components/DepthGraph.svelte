@@ -338,7 +338,6 @@
 
     // LOD thresholds.
     const showLabels = viewK > 0.9;
-    const showShortFnode = viewK > 0.9;
     const graphSelection = selectedFnode && inDegreeMap.has(selectedFnode)
       ? selectedFnode
       : null;
@@ -407,7 +406,7 @@
       }
     }
 
-    if (showShortFnode) {
+    if (showLabels) {
       ctx.font = `${10 / viewK}px monospace`;
       ctx.fillStyle = `rgba(${palette.shortLabel}, 0.9)`;
       ctx.textAlign = "center";
@@ -415,7 +414,7 @@
         const n = visibleNodes[index]!;
         const isSelected = selectedFnode === n.id;
         const isHovered = hoveredNode?.id === n.id;
-        if (!isSelected && !isHovered && (!showLabels || index % labelStride !== 0)) continue;
+        if (!isSelected && !isHovered && index % labelStride !== 0) continue;
         const r = nodeRadius(n);
         ctx.fillText(shortFnode(n.id), n.x, n.y + r + 10 / viewK);
       }
