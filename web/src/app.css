@@ -136,6 +136,24 @@ input:focus-visible,
   to { opacity: 1; transform: none; }
 }
 
+dialog.modal-dialog {
+  margin: 10vh auto auto;
+  padding: 0;
+  color: inherit;
+  background: color-mix(in srgb, var(--mdc-panel) 98%, transparent);
+  border: 1px solid var(--mdc-border-strong);
+  border-radius: var(--mdc-radius-lg);
+  overflow: hidden;
+  box-shadow: var(--mdc-shadow-panel);
+  animation: mdc-pop-in 180ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+dialog.modal-dialog::backdrop {
+  background: var(--mdc-backdrop);
+  backdrop-filter: blur(6px);
+  animation: mdc-fade-in 150ms ease;
+}
+
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--mdc-border-strong) transparent;

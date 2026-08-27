@@ -729,7 +729,7 @@
 
 <div
   class="app"
-  inert={overlay.kind !== "none" || viewSwitching || refreshing || historyNavigating}
+  inert={viewSwitching || refreshing || historyNavigating}
   aria-busy={viewSwitching || refreshing || historyNavigating}
 >
   <header class="toolbar">

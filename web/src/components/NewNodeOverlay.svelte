@@ -64,16 +64,6 @@
     if (disabled) return;
     if ((e.key === "Enter" || e.key === " ") &&
       e.target instanceof Element && e.target.closest(".close-btn, .actions")) return;
-    if (e.key === "Escape") {
-      if (saving) return;
-      e.preventDefault();
-      if (step === "file") {
-        step = "title";
-      } else {
-        close();
-      }
-      return;
-    }
     if (e.key === "Enter") {
       e.preventDefault();
       if (step === "title") {
@@ -82,6 +72,13 @@
         void submit();
       }
     }
+  }
+
+  function onCancel(event: Event) {
+    event.preventDefault();
+    if (disabled || saving) return;
+    if (step === "file") step = "title";
+    else close();
   }
 
   async function submit() {
@@ -117,17 +114,12 @@
 
 <svelte:window onkeydown={onKey} />
 
-<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-<div class="backdrop" onclick={close} role="presentation">
-  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <div
-    class="dialog"
-    role="dialog"
-    aria-modal="true"
+<dialog
+    class="dialog modal-dialog"
     aria-label="new node"
-    tabindex="-1"
     use:modal
-    onclick={(e) => e.stopPropagation()}
+    oncancel={onCancel}
+    onclick={(event) => { if (event.target === event.currentTarget) close(); }}
   >
     <header class="dialog-head">
       <span class="head-icon"><FilePlus2 size={16} strokeWidth={1.8} /></span>
@@ -173,30 +165,12 @@
         {/if}
       </div>
     </footer>
-  </div>
-</div>
+  </dialog>
 
 <style>
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    background: var(--mdc-backdrop);
-    backdrop-filter: blur(6px);
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    padding-top: 14vh;
-    z-index: 50;
-    animation: mdc-fade-in 150ms ease;
-  }
   .dialog {
     width: min(560px, 90vw);
-    background: color-mix(in srgb, var(--mdc-panel) 98%, transparent);
-    border: 1px solid var(--mdc-border-strong);
-    border-radius: var(--mdc-radius-lg);
-    overflow: hidden;
-    box-shadow: var(--mdc-shadow-panel);
-    animation: mdc-pop-in 180ms cubic-bezier(0.2, 0.8, 0.3, 1);
+    margin-top: 14vh;
   }
   .dialog-head {
     display: flex;

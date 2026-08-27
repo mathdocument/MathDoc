@@ -52,6 +52,27 @@
   }
 </script>
 
+{#snippet card(item: NodeInfo, i: number)}
+  <button
+    class="card"
+    class:broken={item.broken}
+    class:selected={i === selected}
+    class:last-visited={item.fnode === lastVisitedFnode}
+    data-fnode={item.fnode}
+    aria-label={ariaLabel(item)}
+    onclick={() => onSelect(item.fnode, i)}
+    onmouseenter={() => onHover?.(i)}
+    disabled={item.broken}
+  >
+    <span class="card-meta">
+      <span class="fnode">{shortFnode(item.fnode)}</span>
+      <span class="depth">depth {item.depth}</span>
+    </span>
+    <span class="title">{item.title}</span>
+    <span class="path">{item.rel_path}</span>
+  </button>
+{/snippet}
+
 <aside class="column" data-accent={accent} aria-label={title}>
   <header class="column-head">
     <span class="head-main">
@@ -90,47 +111,13 @@
           aria-setsize={items.length}
           aria-posinset={i + 1}
         >
-          <button
-            class="card"
-            class:broken={item.broken}
-            class:selected={i === selected}
-            class:last-visited={item.fnode === lastVisitedFnode}
-            data-fnode={item.fnode}
-            aria-label={ariaLabel(item)}
-            onclick={() => onSelect(item.fnode, i)}
-            onmouseenter={() => onHover?.(i)}
-            disabled={item.broken}
-          >
-            <span class="card-meta">
-              <span class="fnode">{shortFnode(item.fnode)}</span>
-              <span class="depth">depth {item.depth}</span>
-            </span>
-            <span class="title">{item.title}</span>
-            <span class="path">{item.rel_path}</span>
-          </button>
+          {@render card(item, i)}
         </li>
       {/each}
     {:else}
       {#each items as item, i (item.fnode)}
         <li>
-          <button
-            class="card"
-            class:broken={item.broken}
-            class:selected={i === selected}
-            class:last-visited={item.fnode === lastVisitedFnode}
-            data-fnode={item.fnode}
-            aria-label={ariaLabel(item)}
-            onclick={() => onSelect(item.fnode, i)}
-            onmouseenter={() => onHover?.(i)}
-            disabled={item.broken}
-          >
-            <span class="card-meta">
-              <span class="fnode">{shortFnode(item.fnode)}</span>
-              <span class="depth">depth {item.depth}</span>
-            </span>
-            <span class="title">{item.title}</span>
-            <span class="path">{item.rel_path}</span>
-          </button>
+          {@render card(item, i)}
         </li>
       {/each}
     {/if}

@@ -60,11 +60,6 @@
     if (disabled) return;
     if ((e.key === "Enter" || e.key === " ") &&
       e.target instanceof Element && e.target.closest(".close-btn, .actions")) return;
-    if (e.key === "Escape") {
-      e.preventDefault();
-      close();
-      return;
-    }
     if (loading || saving) return;
     if (e.key === "ArrowDown" || e.key === "j") {
       e.preventDefault();
@@ -79,6 +74,11 @@
       e.preventDefault();
       void submit();
     }
+  }
+
+  function onCancel(event: Event) {
+    event.preventDefault();
+    if (!disabled) close();
   }
 
   async function submit() {
@@ -111,17 +111,12 @@
 
 <svelte:window onkeydown={onKey} />
 
-<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-<div class="backdrop" onclick={close} role="presentation">
-  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <div
-    class="dialog"
-    role="dialog"
-    aria-modal="true"
+<dialog
+    class="dialog modal-dialog"
     aria-label="remove dependencies"
-    tabindex="-1"
     use:modal
-    onclick={(e) => e.stopPropagation()}
+    oncancel={onCancel}
+    onclick={(event) => { if (event.target === event.currentTarget) close(); }}
   >
     <header class="dialog-head">
       <span class="head-icon"><Unlink2 size={16} strokeWidth={1.8} /></span>
@@ -163,30 +158,12 @@
         <button class="danger" onclick={() => void submit()} disabled={saving || selected.every((value) => !value)}>Remove selected</button>
       </div>
     </footer>
-  </div>
-</div>
+  </dialog>
 
 <style>
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    background: var(--mdc-backdrop);
-    backdrop-filter: blur(6px);
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    padding-top: 10vh;
-    z-index: 50;
-    animation: mdc-fade-in 150ms ease;
-  }
   .dialog {
     width: min(860px, 92vw);
-    background: color-mix(in srgb, var(--mdc-panel) 98%, transparent);
-    border: 1px solid var(--mdc-dim);
-    border-radius: var(--mdc-radius-lg);
-    overflow: hidden;
-    box-shadow: var(--mdc-shadow-panel);
-    animation: mdc-pop-in 180ms cubic-bezier(0.2, 0.8, 0.3, 1);
+    border-color: var(--mdc-dim);
   }
   .dialog-head {
     display: flex;

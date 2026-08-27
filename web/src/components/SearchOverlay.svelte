@@ -20,21 +20,11 @@
   let inputEl = $state<HTMLInputElement | null>(null);
   let searchRequest = 0;
 
-  function firstSelectable(items: NodeInfo[]): number {
-    return items.findIndex((item) => !item.broken);
-  }
-
   function moveSelection(direction: -1 | 1) {
-    for (
-      let index = selected + direction;
-      index >= 0 && index < results.length;
-      index += direction
-    ) {
-      if (!results[index]!.broken) {
-        selected = index;
-        return;
-      }
-    }
+    const index = direction === 1
+      ? results.findIndex((item, index) => index > selected && !item.broken)
+      : results.findLastIndex((item, index) => index < selected && !item.broken);
+    if (index >= 0) selected = index;
   }
 
   $effect(() => {
@@ -57,7 +47,7 @@
         const fresh = await api.search(q, 50, controller.signal);
         if (request !== searchRequest) return;
         results = fresh;
-        selected = firstSelectable(fresh);
+        selected = fresh.findIndex((item) => !item.broken);
       } catch (e) {
         if (isAbortError(e)) return;
         if (request !== searchRequest) return;
@@ -90,10 +80,6 @@
     if ((e.key === "Enter" || e.key === " ") &&
       e.target instanceof Element && e.target.closest(".close-btn")) return;
     switch (e.key) {
-      case "Escape":
-        e.preventDefault();
-        onClose();
-        break;
       case "Enter":
         e.preventDefault();
         submit();
@@ -108,25 +94,21 @@
         break;
     }
   }
+
+  function onCancel(event: Event) {
+    event.preventDefault();
+    if (!disabled) onClose();
+  }
 </script>
 
 <svelte:window onkeydown={onKey} />
 
-<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-<div
-  class="backdrop"
-  onclick={onClose}
-  role="presentation"
->
-<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <div
-    class="dialog"
-    role="dialog"
-    aria-modal="true"
+<dialog
+    class="dialog modal-dialog"
     aria-label="search"
-    tabindex="-1"
     use:modal
-    onclick={(e) => e.stopPropagation()}
+    oncancel={onCancel}
+    onclick={(event) => { if (event.target === event.currentTarget && !disabled) onClose(); }}
   >
     <div class="search-field">
       <Search size={18} strokeWidth={1.8} />
@@ -164,30 +146,11 @@
       {/each}
     </ul>
     <div class="hint"><span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span><span><kbd>Enter</kbd> Open</span><span><kbd>Esc</kbd> Close</span></div>
-  </div>
-</div>
+  </dialog>
 
 <style>
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    background: var(--mdc-backdrop);
-    backdrop-filter: blur(6px);
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    padding-top: 10vh;
-    z-index: 50;
-    animation: mdc-fade-in 150ms ease;
-  }
   .dialog {
     width: min(860px, 92vw);
-    background: color-mix(in srgb, var(--mdc-panel) 98%, transparent);
-    border: 1px solid var(--mdc-border-strong);
-    border-radius: var(--mdc-radius-lg);
-    overflow: hidden;
-    box-shadow: var(--mdc-shadow-panel);
-    animation: mdc-pop-in 180ms cubic-bezier(0.2, 0.8, 0.3, 1);
   }
   .search-field {
     display: flex;
