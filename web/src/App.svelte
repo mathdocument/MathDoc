@@ -378,10 +378,12 @@
       refreshFocused(relationUpdate(appState.load.node, updated));
     }
     forceRelationsDirty = true;
-    void api.children(updated.fnode).then((items) => {
+    if (appState.load.kind !== "ready" || appState.load.node.fnode !== updated.fnode) return;
+    void api.nodeView(updated.fnode).then((nodeView) => {
       if (request !== relationRequest) return;
       if (appState.load.kind === "ready" && appState.load.node.fnode === updated.fnode) {
-        appState.children = { items, selected: -1 };
+        appState.referrers = { items: nodeView.referrers, selected: -1 };
+        appState.children = { items: nodeView.children, selected: -1 };
         forceRelationsDirty = false;
       }
     }).catch((e) => {
