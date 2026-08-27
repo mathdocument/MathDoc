@@ -55,11 +55,12 @@
   let previewing = $state(false);
   let previewSource = $state("");
   let previewLoading = $state(false);
+  let previewError: string | null = $state(null);
   let LatexPreviewComponent = $state<Component<{ source: string }> | null>(null);
   let latexPreviewPromise: Promise<Component<{ source: string }>> | null = null;
+  let previewRequest = 0;
   let alive = false;
   const draftId = Symbol("block draft");
-  const mutationId = Symbol("block mutation");
   let identityVersion = 0;
   let prevFnode: string | null = null;
   let prevSrctype: string | null = null;
@@ -69,6 +70,8 @@
   let syntaxExtension: Extension = [];
   let readyReported = false;
   let syntaxRequested = false;
+  let syntaxRetryCount = 0;
+  let syntaxRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
   const SHIKI_THEME = "tokyo-night";
 
@@ -150,6 +153,7 @@
           syntaxRequested = false;
           return;
         }
+        syntaxRetryCount = 0;
         syntaxExtension = shikiHighlight(hl, lang, SHIKI_THEME, (error) => {
           if (alive) shikiError = error === null ? null : errMsg(error);
         });
@@ -162,6 +166,13 @@
         if (!alive) return;
         syntaxRequested = false;
         shikiError = errMsg(e);
+        if (active && syntaxRetryCount < 2) {
+          const delay = 500 * 2 ** syntaxRetryCount++;
+          syntaxRetryTimer = setTimeout(() => {
+            syntaxRetryTimer = null;
+            if (alive && active) ensureSyntaxHighlighting();
+          }, delay);
+        }
       });
   }
 
@@ -201,6 +212,7 @@
     const targetSrctype = block.srctype;
     const targetRevision = revision;
     const requestIdentity = identityVersion;
+    const mutationId = Symbol("block save");
     saving = true;
     setMutationPending(mutationId, true);
     error = null;
@@ -250,6 +262,7 @@
     const targetSrctype = block.srctype;
     const targetRevision = revision;
     const requestIdentity = identityVersion;
+    const mutationId = Symbol("block delete");
     error = null;
     deleting = true;
     let pending = true;
@@ -276,29 +289,41 @@
   async function toggleLatexPreview() {
     if (block.srctype !== "latex") return;
     if (previewing) {
+      previewRequest++;
       previewing = false;
+      previewLoading = false;
       await tick();
       editorView?.requestMeasure();
       return;
     }
     previewSource = editorView?.state.doc.toString() ?? block.content;
     previewing = true;
+    previewError = null;
     if (LatexPreviewComponent) return;
+    const request = ++previewRequest;
+    const requestIdentity = identityVersion;
     previewLoading = true;
     latexPreviewPromise ??= import("./LatexPreview.svelte").then((module) => module.default);
     try {
-      LatexPreviewComponent = await latexPreviewPromise;
+      const component = await latexPreviewPromise;
+      if (!alive || request !== previewRequest || requestIdentity !== identityVersion) return;
+      LatexPreviewComponent = component;
     } catch (loadError) {
       latexPreviewPromise = null;
+      if (!alive || request !== previewRequest || requestIdentity !== identityVersion) return;
       previewing = false;
-      error = `preview failed: ${errMsg(loadError)}`;
+      previewError = `preview failed: ${errMsg(loadError)}`;
     } finally {
-      previewLoading = false;
+      if (alive && request === previewRequest && requestIdentity === identityVersion) {
+        previewLoading = false;
+      }
     }
   }
 
   onDestroy(() => {
     alive = false;
+    previewRequest++;
+    if (syntaxRetryTimer) clearTimeout(syntaxRetryTimer);
     removeDraft(draftId);
     editorView?.destroy();
     editorView = null;
@@ -318,10 +343,13 @@
     prevContent = nextContent;
     if (identityChanged) {
       identityVersion++;
+      previewRequest++;
       pendingSaveDoc = null;
       saving = false;
       deleting = false;
       previewing = false;
+      previewLoading = false;
+      previewError = null;
     }
     error = null;
     lastSavedDoc = Text.of(nextContent.split("\n"));
@@ -352,7 +380,7 @@
     {#if dirty}<span class="dirty" title="Unsaved changes"><span></span>Unsaved</span>{/if}
     {#if saving}<span class="saving">saving…</span>{/if}
     {#if deleting}<span class="saving">deleting…</span>{/if}
-    {#if error}<span class="error" title={error}><AlertTriangle size={14} strokeWidth={1.9} /></span>{/if}
+    {#if error || previewError}<span class="error" title={error ?? previewError ?? "error"}><AlertTriangle size={14} strokeWidth={1.9} /></span>{/if}
     {#if shikiError}<span class="error" title={`highlight: ${shikiError}`}><Zap size={14} strokeWidth={1.9} /></span>{/if}
     {#if block.srctype === "latex"}
       <button
@@ -385,7 +413,7 @@
   {:else if previewing && expanded}
     <div class="preview-loading" aria-busy="true">Loading renderer…</div>
   {/if}
-  {#if error}<div class="error-bar">{error}</div>{/if}
+  {#if error || previewError}<div class="error-bar">{error ?? previewError}</div>{/if}
 </article>
 
 <style>

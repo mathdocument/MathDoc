@@ -36,15 +36,34 @@
     let previous: string;
     do {
       previous = unwrapped;
-      unwrapped = unwrapped.replace(/\\(?:textbf|textit|emph|texttt)\{([^{}]*)\}/g, "$1");
+      unwrapped = unwrapped.replace(/\\(?:textbf|textit|emph|texttt)\{((?:\\[{}]|[^{}])*)\}/g, "$1");
     } while (unwrapped !== previous);
-    return unwrapped.replace(/\\([%&#_$])/g, "$1");
+    return unwrapped.replace(/\\([%&#_${}])/g, "$1");
   }
 
   function parseHeading(line: string): { level: string; title: string; trailing: string } | null {
-    const start = line.match(/^\\(section|subsection|subsubsection|paragraph)\*?\{/);
+    const start = line.match(/^\\(section|subsection|subsubsection|paragraph)\*?/);
     if (!start) return null;
-    const titleStart = start[0].length;
+    let cursor = start[0].length;
+    while (/\s/.test(line[cursor] ?? "")) cursor++;
+    if (line[cursor] === "[") {
+      let optionalDepth = 1;
+      let braceDepth = 0;
+      for (cursor++; cursor < line.length && optionalDepth > 0; cursor++) {
+        const character = line[cursor];
+        let slashes = 0;
+        for (let previous = cursor - 1; previous >= 0 && line[previous] === "\\"; previous--) slashes++;
+        if (slashes % 2 !== 0) continue;
+        if (character === "{") braceDepth++;
+        else if (character === "}") braceDepth = Math.max(0, braceDepth - 1);
+        else if (braceDepth === 0 && character === "[") optionalDepth++;
+        else if (braceDepth === 0 && character === "]") optionalDepth--;
+      }
+      if (optionalDepth !== 0) return null;
+      while (/\s/.test(line[cursor] ?? "")) cursor++;
+    }
+    if (line[cursor] !== "{") return null;
+    const titleStart = cursor + 1;
     let depth = 1;
     for (let index = titleStart; index < line.length; index++) {
       const character = line[index];
@@ -152,10 +171,12 @@
         stack.push(list);
         continue;
       }
-      if (/^\\end\{(?:itemize|enumerate)\}$/.test(trimmed)) {
+      const listEnd = trimmed.match(/^\\end\{(?:itemize|enumerate)\}\s*(.*)$/);
+      if (listEnd) {
         closeParagraph();
         if (current().tagName === "LI") stack.pop();
         if (stack.length > 1 && /^(?:UL|OL)$/.test(current().tagName)) stack.pop();
+        if (listEnd[1]) appendText(listEnd[1]);
         continue;
       }
       const item = trimmed.match(/^\\item(?:\[([^\]]+)\])?\s*(.*)$/);

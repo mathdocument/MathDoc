@@ -70,6 +70,7 @@
   let fullBasePath = new Path2D();
   let fullOutgoingPath = new Path2D();
   let fullIncomingPath = new Path2D();
+  let graphBounds = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
 
   function nodeRadius(n: SimNode): number {
     const r = n.baseRadius;
@@ -123,8 +124,12 @@
     }));
     computeMetadata(nodes, links);
     applyStaticGraphLayout();
+    computeGraphBounds();
     buildSpatialIndexes();
     fullEdgeSelection = undefined;
+    fullBasePath = new Path2D();
+    fullOutgoingPath = new Path2D();
+    fullIncomingPath = new Path2D();
   }
 
   async function loadGraph(): Promise<boolean> {
@@ -201,6 +206,24 @@
     for (const node of nodes) node.x = (node.x ?? 0) - offsetX;
   }
 
+  function computeGraphBounds() {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const node of nodes) {
+      minX = Math.min(minX, node.x - node.baseRadius);
+      maxX = Math.max(maxX, node.x + node.baseRadius);
+      minY = Math.min(minY, node.y - node.baseRadius);
+      maxY = Math.max(maxY, node.y + node.baseRadius);
+    }
+    for (const { source, target } of links) {
+      if (source !== target) continue;
+      const loopRadius = source.baseRadius + 8;
+      minX = Math.min(minX, source.x - loopRadius);
+      maxX = Math.max(maxX, source.x + loopRadius);
+      minY = Math.min(minY, source.y - 2 * loopRadius);
+    }
+    graphBounds = { minX, maxX, minY, maxY };
+  }
+
   function buildSpatialIndexes() {
     nodeSpatialIndex = new Map();
     nodesByX = [...nodes].sort((a, b) => a.x - b.x);
@@ -217,8 +240,9 @@
     maxEdgeBucket = -Infinity;
     for (const link of links) {
       const { source, target } = link;
-      const first = Math.floor(Math.min(source.x, target.x) / EDGE_BUCKET_SIZE);
-      const last = Math.floor(Math.max(source.x, target.x) / EDGE_BUCKET_SIZE);
+      const loopRadius = source === target ? source.baseRadius + 8 : 0;
+      const first = Math.floor((Math.min(source.x, target.x) - loopRadius) / EDGE_BUCKET_SIZE);
+      const last = Math.floor((Math.max(source.x, target.x) + loopRadius) / EDGE_BUCKET_SIZE);
       if (last - first > MAX_EDGE_BUCKET_SPAN) {
         wideEdges.push(link);
         continue;
@@ -306,6 +330,25 @@
     }
   }
 
+  function edgeOutsideViewport(
+    link: SimLink,
+    minX: number,
+    maxX: number,
+    minY: number,
+    maxY: number,
+  ): boolean {
+    const { source, target } = link;
+    if (source === target) {
+      const loopRadius = source.baseRadius + 8;
+      return source.x + loopRadius < minX || source.x - loopRadius > maxX ||
+        source.y < minY || source.y - 2 * loopRadius > maxY;
+    }
+    return (source.x < minX && target.x < minX) ||
+      (source.x > maxX && target.x > maxX) ||
+      (source.y < minY && target.y < minY) ||
+      (source.y > maxY && target.y > maxY);
+  }
+
   function render() {
     const canvas = canvasEl;
     if (!canvas) return;
@@ -360,7 +403,9 @@
     let basePath: Path2D;
     let outgoingPath: Path2D;
     let incomingPath: Path2D;
-    if (linkCandidates === links) {
+    const fullGraphVisible = minX <= graphBounds.minX && maxX >= graphBounds.maxX &&
+      minY <= graphBounds.minY && maxY >= graphBounds.maxY;
+    if (linkCandidates === links && fullGraphVisible) {
       ensureFullEdgePaths(graphSelection);
       basePath = fullBasePath;
       outgoingPath = fullOutgoingPath;
@@ -371,8 +416,7 @@
       incomingPath = new Path2D();
       for (const link of linkCandidates) {
         const { source, target } = link;
-        if ((source.x < minX && target.x < minX) || (source.x > maxX && target.x > maxX) ||
-          (source.y < minY && target.y < minY) || (source.y > maxY && target.y > maxY)) continue;
+        if (edgeOutsideViewport(link, minX, maxX, minY, maxY)) continue;
         const path = graphSelection && source.id === graphSelection
           ? outgoingPath
           : graphSelection && target.id === graphSelection
@@ -631,6 +675,10 @@
     if (e.pointerId === activePointerId) finishPointer(e, true);
   }
 
+  function onLostPointerCapture(e: PointerEvent) {
+    if (e.pointerId === activePointerId && mouseMode !== "idle") finishPointer(null, true);
+  }
+
   function onPointerLeave() {
     if (mouseMode !== "idle" || !hoveredNode) return;
     hoveredNode = null;
@@ -667,15 +715,7 @@
   function fitToNodes() {
     const canvas = canvasEl;
     if (!canvas || nodes.length === 0) return;
-    // Compute bounding box of all nodes.
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (const n of nodes) {
-      if (n.x == null || n.y == null) continue;
-      minX = Math.min(minX, n.x);
-      maxX = Math.max(maxX, n.x);
-      minY = Math.min(minY, n.y);
-      maxY = Math.max(maxY, n.y);
-    }
+    const { minX, maxX, minY, maxY } = graphBounds;
     if (minX === Infinity) return;
     const graphW = maxX - minX;
     const graphH = maxY - minY;
@@ -849,6 +889,7 @@
     onpointermove={onPointerMove}
     onpointerup={onPointerUp}
     onpointercancel={onPointerCancel}
+    onlostpointercapture={onLostPointerCapture}
     onpointerleave={onPointerLeave}
   ></canvas>
   <button class="ctrl-btn reset-btn" onclick={() => fitToNodes()} title="Fit graph to view">

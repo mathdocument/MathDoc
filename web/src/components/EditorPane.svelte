@@ -27,7 +27,6 @@
   let titleSaving = $state(false);
   let titleInputEl = $state<HTMLInputElement | null>(null);
   const titleDraftId = Symbol("title draft");
-  const titleMutationId = Symbol("title mutation");
   let displayedFnode: string | null = null;
   let titleRequest = 0;
   let readyReported = false;
@@ -163,10 +162,11 @@
     }
     const targetFnode = load.node.fnode;
     const request = ++titleRequest;
+    const mutationId = Symbol("title save");
     const isCurrent = () => request === titleRequest && load.kind === "ready" &&
       load.node.fnode === targetFnode;
     titleSaving = true;
-    setMutationPending(titleMutationId, true);
+    setMutationPending(mutationId, true);
     titleError = null;
     try {
       const updated = await api.putTitle(targetFnode, newTitle, load.node.revision);
@@ -178,7 +178,7 @@
     } catch (e) {
       if (isCurrent()) titleError = errMsg(e);
     } finally {
-      setMutationPending(titleMutationId, false);
+      setMutationPending(mutationId, false);
       if (isCurrent()) titleSaving = false;
     }
   }

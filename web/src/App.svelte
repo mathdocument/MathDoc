@@ -59,6 +59,7 @@
   let refreshError = $state<string | null>(null);
   let refreshing = $state(false);
   let refreshRequest = 0;
+  let historyNavigating = $state(false);
   let graphCheck = $state<GraphCheckReport | null>(null);
   let graphCheckLoading = $state(false);
   let graphCheckError: string | null = $state(null);
@@ -77,6 +78,8 @@
   // Increment after dependency mutations to refresh the graph data.
   let graphRevision = $state(0);
   let forceLoadRequest = 0;
+  let forceSelectionRequest = 0;
+  let forceRefreshRequest = 0;
   let relationRequest = 0;
   let viewRequest = 0;
   let viewSwitchDone: Promise<void> | null = null;
@@ -161,7 +164,7 @@
     // Global shortcuts: "/" opens search, "g" toggles the workspace view.
     // Ignored while typing (inputs, textareas, contenteditable e.g. CodeMirror).
     const onKeyDown = (event: KeyboardEvent) => {
-      if (overlay.kind !== "none" || viewSwitching || refreshing) return;
+      if (overlay.kind !== "none" || viewSwitching || refreshing || historyNavigating) return;
       const target = event.target;
       if (target instanceof HTMLElement) {
         const tag = target.tagName;
@@ -181,47 +184,57 @@
       cancelStartup();
       cancelNavigation();
       forceLoadRequest++;
+      forceSelectionRequest++;
+      forceRefreshRequest++;
       refreshRequest++;
-      const entry = browserHistoryEntry(event.state);
-      if (!entry) return;
       if (restoringHistory) {
         restoringHistory = false;
+        historyNavigating = false;
         return;
       }
+      const entry = browserHistoryEntry(event.state);
+      if (!entry) return;
 
-      const pendingViewSwitch = viewSwitchDone;
-      if (pendingViewSwitch) await pendingViewSwitch;
-      if (request !== popstateRequest) return;
-      const activeEntry = browserHistoryEntry(window.history.state);
-      if (!activeEntry || activeEntry.index !== entry.index || activeEntry.fnode !== entry.fnode) return;
-      const previousIndex = appState.historyIdx;
-      const target = browserHistoryTarget(entry);
-      const committed = view === "force"
-        ? await onForceSelect(entry.fnode, {
-            pushHistory: false,
-            historyIndex: entry.index,
-            historyEntries: entry.entries,
-            browserHistory: "replace",
-            preserveOnFailure: true,
-          })
-        : await navigate(target, {
-            pushHistory: false,
-            historyIndex: entry.index,
-            historyEntries: entry.entries,
-            browserHistory: "replace",
-          });
-      if (request !== popstateRequest) return;
-      if (committed) {
-        overlay = { kind: "none" };
-        return;
-      }
-      const currentEntry = browserHistoryEntry(window.history.state);
-      if (!currentEntry || currentEntry.index !== entry.index ||
-        currentEntry.fnode !== entry.fnode || appState.historyIdx !== previousIndex) return;
-      const delta = previousIndex - entry.index;
-      if (delta !== 0) {
-        restoringHistory = true;
-        window.history.go(delta);
+      historyNavigating = true;
+      let awaitingRollback = false;
+      try {
+        const pendingViewSwitch = viewSwitchDone;
+        if (pendingViewSwitch) await pendingViewSwitch;
+        if (request !== popstateRequest) return;
+        const activeEntry = browserHistoryEntry(window.history.state);
+        if (!activeEntry || activeEntry.index !== entry.index || activeEntry.fnode !== entry.fnode) return;
+        const previousIndex = appState.historyIdx;
+        const target = browserHistoryTarget(entry);
+        const committed = view === "force"
+          ? await onForceSelect(entry.fnode, {
+              pushHistory: false,
+              historyIndex: entry.index,
+              historyEntries: entry.entries,
+              browserHistory: "replace",
+              preserveOnFailure: true,
+            })
+          : await navigate(target, {
+              pushHistory: false,
+              historyIndex: entry.index,
+              historyEntries: entry.entries,
+              browserHistory: "replace",
+            });
+        if (request !== popstateRequest) return;
+        if (committed) {
+          overlay = { kind: "none" };
+          return;
+        }
+        const currentEntry = browserHistoryEntry(window.history.state);
+        if (!currentEntry || currentEntry.index !== entry.index ||
+          currentEntry.fnode !== entry.fnode || appState.historyIdx !== previousIndex) return;
+        const delta = previousIndex - entry.index;
+        if (delta !== 0) {
+          restoringHistory = true;
+          awaitingRollback = true;
+          window.history.go(delta);
+        }
+      } finally {
+        if (request === popstateRequest && !awaitingRollback) historyNavigating = false;
       }
     };
     window.addEventListener("beforeunload", onBeforeUnload);
@@ -339,19 +352,20 @@
     if (!forceSelectedFnode) return true;
     if (!skipUnsavedGuard && !confirmDiscardDrafts()) return false;
     const targetFnode = forceSelectedFnode;
-    const request = ++forceLoadRequest;
+    forceLoadRequest++;
+    const request = ++forceRefreshRequest;
     if (!await settlePendingMutations()) return false;
-    if (request !== forceLoadRequest || forceSelectedFnode !== targetFnode) return false;
+    if (request !== forceRefreshRequest || forceSelectedFnode !== targetFnode) return false;
     const confirmedDraftRevision = unsavedDraftRevision();
     try {
       const node = await api.node(targetFnode, forceDiscovery);
-      if (request !== forceLoadRequest || forceSelectedFnode !== targetFnode) return false;
+      if (request !== forceRefreshRequest || forceSelectedFnode !== targetFnode) return false;
       if (unsavedDraftRevision() !== confirmedDraftRevision) return false;
       forceEditorRevision++;
       forceNodeLoad = { kind: "ready", node };
       return true;
     } catch (e) {
-      if (request === forceLoadRequest && forceSelectedFnode === targetFnode) {
+      if (request === forceRefreshRequest && forceSelectedFnode === targetFnode) {
         forceNodeLoad = { kind: "error", message: e instanceof Error ? e.message : String(e) };
       }
       return false;
@@ -435,6 +449,7 @@
     initialError = null;
     graphRevision++;
     applyGraphStatsDelta(1, 0);
+    if (historyNavigating) return;
     if (view === "force") void onForceSelect(fnode, { skipUnsavedGuard });
     else void navigate(fnode, { skipUnsavedGuard });
   }
@@ -500,14 +515,16 @@
   ): Promise<boolean> {
     cancelStartup();
     if (!opts.skipUnsavedGuard && !confirmDiscardDrafts()) return false;
-    const request = ++forceLoadRequest;
+    forceLoadRequest++;
+    forceRefreshRequest++;
+    const request = ++forceSelectionRequest;
     if (!await settlePendingMutations()) return false;
-    if (request !== forceLoadRequest) return false;
+    if (request !== forceSelectionRequest) return false;
     const confirmedDraftRevision = unsavedDraftRevision();
     if (!fnode) {
       let committed = false;
       await withViewTransition("neutral", () => {
-        if (request !== forceLoadRequest) return;
+        if (request !== forceSelectionRequest) return;
         if (unsavedDraftRevision() !== confirmedDraftRevision) return;
         forceEditorRevision++;
         forceSelectedFnode = null;
@@ -526,11 +543,11 @@
     }
     try {
       const node = await api.node(fnode);
-      if (request !== forceLoadRequest) return false;
+      if (request !== forceSelectionRequest) return false;
       if (unsavedDraftRevision() !== confirmedDraftRevision) return false;
       let committed = false;
       await withViewTransition("neutral", () => {
-        if (request !== forceLoadRequest || committed) return;
+        if (request !== forceSelectionRequest || committed) return;
         if (unsavedDraftRevision() !== confirmedDraftRevision) return;
         forceEditorRevision++;
         forceSelectedFnode = fnode;
@@ -547,11 +564,11 @@
       }, "force-editor");
       return committed;
     } catch (e) {
-      if (request !== forceLoadRequest) return false;
+      if (request !== forceSelectionRequest) return false;
       if (unsavedDraftRevision() !== confirmedDraftRevision) return false;
       if (!opts.preserveOnFailure) {
         await withViewTransition("neutral", () => {
-          if (request !== forceLoadRequest) return;
+          if (request !== forceSelectionRequest) return;
           if (unsavedDraftRevision() !== confirmedDraftRevision) return;
           forceEditorRevision++;
           forceSelectedFnode = fnode;
@@ -566,10 +583,12 @@
   }
 
   async function toggleGraphView() {
-    if (viewSwitching || refreshing || !confirmDiscardDrafts()) return;
+    if (viewSwitching || refreshing || historyNavigating || !confirmDiscardDrafts()) return;
     cancelStartup();
     viewSwitching = true;
     cancelNavigation();
+    forceSelectionRequest++;
+    forceRefreshRequest++;
     const request = ++viewRequest;
     let resolveViewSwitch: () => void;
     const switchDone = new Promise<void>((resolve) => {
@@ -586,9 +605,17 @@
         const forceRequest = ++forceLoadRequest;
         if (appState.load.kind === "ready") {
           const node = appState.load.node;
-          forceSelectedFnode = node.fnode;
-          forceNodeLoad = { kind: "ready", node };
-          commitFocusedHistory(node.fnode, { pushHistory: false });
+          const entry = browserHistoryEntry(window.history.state);
+          const selectionWasCleared = entry?.fnode === null &&
+            browserHistoryTarget(entry) === node.fnode;
+          if (selectionWasCleared) {
+            forceSelectedFnode = null;
+            forceNodeLoad = { kind: "idle" };
+          } else {
+            forceSelectedFnode = node.fnode;
+            forceNodeLoad = { kind: "ready", node };
+            commitFocusedHistory(node.fnode, { pushHistory: false });
+          }
         } else {
           forceSelectedFnode = null;
           forceNodeLoad = { kind: "idle" };
@@ -658,8 +685,8 @@
 
 <div
   class="app"
-  inert={overlay.kind !== "none" || viewSwitching || refreshing}
-  aria-busy={viewSwitching || refreshing}
+  inert={overlay.kind !== "none" || viewSwitching || refreshing || historyNavigating}
+  aria-busy={viewSwitching || refreshing || historyNavigating}
 >
   <header class="toolbar">
     <div class="identity" aria-label="MathDoc">
@@ -850,9 +877,11 @@
   {/if}
 </div>
 
+<div class="overlay-layer" inert={historyNavigating}>
 {#if overlay.kind === "search"}
   <SearchOverlay
     onPick={(fnode) => {
+      if (historyNavigating) return;
       overlay = { kind: "none" };
       if (view === "force") {
         void onForceSelect(fnode);
@@ -893,8 +922,10 @@
     onClose={() => (overlay = { kind: "none" })}
   />
 {/if}
+</div>
 
 <style>
+  .overlay-layer { display: contents; }
   .app {
     display: flex;
     flex-direction: column;
