@@ -407,15 +407,17 @@
     }
     forceRelationsDirty = true;
     if (appState.load.kind !== "ready" || appState.load.node.fnode !== updated.fnode) return;
+    const editorRevision = appState.editorRevision;
+    const isCurrentRelation = () => request === relationRequest &&
+      appState.editorRevision === editorRevision &&
+      appState.load.kind === "ready" && appState.load.node.fnode === updated.fnode;
     void api.nodeView(updated.fnode).then((nodeView) => {
-      if (request !== relationRequest) return;
-      if (appState.load.kind === "ready" && appState.load.node.fnode === updated.fnode) {
-        appState.referrers = { items: nodeView.referrers, selected: -1 };
-        appState.children = { items: nodeView.children, selected: -1 };
-        forceRelationsDirty = false;
-      }
+      if (!isCurrentRelation()) return;
+      appState.referrers = { items: nodeView.referrers, selected: -1 };
+      appState.children = { items: nodeView.children, selected: -1 };
+      forceRelationsDirty = false;
     }).catch((e) => {
-      if (request !== relationRequest) return;
+      if (!isCurrentRelation()) return;
       refreshError = e instanceof Error ? e.message : String(e);
     });
   }
@@ -583,7 +585,6 @@
           forceSelectedFnode = null;
           forceNodeLoad = { kind: "idle" };
         }
-        forceRelationsDirty = false;
         if (request !== viewRequest) return;
         const editorReady = new Promise<void>((resolve) => {
           resolveForceEditorReady = resolve;
