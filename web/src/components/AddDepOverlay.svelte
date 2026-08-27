@@ -16,7 +16,7 @@
   interface Props {
     targetFnode: string;
     targetRevision: string;
-    onAdded: (node: NodeDetail) => void;
+    onAdded: (node: NodeDetail, delta: { nodes: number; edges: number }) => void;
     onClose: () => void;
   }
   let { targetFnode, targetRevision, onAdded, onClose }: Props = $props();
@@ -154,7 +154,7 @@
       setMutationPending(mutationId, false);
       pending = false;
       if (!alive) return;
-      onAdded(updated);
+      onAdded(updated, { nodes: 0, edges: 1 });
       onClose();
     } catch (e) {
       if (alive) error = errMsg(e);
@@ -186,7 +186,7 @@
       pending = false;
       if (!alive) return;
       removeDraft(draftId);
-      onAdded(updated);
+      onAdded(updated, { nodes: 1, edges: 1 });
       onClose();
     } catch (e) {
       if (alive) error = errMsg(e);

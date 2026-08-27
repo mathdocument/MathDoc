@@ -11,7 +11,7 @@
   interface Props {
     targetFnode: string;
     targetRevision: string;
-    onRemoved: (node: NodeDetail) => void;
+    onRemoved: (node: NodeDetail, delta: { nodes: number; edges: number }) => void;
     onClose: () => void;
   }
   let { targetFnode, targetRevision, onRemoved, onClose }: Props = $props();
@@ -96,7 +96,7 @@
       setMutationPending(mutationId, false);
       pending = false;
       if (!alive) return;
-      onRemoved(updated);
+      onRemoved(updated, { nodes: 0, edges: -toRemove.length });
       onClose();
     } catch (e) {
       if (alive) error = errMsg(e);

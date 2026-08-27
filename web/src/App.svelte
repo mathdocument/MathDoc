@@ -60,6 +60,7 @@
   let graphCheck = $state<GraphCheckReport | null>(null);
   let graphCheckLoading = $state(false);
   let graphCheckError: string | null = $state(null);
+  let graphCheckStale = $state(false);
   let graphCheckRequest = 0;
 
   // Top-level view state: three-column layout vs. full-screen force graph.
@@ -85,13 +86,14 @@
       ? graphCheck.missing.length + graphCheck.invalid.length + graphCheck.cycles.length
       : 0,
   );
-  let graphCheckTitle = $derived(
-    graphCheckError ?? (graphCheck
-      ? graphIssueCount === 0
-        ? "Graph check: no issues"
-        : `Graph check: ${graphIssueCount} issue${graphIssueCount === 1 ? "" : "s"}`
-      : "Checking graph"),
-  );
+  let graphCheckTitle = $derived.by(() => {
+    if (graphCheckError) return graphCheckError;
+    if (graphCheckStale) return "Graph counts updated locally; refresh to recheck issues";
+    if (!graphCheck) return "Checking graph";
+    return graphIssueCount === 0
+      ? "Graph check: no issues"
+      : `Graph check: ${graphIssueCount} issue${graphIssueCount === 1 ? "" : "s"}`;
+  });
 
   async function refreshGraphCheck(): Promise<boolean> {
     const request = ++graphCheckRequest;
@@ -101,6 +103,7 @@
       const report = await api.graphCheck();
       if (request !== graphCheckRequest) return false;
       graphCheck = report;
+      graphCheckStale = false;
       return true;
     } catch (error) {
       if (request === graphCheckRequest) {
@@ -110,6 +113,22 @@
     } finally {
       if (request === graphCheckRequest) graphCheckLoading = false;
     }
+  }
+
+  function applyGraphStatsDelta(nodes: number, edges: number) {
+    graphCheckRequest++;
+    graphCheckLoading = false;
+    graphCheckError = null;
+    if (!graphCheck) {
+      void refreshGraphCheck();
+      return;
+    }
+    graphCheck = {
+      ...graphCheck,
+      nodes: Math.max(0, graphCheck.nodes + nodes),
+      edges: Math.max(0, graphCheck.edges + edges),
+    };
+    graphCheckStale = true;
   }
 
   function markColumnsEditorReady() {
@@ -341,11 +360,11 @@
     };
   }
 
-  function afterDepMutation(updated: NodeDetail) {
+  function afterDepMutation(updated: NodeDetail, delta: { nodes: number; edges: number }) {
     const request = ++relationRequest;
     refreshError = null;
     graphRevision++;
-    void refreshGraphCheck();
+    applyGraphStatsDelta(delta.nodes, delta.edges);
     if (forceNodeLoad.kind === "ready" && forceNodeLoad.node.fnode === updated.fnode) {
       forceNodeLoad = { kind: "ready", node: relationUpdate(forceNodeLoad.node, updated) };
     }
@@ -368,7 +387,7 @@
   function afterNodeCreated(fnode: string, skipUnsavedGuard = false) {
     initialError = null;
     graphRevision++;
-    void refreshGraphCheck();
+    applyGraphStatsDelta(1, 0);
     if (view === "force") void onForceSelect(fnode, { skipUnsavedGuard });
     else void navigate(fnode, { skipUnsavedGuard });
   }
@@ -661,6 +680,7 @@
     <span
       class="graph-stats"
       class:checking={graphCheckLoading}
+      class:stale={graphCheckStale}
       class:issues={graphIssueCount > 0}
       class:error={graphCheckError !== null}
       title={graphCheckTitle}
@@ -976,6 +996,10 @@
   .graph-stats.issues .graph-stats-dot {
     background: var(--mdc-warning);
     box-shadow: 0 0 0 3px rgba(232, 184, 109, 0.1);
+  }
+  .graph-stats.stale .graph-stats-dot {
+    background: var(--mdc-muted);
+    box-shadow: 0 0 0 3px rgba(135, 147, 165, 0.09);
   }
   .graph-stats.error .graph-stats-dot {
     background: var(--mdc-error);
