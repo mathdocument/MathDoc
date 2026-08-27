@@ -21,12 +21,12 @@
     broken: boolean;
     isRoot: boolean;
     isLeaf: boolean;
-    x?: number;
-    y?: number;
+    x: number;
+    y: number;
   }
   interface SimLink {
-    source: string | SimNode;
-    target: string | SimNode;
+    source: SimNode;
+    target: SimNode;
   }
 
   let canvasEl = $state<HTMLCanvasElement | null>(null);
@@ -52,7 +52,7 @@
   const MAX_NODE_RADIUS = 24;
   const SPATIAL_CELL_SIZE = 64;
   const EDGE_BUCKET_SIZE = 512;
-  const MAX_EDGE_BUCKET_SPAN = 256;
+  const MAX_EDGE_BUCKET_SPAN = 16;
   const MIN_ZOOM = 0.0001;
   const MAX_ZOOM = 5;
 
@@ -88,8 +88,8 @@
       outDegreeMap.set(n.id, 0);
     }
     for (const l of linkList) {
-      const s = typeof l.source === "string" ? l.source : l.source.id;
-      const t = typeof l.target === "string" ? l.target : l.target.id;
+      const s = l.source.id;
+      const t = l.target.id;
       outDegreeMap.set(s, (outDegreeMap.get(s) ?? 0) + 1);
       inDegreeMap.set(t, (inDegreeMap.get(t) ?? 0) + 1);
     }
@@ -110,10 +110,12 @@
       broken: node.broken,
       isRoot: false,
       isLeaf: false,
+      x: 0,
+      y: 0,
     }));
     links = data.edges.map(([source, target]) => ({
-      source: nodes[source]!.id,
-      target: nodes[target]!.id,
+      source: nodes[source]!,
+      target: nodes[target]!,
     }));
     computeMetadata(nodes, links);
     applyStaticGraphLayout();
@@ -159,17 +161,7 @@
 
   // ── Static depth layout ──────────────────────────────────────────────────────
 
-  function resolveLinkNodes() {
-    const nodesById = new Map(nodes.map((node) => [node.id, node]));
-    for (const link of links) {
-      if (typeof link.source === "string") link.source = nodesById.get(link.source)!;
-      if (typeof link.target === "string") link.target = nodesById.get(link.target)!;
-    }
-  }
-
   function applyStaticGraphLayout() {
-    resolveLinkNodes();
-
     const layers = new Map<number, SimNode[]>();
     for (const node of nodes) {
       const layer = layers.get(node.depth) ?? [];
@@ -202,9 +194,9 @@
 
   function buildSpatialIndexes() {
     nodeSpatialIndex = new Map();
-    nodesByX = [...nodes].sort((a, b) => a.x! - b.x!);
+    nodesByX = [...nodes].sort((a, b) => a.x - b.x);
     for (const node of nodes) {
-      const key = spatialKey(node.x!, node.y!);
+      const key = spatialKey(node.x, node.y);
       const bucket = nodeSpatialIndex.get(key);
       if (bucket) bucket.push(node);
       else nodeSpatialIndex.set(key, [node]);
@@ -215,11 +207,9 @@
     minEdgeBucket = Infinity;
     maxEdgeBucket = -Infinity;
     for (const link of links) {
-      const source = typeof link.source === "string" ? undefined : link.source;
-      const target = typeof link.target === "string" ? undefined : link.target;
-      if (!source || !target) continue;
-      const first = Math.floor(Math.min(source.x!, target.x!) / EDGE_BUCKET_SIZE);
-      const last = Math.floor(Math.max(source.x!, target.x!) / EDGE_BUCKET_SIZE);
+      const { source, target } = link;
+      const first = Math.floor(Math.min(source.x, target.x) / EDGE_BUCKET_SIZE);
+      const last = Math.floor(Math.max(source.x, target.x) / EDGE_BUCKET_SIZE);
       if (last - first > MAX_EDGE_BUCKET_SPAN) {
         wideEdges.push(link);
         continue;
@@ -273,7 +263,7 @@
     let high = nodesByX.length;
     while (low < high) {
       const middle = (low + high) >>> 1;
-      if (nodesByX[middle]!.x! < x) low = middle + 1;
+      if (nodesByX[middle]!.x < x) low = middle + 1;
       else high = middle;
     }
     return low;
@@ -314,18 +304,24 @@
     const firstBucket = Math.max(minEdgeBucket, Math.floor(minX / EDGE_BUCKET_SIZE));
     const lastBucket = Math.min(maxEdgeBucket, Math.floor(maxX / EDGE_BUCKET_SIZE));
     let linkCandidates: Iterable<SimLink> = links;
-    if (lastBucket >= firstBucket && (lastBucket - firstBucket + 1) * 2 < edgeBuckets.size) {
-      const visibleLinks = new Set<SimLink>(wideEdges);
+    if (lastBucket < firstBucket) {
+      linkCandidates = wideEdges;
+    } else {
+      let candidateCost = wideEdges.length;
       for (let bucketIndex = firstBucket; bucketIndex <= lastBucket; bucketIndex++) {
-        const bucket = edgeBuckets.get(bucketIndex);
-        if (bucket) for (const link of bucket) visibleLinks.add(link);
+        candidateCost += edgeBuckets.get(bucketIndex)?.length ?? 0;
       }
-      linkCandidates = visibleLinks;
+      if (candidateCost < links.length) {
+        const visibleLinks = new Set<SimLink>(wideEdges);
+        for (let bucketIndex = firstBucket; bucketIndex <= lastBucket; bucketIndex++) {
+          const bucket = edgeBuckets.get(bucketIndex);
+          if (bucket) for (const link of bucket) visibleLinks.add(link);
+        }
+        linkCandidates = visibleLinks;
+      }
     }
     for (const link of linkCandidates) {
-      const s = typeof link.source === "string" ? undefined : link.source;
-      const t = typeof link.target === "string" ? undefined : link.target;
-      if (!s || !t || s.x == null || s.y == null || t.x == null || t.y == null) continue;
+      const { source: s, target: t } = link;
       if ((s.x < minX && t.x < minX) || (s.x > maxX && t.x > maxX) ||
         (s.y < minY && t.y < minY) || (s.y > maxY && t.y > maxY)) continue;
 
@@ -361,8 +357,7 @@
     const firstNode = firstNodeAtOrAfter(minX - nodeMargin);
     for (let index = firstNode; index < nodesByX.length; index++) {
       const n = nodesByX[index]!;
-      if (n.x! > maxX + nodeMargin) break;
-      if (n.x == null || n.y == null) continue;
+      if (n.x > maxX + nodeMargin) break;
       const r = nodeRadius(n);
       if (n.x + r < minX || n.x - r > maxX || n.y + r < minY || n.y - r > maxY) continue;
       visibleNodes.push(n);
@@ -371,8 +366,8 @@
     const labelStride = Math.max(1, Math.ceil(visibleNodes.length / 500));
     for (let index = 0; index < visibleNodes.length; index++) {
       const n = visibleNodes[index]!;
-      const x = n.x!;
-      const y = n.y!;
+      const x = n.x;
+      const y = n.y;
       const r = nodeRadius(n);
       const isSelected = selectedFnode === n.id;
       const isHovered = hoveredNode?.id === n.id;
