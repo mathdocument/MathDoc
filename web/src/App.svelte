@@ -523,24 +523,16 @@
       ? forceSelectedFnode
       : appState.load.kind === "ready" ? appState.load.node.fnode : null,
   );
+  let activeNode = $derived(
+    view === "force"
+      ? forceNodeLoad.kind === "ready" ? forceNodeLoad.node : null
+      : appState.load.kind === "ready" ? appState.load.node : null,
+  );
   // Whether the active node is editable (non-broken).
-  let activeReady = $derived(
-    activeFnode !== null &&
-    (view === "force"
-      ? forceNodeLoad.kind === "ready" && !forceNodeLoad.node.broken
-      : appState.load.kind === "ready" && !appState.load.node.broken),
-  );
-  let activeRevision = $derived(
-    view === "force"
-      ? forceNodeLoad.kind === "ready" ? forceNodeLoad.node.revision : null
-      : appState.load.kind === "ready" ? appState.load.node.revision : null,
-  );
+  let activeReady = $derived(activeFnode !== null && activeNode !== null && !activeNode.broken);
+  let activeRevision = $derived(activeNode?.revision ?? null);
   // Depens of the active node.
-  let activeDepens = $derived(
-    view === "force"
-      ? (forceNodeLoad.kind === "ready" ? forceNodeLoad.node.depens : [])
-      : (appState.load.kind === "ready" ? appState.load.node.depens : []),
-  );
+  let activeDepens = $derived(activeNode?.depens ?? []);
 
   $effect(() => {
     if ("target" in overlay && activeFnode !== overlay.target) {

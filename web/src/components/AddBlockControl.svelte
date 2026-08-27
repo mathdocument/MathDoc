@@ -65,20 +65,18 @@
     const targetFnode = fnode;
     const targetRevision = revision;
     adding = srctype;
-    let pending = true;
     setMutationPending(mutationId, true);
     error = null;
     try {
       const node = await api.putBlock(targetFnode, srctype, "", targetRevision);
       setMutationPending(mutationId, false);
-      pending = false;
       if (!alive || fnode !== targetFnode) return;
       open = false;
       onAdded?.(node);
     } catch (e) {
       if (alive && fnode === targetFnode) error = errMsg(e);
     } finally {
-      if (pending) setMutationPending(mutationId, false);
+      setMutationPending(mutationId, false);
       if (alive && fnode === targetFnode) adding = null;
     }
   }

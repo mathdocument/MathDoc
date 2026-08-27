@@ -140,20 +140,18 @@
     const node = results[selected];
     if (!node || node.broken || saving) return;
     saving = true;
-    let pending = true;
     setMutationPending(mutationId, true);
     error = null;
     try {
       const updated = await api.addDep(targetFnode, node.fnode, targetRevision);
       setMutationPending(mutationId, false);
-      pending = false;
       if (!alive) return;
       onAdded(updated, { nodes: 0, edges: 1 });
       onClose();
     } catch (e) {
       if (alive) error = errMsg(e);
     } finally {
-      if (pending) setMutationPending(mutationId, false);
+      setMutationPending(mutationId, false);
       if (alive) saving = false;
     }
   }
@@ -166,7 +164,6 @@
   async function createAndAdd() {
     if (saving || !canCreate) return;
     saving = true;
-    let pending = true;
     setMutationPending(mutationId, true);
     error = null;
     try {
@@ -177,7 +174,6 @@
       if (creatingFile.trim().length > 0) params.file = creatingFile.trim();
       const updated = await api.newNode(params, targetRevision);
       setMutationPending(mutationId, false);
-      pending = false;
       if (!alive) return;
       removeDraft(draftId);
       onAdded(updated, { nodes: 1, edges: 1 });
@@ -185,7 +181,7 @@
     } catch (e) {
       if (alive) error = errMsg(e);
     } finally {
-      if (pending) setMutationPending(mutationId, false);
+      setMutationPending(mutationId, false);
       if (alive) saving = false;
     }
   }

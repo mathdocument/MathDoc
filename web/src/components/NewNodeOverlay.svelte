@@ -90,7 +90,6 @@
     }
     if (!confirmDiscardDrafts(draftId)) return;
     saving = true;
-    let pending = true;
     setMutationPending(mutationId, true);
     error = null;
     try {
@@ -98,7 +97,6 @@
       if (file.trim().length > 0) params.file = file.trim();
       const node = await api.newNode(params);
       setMutationPending(mutationId, false);
-      pending = false;
       if (!alive) return;
       removeDraft(draftId);
       onCreated(node.fnode, true);
@@ -106,7 +104,7 @@
     } catch (e) {
       if (alive) error = errMsg(e);
     } finally {
-      if (pending) setMutationPending(mutationId, false);
+      setMutationPending(mutationId, false);
       if (alive) saving = false;
     }
   }

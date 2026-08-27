@@ -23,30 +23,27 @@
   let saving = $state(false);
   let loading = $state(true);
   let error: string | null = $state(null);
-  let loadRequest = 0;
   let alive = true;
   const mutationId = Symbol("remove dependency mutation");
 
   onDestroy(() => {
     alive = false;
-    loadRequest++;
   });
 
   onMount(() => {
-    const request = ++loadRequest;
     loading = true;
     error = null;
     children = [];
     selected = [];
     cursor = 0;
     api.children(targetFnode).then((items) => {
-      if (!alive || request !== loadRequest) return;
+      if (!alive) return;
       children = items;
       selected = items.map(() => false);
       cursor = 0;
       loading = false;
     }).catch((e) => {
-      if (!alive || request !== loadRequest) return;
+      if (!alive) return;
       error = errMsg(e);
       loading = false;
     });
@@ -90,20 +87,18 @@
       return;
     }
     saving = true;
-    let pending = true;
     setMutationPending(mutationId, true);
     error = null;
     try {
       const updated = await api.rmDeps(targetFnode, toRemove, targetRevision);
       setMutationPending(mutationId, false);
-      pending = false;
       if (!alive) return;
       onRemoved(updated, { nodes: 0, edges: -toRemove.length });
       onClose();
     } catch (e) {
       if (alive) error = errMsg(e);
     } finally {
-      if (pending) setMutationPending(mutationId, false);
+      setMutationPending(mutationId, false);
       if (alive) saving = false;
     }
   }

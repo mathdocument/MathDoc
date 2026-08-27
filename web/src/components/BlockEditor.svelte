@@ -290,7 +290,6 @@
     const mutationId = Symbol("block delete");
     error = null;
     deleting = true;
-    let pending = true;
     setMutationPending(mutationId, true);
     const isCurrent = () => alive && requestIdentity === identityVersion &&
       fnode === targetFnode && block.srctype === targetSrctype;
@@ -299,12 +298,11 @@
       if (!isCurrent()) return;
       setDirty(false);
       setMutationPending(mutationId, false);
-      pending = false;
       onDeleted?.(node, targetSrctype);
     } catch (e) {
       if (isCurrent()) error = errMsg(e);
     } finally {
-      if (pending) setMutationPending(mutationId, false);
+      setMutationPending(mutationId, false);
       if (isCurrent()) deleting = false;
     }
   }

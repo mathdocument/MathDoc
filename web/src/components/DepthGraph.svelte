@@ -21,6 +21,8 @@
     title: string;
     labelLines: string[];
     depth: number;
+    inDegree: number;
+    outDegree: number;
     isRoot: boolean;
     isLeaf: boolean;
     baseRadius: number;
@@ -72,8 +74,6 @@
   const MAX_CANVAS_DPR = 2;
   const MAX_BACKING_PIXELS = 8_000_000;
 
-  let inDegreeMap = new Map<string, number>();
-  let outDegreeMap = new Map<string, number>();
   let nodeSpatialIndex = new Map<string, SimNode[]>();
   let nodesById = new Map<string, SimNode>();
   let nodesByX: SimNode[] = [];
@@ -96,23 +96,17 @@
 
   // Compute directed degrees, root, and leaf status for all rendered nodes.
   function computeMetadata(nodeList: SimNode[], edges: GraphFull["edges"]) {
-    inDegreeMap = new Map<string, number>();
-    outDegreeMap = new Map<string, number>();
     outgoingLinks = new Map<string, SimNode[]>();
     incomingLinks = new Map<string, SimNode[]>();
     selfEdgeNodes = new Set<string>();
-    for (const n of nodeList) {
-      inDegreeMap.set(n.id, 0);
-      outDegreeMap.set(n.id, 0);
-    }
     for (const [sourceIndex, targetIndex] of edges) {
       const source = nodeList[sourceIndex]!;
       const target = nodeList[targetIndex]!;
       const s = source.id;
       const t = target.id;
       if (source === target) selfEdgeNodes.add(s);
-      outDegreeMap.set(s, (outDegreeMap.get(s) ?? 0) + 1);
-      inDegreeMap.set(t, (inDegreeMap.get(t) ?? 0) + 1);
+      source.outDegree++;
+      target.inDegree++;
       const outgoing = outgoingLinks.get(s);
       if (outgoing) outgoing.push(target);
       else outgoingLinks.set(s, [target]);
@@ -121,11 +115,9 @@
       else incomingLinks.set(t, [source]);
     }
     for (const n of nodeList) {
-      const inDegree = inDegreeMap.get(n.id) ?? 0;
-      const outDegree = outDegreeMap.get(n.id) ?? 0;
-      n.isRoot = inDegree === 0;
-      n.isLeaf = outDegree === 0;
-      const ior = Math.log1p(inDegree) - Math.log1p(outDegree);
+      n.isRoot = n.inDegree === 0;
+      n.isLeaf = n.outDegree === 0;
+      const ior = Math.log1p(n.inDegree) - Math.log1p(n.outDegree);
       n.baseRadius = Math.min(MAX_NODE_RADIUS, 6 * (Math.max(0, ior) + 1));
     }
   }
@@ -141,6 +133,8 @@
       title: node.title,
       labelLines: wrapLabel(node.title, 16),
       depth: node.depth,
+      inDegree: 0,
+      outDegree: 0,
       isRoot: false,
       isLeaf: false,
       baseRadius: 6,
@@ -160,11 +154,11 @@
     if (canvasEl) canvasEl.style.cursor = "grab";
   }
 
-  async function loadGraph(): Promise<boolean> {
+  async function loadGraph(showLoading: boolean): Promise<boolean> {
     const controller = new AbortController();
     graphAbortController = controller;
     const request = ++graphRequest;
-    graphLoading = true;
+    if (showLoading) graphLoading = true;
     try {
       loadError = null;
       const data = await api.full(false, controller.signal);
@@ -178,29 +172,6 @@
     } finally {
       if (graphAbortController === controller) graphAbortController = null;
       if (request === graphRequest) graphLoading = false;
-    }
-  }
-
-  // Reload into the deterministic depth layout after graph mutations.
-  async function reloadGraph(): Promise<boolean> {
-    const controller = new AbortController();
-    graphAbortController = controller;
-    const request = ++graphRequest;
-    try {
-      loadError = null;
-      const data = await api.full(false, controller.signal);
-      if (request !== graphRequest || !active) return false;
-      loadError = null;
-      installGraph(data);
-      requestRender();
-      return true;
-    } catch (e) {
-      if (request === graphRequest && !controller.signal.aborted) {
-        loadError = e instanceof Error ? e.message : String(e);
-      }
-      return false;
-    } finally {
-      if (graphAbortController === controller) graphAbortController = null;
     }
   }
 
@@ -406,8 +377,8 @@
 
     ensureSelectedEdgePaths(graphSelection);
     if (graphSelection) {
-      const selectedDegree = (inDegreeMap.get(graphSelection) ?? 0) +
-        (outDegreeMap.get(graphSelection) ?? 0);
+      const selected = nodesById.get(graphSelection)!;
+      const selectedDegree = selected.inDegree + selected.outDegree;
       const highlightAlpha = Math.max(0.77, Math.min(0.9, 12 / Math.sqrt(Math.max(1, selectedDegree))));
       ctx.lineWidth = (selectedDegree > 1_000 ? 1.25 : 2) / viewK;
       ctx.setLineDash([]);
@@ -779,7 +750,7 @@
     let allowImmediateRetry = true;
     graphLoadPromise = (async () => {
       if (!graphInitialized) {
-        const loaded = await loadGraph();
+        const loaded = await loadGraph(true);
         if (!loaded) {
           graphDirty = false;
           return;
@@ -792,7 +763,7 @@
         const wasEmpty = nodes.length === 0;
         const reloadRevision = loadedRevision;
         graphDirty = false;
-        if (!await reloadGraph()) {
+        if (!await loadGraph(false)) {
           graphDirty = true;
           allowImmediateRetry = loadedRevision !== reloadRevision;
           return;
