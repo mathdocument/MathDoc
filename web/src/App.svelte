@@ -195,6 +195,9 @@
             browserHistory: "replace",
           });
       if (request !== popstateRequest || committed) return;
+      const currentEntry = browserHistoryEntry(window.history.state);
+      if (!currentEntry || currentEntry.index !== entry.index ||
+        currentEntry.fnode !== entry.fnode || appState.historyIdx !== previousIndex) return;
       const delta = previousIndex - entry.index;
       if (delta !== 0) {
         restoringHistory = true;
