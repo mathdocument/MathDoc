@@ -46,7 +46,7 @@
     settlePendingMutations,
     unsavedDraftRevision,
   } from "./lib/unsaved";
-  import { applyTheme, currentTheme, type Theme } from "./lib/theme";
+  import { applyTheme, currentTheme, observeTheme, type Theme } from "./lib/theme";
 
   type Overlay =
     | { kind: "none" }
@@ -133,6 +133,11 @@
     theme = theme === "dark" ? "light" : "dark";
     applyTheme(theme);
   }
+
+  onMount(() => observeTheme((nextTheme) => {
+    theme = nextTheme;
+    applyTheme(nextTheme, false);
+  }));
 
   function applyGraphStatsDelta(nodes: number, edges: number) {
     graphCheckRequest++;

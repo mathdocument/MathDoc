@@ -2,13 +2,18 @@ export type Theme = "light" | "dark";
 
 const STORAGE_KEY = "mdc-theme";
 
-export function preferredTheme(): Theme {
+function storedTheme(): Theme | null {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === "light" || stored === "dark") return stored;
+    return stored === "light" || stored === "dark" ? stored : null;
   } catch {
-    // Storage can be unavailable in privacy-restricted contexts.
+    return null;
   }
+}
+
+export function preferredTheme(): Theme {
+  const stored = storedTheme();
+  if (stored) return stored;
   return matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
 }
 
@@ -26,4 +31,20 @@ export function applyTheme(theme: Theme, persist = true) {
   } catch {
     // The active page can still use the selected theme without persistence.
   }
+}
+
+export function observeTheme(onChange: (theme: Theme) => void): () => void {
+  const media = matchMedia("(prefers-color-scheme: light)");
+  const onMediaChange = () => {
+    if (!storedTheme()) onChange(media.matches ? "light" : "dark");
+  };
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === STORAGE_KEY) onChange(preferredTheme());
+  };
+  media.addEventListener("change", onMediaChange);
+  window.addEventListener("storage", onStorage);
+  return () => {
+    media.removeEventListener("change", onMediaChange);
+    window.removeEventListener("storage", onStorage);
+  };
 }
