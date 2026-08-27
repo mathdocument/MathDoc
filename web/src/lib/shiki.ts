@@ -36,15 +36,17 @@ function getHighlighterCore(): Promise<HighlighterCore> {
         { createOnigurumaEngine },
         getWasm,
         tokyoNight,
+        githubLight,
       ] = await Promise.all([
         import("shiki/core"),
         import("shiki/engine/oniguruma"),
         import("shiki/wasm"),
         import("@shikijs/themes/tokyo-night"),
+        import("@shikijs/themes/github-light"),
       ]);
       return createHighlighterCore({
         langs: [],
-        themes: [tokyoNight.default],
+        themes: [tokyoNight.default, githubLight.default],
         engine: createOnigurumaEngine(getWasm.default),
       });
     })().catch((error) => {

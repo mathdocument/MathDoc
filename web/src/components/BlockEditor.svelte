@@ -29,18 +29,20 @@
   import { errMsg } from "../lib/format";
   import { shikiHighlight } from "../lib/cm-shiki";
   import { getHighlighter, srctypeToLang } from "../lib/shiki";
+  import type { Theme } from "../lib/theme";
   import { removeDraft, setDraftDirty, setMutationPending } from "../lib/unsaved";
 
   interface Props {
     fnode: string;
     revision: string;
     block: SrcBlock;
+    theme: Theme;
     active?: boolean;
     onDeleted?: (node: NodeDetail, srctype: string) => void;
     onSaved?: (node: NodeDetail) => void;
     onReady?: () => void;
   }
-  let { fnode, revision, block, active = true, onDeleted, onSaved, onReady }: Props = $props();
+  let { fnode, revision, block, theme, active = true, onDeleted, onSaved, onReady }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
   let editorView: EditorView | null = null;
@@ -69,11 +71,16 @@
   const syntaxCompartment = new Compartment();
   let syntaxExtension: Extension = [];
   let readyReported = false;
-  let syntaxRequested = false;
+  let syntaxRequest = 0;
+  let pendingSyntaxTheme: Theme | null = null;
+  let appliedSyntaxTheme: Theme | null = null;
   let syntaxRetryCount = 0;
   let syntaxRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const SHIKI_THEME = "tokyo-night";
+  const SHIKI_THEMES: Record<Theme, string> = {
+    dark: "tokyo-night",
+    light: "github-light",
+  };
 
   function buildBaseExtensions(): Extension[] {
     return [
@@ -143,29 +150,32 @@
   }
 
   function ensureSyntaxHighlighting() {
-    if (syntaxRequested || !editorView || !active) return;
-    syntaxRequested = true;
+    if (!editorView || !active || appliedSyntaxTheme === theme || pendingSyntaxTheme === theme) return;
+    const requestedTheme = theme;
+    const request = ++syntaxRequest;
+    pendingSyntaxTheme = requestedTheme;
     shikiError = null;
     const lang = srctypeToLang(block.srctype);
     getHighlighter(lang)
       .then((hl) => {
-        if (!alive || !editorView) return;
-        if (!active) {
-          syntaxRequested = false;
+        if (!alive || request !== syntaxRequest || !editorView) return;
+        pendingSyntaxTheme = null;
+        if (!active || theme !== requestedTheme) {
           return;
         }
         syntaxRetryCount = 0;
-        syntaxExtension = shikiHighlight(hl, lang, SHIKI_THEME, (error) => {
+        syntaxExtension = shikiHighlight(hl, lang, SHIKI_THEMES[requestedTheme], (error) => {
           if (alive) shikiError = error === null ? null : errMsg(error);
         });
+        appliedSyntaxTheme = requestedTheme;
         editorExtensions = buildEditorExtensions();
         editorView.dispatch({
           effects: syntaxCompartment.reconfigure(syntaxExtension),
         });
       })
       .catch((e) => {
-        if (!alive) return;
-        syntaxRequested = false;
+        if (!alive || request !== syntaxRequest) return;
+        pendingSyntaxTheme = null;
         shikiError = errMsg(e);
         if (active && syntaxRetryCount < 2) {
           const delay = 500 * 2 ** syntaxRetryCount++;
@@ -204,6 +214,7 @@
   });
 
   $effect(() => {
+    void theme;
     if (active && alive) ensureSyntaxHighlighting();
   });
 
@@ -323,6 +334,7 @@
 
   onDestroy(() => {
     alive = false;
+    syntaxRequest++;
     previewRequest++;
     if (syntaxRetryTimer) clearTimeout(syntaxRetryTimer);
     removeDraft(draftId);

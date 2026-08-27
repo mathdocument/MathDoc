@@ -851,6 +851,7 @@
         {#key forceEditorRevision}
           <EditorPane
             load={forceNodeLoad}
+            {theme}
             active={view === "force"}
             onRefresh={refreshForceNode}
             onReady={markForceEditorReady}
@@ -883,6 +884,7 @@
       {#key appState.editorRevision}
         <EditorPane
           load={appState.load}
+          {theme}
           active={view === "columns"}
           onRefresh={refreshColumnNode}
           onReady={markColumnsEditorReady}

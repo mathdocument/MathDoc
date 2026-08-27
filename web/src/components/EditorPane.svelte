@@ -3,6 +3,7 @@
   import { Check, FileText, Hash, Layers3, X } from "@lucide/svelte";
   import type { FormalCodeStatus, NodeDetail } from "../lib/types";
   import type { LoadState } from "../lib/state.svelte";
+  import type { Theme } from "../lib/theme";
   import { shortFnode, errMsg } from "../lib/format";
   import AddBlockControl from "./AddBlockControl.svelte";
   import { api } from "../lib/api";
@@ -14,11 +15,12 @@
 
   interface Props {
     load: LoadState;
+    theme: Theme;
     active?: boolean;
     onRefresh?: (node: NodeDetail, graphChanged?: boolean) => void;
     onReady?: () => void;
   }
-  let { load, active = true, onRefresh, onReady }: Props = $props();
+  let { load, theme, active = true, onRefresh, onReady }: Props = $props();
 
   // Inline title editing.
   let editingTitle = $state(false);
@@ -289,6 +291,7 @@
             fnode={node.fnode}
             revision={node.revision}
             {block}
+            {theme}
             {active}
             onDeleted={applyDeletedBlock}
             onSaved={applySavedBlock}
