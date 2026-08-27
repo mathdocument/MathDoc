@@ -54,6 +54,7 @@
 
   let overlay = $state<Overlay>({ kind: "none" });
   let initialLoad = $state(true);
+  let startupRequest = 0;
   let initialError = $state<string | null>(null);
   let refreshError = $state<string | null>(null);
   let refreshing = $state(false);
@@ -115,6 +116,10 @@
     }
   }
 
+  function cancelStartup() {
+    startupRequest++;
+  }
+
   function applyGraphStatsDelta(nodes: number, edges: number) {
     graphCheckRequest++;
     graphCheckLoading = false;
@@ -172,6 +177,7 @@
     const onPopState = async (event: PopStateEvent) => {
       const entry = browserHistoryEntry(event.state);
       if (!entry) return;
+      cancelStartup();
       if (restoringHistory) {
         restoringHistory = false;
         return;
@@ -222,6 +228,8 @@
     if (!initialLoad) return;
     initialLoad = false;
     (async () => {
+      const request = ++startupRequest;
+      const isCurrent = () => request === startupRequest;
       try {
         // URL hash can override the default even when a cyclic graph has no roots.
         const hash = window.location.hash.slice(1);
@@ -231,12 +239,15 @@
           (currentEntry?.fnode === null ? browserHistoryTarget(currentEntry) : null);
         if (ref) {
           const resolved = await api.resolve(ref);
+          if (!isCurrent()) return;
           await navigate(resolved.fnode, initialHistoryOptions(resolved.fnode));
           return;
         }
         const roots = (await api.roots()).filter((node) => !node.broken);
+        if (!isCurrent()) return;
         if (roots.length === 0) {
           const graph = await api.full();
+          if (!isCurrent()) return;
           const fallback = graph.nodes.find((node) => !node.broken);
           if (!fallback) {
             initialError = "workspace has no valid nodes — create one with New node";
@@ -248,7 +259,7 @@
         const deepest = [...roots].sort((a, b) => b.topo_depth - a.topo_depth)[0]!;
         await navigate(deepest.fnode, initialHistoryOptions(deepest.fnode));
       } catch (e) {
-        initialError = e instanceof Error ? e.message : String(e);
+        if (isCurrent()) initialError = e instanceof Error ? e.message : String(e);
       } finally {
         void refreshGraphCheck();
       }
@@ -396,6 +407,7 @@
   }
 
   function afterNodeCreated(fnode: string, skipUnsavedGuard = false) {
+    cancelStartup();
     initialError = null;
     graphRevision++;
     applyGraphStatsDelta(1, 0);
@@ -462,6 +474,7 @@
       preserveOnFailure?: boolean;
     } = {},
   ): Promise<boolean> {
+    cancelStartup();
     if (!opts.skipUnsavedGuard && !confirmDiscardDrafts()) return false;
     if (!await settlePendingMutations()) return false;
     const confirmedDraftRevision = unsavedDraftRevision();
@@ -527,6 +540,7 @@
 
   async function toggleGraphView() {
     if (viewSwitching || !confirmDiscardDrafts()) return;
+    cancelStartup();
     viewSwitching = true;
     cancelNavigation();
     const request = ++viewRequest;
@@ -719,7 +733,7 @@
         if (appState.failedNavigationFnode) {
           const target = appState.failedNavigationFnode;
           if (view === "force") void onForceSelect(target);
-          else void navigate(target);
+          else { cancelStartup(); void navigate(target); }
         } else {
           void refreshView();
         }
@@ -772,7 +786,7 @@
         selected={appState.referrers.selected}
         accent="up"
         lastVisitedFnode={appState.lastVisitedFnode}
-        onSelect={(fnode) => navigate(fnode, { direction: "up" })}
+        onSelect={(fnode) => { cancelStartup(); return navigate(fnode, { direction: "up" }); }}
         onHover={(i) => (appState.referrers.selected = i)}
       />
       {#key appState.editorRevision}
@@ -788,7 +802,7 @@
         selected={appState.children.selected}
         accent="down"
         lastVisitedFnode={appState.lastVisitedFnode}
-        onSelect={(fnode) => navigate(fnode, { direction: "down" })}
+        onSelect={(fnode) => { cancelStartup(); return navigate(fnode, { direction: "down" }); }}
         onHover={(i) => (appState.children.selected = i)}
       />
     {/if}
@@ -803,6 +817,7 @@
       if (view === "force") {
         void onForceSelect(fnode);
       } else {
+        cancelStartup();
         void navigate(fnode, { direction: "neutral" });
       }
     }}
