@@ -210,7 +210,11 @@
             historyEntries: entry.entries,
             browserHistory: "replace",
           });
-      if (request !== popstateRequest || committed) return;
+      if (request !== popstateRequest) return;
+      if (committed) {
+        overlay = { kind: "none" };
+        return;
+      }
       const currentEntry = browserHistoryEntry(window.history.state);
       if (!currentEntry || currentEntry.index !== entry.index ||
         currentEntry.fnode !== entry.fnode || appState.historyIdx !== previousIndex) return;
