@@ -209,18 +209,14 @@
     if (!confirmDiscardDrafts()) return;
     if (!await settlePendingMutations()) return;
     if (refreshing) return;
-    // Refresh both views so switching between them doesn't show stale data.
     refreshError = null;
     refreshing = true;
     graphRevision++;
     try {
-      const [forceOk, columnOk] = await Promise.all([
-        refreshForceNodeRaw(true),
-        refreshCurrent(true),
-      ]);
-      if (!forceOk || !columnOk) {
-        refreshError = "one or more refresh requests failed";
-      }
+      const refreshed = view === "force"
+        ? await refreshForceNodeRaw(true)
+        : await refreshCurrent(true);
+      if (!refreshed) refreshError = "refresh request failed";
     } finally {
       refreshing = false;
     }
