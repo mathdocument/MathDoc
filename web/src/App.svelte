@@ -58,6 +58,7 @@
   let initialError = $state<string | null>(null);
   let refreshError = $state<string | null>(null);
   let refreshing = $state(false);
+  let refreshRequest = 0;
   let graphCheck = $state<GraphCheckReport | null>(null);
   let graphCheckLoading = $state(false);
   let graphCheckError: string | null = $state(null);
@@ -160,7 +161,7 @@
     // Global shortcuts: "/" opens search, "g" toggles the workspace view.
     // Ignored while typing (inputs, textareas, contenteditable e.g. CodeMirror).
     const onKeyDown = (event: KeyboardEvent) => {
-      if (overlay.kind !== "none") return;
+      if (overlay.kind !== "none" || viewSwitching || refreshing) return;
       const target = event.target;
       if (target instanceof HTMLElement) {
         const tag = target.tagName;
@@ -180,6 +181,7 @@
       cancelStartup();
       cancelNavigation();
       forceLoadRequest++;
+      refreshRequest++;
       const entry = browserHistoryEntry(event.state);
       if (!entry) return;
       if (restoringHistory) {
@@ -289,16 +291,20 @@
   }
 
   async function refreshView() {
-    if (!confirmDiscardDrafts()) return;
-    if (!await settlePendingMutations()) return;
     if (refreshing) return;
+    if (!confirmDiscardDrafts()) return;
+    const request = ++refreshRequest;
     refreshError = null;
     refreshing = true;
     try {
+      if (!await settlePendingMutations()) return;
+      if (request !== refreshRequest) return;
       const checked = await refreshGraphCheck();
+      if (request !== refreshRequest) return;
       const refreshed = view === "force"
         ? await refreshForceNodeRaw(true, !checked)
         : await refreshCurrent(true, !checked);
+      if (request !== refreshRequest) return;
       if (refreshed || checked) graphRevision++;
       if (!refreshed) refreshError = "refresh request failed";
     } finally {
@@ -550,7 +556,7 @@
   }
 
   async function toggleGraphView() {
-    if (viewSwitching || !confirmDiscardDrafts()) return;
+    if (viewSwitching || refreshing || !confirmDiscardDrafts()) return;
     cancelStartup();
     viewSwitching = true;
     cancelNavigation();
