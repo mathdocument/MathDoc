@@ -1138,7 +1138,7 @@
     pointer-events: none;
   }
   .force-canvas-wrap {
-    flex: 5;
+    flex: 1 1 auto;
     min-width: 0;
     border: 1px solid var(--mdc-border);
     border-radius: var(--mdc-radius-md);
@@ -1147,8 +1147,9 @@
     box-shadow: 0 10px 35px rgba(0, 0, 0, 0.16);
   }
   .force-editor-wrap {
-    flex: 2;
-    min-width: 0;
+    flex: 0 0 400px;
+    width: 400px;
+    min-width: 400px;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -1188,6 +1189,22 @@
     }
     .identity {
       min-width: 32px;
+    }
+  }
+
+  @media (max-width: 700px) {
+    .force-layout {
+      flex-direction: column;
+    }
+    .force-canvas-wrap {
+      flex: 1 1 52%;
+      min-height: 240px;
+    }
+    .force-editor-wrap {
+      flex: 1 1 48%;
+      width: 100%;
+      min-width: 0;
+      min-height: 0;
     }
   }
 
