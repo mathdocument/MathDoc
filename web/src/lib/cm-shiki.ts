@@ -45,6 +45,7 @@ export function shikiHighlight(
       private timer: ReturnType<typeof setTimeout> | null = null;
       private run = 0;
       private errorReported = false;
+      private marksByColor = new Map<string, Decoration>();
 
       constructor(view: EditorView) {
         this.recompute(view);
@@ -147,6 +148,15 @@ export function shikiHighlight(
         else console.warn("Shiki failed to highlight a document chunk", error);
       }
 
+      private markForColor(color: string): Decoration {
+        let mark = this.marksByColor.get(color);
+        if (!mark) {
+          mark = Decoration.mark({ attributes: { style: `color: ${color}` } });
+          this.marksByColor.set(color, mark);
+        }
+        return mark;
+      }
+
       private tokenRanges(
         lines: ReturnType<HighlighterCore["codeToTokens"]>["tokens"],
         base: number,
@@ -158,9 +168,7 @@ export function shikiHighlight(
             const from = base + token.offset;
             const to = Math.min(limit, from + token.content.length);
             if (token.color && from < to) {
-              ranges.push(Decoration.mark({
-                attributes: { style: `color: ${token.color}` },
-              }).range(from, to));
+              ranges.push(this.markForColor(token.color).range(from, to));
             }
           }
         }
@@ -184,13 +192,7 @@ export function shikiHighlight(
               const tokenFrom = from + token.offset;
               const tokenTo = Math.min(to, tokenFrom + token.content.length);
               if (token.color && tokenFrom < tokenTo) {
-                builder.add(
-                  tokenFrom,
-                  tokenTo,
-                  Decoration.mark({
-                    attributes: { style: `color: ${token.color}` },
-                  }),
-                );
+                builder.add(tokenFrom, tokenTo, this.markForColor(token.color));
               }
             }
           }
