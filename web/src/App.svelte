@@ -547,8 +547,9 @@
     cancelNavigation();
     const request = ++viewRequest;
     try {
+      if (!await settlePendingMutations()) return;
+      if (request !== viewRequest) return;
       if (view === "columns") {
-        if (!await settlePendingMutations()) return;
         // Reuse the node already displayed by Knowledge. The graph data loads
         // progressively after the view changes, so switching never waits for
         // a full-workspace fetch or layout pass.
