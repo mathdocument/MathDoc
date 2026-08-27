@@ -523,9 +523,11 @@
       return committed;
     } catch (e) {
       if (request !== forceLoadRequest) return false;
+      if (unsavedDraftRevision() !== confirmedDraftRevision) return false;
       if (!opts.preserveOnFailure) {
         await withViewTransition("neutral", () => {
           if (request !== forceLoadRequest) return;
+          if (unsavedDraftRevision() !== confirmedDraftRevision) return;
           forceEditorRevision++;
           forceSelectedFnode = fnode;
           forceNodeLoad = {
