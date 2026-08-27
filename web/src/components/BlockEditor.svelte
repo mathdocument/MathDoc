@@ -10,7 +10,7 @@
     Trash2,
     Zap,
   } from "@lucide/svelte";
-  import { Compartment, EditorState } from "@codemirror/state";
+  import { Compartment, EditorState, Text, type Extension } from "@codemirror/state";
   import {
     EditorView,
     keymap,
@@ -24,7 +24,6 @@
   } from "@codemirror/view";
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
   import { indentUnit } from "@codemirror/language";
-  import type { Extension } from "@codemirror/state";
   import type { NodeDetail, SrcBlock } from "../lib/types";
   import { api } from "../lib/api";
   import { errMsg } from "../lib/format";
@@ -48,7 +47,7 @@
   let dirty = $state(false);
   let saving = $state(false);
   let deleting = $state(false);
-  let lastSavedContent = $state("");
+  let lastSavedDoc: Text | null = null;
   let error: string | null = $state(null);
   let expanded = $state(true);
   let shikiError: string | null = $state(null);
@@ -64,7 +63,7 @@
   let prevFnode: string | null = null;
   let prevSrctype: string | null = null;
   let prevContent: string | null = null;
-  let pendingSaveContent: string | null = null;
+  let pendingSaveDoc: Text | null = null;
   const syntaxCompartment = new Compartment();
   let syntaxExtension: Extension = [];
   let readyReported = false;
@@ -116,7 +115,7 @@
       }),
       EditorView.updateListener.of((u) => {
         if (u.docChanged) {
-          setDirty(pendingSaveContent !== null || u.state.doc.toString() !== lastSavedContent);
+          setDirty(pendingSaveDoc !== null || lastSavedDoc === null || !u.state.doc.eq(lastSavedDoc));
         }
       }),
     ];
@@ -149,11 +148,14 @@
     prevFnode = fnode;
     prevSrctype = block.srctype;
     prevContent = block.content;
-    lastSavedContent = block.content;
     editorExtensions = buildEditorExtensions();
-    editorView = new EditorView({
+    const initialState = EditorState.create({
       doc: block.content,
       extensions: editorExtensions,
+    });
+    lastSavedDoc = initialState.doc;
+    editorView = new EditorView({
+      state: initialState,
       parent: host!,
     });
     reportReadyAfterMeasure(editorView);
@@ -184,8 +186,9 @@
     saving = true;
     setMutationPending(mutationId, true);
     error = null;
-    const content = editorView.state.doc.toString();
-    pendingSaveContent = content;
+    const contentDoc = editorView.state.doc;
+    const content = contentDoc.toString();
+    pendingSaveDoc = contentDoc;
     setDirty(true);
     const isCurrent = () => alive && requestIdentity === identityVersion &&
       fnode === targetFnode && block.srctype === targetSrctype;
@@ -200,10 +203,10 @@
       }
 
       onSaved?.(node);
-      lastSavedContent = updated.content;
+      lastSavedDoc = Text.of(updated.content.split("\n"));
       // A response may normalize the submitted text, but it must never replace
       // edits made while that request was in flight.
-      if (editorView.state.doc.toString() === content) {
+      if (editorView.state.doc.eq(contentDoc)) {
         if (content !== updated.content) {
           editorView.dispatch({
             changes: { from: 0, to: editorView.state.doc.length, insert: updated.content },
@@ -215,8 +218,8 @@
     } finally {
       setMutationPending(mutationId, false);
       if (isCurrent()) {
-        pendingSaveContent = null;
-        if (editorView) setDirty(editorView.state.doc.toString() !== lastSavedContent);
+        pendingSaveDoc = null;
+        if (editorView) setDirty(lastSavedDoc === null || !editorView.state.doc.eq(lastSavedDoc));
         saving = false;
       }
     }
@@ -296,14 +299,14 @@
     prevSrctype = nextSrctype;
     prevContent = nextContent;
     identityVersion++;
-    pendingSaveContent = null;
+    pendingSaveDoc = null;
     if (identityChanged) {
       saving = false;
       deleting = false;
       previewing = false;
     }
     error = null;
-    lastSavedContent = nextContent;
+    lastSavedDoc = Text.of(nextContent.split("\n"));
     if (editorView) {
       if (identityChanged) {
         // A keyed block component may be reused for the same srctype on a new
@@ -312,13 +315,13 @@
           doc: nextContent,
           extensions: editorExtensions,
         }));
-      } else if (!dirty && editorView.state.doc.toString() !== nextContent) {
+      } else if (!dirty && !editorView.state.doc.eq(lastSavedDoc)) {
         editorView.dispatch({
           changes: { from: 0, to: editorView.state.doc.length, insert: nextContent },
         });
       }
     }
-    setDirty(editorView?.state.doc.toString() !== lastSavedContent);
+    setDirty(editorView !== null && !editorView.state.doc.eq(lastSavedDoc));
   });
 </script>
 
