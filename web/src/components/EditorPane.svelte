@@ -277,7 +277,10 @@
           <p>Attach code, LaTeX, or prose with “Add source block” below.</p>
         </div>
       {:else if editorLoadError}
-        <div class="editor-load-error" role="alert">editor failed to load: {editorLoadError}</div>
+        <div class="editor-load-error" role="alert">
+          <span>editor failed to load: {editorLoadError}</span>
+          <button onclick={ensureBlockEditorLoaded}>retry</button>
+        </div>
       {:else if !BlockEditorComponent}
         <div class="editor-loading" aria-busy="true">Loading editor…</div>
       {:else}
@@ -566,6 +569,13 @@
     font-size: 0.72rem;
   }
   .editor-load-error { color: var(--mdc-error); }
+  .editor-load-error button {
+    color: inherit;
+    background: transparent;
+    border: 1px solid currentColor;
+    border-radius: var(--mdc-radius-sm);
+    cursor: pointer;
+  }
   .empty-icon {
     display: grid;
     place-items: center;
