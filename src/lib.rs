@@ -19,9 +19,6 @@ pub(crate) mod formal;
 pub mod indcache;
 #[cfg(unix)]
 pub mod mdocnode;
-#[cfg(unix)]
-pub(crate) mod metric;
-#[cfg(unix)]
 pub(crate) mod profile;
 #[cfg(unix)]
 pub mod web;

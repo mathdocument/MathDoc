@@ -5,149 +5,130 @@ use std::path::{Component, Path, PathBuf};
 
 use super::{
     ensure_complete_machine_output, process_error_result, require_tool, run_process, CompilerReq,
-    CompilerRes, CompilerWorkspace, FormalCompilationReceipt, ProgressCallback, SrcCompiler,
+    CompilerRes, CompilerWorkspace, FormalCompilationReceipt, ProgressCallback,
 };
 use crate::workspace::FileSnapshot;
-
-pub(super) struct CompilerLean;
 
 const DRIVER_MODULE: &str = "Lib";
 const DRIVER_FILE: &str = "Lib.lean";
 
-impl SrcCompiler for CompilerLean {
-    fn srctype(&self) -> &str {
-        "lean"
+pub(super) fn compile(req: &CompilerReq) -> (CompilerRes, Option<FormalCompilationReceipt>) {
+    let timeout_sec = match req.timeout_sec() {
+        Ok(timeout) => timeout,
+        Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+    };
+    let setup_timeout_sec = match req.setup_timeout_sec() {
+        Ok(timeout) => timeout,
+        Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+    };
+
+    let lake = match require_tool("lake") {
+        Ok(p) => p,
+        Err(e) => return without_receipt(CompilerRes::err_code(e.to_string(), 127)),
+    };
+
+    let workspace = match CompilerWorkspace::open(req, "lean") {
+        Ok(workspace) => workspace,
+        Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+    };
+    let (_, relative) = match workspace.lib_source(req) {
+        Ok(source) => source,
+        Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+    };
+    if let Err(error) = ensure_workspace(&workspace, &lake, setup_timeout_sec, &req.progress) {
+        return without_receipt(process_error_result(error, 1));
     }
-
-    fn compile(&self, req: &CompilerReq) -> CompilerRes {
-        self.compile_with_receipt(req).0
-    }
-
-    fn compile_with_receipt(
-        &self,
-        req: &CompilerReq,
-    ) -> (CompilerRes, Option<FormalCompilationReceipt>) {
-        let timeout_sec = match req.timeout_sec() {
-            Ok(timeout) => timeout,
-            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
-        };
-        let setup_timeout_sec = match req.setup_timeout_sec() {
-            Ok(timeout) => timeout,
-            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
-        };
-
-        let lake = match require_tool("lake") {
-            Ok(p) => p,
-            Err(e) => return without_receipt(CompilerRes::err_code(e.to_string(), 127)),
-        };
-
-        let workspace = match CompilerWorkspace::open(req, "lean") {
-            Ok(workspace) => workspace,
-            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
-        };
-        let (_, relative) = match workspace.lib_source(req) {
-            Ok(source) => source,
-            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
-        };
-        if let Err(error) = ensure_workspace(&workspace, &lake, setup_timeout_sec, &req.progress) {
-            return without_receipt(process_error_result(error, 1));
+    let module = match module_name_from_relative(&relative) {
+        Ok(module) => module,
+        Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+    };
+    let driver_snapshot = match write_driver(&workspace, &module) {
+        Ok(snapshot) => snapshot,
+        Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+    };
+    let source_path = workspace.lib_root().join(&relative);
+    let source_snapshot = match workspace.snapshot(&source_path) {
+        Ok(snapshot) => snapshot,
+        Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+    };
+    let Some(source_content) = source_snapshot.content() else {
+        return without_receipt(CompilerRes::err(
+            "Lean source disappeared before compilation",
+        ));
+    };
+    let source_sha256 = crate::formal::status::content_digest(source_content);
+    let environment = match crate::formal::status::capture_environment(workspace.mdcroot(), "lean")
+    {
+        Ok(Some(evidence)) => evidence,
+        Ok(None) => {
+            return without_receipt(CompilerRes::err("Lean compiler environment is incomplete"))
         }
-        let module = match module_name_from_relative(&relative) {
-            Ok(module) => module,
-            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
-        };
-        let driver_snapshot = match write_driver(&workspace, &module) {
-            Ok(snapshot) => snapshot,
-            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
-        };
-        let source_path = workspace.lib_root().join(&relative);
-        let source_snapshot = match workspace.snapshot(&source_path) {
-            Ok(snapshot) => snapshot,
-            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
-        };
-        let Some(source_content) = source_snapshot.content() else {
-            return without_receipt(CompilerRes::err(
-                "Lean source disappeared before compilation",
-            ));
-        };
-        let source_sha256 = crate::formal::status::content_digest(source_content);
-        let environment =
-            match crate::formal::status::capture_environment(workspace.mdcroot(), "lean") {
-                Ok(Some(evidence)) => evidence,
-                Ok(None) => {
-                    return without_receipt(CompilerRes::err(
-                        "Lean compiler environment is incomplete",
-                    ))
-                }
-                Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
-            };
-        let compiler_identity = match lean_compiler_identity(&workspace, &lake, timeout_sec) {
-            Ok(identity) => identity,
-            Err(error) => return without_receipt(process_error_result(error, 1)),
-        };
-        let dependency_evidence = match collect_dependency_evidence(
-            &workspace,
-            &lake,
-            &Path::new("Lib").join(&relative),
-            timeout_sec,
-            false,
-        ) {
-            Ok(evidence) => evidence,
-            Err(error) => return without_receipt(process_error_result(error, 1)),
-        };
+        Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+    };
+    let compiler_identity = match lean_compiler_identity(&workspace, &lake, timeout_sec) {
+        Ok(identity) => identity,
+        Err(error) => return without_receipt(process_error_result(error, 1)),
+    };
+    let dependency_evidence = match collect_dependency_evidence(
+        &workspace,
+        &lake,
+        &Path::new("Lib").join(&relative),
+        timeout_sec,
+        false,
+    ) {
+        Ok(evidence) => evidence,
+        Err(error) => return without_receipt(process_error_result(error, 1)),
+    };
 
-        req.emit_progress(&format!("building `{DRIVER_MODULE}` importing `{module}`"));
-        let process_cwd = match workspace.process_cwd() {
-            Ok(cwd) => cwd,
-            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
-        };
-        match run_process(
-            &lake,
-            ["--quiet", "--no-ansi", "build", "+Lib"],
-            "lake build +Lib",
-            timeout_sec,
-            Some(process_cwd),
-        ) {
-            Ok((rtcode, stdout, stderr)) => {
-                let (out, err) = classify_build_output(&stdout, &stderr, rtcode == 0);
-                let formal_receipt = if rtcode == 0 {
-                    match collect_formal_receipt(
-                        req,
-                        &workspace,
-                        &lake,
-                        &relative,
-                        timeout_sec,
-                        &source_snapshot,
-                        &driver_snapshot,
-                        source_sha256,
-                        environment,
-                        match crate::formal::status::module_key(&relative) {
-                            Ok(module) => module,
-                            Err(error) => {
-                                return without_receipt(CompilerRes::err(error.to_string()))
-                            }
-                        },
-                        compiler_identity,
-                        dependency_evidence,
-                    ) {
-                        Ok(receipt) => Some(receipt),
-                        Err(error) => return without_receipt(process_error_result(error, 1)),
-                    }
-                } else {
-                    None
-                };
-                (
-                    CompilerRes {
-                        stdout: out,
-                        stderr: err,
-                        rtcode,
-                        interrupted: false,
+    req.emit_progress(&format!("building `{DRIVER_MODULE}` importing `{module}`"));
+    let process_cwd = match workspace.process_cwd() {
+        Ok(cwd) => cwd,
+        Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+    };
+    match run_process(
+        &lake,
+        ["--quiet", "--no-ansi", "build", "+Lib"],
+        "lake build +Lib",
+        timeout_sec,
+        Some(process_cwd),
+    ) {
+        Ok((rtcode, stdout, stderr)) => {
+            let (out, err) = classify_build_output(&stdout, &stderr, rtcode == 0);
+            let formal_receipt = if rtcode == 0 {
+                match collect_formal_receipt(
+                    req,
+                    &workspace,
+                    &lake,
+                    &relative,
+                    timeout_sec,
+                    &source_snapshot,
+                    &driver_snapshot,
+                    source_sha256,
+                    environment,
+                    match crate::formal::status::module_key(&relative) {
+                        Ok(module) => module,
+                        Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
                     },
-                    formal_receipt,
-                )
-            }
-            Err(e) => without_receipt(process_error_result(e, 1)),
+                    compiler_identity,
+                    dependency_evidence,
+                ) {
+                    Ok(receipt) => Some(receipt),
+                    Err(error) => return without_receipt(process_error_result(error, 1)),
+                }
+            } else {
+                None
+            };
+            (
+                CompilerRes {
+                    stdout: out,
+                    stderr: err,
+                    rtcode,
+                    interrupted: false,
+                },
+                formal_receipt,
+            )
         }
+        Err(e) => without_receipt(process_error_result(e, 1)),
     }
 }
 

@@ -7,147 +7,131 @@ use std::path::{Component, Path, PathBuf};
 
 use super::{
     ensure_complete_machine_output, process_error_result, require_tool, run_process, CompilerReq,
-    CompilerRes, CompilerWorkspace, FormalCompilationReceipt, SrcCompiler,
+    CompilerRes, CompilerWorkspace, FormalCompilationReceipt,
 };
 use crate::workspace::FileSnapshot;
 
-pub(super) struct CompilerRocq;
-
 const INVENTORY_FILE: &str = ".mdc-module-inventory";
 
-impl SrcCompiler for CompilerRocq {
-    fn srctype(&self) -> &str {
-        "rocq"
+pub(super) fn compile(req: &CompilerReq) -> (CompilerRes, Option<FormalCompilationReceipt>) {
+    let timeout_sec = match req.timeout_sec() {
+        Ok(timeout) => timeout,
+        Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+    };
+
+    let rocq = match require_tool("rocq") {
+        Ok(p) => p,
+        Err(e) => return without_receipt(CompilerRes::err_code(e.to_string(), 127)),
+    };
+
+    let workspace = match CompilerWorkspace::open(req, "rocq") {
+        Ok(workspace) => workspace,
+        Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+    };
+    let (_, relative) = match workspace.lib_source(req) {
+        Ok(source) => source,
+        Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+    };
+    let (inventory, inventory_snapshot) = match ensure_workspace(&workspace) {
+        Ok(inventory) => inventory,
+        Err(e) => return without_receipt(CompilerRes::err(e.to_string())),
+    };
+    let source = Path::new("Lib").join(relative);
+    let output = Path::new("build")
+        .join(source.strip_prefix("Lib").unwrap())
+        .with_extension("vo");
+    if let Err(error) = ensure_build_parent(&workspace, &output) {
+        return without_receipt(CompilerRes::err(error.to_string()));
     }
-
-    fn compile(&self, req: &CompilerReq) -> CompilerRes {
-        self.compile_with_receipt(req).0
-    }
-
-    fn compile_with_receipt(
-        &self,
-        req: &CompilerReq,
-    ) -> (CompilerRes, Option<FormalCompilationReceipt>) {
-        let timeout_sec = match req.timeout_sec() {
-            Ok(timeout) => timeout,
-            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
-        };
-
-        let rocq = match require_tool("rocq") {
-            Ok(p) => p,
-            Err(e) => return without_receipt(CompilerRes::err_code(e.to_string(), 127)),
-        };
-
-        let workspace = match CompilerWorkspace::open(req, "rocq") {
-            Ok(workspace) => workspace,
-            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
-        };
-        let (_, relative) = match workspace.lib_source(req) {
-            Ok(source) => source,
-            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
-        };
-        let (inventory, inventory_snapshot) = match ensure_workspace(&workspace) {
-            Ok(inventory) => inventory,
-            Err(e) => return without_receipt(CompilerRes::err(e.to_string())),
-        };
-        let source = Path::new("Lib").join(relative);
-        let output = Path::new("build")
-            .join(source.strip_prefix("Lib").unwrap())
-            .with_extension("vo");
-        if let Err(error) = ensure_build_parent(&workspace, &output) {
-            return without_receipt(CompilerRes::err(error.to_string()));
-        }
-        let source_path = workspace.root().join(&source);
-        let source_snapshot = match workspace.snapshot(&source_path) {
-            Ok(snapshot) => snapshot,
-            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
-        };
-        let Some(source_content) = source_snapshot.content() else {
-            return without_receipt(CompilerRes::err(
-                "Rocq source disappeared before compilation",
-            ));
-        };
-        let source_sha256 = crate::formal::status::content_digest(source_content);
-        let compiler_identity = match crate::formal::status::capture_compiler_identity(&rocq) {
-            Ok(identity) => identity,
-            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
-        };
-        let library_roots = match rocq_library_roots(&workspace, &rocq, timeout_sec) {
-            Ok(roots) => roots,
+    let source_path = workspace.root().join(&source);
+    let source_snapshot = match workspace.snapshot(&source_path) {
+        Ok(snapshot) => snapshot,
+        Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+    };
+    let Some(source_content) = source_snapshot.content() else {
+        return without_receipt(CompilerRes::err(
+            "Rocq source disappeared before compilation",
+        ));
+    };
+    let source_sha256 = crate::formal::status::content_digest(source_content);
+    let compiler_identity = match crate::formal::status::capture_compiler_identity(&rocq) {
+        Ok(identity) => identity,
+        Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+    };
+    let library_roots = match rocq_library_roots(&workspace, &rocq, timeout_sec) {
+        Ok(roots) => roots,
+        Err(error) => return without_receipt(process_error_result(error, 1)),
+    };
+    let dependency_evidence =
+        match rocq_dependency_evidence(&workspace, &rocq, &library_roots, &source, timeout_sec) {
+            Ok(evidence) => evidence,
             Err(error) => return without_receipt(process_error_result(error, 1)),
         };
-        let dependency_evidence =
-            match rocq_dependency_evidence(&workspace, &rocq, &library_roots, &source, timeout_sec)
-            {
-                Ok(evidence) => evidence,
-                Err(error) => return without_receipt(process_error_result(error, 1)),
-            };
-        let args = vec![
-            OsStr::new("compile").to_os_string(),
-            OsStr::new("-q").to_os_string(),
-            OsStr::new("-Q").to_os_string(),
-            OsStr::new("build").to_os_string(),
-            std::ffi::OsString::new(),
-            OsStr::new("-Q").to_os_string(),
-            OsStr::new("Lib").to_os_string(),
-            std::ffi::OsString::new(),
-            OsStr::new("-noglob").to_os_string(),
-            OsStr::new("-o").to_os_string(),
-            output.as_os_str().to_os_string(),
-            source.as_os_str().to_os_string(),
-        ];
-        let process_cwd = match workspace.process_cwd() {
-            Ok(cwd) => cwd,
-            Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
-        };
+    let args = vec![
+        OsStr::new("compile").to_os_string(),
+        OsStr::new("-q").to_os_string(),
+        OsStr::new("-Q").to_os_string(),
+        OsStr::new("build").to_os_string(),
+        std::ffi::OsString::new(),
+        OsStr::new("-Q").to_os_string(),
+        OsStr::new("Lib").to_os_string(),
+        std::ffi::OsString::new(),
+        OsStr::new("-noglob").to_os_string(),
+        OsStr::new("-o").to_os_string(),
+        output.as_os_str().to_os_string(),
+        source.as_os_str().to_os_string(),
+    ];
+    let process_cwd = match workspace.process_cwd() {
+        Ok(cwd) => cwd,
+        Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
+    };
 
-        match run_process(
-            &rocq,
-            args,
-            &format!("rocq compile {}", source.display()),
-            timeout_sec,
-            Some(process_cwd),
-        ) {
-            Ok((rtcode, stdout, stderr)) => {
-                if rtcode == 0 {
-                    if let Err(error) =
-                        record_module_inventory(&workspace, &inventory, &inventory_snapshot)
-                    {
-                        return without_receipt(CompilerRes::err(error.to_string()));
-                    }
+    match run_process(
+        &rocq,
+        args,
+        &format!("rocq compile {}", source.display()),
+        timeout_sec,
+        Some(process_cwd),
+    ) {
+        Ok((rtcode, stdout, stderr)) => {
+            if rtcode == 0 {
+                if let Err(error) =
+                    record_module_inventory(&workspace, &inventory, &inventory_snapshot)
+                {
+                    return without_receipt(CompilerRes::err(error.to_string()));
                 }
-                let formal_receipt = if rtcode == 0 {
-                    match collect_formal_receipt(
-                        req,
-                        &workspace,
-                        &rocq,
-                        &library_roots,
-                        &source,
-                        &output,
-                        timeout_sec,
-                        &source_snapshot,
-                        source_sha256,
-                        compiler_identity,
-                        dependency_evidence,
-                    ) {
-                        Ok(receipt) => Some(receipt),
-                        Err(error) => return without_receipt(process_error_result(error, 1)),
-                    }
-                } else {
-                    None
-                };
-                (
-                    CompilerRes {
-                        stdout: stdout.trim().to_string(),
-                        stderr: stderr.trim().to_string(),
-                        rtcode,
-                        interrupted: false,
-                    },
-                    formal_receipt,
-                )
             }
-            Err(e) => without_receipt(process_error_result(e, 1)),
+            let formal_receipt = if rtcode == 0 {
+                match collect_formal_receipt(
+                    req,
+                    &workspace,
+                    &rocq,
+                    &library_roots,
+                    &source,
+                    &output,
+                    timeout_sec,
+                    &source_snapshot,
+                    source_sha256,
+                    compiler_identity,
+                    dependency_evidence,
+                ) {
+                    Ok(receipt) => Some(receipt),
+                    Err(error) => return without_receipt(process_error_result(error, 1)),
+                }
+            } else {
+                None
+            };
+            (
+                CompilerRes {
+                    stdout: stdout.trim().to_string(),
+                    stderr: stderr.trim().to_string(),
+                    rtcode,
+                    interrupted: false,
+                },
+                formal_receipt,
+            )
         }
+        Err(e) => without_receipt(process_error_result(e, 1)),
     }
 }
 

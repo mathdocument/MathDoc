@@ -1,13 +1,5 @@
-use super::{CompilerReq, CompilerRes, SrcCompiler};
+use super::{CompilerReq, CompilerRes};
 
-pub(super) struct CompilerText;
-
-impl SrcCompiler for CompilerText {
-    fn srctype(&self) -> &str {
-        "text"
-    }
-
-    fn compile(&self, _req: &CompilerReq) -> CompilerRes {
-        CompilerRes::ok("")
-    }
+pub(super) fn compile(_req: &CompilerReq) -> CompilerRes {
+    CompilerRes::ok("")
 }

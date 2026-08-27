@@ -1,92 +1,83 @@
 use super::{
     process_error_result, require_tool, run_process, CompilerReq, CompilerRes, CompilerWorkspace,
-    SrcCompiler,
 };
 use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
-
-pub(super) struct CompilerLatex;
 
 const DRIVER_FILE: &str = "Lib.tex";
 const MAIN_FILE: &str = "Main.tex";
 const DEFAULT_MAIN: &str =
     "\\documentclass{article}\n\n\\begin{document}\n\\input{Lib.tex}\n\\end{document}\n";
 
-impl SrcCompiler for CompilerLatex {
-    fn srctype(&self) -> &str {
-        "latex"
+pub(super) fn compile(req: &CompilerReq) -> CompilerRes {
+    let timeout_sec = match req.timeout_sec() {
+        Ok(timeout) => timeout,
+        Err(error) => return CompilerRes::err(error.to_string()),
+    };
+
+    let latexmk = match require_tool("latexmk") {
+        Ok(p) => p,
+        Err(e) => return CompilerRes::err_code(e.to_string(), 127),
+    };
+    if let Err(e) = require_tool("xelatex") {
+        return CompilerRes::err_code(e.to_string(), 127);
     }
 
-    fn compile(&self, req: &CompilerReq) -> CompilerRes {
-        let timeout_sec = match req.timeout_sec() {
-            Ok(timeout) => timeout,
-            Err(error) => return CompilerRes::err(error.to_string()),
-        };
+    let workspace = match CompilerWorkspace::open(req, "latex") {
+        Ok(workspace) => workspace,
+        Err(error) => return CompilerRes::err(error.to_string()),
+    };
+    let (lib_root, relative) = match workspace.lib_source(req) {
+        Ok(source) => source,
+        Err(error) => return CompilerRes::err(error.to_string()),
+    };
+    if let Err(error) = ensure_workspace(&workspace, &relative) {
+        return CompilerRes::err(error.to_string());
+    }
+    let inputs = match LatexInputSnapshots::capture(&workspace, lib_root.join(&relative)) {
+        Ok(inputs) => inputs,
+        Err(error) => return CompilerRes::err(error.to_string()),
+    };
+    let workspace_root = workspace.root();
+    let pdf_path = workspace_root.join("Main.pdf");
+    let args = [
+        "-pdf",
+        "-xelatex",
+        "-interaction=nonstopmode",
+        "-halt-on-error",
+        MAIN_FILE,
+    ];
+    let process_cwd = match workspace.process_cwd() {
+        Ok(cwd) => cwd,
+        Err(error) => return CompilerRes::err(error.to_string()),
+    };
 
-        let latexmk = match require_tool("latexmk") {
-            Ok(p) => p,
-            Err(e) => return CompilerRes::err_code(e.to_string(), 127),
-        };
-        if let Err(e) = require_tool("xelatex") {
-            return CompilerRes::err_code(e.to_string(), 127);
-        }
-
-        let workspace = match CompilerWorkspace::open(req, "latex") {
-            Ok(workspace) => workspace,
-            Err(error) => return CompilerRes::err(error.to_string()),
-        };
-        let (lib_root, relative) = match workspace.lib_source(req) {
-            Ok(source) => source,
-            Err(error) => return CompilerRes::err(error.to_string()),
-        };
-        if let Err(error) = ensure_workspace(&workspace, &relative) {
-            return CompilerRes::err(error.to_string());
-        }
-        let inputs = match LatexInputSnapshots::capture(&workspace, lib_root.join(&relative)) {
-            Ok(inputs) => inputs,
-            Err(error) => return CompilerRes::err(error.to_string()),
-        };
-        let workspace_root = workspace.root();
-        let pdf_path = workspace_root.join("Main.pdf");
-        let args = [
-            "-pdf",
-            "-xelatex",
-            "-interaction=nonstopmode",
-            "-halt-on-error",
-            MAIN_FILE,
-        ];
-        let process_cwd = match workspace.process_cwd() {
-            Ok(cwd) => cwd,
-            Err(error) => return CompilerRes::err(error.to_string()),
-        };
-
-        match run_process(&latexmk, args, "latexmk", timeout_sec, Some(process_cwd)) {
-            Ok((rtcode, stdout, stderr)) => {
-                if rtcode != 0 {
-                    return CompilerRes {
-                        stdout: String::new(),
-                        stderr: summarize_latex_error(&stdout, &stderr),
-                        rtcode,
-                        interrupted: false,
-                    };
-                }
-                if let Err(error) = inputs.require_current(&workspace) {
-                    return CompilerRes::err(error.to_string());
-                }
-                if !pdf_path.is_file() {
-                    return CompilerRes::err(format!(
-                        "latexmk succeeded but pdf not found: {}",
-                        pdf_path.display()
-                    ));
-                }
-                CompilerRes::ok(format!(
-                    "source tex: {}\nartifact pdf: {}",
-                    req.source.display(),
-                    pdf_path.display()
-                ))
+    match run_process(&latexmk, args, "latexmk", timeout_sec, Some(process_cwd)) {
+        Ok((rtcode, stdout, stderr)) => {
+            if rtcode != 0 {
+                return CompilerRes {
+                    stdout: String::new(),
+                    stderr: summarize_latex_error(&stdout, &stderr),
+                    rtcode,
+                    interrupted: false,
+                };
             }
-            Err(e) => process_error_result(e, 127),
+            if let Err(error) = inputs.require_current(&workspace) {
+                return CompilerRes::err(error.to_string());
+            }
+            if !pdf_path.is_file() {
+                return CompilerRes::err(format!(
+                    "latexmk succeeded but pdf not found: {}",
+                    pdf_path.display()
+                ));
+            }
+            CompilerRes::ok(format!(
+                "source tex: {}\nartifact pdf: {}",
+                req.source.display(),
+                pdf_path.display()
+            ))
         }
+        Err(e) => process_error_result(e, 127),
     }
 }
 

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::io::Write;
 
-use crate::compiler::{CompilerRegistry, CompilerReq, CompilerRes};
+use crate::compiler::{CompilerReq, CompilerRes};
 use crate::config::Config;
 use crate::core::escape_terminal;
 use crate::indcache::IndCache;
@@ -61,7 +61,6 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
     }
 
     let config = Config::load(&mdcroot)?;
-    let registry = CompilerRegistry::default_registry();
     let total = targets.len();
     let mut failure_codes = Vec::new();
     let mut interrupted_code = None;
@@ -89,13 +88,7 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
             config: config.src_config(srctype),
             progress: Some(Box::new(compile_progress)),
         };
-        let (result, formal_receipt) = match registry.resolve(srctype) {
-            Some(compiler) => compiler.compile_with_receipt(&req),
-            None => (
-                CompilerRes::err(format!("unknown srctype: {srctype}")),
-                None,
-            ),
-        };
+        let (result, formal_receipt) = crate::compiler::compile_with_receipt(srctype, &req);
         print_compile_result(&result);
         if let Some((_, succeeded, receipt)) = formal_outcomes
             .iter_mut()

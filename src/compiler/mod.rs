@@ -12,7 +12,7 @@ use process::{
     ensure_complete_machine_output, process_error_result, require_tool, run_process,
     run_process_with_inherited_fd,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub(crate) const ROCQ_CLEAN_MARKER_FILENAME: &str = ".mdc-clean-needed";
@@ -105,51 +105,20 @@ impl CompilerRes {
     }
 }
 
-pub(crate) trait SrcCompiler: Send + Sync {
-    fn srctype(&self) -> &str;
-    fn compile(&self, req: &CompilerReq) -> CompilerRes;
-
-    #[doc(hidden)]
-    fn compile_with_receipt(
-        &self,
-        req: &CompilerReq,
-    ) -> (CompilerRes, Option<FormalCompilationReceipt>) {
-        (self.compile(req), None)
-    }
-}
-
-// ── Registry ──────────────────────────────────────────────────────────────────
-
-pub(crate) struct CompilerRegistry {
-    compilers: HashMap<String, Box<dyn SrcCompiler>>,
-}
-
-impl CompilerRegistry {
-    pub(crate) fn default_registry() -> Self {
-        let mut m: HashMap<String, Box<dyn SrcCompiler>> = HashMap::new();
-        for c in [
-            Box::new(text::CompilerText) as Box<dyn SrcCompiler>,
-            Box::new(python::CompilerPython),
-            Box::new(latex::CompilerLatex),
-            Box::new(lean::CompilerLean),
-            Box::new(rocq::CompilerRocq),
-        ] {
-            m.insert(c.srctype().to_ascii_lowercase(), c);
-        }
-        for srctype in crate::config::builtin_srctypes() {
-            assert!(
-                m.contains_key(srctype),
-                "missing built-in compiler: {srctype}"
-            );
-        }
-        assert_eq!(m.len(), crate::config::builtin_srctypes().len());
-        CompilerRegistry { compilers: m }
-    }
-
-    pub(crate) fn resolve(&self, srctype: &str) -> Option<&dyn SrcCompiler> {
-        self.compilers
-            .get(&srctype.to_ascii_lowercase())
-            .map(|b| b.as_ref())
+pub(crate) fn compile_with_receipt(
+    srctype: &str,
+    req: &CompilerReq,
+) -> (CompilerRes, Option<FormalCompilationReceipt>) {
+    match crate::config::canonical_srctype(srctype) {
+        "text" => (text::compile(req), None),
+        "python" => (python::compile(req), None),
+        "latex" => (latex::compile(req), None),
+        "lean" => lean::compile(req),
+        "rocq" => rocq::compile(req),
+        _ => (
+            CompilerRes::err(format!("unknown srctype: {srctype}")),
+            None,
+        ),
     }
 }
 

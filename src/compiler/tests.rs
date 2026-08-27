@@ -1,5 +1,9 @@
 use super::*;
 
+fn compile(srctype: &str, req: &CompilerReq) -> CompilerRes {
+    compile_with_receipt(srctype, req).0
+}
+
 fn make_req(mdcroot: &std::path::Path, srctype: &str) -> CompilerReq {
     CompilerReq {
         mdcroot: mdcroot.to_path_buf(),
@@ -84,8 +88,7 @@ fn test_python_accepts_non_utf8_workspace_path() {
     );
 
     let req = make_req(&root, "python");
-    let registry = CompilerRegistry::default_registry();
-    let result = registry.resolve("python").unwrap().compile(&req);
+    let result = compile("python", &req);
     assert!(
         result.is_success(),
         "Python compilation failed: {}",
@@ -113,8 +116,7 @@ fn test_python_uses_deterministic_working_directory() {
     );
 
     let req = make_req(root, "python");
-    let registry = CompilerRegistry::default_registry();
-    let result = registry.resolve("python").unwrap().compile(&req);
+    let result = compile("python", &req);
     assert!(
         result.is_success(),
         "Python compilation failed: {}",
@@ -145,10 +147,7 @@ fn test_python_treats_leading_hyphen_source_as_a_file() {
     let mut req = make_req(root, "python");
     req.source = source;
 
-    let result = CompilerRegistry::default_registry()
-        .resolve("python")
-        .unwrap()
-        .compile(&req);
+    let result = compile("python", &req);
 
     assert!(result.is_success(), "{}", result.stderr);
     assert_eq!(
@@ -199,10 +198,7 @@ fn test_python_rejects_a_replaced_working_tree_generation() {
     );
     let req = make_req(&root, "python");
 
-    let result = CompilerRegistry::default_registry()
-        .resolve("python")
-        .unwrap()
-        .compile(&req);
+    let result = compile("python", &req);
 
     assert!(!result.is_success());
     assert!(result.stderr.contains("source changed during execution"));
@@ -237,10 +233,7 @@ fn test_python_preserves_nested_script_import_and_main_semantics() {
     let mut req = make_req(root, "python");
     req.source = source;
 
-    let result = CompilerRegistry::default_registry()
-        .resolve("python")
-        .unwrap()
-        .compile(&req);
+    let result = compile("python", &req);
 
     assert!(result.is_success(), "{}", result.stderr);
     assert_eq!(
@@ -252,7 +245,6 @@ fn test_python_preserves_nested_script_import_and_main_semantics() {
 #[test]
 fn timed_compilers_reject_unresolved_configuration_without_panicking() {
     let tmp = tempfile::tempdir().unwrap();
-    let registry = CompilerRegistry::default_registry();
 
     for srctype in ["python", "latex", "lean", "rocq"] {
         let req = CompilerReq {
@@ -262,7 +254,7 @@ fn timed_compilers_reject_unresolved_configuration_without_panicking() {
             progress: None,
         };
 
-        let result = registry.resolve(srctype).unwrap().compile(&req);
+        let result = compile(srctype, &req);
 
         assert!(!result.is_success());
         assert!(
@@ -284,9 +276,7 @@ fn test_latex_compiles_hello_world() {
     std::fs::create_dir_all(mdcroot.join(".mdc")).unwrap();
     write_source(mdcroot, "latex", "Hello, world!\n");
     let req = make_req(mdcroot, "latex");
-    let registry = CompilerRegistry::default_registry();
-    let compiler = registry.resolve("latex").unwrap();
-    let res = compiler.compile(&req);
+    let res = compile("latex", &req);
     assert!(res.is_success(), "latex compilation failed: {}", res.stderr);
     assert!(mdcroot.join(".mdc/latex/Main.pdf").is_file());
     assert_eq!(
@@ -312,10 +302,7 @@ fn test_latex_rejects_source_changed_during_compilation() {
         move || std::fs::write(source, "Replacement source.\n").unwrap(),
     );
 
-    let result = CompilerRegistry::default_registry()
-        .resolve("latex")
-        .unwrap()
-        .compile(&make_req(mdcroot, "latex"));
+    let result = compile("latex", &make_req(mdcroot, "latex"));
 
     assert!(!result.is_success());
     assert!(result
@@ -337,10 +324,7 @@ fn test_latex_compiles_tex_active_source_path() {
     let mut request = make_req(mdcroot, "latex");
     request.source = source;
 
-    let result = CompilerRegistry::default_registry()
-        .resolve("latex")
-        .unwrap()
-        .compile(&request);
+    let result = compile("latex", &request);
 
     assert!(result.is_success(), "{}", result.stderr);
 }
@@ -356,9 +340,7 @@ fn test_lean_compiles_hello_world() {
     std::fs::create_dir_all(mdcroot.join(".mdc")).unwrap();
     write_source(mdcroot, "lean", "#check Nat\n");
     let req = make_req(mdcroot, "lean");
-    let registry = CompilerRegistry::default_registry();
-    let compiler = registry.resolve("lean").unwrap();
-    let res = compiler.compile(&req);
+    let res = compile("lean", &req);
     assert!(res.is_success(), "lean compilation failed: {}", res.stderr);
     assert!(mdcroot
         .join(".mdc/lean/.lake/build/lib/lean/Lib/node.olean")
@@ -393,8 +375,7 @@ fn test_lean_builds_imports_from_lib_tree() {
 
     let mut req = make_req(mdcroot, "lean");
     req.source = lib.join("data/A.lean");
-    let registry = CompilerRegistry::default_registry();
-    let (result, formal_receipt) = registry.resolve("lean").unwrap().compile_with_receipt(&req);
+    let (result, formal_receipt) = compile_with_receipt("lean", &req);
 
     assert!(
         result.is_success(),
@@ -426,7 +407,7 @@ fn test_lean_builds_imports_from_lib_tree() {
     let a_before = std::fs::metadata(&a_olean).unwrap().modified().unwrap();
     let b_before = std::fs::metadata(&b_olean).unwrap().modified().unwrap();
     std::thread::sleep(std::time::Duration::from_millis(20));
-    let unchanged = registry.resolve("lean").unwrap().compile(&req);
+    let unchanged = compile("lean", &req);
     assert!(
         unchanged.is_success(),
         "unchanged Lean build failed: {}",
@@ -447,7 +428,7 @@ fn test_lean_builds_imports_from_lib_tree() {
         "module\nimport Lib.data.B\npublic import Lib.data.B\n-- import Lib.data.C\n#check answer\n#check Nat\n",
     )
     .unwrap();
-    let incremental = registry.resolve("lean").unwrap().compile(&req);
+    let incremental = compile("lean", &req);
     assert!(
         incremental.is_success(),
         "incremental Lean build failed: {}",
@@ -460,7 +441,7 @@ fn test_lean_builds_imports_from_lib_tree() {
     );
 
     req.source = lib.join("data/C.lean");
-    let switched = registry.resolve("lean").unwrap().compile(&req);
+    let switched = compile("lean", &req);
     assert!(
         switched.is_success(),
         "switched Lean build failed: {}",
@@ -476,7 +457,7 @@ fn test_lean_builds_imports_from_lib_tree() {
 
     req.source = lib.join("data/A.lean");
     std::fs::remove_file(lib.join("data/B.lean")).unwrap();
-    let stale_import = registry.resolve("lean").unwrap().compile(&req);
+    let stale_import = compile("lean", &req);
     assert!(
         !stale_import.is_success(),
         "deleted Lean import remained available"
@@ -497,8 +478,7 @@ fn test_lean_driver_compiles_quoted_module_path() {
 
     let mut req = make_req(mdcroot, "lean");
     req.source = source;
-    let registry = CompilerRegistry::default_registry();
-    let result = registry.resolve("lean").unwrap().compile(&req);
+    let result = compile("lean", &req);
 
     assert!(
         result.is_success(),
@@ -529,9 +509,7 @@ fn test_rocq_compiles_hello_world() {
         "Require Import Corelib.Init.Logic.\nTheorem trivial : True.\nProof. exact I. Qed.\n",
     );
     let req = make_req(mdcroot, "rocq");
-    let registry = CompilerRegistry::default_registry();
-    let compiler = registry.resolve("rocq").unwrap();
-    let (res, receipt) = compiler.compile_with_receipt(&req);
+    let (res, receipt) = compile_with_receipt("rocq", &req);
     assert!(res.is_success(), "rocq compilation failed: {}", res.stderr);
     assert!(receipt
         .as_ref()
@@ -566,18 +544,16 @@ fn test_rocq_imports_previous_lib_build_artifacts() {
     )
     .unwrap();
 
-    let registry = CompilerRegistry::default_registry();
-    let compiler = registry.resolve("rocq").unwrap();
     let mut req = make_req(mdcroot, "rocq");
     req.source = lib.join("B.v");
-    let dependency = compiler.compile(&req);
+    let dependency = compile("rocq", &req);
     assert!(
         dependency.is_success(),
         "Rocq dependency compilation failed: {}",
         dependency.stderr
     );
     req.source = lib.join("A.v");
-    let (result, formal_receipt) = compiler.compile_with_receipt(&req);
+    let (result, formal_receipt) = compile_with_receipt("rocq", &req);
     assert!(
         result.is_success(),
         "Rocq compilation failed: {}",
@@ -597,7 +573,7 @@ fn test_rocq_imports_previous_lib_build_artifacts() {
     );
 
     std::fs::write(lib.join("B.v"), "this is not valid Rocq\n").unwrap();
-    let stale_import = compiler.compile(&req);
+    let stale_import = compile("rocq", &req);
     assert!(
         !stale_import.is_success(),
         "stale Rocq import remained available"
@@ -620,10 +596,7 @@ fn test_rocq_rejects_load_dependencies() {
 
     let mut req = make_req(mdcroot, "rocq");
     req.source = lib.join("A.v");
-    let result = CompilerRegistry::default_registry()
-        .resolve("rocq")
-        .unwrap()
-        .compile(&req);
+    let result = compile("rocq", &req);
     assert!(!result.is_success());
     assert!(result.stderr.contains("Load dependencies are unsupported"));
 }
