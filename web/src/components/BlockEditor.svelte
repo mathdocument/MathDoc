@@ -46,7 +46,6 @@
 
   let host = $state<HTMLDivElement | null>(null);
   let editorView: EditorView | null = null;
-  let editorExtensions: Extension[] = [];
   let dirty = $state(false);
   let saving = $state(false);
   let deleting = $state(false);
@@ -56,7 +55,6 @@
   let shikiError: string | null = $state(null);
   let previewing = $state(false);
   let previewSource = $state("");
-  let previewLoading = $state(false);
   let previewError: string | null = $state(null);
   let LatexPreviewComponent = $state<Component<{ source: string }> | null>(null);
   let latexPreviewPromise: Promise<Component<{ source: string }>> | null = null;
@@ -150,7 +148,8 @@
   }
 
   function ensureSyntaxHighlighting() {
-    if (!editorView || !active || appliedSyntaxTheme === theme || pendingSyntaxTheme === theme) return;
+    if (!editorView || !active || !expanded || previewing ||
+      appliedSyntaxTheme === theme || pendingSyntaxTheme === theme) return;
     const requestedTheme = theme;
     const request = ++syntaxRequest;
     pendingSyntaxTheme = requestedTheme;
@@ -160,7 +159,7 @@
       .then((hl) => {
         if (!alive || request !== syntaxRequest || !editorView) return;
         pendingSyntaxTheme = null;
-        if (!active || theme !== requestedTheme) {
+        if (!active || !expanded || previewing || theme !== requestedTheme) {
           return;
         }
         syntaxRetryCount = 0;
@@ -168,7 +167,6 @@
           if (alive) shikiError = error === null ? null : errMsg(error);
         });
         appliedSyntaxTheme = requestedTheme;
-        editorExtensions = buildEditorExtensions();
         editorView.dispatch({
           effects: syntaxCompartment.reconfigure(syntaxExtension),
         });
@@ -187,6 +185,20 @@
       });
   }
 
+  function suspendSyntaxHighlighting() {
+    if (!editorView ||
+      (pendingSyntaxTheme === null && appliedSyntaxTheme === null && syntaxRetryTimer === null)) return;
+    syntaxRequest++;
+    pendingSyntaxTheme = null;
+    appliedSyntaxTheme = null;
+    syntaxExtension = [];
+    if (syntaxRetryTimer) {
+      clearTimeout(syntaxRetryTimer);
+      syntaxRetryTimer = null;
+    }
+    editorView.dispatch({ effects: syntaxCompartment.reconfigure([]) });
+  }
+
   function setDirty(value: boolean) {
     dirty = value;
     setDraftDirty(draftId, value);
@@ -199,10 +211,9 @@
     prevFnode = fnode;
     prevSrctype = block.srctype;
     prevContent = block.content;
-    editorExtensions = buildEditorExtensions();
     const initialState = EditorState.create({
       doc: block.content,
-      extensions: editorExtensions,
+      extensions: buildEditorExtensions(),
     });
     lastSavedDoc = initialState.doc;
     editorView = new EditorView({
@@ -215,7 +226,9 @@
 
   $effect(() => {
     void theme;
-    if (active && alive) ensureSyntaxHighlighting();
+    if (!alive) return;
+    if (active && expanded && !previewing) ensureSyntaxHighlighting();
+    else suspendSyntaxHighlighting();
   });
 
   async function save() {
@@ -303,7 +316,6 @@
     if (previewing) {
       previewRequest++;
       previewing = false;
-      previewLoading = false;
       await tick();
       editorView?.requestMeasure();
       return;
@@ -314,7 +326,6 @@
     if (LatexPreviewComponent) return;
     const request = ++previewRequest;
     const requestIdentity = identityVersion;
-    previewLoading = true;
     latexPreviewPromise ??= import("./LatexPreview.svelte").then((module) => module.default);
     try {
       const component = await latexPreviewPromise;
@@ -325,10 +336,6 @@
       if (!alive || request !== previewRequest || requestIdentity !== identityVersion) return;
       previewing = false;
       previewError = `preview failed: ${errMsg(loadError)}`;
-    } finally {
-      if (alive && request === previewRequest && requestIdentity === identityVersion) {
-        previewLoading = false;
-      }
     }
   }
 
@@ -361,7 +368,6 @@
       saving = false;
       deleting = false;
       previewing = false;
-      previewLoading = false;
       previewError = null;
     }
     error = null;
@@ -372,7 +378,7 @@
         // node. Reset state so undo history cannot cross that node boundary.
         editorView.setState(EditorState.create({
           doc: nextContent,
-          extensions: editorExtensions,
+          extensions: buildEditorExtensions(),
         }));
       } else if (!dirty && !editorView.state.doc.eq(lastSavedDoc)) {
         editorView.dispatch({
@@ -400,7 +406,7 @@
         class="preview-toggle"
         class:active={previewing}
         onclick={() => void toggleLatexPreview()}
-        disabled={!expanded || previewLoading}
+        disabled={!expanded}
         aria-pressed={previewing}
         title={previewing ? "Return to LaTeX editor" : "Render LaTeX preview"}
       >
@@ -421,8 +427,10 @@
     bind:this={host}
   >
   </div>
-  {#if previewing && expanded && LatexPreviewComponent}
-    <LatexPreviewComponent source={previewSource} />
+  {#if LatexPreviewComponent}
+    <div class:preview-hidden={!previewing || !expanded} aria-hidden={!previewing || !expanded}>
+      <LatexPreviewComponent source={previewSource} />
+    </div>
   {:else if previewing && expanded}
     <div class="preview-loading" aria-busy="true">Loading renderer…</div>
   {/if}
@@ -565,6 +573,7 @@
     font-family: var(--mdc-mono);
     font-size: 0.72rem;
   }
+  .preview-hidden { display: none; }
   .error-bar {
     padding: 0.4rem 0.6rem;
     background: rgba(255, 125, 143, 0.1);

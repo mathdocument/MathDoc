@@ -23,6 +23,10 @@ export class ApiError extends Error {
   }
 }
 
+export function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(path, init);
   const text = await resp.text();
@@ -70,8 +74,8 @@ export const api = {
   graphCheck: () => req<GraphCheckReport>("/api/graph/check"),
   full: (fresh = false, signal?: AbortSignal) =>
     req<GraphFull>(`/api/graph/full${fresh ? "?fresh=true" : ""}`, { signal }),
-  search: (q: string, n = 200) =>
-    req<NodeInfo[]>(`/api/search?q=${encodeURIComponent(q)}&n=${n}`),
+  search: (q: string, n = 200, signal?: AbortSignal) =>
+    req<NodeInfo[]>(`/api/search?q=${encodeURIComponent(q)}&n=${n}`, { signal }),
   resolve: (ref: string) =>
     req<ResolveResponse>(`/api/resolve?ref=${encodeURIComponent(ref)}`),
   node: (fnode: string, fresh = false) =>
@@ -82,9 +86,10 @@ export const api = {
     ),
   children: (fnode: string) =>
     req<NodeInfo[]>(`/api/node/${encodeURIComponent(fnode)}/children`),
-  dependencyCandidates: (fnode: string, q: string, n = 50) =>
+  dependencyCandidates: (fnode: string, q: string, n = 50, signal?: AbortSignal) =>
     req<DependencyCandidates>(
       `/api/node/${encodeURIComponent(fnode)}/dep/candidates?q=${encodeURIComponent(q)}&n=${n}`,
+      { signal },
     ),
   putBlock: (fnode: string, srctype: string, content: string, expectedRevision: string) =>
     mutateNode(fnode, expectedRevision, (revision) => req<NodeDetail>(

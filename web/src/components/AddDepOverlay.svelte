@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import { Link2, Plus, X } from "@lucide/svelte";
-  import { api } from "../lib/api";
+  import { api, isAbortError } from "../lib/api";
   import { errMsg } from "../lib/format";
   import type { DependencyCandidatesEmpty, NodeDetail, NodeInfo } from "../lib/types";
   import { shortFnode } from "../lib/format";
@@ -83,14 +83,16 @@
     candidateEmpty = null;
     selected = 0;
     error = null;
+    const controller = new AbortController();
     const handle = setTimeout(async () => {
       try {
-        const candidates = await api.dependencyCandidates(targetFnode, q, 50);
+        const candidates = await api.dependencyCandidates(targetFnode, q, 50, controller.signal);
         if (request !== searchRequest) return;
         candidateEmpty = candidates.empty;
         results = candidates.nodes;
         selected = firstSelectable(results);
       } catch (e) {
+        if (isAbortError(e)) return;
         if (request !== searchRequest) return;
         results = [];
         candidateEmpty = null;
@@ -101,6 +103,7 @@
     }, 120);
     return () => {
       clearTimeout(handle);
+      controller.abort();
       if (request === searchRequest) searchRequest++;
     };
   });

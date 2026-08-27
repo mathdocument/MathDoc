@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api } from "../lib/api";
+  import { api, isAbortError } from "../lib/api";
   import { Search, X } from "@lucide/svelte";
   import type { NodeInfo } from "../lib/types";
   import { errMsg, shortFnode } from "../lib/format";
@@ -51,13 +51,15 @@
     error = null;
     results = [];
     selected = 0;
+    const controller = new AbortController();
     const handle = setTimeout(async () => {
       try {
-        const fresh = await api.search(q, 50);
+        const fresh = await api.search(q, 50, controller.signal);
         if (request !== searchRequest) return;
         results = fresh;
         selected = firstSelectable(fresh);
       } catch (e) {
+        if (isAbortError(e)) return;
         if (request !== searchRequest) return;
         results = [];
         error = errMsg(e);
@@ -67,6 +69,7 @@
     }, 120);
     return () => {
       clearTimeout(handle);
+      controller.abort();
       if (request === searchRequest) searchRequest++;
     };
   });

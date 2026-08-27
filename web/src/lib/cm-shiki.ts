@@ -10,7 +10,7 @@
 // without monopolizing the main thread.
 
 import { ViewPlugin, type DecorationSet, Decoration, EditorView, type ViewUpdate } from "@codemirror/view";
-import { RangeSetBuilder, StateEffect } from "@codemirror/state";
+import { StateEffect } from "@codemirror/state";
 import type { Extension, Range, Text } from "@codemirror/state";
 import type { HighlighterCore } from "shiki/core";
 import type { GrammarState } from "@shikijs/types";
@@ -21,14 +21,15 @@ const recomputeEffect = StateEffect.define<null>();
 /** Notify CodeMirror that a progressive chunk added decorations. */
 const redrawEffect = StateEffect.define<number>();
 
-/** Small documents can still be highlighted atomically. */
-const SYNC_HIGHLIGHT_LENGTH = 4_000;
+/** Keep syntax decoration memory and retokenization work bounded. */
+const MAX_HIGHLIGHT_LENGTH = 100_000;
 
-/** Large documents yield to the browser between chunks of roughly this size. */
-const HIGHLIGHT_CHUNK_LENGTH = 8_000;
+/** Each callback handles only a small amount of text and a few grammar lines. */
+const HIGHLIGHT_CHUNK_LENGTH = 4_000;
+const HIGHLIGHT_CHUNK_LINES = 8;
 
 /** Bound pathological grammar work within a single main-thread task. */
-const TOKENIZE_TIME_LIMIT_MS = 50;
+const TOKENIZE_TIME_LIMIT_MS = 5;
 
 /** Debounce window after the last keystroke before re-tokenizing. */
 const HIGHLIGHT_DEBOUNCE_MS = 140;
@@ -83,15 +84,9 @@ export function shikiHighlight(
         const run = ++this.run;
         this.errorReported = false;
         const doc = view.state.doc;
-        if (doc.length === 0) {
+        if (doc.length === 0 || doc.length > MAX_HIGHLIGHT_LENGTH) {
           this.decorations = Decoration.none;
           onError?.(null);
-          return;
-        }
-
-        if (doc.length <= SYNC_HIGHLIGHT_LENGTH) {
-          this.decorations = this.highlightRange(doc, 0, doc.length);
-          if (!this.errorReported) onError?.(null);
           return;
         }
 
@@ -109,11 +104,26 @@ export function shikiHighlight(
         setTimeout(() => {
           if (run !== this.run || !view.dom.isConnected || view.state.doc !== doc) return;
 
-          const target = Math.min(doc.length, from + HIGHLIGHT_CHUNK_LENGTH);
-          const targetLine = doc.lineAt(target);
-          const to = target >= doc.length
-            ? doc.length
-            : Math.min(doc.length, targetLine.to + 1);
+          let to = from;
+          let skipChunk = false;
+          for (let lineCount = 0; lineCount < HIGHLIGHT_CHUNK_LINES && to < doc.length; lineCount++) {
+            const line = doc.lineAt(to);
+            const lineEnd = line.to < doc.length ? line.to + 1 : line.to;
+            if (line.to - line.from > HIGHLIGHT_CHUNK_LENGTH) {
+              if (to === from) {
+                to = lineEnd;
+                skipChunk = true;
+              }
+              break;
+            }
+            if (to > from && lineEnd - from > HIGHLIGHT_CHUNK_LENGTH) break;
+            to = lineEnd;
+          }
+          if (skipChunk) {
+            if (to < doc.length) this.scheduleChunk(view, doc, to, undefined, run);
+            else if (!this.errorReported) onError?.(null);
+            return;
+          }
           const text = doc.sliceString(from, to);
 
           try {
@@ -178,35 +188,6 @@ export function shikiHighlight(
           }
         }
         return ranges;
-      }
-
-      private highlightRange(doc: Text, from: number, to: number): DecorationSet {
-
-        try {
-          const text = doc.sliceString(from, to);
-          const result = highlighter.codeToTokens(text, {
-            lang: lang as never,
-            theme,
-            tokenizeMaxLineLength: HIGHLIGHT_CHUNK_LENGTH,
-            tokenizeTimeLimit: TOKENIZE_TIME_LIMIT_MS,
-          });
-          const builder = new RangeSetBuilder<Decoration>();
-
-          for (const lineTokens of result.tokens) {
-            for (const token of lineTokens) {
-              const tokenFrom = from + token.offset;
-              const tokenTo = Math.min(to, tokenFrom + token.content.length);
-              if (token.color && tokenFrom < tokenTo) {
-                builder.add(tokenFrom, tokenTo, this.markForColor(token.color));
-              }
-            }
-          }
-
-          return builder.finish();
-        } catch (error) {
-          this.reportError(error);
-          return Decoration.none;
-        }
       }
 
       destroy() {
