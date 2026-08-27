@@ -1208,9 +1208,9 @@
     box-shadow: 0 10px 35px color-mix(in srgb, var(--mdc-fg) 12%, transparent);
   }
   .force-editor-wrap {
-    flex: 0 0 400px;
-    width: 400px;
-    min-width: 400px;
+    flex: 0 0 calc((100% - 0.75rem) / 3);
+    width: calc((100% - 0.75rem) / 3);
+    min-width: 0;
     display: flex;
     flex-direction: column;
     overflow: hidden;
