@@ -21,6 +21,8 @@
     canGoForward,
     refreshFocused,
     browserHistoryEntry,
+    browserHistoryTarget,
+    commitClearedHistory,
     commitFocusedHistory,
     initialHistoryOptions,
     type BrowserHistoryMode,
@@ -122,6 +124,7 @@
 
       const request = ++popstateRequest;
       const previousIndex = appState.historyIdx;
+      const target = browserHistoryTarget(entry);
       const committed = view === "force"
         ? await onForceSelect(entry.fnode, {
             pushHistory: false,
@@ -130,7 +133,7 @@
             browserHistory: "replace",
             preserveOnFailure: true,
           })
-        : await navigate(entry.fnode, {
+        : await navigate(target, {
             pushHistory: false,
             historyIndex: entry.index,
             historyEntries: entry.entries,
@@ -164,7 +167,9 @@
         // URL hash can override the default even when a cyclic graph has no roots.
         const hash = window.location.hash.slice(1);
         const params = new URLSearchParams(hash);
-        const ref = params.get("ref");
+        const currentEntry = browserHistoryEntry(window.history.state);
+        const ref = params.get("ref") ??
+          (currentEntry?.fnode === null ? browserHistoryTarget(currentEntry) : null);
         if (ref) {
           const resolved = await api.resolve(ref);
           await navigate(resolved.fnode, initialHistoryOptions(resolved.fnode));
@@ -399,6 +404,12 @@
         forceEditorRevision++;
         forceSelectedFnode = null;
         forceNodeLoad = { kind: "idle" };
+        commitClearedHistory({
+          pushHistory: opts.pushHistory,
+          historyIndex: opts.historyIndex,
+          historyEntries: opts.historyEntries,
+          browserHistory: opts.browserHistory,
+        });
         committed = true;
       }, "force-editor");
       return committed;
@@ -483,7 +494,7 @@
         }
       } else {
         // Keep the complete graph view visible until the column data is ready.
-        const target = forceSelectedFnode;
+        const target = forceSelectedFnode ?? appState.history[appState.historyIdx] ?? null;
         const canReuseColumns = target !== null &&
           appState.load.kind === "ready" &&
           appState.load.node.fnode === target &&
@@ -495,6 +506,7 @@
             pushHistory: false,
             skipTransition: true,
             skipUnsavedGuard: true,
+            browserHistory: "replace",
           });
           if (!navigated) return;
         }

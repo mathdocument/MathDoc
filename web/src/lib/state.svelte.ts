@@ -7,12 +7,13 @@ import {
 } from "./unsaved";
 import {
   browserHistoryEntry,
+  browserHistoryTarget,
   focusedHistoryState,
   type BrowserHistoryEntry,
   type BrowserHistoryMode,
 } from "./history";
 
-export { browserHistoryEntry } from "./history";
+export { browserHistoryEntry, browserHistoryTarget } from "./history";
 export type { BrowserHistoryEntry, BrowserHistoryMode } from "./history";
 
 export type LoadState =
@@ -108,7 +109,7 @@ export function initialHistoryOptions(fnode: string): {
   browserHistory: BrowserHistoryMode;
 } {
   const entry = browserHistoryEntry(window.history.state);
-  if (entry?.fnode === fnode) {
+  if (entry && browserHistoryTarget(entry) === fnode) {
     appState.history = [...entry.entries];
     appState.historyIdx = entry.index;
     return {
@@ -141,6 +142,45 @@ export function commitFocusedHistory(
   const state: BrowserHistoryEntry = {
     mdcHistory: 1,
     fnode,
+    index: appState.historyIdx,
+    entries: [...appState.history],
+  };
+  if (mode === "push") {
+    window.history.pushState(state, "", url);
+  } else {
+    window.history.replaceState(state, "", url);
+  }
+}
+
+export function commitClearedHistory(
+  opts: {
+    pushHistory?: boolean;
+    historyIndex?: number;
+    historyEntries?: string[];
+    browserHistory?: BrowserHistoryMode;
+  } = {},
+): void {
+  const backingEntries = opts.historyEntries ?? appState.history;
+  const backingIndex = opts.historyIndex ?? appState.historyIdx;
+  const backingFnode = backingEntries[backingIndex];
+  const url = new URL(window.location.href);
+  url.hash = "";
+
+  if (!backingFnode) {
+    window.history.replaceState(null, "", url);
+    return;
+  }
+
+  const push = opts.pushHistory ?? true;
+  const history = focusedHistoryState(appState.history, appState.historyIdx, backingFnode, opts);
+  appState.history = history.entries;
+  appState.historyIdx = history.index;
+
+  const mode = opts.browserHistory ?? (push ? "push" : "none");
+  if (mode === "none") return;
+  const state: BrowserHistoryEntry = {
+    mdcHistory: 1,
+    fnode: null,
     index: appState.historyIdx,
     entries: [...appState.history],
   };
