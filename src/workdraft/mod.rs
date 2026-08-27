@@ -1087,9 +1087,9 @@ fn check_observation_cache(
     if cached.valid_mdocs != manifest.sources.len()
         || cached.source_files != source_file_count
         || cached.file_count() != manifest.sources.len() + source_file_count
-        || specs
-            .iter()
-            .any(|spec| cached.contains(spec.source_id, spec.srctype) != spec.expected_present)
+        || specs.iter().any(|spec| {
+            cached.stat(spec.source_id, spec.srctype).is_some() != spec.expected_present
+        })
     {
         return Ok(None);
     }

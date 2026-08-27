@@ -20,7 +20,6 @@ anyhow = "1"
 libc = "0.2"
 toml = "0.8"
 which = "6"
-regex = "1"
 sha2 = "0.10"
 dialoguer = "0.12.0"
 ratatui = "0.29"
@@ -29,18 +28,13 @@ crossterm = "0.28"
 axum = { version = "0.7", default-features = false, features = ["http1", "json", "tokio", "macros", "tower-log", "query"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "fs"] }
 tower = { version = "0", features = ["util"] }
-tower-http = { version = "0", features = ["fs", "trace"] }
+tower-http = { version = "0", features = ["fs"] }
 rust-embed = "8"
 mime_guess = "2"
 open = "5"
 tempfile = "3"
 
 [features]
-default = []
 # Serve built frontend assets from web/dist via tower-http during development.
 # When disabled, rust-embed embeds web/dist at compile time.
 dev-web = []
-
-[dev-dependencies]
-tower = { version = "0", features = ["util"] }
-axum = { version = "0.7", default-features = false, features = ["http1", "json", "tokio", "macros", "tower-log", "query"] }

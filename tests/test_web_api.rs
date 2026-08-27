@@ -4,8 +4,6 @@ use axum::body::Body;
 #[cfg(not(feature = "dev-web"))]
 use axum::http::Uri;
 use axum::http::{Request, StatusCode};
-#[cfg(not(feature = "dev-web"))]
-use regex::Regex;
 use tempfile::TempDir;
 
 use mathdoc::indcache::IndCache;
@@ -379,10 +377,13 @@ async fn embedded_index_assets_use_release_mime_and_cache_policy() {
     assert_eq!(index.as_ref(), embedded_index.data.as_ref());
 
     let index = std::str::from_utf8(&index).unwrap();
-    let url_pattern = Regex::new(r#"(?:src|href)="([^"]+)""#).unwrap();
     let mut asset_count = 0;
-    for captures in url_pattern.captures_iter(index) {
-        let url = &captures[1];
+    let urls = index
+        .split("src=\"")
+        .skip(1)
+        .chain(index.split("href=\"").skip(1))
+        .filter_map(|suffix| suffix.split_once('"').map(|(url, _)| url));
+    for url in urls {
         if url.starts_with("data:") {
             continue;
         }

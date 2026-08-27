@@ -8,8 +8,6 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::Router;
-use tower_http::trace::TraceLayer;
-
 #[cfg(feature = "dev-web")]
 use tower_http::services::ServeDir;
 
@@ -133,7 +131,6 @@ pub fn router(state: AppState) -> Router {
     };
     app.layer(middleware::from_fn(require_local_host))
         .layer(middleware::from_fn(disable_html_caching))
-        .layer(TraceLayer::new_for_http())
 }
 
 async fn disable_html_caching(request: Request, next: Next) -> Response {

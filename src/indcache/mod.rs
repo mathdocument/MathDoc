@@ -128,10 +128,6 @@ impl WorkdraftObservationCache {
             .count()
     }
 
-    pub(crate) fn contains(&self, source_id: &str, srctype: &str) -> bool {
-        self.stat(source_id, srctype).is_some()
-    }
-
     pub(crate) fn stat(
         &self,
         source_id: &str,

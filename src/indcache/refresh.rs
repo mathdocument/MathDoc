@@ -333,21 +333,21 @@ fn index_digest(files: &[ScannedMdoc]) -> String {
     format!("{:x}", digest.finalize())
 }
 
+fn read_next_edge(rows: &mut rusqlite::Rows<'_>) -> rusqlite::Result<Option<(String, String)>> {
+    rows.next()?
+        .map(|row| Ok((row.get(0)?, row.get(1)?)))
+        .transpose()
+}
+
+fn read_next_invalid(
+    rows: &mut rusqlite::Rows<'_>,
+) -> rusqlite::Result<Option<(String, String, String)>> {
+    rows.next()?
+        .map(|row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .transpose()
+}
+
 fn indexed_digest(conn: &Connection) -> Result<String> {
-    fn read_next_edge(rows: &mut rusqlite::Rows<'_>) -> rusqlite::Result<Option<(String, String)>> {
-        rows.next()?
-            .map(|row| Ok((row.get(0)?, row.get(1)?)))
-            .transpose()
-    }
-
-    fn read_next_invalid(
-        rows: &mut rusqlite::Rows<'_>,
-    ) -> rusqlite::Result<Option<(String, String, String)>> {
-        rows.next()?
-            .map(|row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-            .transpose()
-    }
-
     let mut digest = Sha256::new();
     hash_value(&mut digest, b"mathdoc-index-v1");
     let mut file_stmt = conn.prepare(
@@ -446,20 +446,6 @@ fn semantic_delta_paths(
     conn: &Connection,
     files: &[ScannedMdoc],
 ) -> Result<Option<(Vec<usize>, Vec<String>)>> {
-    fn read_next_edge(rows: &mut rusqlite::Rows<'_>) -> rusqlite::Result<Option<(String, String)>> {
-        rows.next()?
-            .map(|row| Ok((row.get(0)?, row.get(1)?)))
-            .transpose()
-    }
-
-    fn read_next_invalid(
-        rows: &mut rusqlite::Rows<'_>,
-    ) -> rusqlite::Result<Option<(String, String, String)>> {
-        rows.next()?
-            .map(|row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-            .transpose()
-    }
-
     let mut file_stmt = conn.prepare(
         "SELECT f.path, m.fnode, m.title
          FROM mdoc_files f LEFT JOIN mdocs m ON m.path = f.path

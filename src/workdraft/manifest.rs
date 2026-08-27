@@ -24,10 +24,6 @@ impl BlockBaseline {
     fn matches(&self, content: &[u8]) -> bool {
         self.0 == <[u8; 32]>::from(Sha256::digest(content))
     }
-
-    fn update(&mut self, content: &[u8]) {
-        self.0 = Sha256::digest(content).into();
-    }
 }
 
 impl Serialize for BlockBaseline {
@@ -101,9 +97,7 @@ impl SourceBaseline {
         self.unknown.remove(srctype);
         if present {
             self.blocks
-                .entry(srctype.to_string())
-                .and_modify(|baseline| baseline.update(content))
-                .or_insert_with(|| BlockBaseline::new(content));
+                .insert(srctype.to_string(), BlockBaseline::new(content));
         } else {
             self.blocks.remove(srctype);
         }
