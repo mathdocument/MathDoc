@@ -24,12 +24,9 @@
     isRoot: boolean;
     isLeaf: boolean;
     baseRadius: number;
+    order: number;
     x: number;
     y: number;
-  }
-  interface SimLink {
-    source: SimNode;
-    target: SimNode;
   }
 
   let canvasEl = $state<HTMLCanvasElement | null>(null);
@@ -78,9 +75,10 @@
   let inDegreeMap = new Map<string, number>();
   let outDegreeMap = new Map<string, number>();
   let nodeSpatialIndex = new Map<string, SimNode[]>();
+  let nodesById = new Map<string, SimNode>();
   let nodesByX: SimNode[] = [];
-  let outgoingLinks = new Map<string, SimLink[]>();
-  let incomingLinks = new Map<string, SimLink[]>();
+  let outgoingLinks = new Map<string, SimNode[]>();
+  let incomingLinks = new Map<string, SimNode[]>();
   let dprQuery: MediaQueryList | null = null;
   let canvasDpr = 1;
   let edgePathSelection: string | null | undefined;
@@ -96,26 +94,28 @@
   }
 
   // Compute directed degrees, root, and leaf status for all rendered nodes.
-  function computeMetadata(nodeList: SimNode[], linkList: SimLink[]) {
+  function computeMetadata(nodeList: SimNode[], edges: GraphFull["edges"]) {
     inDegreeMap = new Map<string, number>();
     outDegreeMap = new Map<string, number>();
-    outgoingLinks = new Map<string, SimLink[]>();
-    incomingLinks = new Map<string, SimLink[]>();
+    outgoingLinks = new Map<string, SimNode[]>();
+    incomingLinks = new Map<string, SimNode[]>();
     for (const n of nodeList) {
       inDegreeMap.set(n.id, 0);
       outDegreeMap.set(n.id, 0);
     }
-    for (const l of linkList) {
-      const s = l.source.id;
-      const t = l.target.id;
+    for (const [sourceIndex, targetIndex] of edges) {
+      const source = nodeList[sourceIndex]!;
+      const target = nodeList[targetIndex]!;
+      const s = source.id;
+      const t = target.id;
       outDegreeMap.set(s, (outDegreeMap.get(s) ?? 0) + 1);
       inDegreeMap.set(t, (inDegreeMap.get(t) ?? 0) + 1);
       const outgoing = outgoingLinks.get(s);
-      if (outgoing) outgoing.push(l);
-      else outgoingLinks.set(s, [l]);
+      if (outgoing) outgoing.push(target);
+      else outgoingLinks.set(s, [target]);
       const incoming = incomingLinks.get(t);
-      if (incoming) incoming.push(l);
-      else incomingLinks.set(t, [l]);
+      if (incoming) incoming.push(source);
+      else incomingLinks.set(t, [source]);
     }
     for (const n of nodeList) {
       const inDegree = inDegreeMap.get(n.id) ?? 0;
@@ -141,14 +141,12 @@
       isRoot: false,
       isLeaf: false,
       baseRadius: 6,
+      order: 0,
       x: 0,
       y: 0,
     }));
-    const links = data.edges.map(([source, target]) => ({
-      source: nodes[source]!,
-      target: nodes[target]!,
-    }));
-    computeMetadata(nodes, links);
+    nodesById = new Map(nodes.map((node) => [node.id, node]));
+    computeMetadata(nodes, data.edges);
     applyStaticGraphLayout();
     computeGraphBounds();
     buildSpatialIndexes();
@@ -230,6 +228,7 @@
     const rowsPerColumn = Math.max(24, Math.ceil(Math.sqrt(nodes.length) * 1.5));
     const spacing = 58;
     let cursorX = 0;
+    nodesByX = [];
     for (const depth of depths) {
       const layer = layers.get(depth)!;
       layer.sort((a, b) => lexicalCompare(a.title, b.title) || lexicalCompare(a.id, b.id));
@@ -241,6 +240,8 @@
         const row = index % rowsPerColumn;
         node.x = cursorX + column * spacing;
         node.y = (row - (rows - 1) / 2) * spacing;
+        node.order = nodesByX.length;
+        nodesByX.push(node);
       }
       cursorX += Math.max(140, columns * spacing + 90);
     }
@@ -262,7 +263,6 @@
 
   function buildSpatialIndexes() {
     nodeSpatialIndex = new Map();
-    nodesByX = [...nodes].sort((a, b) => a.x - b.x);
     for (const node of nodes) {
       const key = spatialKey(node.x, node.y);
       const bucket = nodeSpatialIndex.get(key);
@@ -312,12 +312,29 @@
     return low;
   }
 
-  function appendEdge(path: Path2D, link: SimLink) {
-    const { source, target } = link;
+  function appendEdge(
+    path: Path2D,
+    source: SimNode,
+    target: SimNode,
+    reciprocal: boolean,
+    loopOffset = 0,
+  ) {
     if (source === target) {
-      const loopRadius = source.baseRadius + 8;
+      const loopRadius = source.baseRadius + 8 + loopOffset;
       path.moveTo(source.x, source.y);
       path.arc(source.x, source.y - loopRadius, loopRadius, Math.PI / 2, Math.PI * 2.5);
+    } else if (reciprocal) {
+      const dx = target.x - source.x;
+      const dy = target.y - source.y;
+      const length = Math.hypot(dx, dy) || 1;
+      const curve = 10;
+      path.moveTo(source.x, source.y);
+      path.quadraticCurveTo(
+        (source.x + target.x) / 2 - dy / length * curve,
+        (source.y + target.y) / 2 + dx / length * curve,
+        target.x,
+        target.y,
+      );
     } else {
       path.moveTo(source.x, source.y);
       path.lineTo(target.x, target.y);
@@ -330,11 +347,23 @@
     selectedOutgoingPath = new Path2D();
     selectedIncomingPath = new Path2D();
     if (!selection) return;
-    for (const link of outgoingLinks.get(selection) ?? []) {
-      appendEdge(selectedOutgoingPath, link);
+    const selected = nodesById.get(selection);
+    if (!selected) return;
+    const outgoing = outgoingLinks.get(selection) ?? [];
+    const incoming = incomingLinks.get(selection) ?? [];
+    const incomingIds = new Set(incoming.map((node) => node.id));
+    const outgoingIds = new Set(outgoing.map((node) => node.id));
+    for (const target of outgoing) {
+      appendEdge(selectedOutgoingPath, selected, target, incomingIds.has(target.id));
     }
-    for (const link of incomingLinks.get(selection) ?? []) {
-      appendEdge(selectedIncomingPath, link);
+    for (const source of incoming) {
+      appendEdge(
+        selectedIncomingPath,
+        source,
+        selected,
+        outgoingIds.has(source.id),
+        source === selected ? 4 : 0,
+      );
     }
   }
 
@@ -361,7 +390,7 @@
 
     // LOD thresholds.
     const showLabels = viewK > 0.9;
-    const graphSelection = selectedFnode && inDegreeMap.has(selectedFnode)
+    const graphSelection = selectedFnode && nodesById.has(selectedFnode)
       ? selectedFnode
       : null;
     const palette = theme === "light" ? LIGHT_PALETTE : DARK_PALETTE;
@@ -408,35 +437,44 @@
     ctx.fillStyle = palette.leaf;
     ctx.fill(leafPath);
 
-    for (const n of visibleNodes) {
-      const r = nodeRadius(n);
-      const isSelected = selectedFnode === n.id;
-      const isHovered = hoveredNode?.id === n.id;
-      if (isSelected) {
-        ctx.beginPath();
-        ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
-        ctx.strokeStyle = palette.outline;
-        ctx.lineWidth = 2.5 / viewK;
-        ctx.stroke();
-      } else if (isHovered) {
-        ctx.beginPath();
-        ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
-        ctx.strokeStyle = palette.outline;
-        ctx.lineWidth = 1.5 / viewK;
-        ctx.stroke();
+    const selectedNode = graphSelection ? nodesById.get(graphSelection) ?? null : null;
+    if (selectedNode) {
+      ctx.beginPath();
+      ctx.arc(selectedNode.x, selectedNode.y, nodeRadius(selectedNode), 0, 2 * Math.PI);
+      ctx.strokeStyle = palette.outline;
+      ctx.lineWidth = 2.5 / viewK;
+      ctx.stroke();
+    }
+    if (hoveredNode && hoveredNode.id !== graphSelection) {
+      ctx.beginPath();
+      ctx.arc(hoveredNode.x, hoveredNode.y, nodeRadius(hoveredNode), 0, 2 * Math.PI);
+      ctx.strokeStyle = palette.outline;
+      ctx.lineWidth = 1.5 / viewK;
+      ctx.stroke();
+    }
+
+    const labelNodes: SimNode[] = [];
+    const labelIds = new Set<string>();
+    const addLabelNode = (node: SimNode | null) => {
+      if (!node || labelIds.has(node.id)) return;
+      labelIds.add(node.id);
+      labelNodes.push(node);
+    };
+    if (showLabels) {
+      for (const node of visibleNodes) {
+        if (node.order % labelStride === 0) addLabelNode(node);
+        if (labelNodes.length >= 500) break;
       }
     }
+    addLabelNode(selectedNode);
+    addLabelNode(hoveredNode);
 
     if (showLabels) {
       ctx.font = `${10 / viewK}px monospace`;
       ctx.fillStyle = `rgba(${palette.shortLabel}, 0.9)`;
       ctx.textAlign = "right";
       ctx.textBaseline = "middle";
-      for (let index = 0; index < visibleNodes.length; index++) {
-        const n = visibleNodes[index]!;
-        const isSelected = selectedFnode === n.id;
-        const isHovered = hoveredNode?.id === n.id;
-        if (!isSelected && !isHovered && index % labelStride !== 0) continue;
+      for (const n of labelNodes) {
         const r = nodeRadius(n);
         ctx.fillText(shortFnode(n.id), n.x - r - 5 / viewK, n.y);
       }
@@ -445,12 +483,9 @@
     ctx.font = `${11 / viewK}px sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    for (let index = 0; index < visibleNodes.length; index++) {
-      const n = visibleNodes[index]!;
+    for (const n of labelNodes) {
       const isSelected = selectedFnode === n.id;
       const isHovered = hoveredNode?.id === n.id;
-      const showNodeLabel = isSelected || isHovered || (showLabels && index % labelStride === 0);
-      if (!showNodeLabel) continue;
       const r = nodeRadius(n);
       ctx.fillStyle = isSelected || isHovered
         ? palette.outline
