@@ -32,15 +32,6 @@ export default defineConfig({
         {
           tag: 'link',
           attrs: {
-            rel: 'icon',
-            type: 'image/png',
-            sizes: '64x64',
-            href: '/MathDoc/favicon.png',
-          },
-        },
-        {
-          tag: 'link',
-          attrs: {
             rel: 'apple-touch-icon',
             sizes: '400x400',
             href: '/MathDoc/mdc-logo.png?v=2',
