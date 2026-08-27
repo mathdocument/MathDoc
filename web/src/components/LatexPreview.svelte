@@ -219,7 +219,14 @@
         errorCallback: (message) => errors.push(message),
       });
       formatTextCommands(host);
-      if (errors.length > 0) renderError = errors[0]!;
+      if (errors.length > 0) {
+        renderError = errors[0]!;
+      } else {
+        const katexError = host.querySelector<HTMLElement>(".katex-error");
+        if (katexError) {
+          renderError = katexError.title || katexError.textContent || "invalid LaTeX";
+        }
+      }
     } catch (error) {
       renderError = error instanceof Error ? error.message : String(error);
     }
