@@ -17,6 +17,7 @@
   interface SimNode {
     id: string;
     title: string;
+    label: string;
     depth: number;
     isRoot: boolean;
     isLeaf: boolean;
@@ -104,6 +105,7 @@
     nodes = data.nodes.map((node: NodeInfo) => ({
       id: node.fnode,
       title: node.title,
+      label: truncate(node.title, 20),
       depth: node.depth,
       isRoot: false,
       isLeaf: false,
@@ -414,13 +416,13 @@
         ? "#e7edf6"
         : `rgba(192, 202, 216, ${labelAlpha * 0.82})`;
       ctx.textAlign = "left";
-      const label = truncate(n.title, 20);
-      ctx.fillText(label, x + r + 3 / viewK, y + 3 / viewK);
+      ctx.fillText(n.label, x + r + 3 / viewK, y + 3 / viewK);
     }
   }
 
   function truncate(s: string, max: number): string {
-    return s.length > max ? s.slice(0, max - 1) + "…" : s;
+    const characters = Array.from(s);
+    return characters.length > max ? characters.slice(0, max - 1).join("") + "…" : s;
   }
 
   // ── Canvas sizing ───────────────────────────────────────────────────────────
