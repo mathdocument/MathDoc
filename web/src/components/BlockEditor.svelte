@@ -320,6 +320,7 @@
           changes: { from: 0, to: editorView.state.doc.length, insert: nextContent },
         });
       }
+      if (previewing && editorView.state.doc.eq(lastSavedDoc)) previewSource = nextContent;
     }
     setDirty(editorView !== null && !editorView.state.doc.eq(lastSavedDoc));
   });
