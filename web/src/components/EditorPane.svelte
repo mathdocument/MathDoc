@@ -4,7 +4,6 @@
   import type { FormalCodeStatus, NodeDetail } from "../lib/types";
   import type { LoadState } from "../lib/state.svelte";
   import { shortFnode, errMsg } from "../lib/format";
-  import BlockEditor from "./BlockEditor.svelte";
   import AddBlockControl from "./AddBlockControl.svelte";
   import { api } from "../lib/api";
   import {
@@ -32,6 +31,9 @@
   let titleRequest = 0;
   let readyReported = false;
   const readyBlocks = new Set<string>();
+  let BlockEditorComponent = $state<typeof import("./BlockEditor.svelte").default | null>(null);
+  let editorLoadError: string | null = $state(null);
+  let alive = true;
 
   const formalStatusLabels: Record<FormalCodeStatus, string> = {
     no_code: "No code",
@@ -87,7 +89,17 @@
   }
 
   onMount(() => {
-    if (load.kind !== "ready" || load.node.blocks.length === 0) reportReady();
+    if (load.kind !== "ready" || load.node.blocks.length === 0) {
+      reportReady();
+      return;
+    }
+    void import("./BlockEditor.svelte").then((module) => {
+      if (alive) BlockEditorComponent = module.default;
+    }).catch((error) => {
+      if (!alive) return;
+      editorLoadError = errMsg(error);
+      reportReady();
+    });
   });
 
   // Reset title editing state when the displayed node changes.
@@ -108,6 +120,7 @@
   });
 
   onDestroy(() => {
+    alive = false;
     titleRequest++;
     removeDraft(titleDraftId);
   });
@@ -250,9 +263,13 @@
           <strong>No source blocks yet</strong>
           <p>Attach code, LaTeX, or prose with “Add source block” below.</p>
         </div>
+      {:else if editorLoadError}
+        <div class="editor-load-error" role="alert">editor failed to load: {editorLoadError}</div>
+      {:else if !BlockEditorComponent}
+        <div class="editor-loading" aria-busy="true">Loading editor…</div>
       {:else}
         {#each node.blocks as block (block.srctype)}
-          <BlockEditor
+          <BlockEditorComponent
             fnode={node.fnode}
             revision={node.revision}
             {block}
@@ -525,6 +542,16 @@
     margin: 0;
     font-size: 0.72rem;
   }
+  .editor-loading,
+  .editor-load-error {
+    min-height: 8rem;
+    display: grid;
+    place-items: center;
+    color: var(--mdc-muted);
+    font-family: var(--mdc-mono);
+    font-size: 0.72rem;
+  }
+  .editor-load-error { color: var(--mdc-error); }
   .empty-icon {
     display: grid;
     place-items: center;
