@@ -12,7 +12,7 @@ function storedTheme(): Theme | null {
   }
 }
 
-export function preferredTheme(): Theme {
+function preferredTheme(): Theme {
   if (volatileTheme) return volatileTheme;
   const stored = storedTheme();
   if (stored) return stored;

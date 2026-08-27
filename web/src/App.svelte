@@ -17,8 +17,6 @@
     navigate,
     withViewTransition,
     appState,
-    goBack,
-    goForward,
     canGoBack,
     canGoForward,
     cancelNavigation,
@@ -735,14 +733,14 @@
     <div class="history-tools" aria-label="navigation history">
       <button
         class="tool icon-only"
-        onclick={() => void goBack()}
+        onclick={() => window.history.back()}
         disabled={!canGoBack()}
         title="Back"
         aria-label="Back"
       ><ArrowLeft size={16} strokeWidth={1.8} /></button>
       <button
         class="tool icon-only"
-        onclick={() => void goForward()}
+        onclick={() => window.history.forward()}
         disabled={!canGoForward()}
         title="Forward"
         aria-label="Forward"

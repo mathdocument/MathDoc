@@ -281,13 +281,3 @@ export function canGoBack(): boolean {
 export function canGoForward(): boolean {
   return appState.historyIdx < appState.history.length - 1;
 }
-
-export function goBack() {
-  if (!canGoBack()) return;
-  window.history.back();
-}
-
-export function goForward() {
-  if (!canGoForward()) return;
-  window.history.forward();
-}

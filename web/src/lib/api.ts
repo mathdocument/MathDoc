@@ -13,16 +13,6 @@ import type {
   ResolveResponse,
 } from "./types";
 
-export class ApiError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
-    super(message);
-    this.name = "ApiError";
-  }
-}
-
 export function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
@@ -43,7 +33,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
       typeof body === "object" && body !== null && "error" in body
         ? String((body as { error: unknown }).error)
         : `HTTP ${resp.status}`;
-    throw new ApiError(msg, resp.status);
+    throw new Error(msg);
   }
   return body as T;
 }
