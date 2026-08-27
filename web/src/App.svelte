@@ -85,7 +85,6 @@
   let forceSelectionRequest = 0;
   let forceRefreshRequest = 0;
   let relationRequest = 0;
-  let viewRequest = 0;
   let viewSwitchDone: Promise<void> | null = null;
   let forceRelationsDirty = false;
   // NodeDetail for the force-graph side panel (fetched on selection).
@@ -520,7 +519,6 @@
     if (view === "force") {
       const s = forceNodeLoad;
       if (s.kind === "ready") return `${s.node.title}  ·  ${s.node.fnode.slice(0, 8)}`;
-      if (s.kind === "loading") return "loading…";
       if (s.kind === "error") return `error: ${s.message}`;
       return "";
     }
@@ -528,7 +526,6 @@
     if (s.kind === "ready") {
       return `${s.node.title}  ·  ${s.node.fnode.slice(0, 8)}`;
     }
-    if (s.kind === "loading") return "loading…";
     if (s.kind === "error") return `error: ${s.message}`;
     return "";
   });
@@ -610,7 +607,6 @@
     cancelNavigation();
     forceSelectionRequest++;
     forceRefreshRequest++;
-    const request = ++viewRequest;
     let resolveViewSwitch: () => void;
     const switchDone = new Promise<void>((resolve) => {
       resolveViewSwitch = resolve;
@@ -618,7 +614,6 @@
     viewSwitchDone = switchDone;
     try {
       if (!await settlePendingMutations()) return;
-      if (request !== viewRequest) return;
       if (view === "columns") {
         // Reuse the node already displayed by Knowledge. The graph data loads
         // progressively after the view changes, so switching never waits for
@@ -641,14 +636,12 @@
           forceSelectedFnode = null;
           forceNodeLoad = { kind: "idle" };
         }
-        if (request !== viewRequest) return;
         const editorReady = new Promise<void>((resolve) => {
           resolveForceEditorReady = resolve;
         });
         forceEditorMounted = true;
         await tick();
         await editorReady;
-        if (request !== viewRequest) return;
         view = "force";
         await tick();
         columnsMounted = false;
@@ -678,14 +671,12 @@
           });
           if (!navigated) return;
         }
-        if (request !== viewRequest) return;
         const editorReady = new Promise<void>((resolve) => {
           resolveColumnsEditorReady = resolve;
         });
         columnsMounted = true;
         await tick();
         await editorReady;
-        if (request !== viewRequest) return;
         view = "columns";
         await tick();
         forceEditorMounted = false;
@@ -697,9 +688,7 @@
     } finally {
       resolveViewSwitch!();
       if (viewSwitchDone === switchDone) viewSwitchDone = null;
-      if (request === viewRequest) {
-        viewSwitching = false;
-      }
+      viewSwitching = false;
     }
   }
 </script>

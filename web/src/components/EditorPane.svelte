@@ -198,14 +198,6 @@
 >
   {#if load.kind === "idle"}
     <div class="placeholder">no node selected</div>
-  {:else if load.kind === "loading"}
-    <div class="skeleton" aria-busy="true" aria-label="loading node">
-      <div class="sk sk-eyebrow"></div>
-      <div class="sk sk-title"></div>
-      <div class="sk sk-meta"></div>
-      <div class="sk sk-block"></div>
-      <div class="sk sk-block tall"></div>
-    </div>
   {:else if load.kind === "error"}
     <div class="placeholder error">{load.message}</div>
   {:else}
@@ -511,35 +503,6 @@
   }
   .placeholder.error {
     color: var(--mdc-error);
-  }
-  /* Skeleton loading state (shown only while the very first node loads). */
-  .skeleton {
-    padding: 1.1rem 1.25rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.8rem;
-  }
-  .sk {
-    position: relative;
-    overflow: hidden;
-    border-radius: 6px;
-    background: var(--mdc-card);
-  }
-  .sk::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    transform: translateX(-100%);
-    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--mdc-accent) 9%, transparent), transparent);
-    animation: mdc-shimmer 1.4s infinite;
-  }
-  .sk-eyebrow { width: 4.5rem; height: 0.6rem; }
-  .sk-title { width: 55%; height: 1.45rem; border-radius: 8px; }
-  .sk-meta { width: 40%; height: 0.85rem; }
-  .sk-block { width: 100%; height: 7rem; border-radius: var(--mdc-radius-md); }
-  .sk-block.tall { height: 12rem; }
-  @keyframes mdc-shimmer {
-    to { transform: translateX(100%); }
   }
   .empty-state {
     display: flex;

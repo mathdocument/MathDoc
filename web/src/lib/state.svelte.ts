@@ -18,7 +18,6 @@ export type { BrowserHistoryEntry, BrowserHistoryMode } from "./history";
 
 export type LoadState =
   | { kind: "idle" }
-  | { kind: "loading" }
   | { kind: "ready"; node: NodeDetail }
   | { kind: "error"; message: string };
 
