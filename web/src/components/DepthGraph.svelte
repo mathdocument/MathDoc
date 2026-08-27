@@ -52,8 +52,6 @@
   const LEAF_COLOR = "#63d8b2";
   const MAX_NODE_RADIUS = 24;
   const SPATIAL_CELL_SIZE = 64;
-  const EDGE_BUCKET_SIZE = 512;
-  const MAX_EDGE_BUCKET_SPAN = 16;
   const MIN_ZOOM = 0.0001;
   const MAX_ZOOM = 5;
 
@@ -61,15 +59,12 @@
   let outDegreeMap = new Map<string, number>();
   let nodeSpatialIndex = new Map<string, SimNode[]>();
   let nodesByX: SimNode[] = [];
-  let edgeBuckets = new Map<number, SimLink[]>();
-  let wideEdges: SimLink[] = [];
-  let minEdgeBucket = 0;
-  let maxEdgeBucket = -1;
+  let outgoingLinks = new Map<string, SimLink[]>();
+  let incomingLinks = new Map<string, SimLink[]>();
   let dprQuery: MediaQueryList | null = null;
-  let fullEdgeSelection: string | null | undefined;
-  let fullBasePath = new Path2D();
-  let fullOutgoingPath = new Path2D();
-  let fullIncomingPath = new Path2D();
+  let edgePathSelection: string | null | undefined;
+  let selectedOutgoingPath = new Path2D();
+  let selectedIncomingPath = new Path2D();
   let graphBounds = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
 
   function nodeRadius(n: SimNode): number {
@@ -83,15 +78,21 @@
   function computeMetadata(nodeList: SimNode[], linkList: SimLink[]) {
     inDegreeMap = new Map<string, number>();
     outDegreeMap = new Map<string, number>();
+    outgoingLinks = new Map<string, SimLink[]>();
+    incomingLinks = new Map<string, SimLink[]>();
     for (const n of nodeList) {
       inDegreeMap.set(n.id, 0);
       outDegreeMap.set(n.id, 0);
+      outgoingLinks.set(n.id, []);
+      incomingLinks.set(n.id, []);
     }
     for (const l of linkList) {
       const s = l.source.id;
       const t = l.target.id;
       outDegreeMap.set(s, (outDegreeMap.get(s) ?? 0) + 1);
       inDegreeMap.set(t, (inDegreeMap.get(t) ?? 0) + 1);
+      outgoingLinks.get(s)?.push(l);
+      incomingLinks.get(t)?.push(l);
     }
     for (const n of nodeList) {
       const inDegree = inDegreeMap.get(n.id) ?? 0;
@@ -126,10 +127,9 @@
     applyStaticGraphLayout();
     computeGraphBounds();
     buildSpatialIndexes();
-    fullEdgeSelection = undefined;
-    fullBasePath = new Path2D();
-    fullOutgoingPath = new Path2D();
-    fullIncomingPath = new Path2D();
+    edgePathSelection = undefined;
+    selectedOutgoingPath = new Path2D();
+    selectedIncomingPath = new Path2D();
   }
 
   async function loadGraph(): Promise<boolean> {
@@ -233,32 +233,6 @@
       if (bucket) bucket.push(node);
       else nodeSpatialIndex.set(key, [node]);
     }
-
-    edgeBuckets = new Map();
-    wideEdges = [];
-    minEdgeBucket = Infinity;
-    maxEdgeBucket = -Infinity;
-    for (const link of links) {
-      const { source, target } = link;
-      const loopRadius = source === target ? source.baseRadius + 8 : 0;
-      const first = Math.floor((Math.min(source.x, target.x) - loopRadius) / EDGE_BUCKET_SIZE);
-      const last = Math.floor((Math.max(source.x, target.x) + loopRadius) / EDGE_BUCKET_SIZE);
-      if (last - first > MAX_EDGE_BUCKET_SPAN) {
-        wideEdges.push(link);
-        continue;
-      }
-      minEdgeBucket = Math.min(minEdgeBucket, first);
-      maxEdgeBucket = Math.max(maxEdgeBucket, last);
-      for (let bucketIndex = first; bucketIndex <= last; bucketIndex++) {
-        const bucket = edgeBuckets.get(bucketIndex);
-        if (bucket) bucket.push(link);
-        else edgeBuckets.set(bucketIndex, [link]);
-      }
-    }
-    if (edgeBuckets.size === 0) {
-      minEdgeBucket = 0;
-      maxEdgeBucket = -1;
-    }
   }
 
   // Render-on-demand flag. Set by requestRender(), consumed by the RAF loop.
@@ -314,39 +288,19 @@
     }
   }
 
-  function ensureFullEdgePaths(selection: string | null) {
-    if (fullEdgeSelection === selection) return;
-    fullEdgeSelection = selection;
-    fullBasePath = new Path2D();
-    fullOutgoingPath = new Path2D();
-    fullIncomingPath = new Path2D();
-    for (const link of links) {
-      const path = selection && link.source.id === selection
-        ? fullOutgoingPath
-        : selection && link.target.id === selection
-          ? fullIncomingPath
-          : fullBasePath;
-      appendEdge(path, link);
+  function ensureSelectedEdgePaths(selection: string | null) {
+    if (edgePathSelection === selection) return;
+    edgePathSelection = selection;
+    selectedOutgoingPath = new Path2D();
+    selectedIncomingPath = new Path2D();
+    if (!selection) return;
+    for (const link of outgoingLinks.get(selection) ?? []) {
+      appendEdge(selectedOutgoingPath, link);
     }
-  }
-
-  function edgeOutsideViewport(
-    link: SimLink,
-    minX: number,
-    maxX: number,
-    minY: number,
-    maxY: number,
-  ): boolean {
-    const { source, target } = link;
-    if (source === target) {
-      const loopRadius = source.baseRadius + 8;
-      return source.x + loopRadius < minX || source.x - loopRadius > maxX ||
-        source.y < minY || source.y - 2 * loopRadius > maxY;
+    for (const link of incomingLinks.get(selection) ?? []) {
+      // A self-edge is already represented as outgoing.
+      if (link.source !== link.target) appendEdge(selectedIncomingPath, link);
     }
-    return (source.x < minX && target.x < minX) ||
-      (source.x > maxX && target.x > maxX) ||
-      (source.y < minY && target.y < minY) ||
-      (source.y > maxY && target.y > maxY);
   }
 
   function render() {
@@ -378,68 +332,16 @@
       ? selectedFnode
       : null;
 
-    // Build a small number of paths instead of issuing one canvas stroke per
-    // edge. Cull links wholly outside the viewport and reduce opacity around
-    // high-degree selections so dense hubs remain legible.
-    const firstBucket = Math.max(minEdgeBucket, Math.floor(minX / EDGE_BUCKET_SIZE));
-    const lastBucket = Math.min(maxEdgeBucket, Math.floor(maxX / EDGE_BUCKET_SIZE));
-    let linkCandidates: Iterable<SimLink> = links;
-    if (lastBucket < firstBucket) {
-      linkCandidates = wideEdges;
-    } else {
-      let candidateCost = wideEdges.length;
-      for (let bucketIndex = firstBucket; bucketIndex <= lastBucket; bucketIndex++) {
-        candidateCost += edgeBuckets.get(bucketIndex)?.length ?? 0;
-      }
-      if (candidateCost < links.length) {
-        const visibleLinks = new Set<SimLink>(wideEdges);
-        for (let bucketIndex = firstBucket; bucketIndex <= lastBucket; bucketIndex++) {
-          const bucket = edgeBuckets.get(bucketIndex);
-          if (bucket) for (const link of bucket) visibleLinks.add(link);
-        }
-        linkCandidates = visibleLinks;
-      }
-    }
-    let basePath: Path2D;
-    let outgoingPath: Path2D;
-    let incomingPath: Path2D;
-    const fullGraphVisible = minX <= graphBounds.minX && maxX >= graphBounds.maxX &&
-      minY <= graphBounds.minY && maxY >= graphBounds.maxY;
-    if (linkCandidates === links && fullGraphVisible) {
-      ensureFullEdgePaths(graphSelection);
-      basePath = fullBasePath;
-      outgoingPath = fullOutgoingPath;
-      incomingPath = fullIncomingPath;
-    } else {
-      basePath = new Path2D();
-      outgoingPath = new Path2D();
-      incomingPath = new Path2D();
-      for (const link of linkCandidates) {
-        const { source, target } = link;
-        if (edgeOutsideViewport(link, minX, maxX, minY, maxY)) continue;
-        const path = graphSelection && source.id === graphSelection
-          ? outgoingPath
-          : graphSelection && target.id === graphSelection
-            ? incomingPath
-            : basePath;
-        appendEdge(path, link);
-      }
-    }
-
-    const baseAlpha = Math.max(0.035, 0.28 * Math.min(1, Math.sqrt(5_000 / Math.max(1, links.length))));
-    ctx.strokeStyle = `rgba(102, 115, 134, ${graphSelection ? baseAlpha * 0.35 : baseAlpha})`;
-    ctx.lineWidth = 1 / viewK;
-    ctx.stroke(basePath);
-
+    ensureSelectedEdgePaths(graphSelection);
     if (graphSelection) {
       const selectedDegree = (inDegreeMap.get(graphSelection) ?? 0) +
         (outDegreeMap.get(graphSelection) ?? 0);
       const highlightAlpha = Math.max(0.16, Math.min(0.86, 12 / Math.sqrt(Math.max(1, selectedDegree))));
       ctx.lineWidth = (selectedDegree > 1_000 ? 1.25 : 2) / viewK;
       ctx.strokeStyle = `rgba(99, 216, 178, ${highlightAlpha})`;
-      ctx.stroke(outgoingPath);
+      ctx.stroke(selectedOutgoingPath);
       ctx.strokeStyle = `rgba(182, 156, 255, ${highlightAlpha})`;
-      ctx.stroke(incomingPath);
+      ctx.stroke(selectedIncomingPath);
     }
 
     // Keep only visible nodes for drawing, labels, and pointer hit testing.
