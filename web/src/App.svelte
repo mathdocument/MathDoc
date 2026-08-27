@@ -28,6 +28,7 @@
     commitClearedHistory,
     commitFocusedHistory,
     initialHistoryOptions,
+    type BrowserHistoryEntry,
     type BrowserHistoryMode,
     type LoadState,
   } from "./lib/state.svelte";
@@ -59,6 +60,7 @@
   let theme = $state<Theme>(currentTheme());
   let initialLoad = $state(true);
   let startupRequest = 0;
+  let initialNavigationRetry: { fnode: string; clearedEntry: BrowserHistoryEntry | null } | null = null;
   let initialError = $state<string | null>(null);
   let refreshError = $state<string | null>(null);
   let refreshing = $state(false);
@@ -137,6 +139,22 @@
     theme = nextTheme;
     applyTheme(nextTheme, false);
   }));
+
+  async function navigateInitial(
+    fnode: string,
+    clearedEntry: BrowserHistoryEntry | null = null,
+  ): Promise<boolean> {
+    const committed = await navigate(fnode, initialHistoryOptions(fnode));
+    if (committed && clearedEntry) {
+      commitClearedHistory({
+        pushHistory: false,
+        historyIndex: clearedEntry.index,
+        historyEntries: clearedEntry.entries,
+        browserHistory: "replace",
+      });
+    }
+    return committed;
+  }
 
   function applyGraphStatsDelta(nodes: number, edges: number) {
     graphCheckRequest++;
@@ -282,12 +300,17 @@
         const hash = window.location.hash.slice(1);
         const params = new URLSearchParams(hash);
         const currentEntry = browserHistoryEntry(window.history.state);
-        const ref = params.get("ref") ??
+        const hashRef = params.get("ref");
+        const clearedEntry = hashRef === null && currentEntry?.fnode === null ? currentEntry : null;
+        const ref = hashRef ??
           (currentEntry?.fnode === null ? browserHistoryTarget(currentEntry) : null);
         if (ref) {
           const resolved = await api.resolve(ref);
           if (!isCurrent()) return;
-          await navigate(resolved.fnode, initialHistoryOptions(resolved.fnode));
+          const committed = await navigateInitial(resolved.fnode, clearedEntry);
+          if (isCurrent() && !committed) {
+            initialNavigationRetry = { fnode: resolved.fnode, clearedEntry };
+          }
           return;
         }
         const roots = (await api.roots()).filter((node) => !node.broken);
@@ -300,11 +323,17 @@
             initialError = "workspace has no valid nodes — create one with New node";
             return;
           }
-          await navigate(fallback.fnode, initialHistoryOptions(fallback.fnode));
+          const committed = await navigateInitial(fallback.fnode);
+          if (isCurrent() && !committed) {
+            initialNavigationRetry = { fnode: fallback.fnode, clearedEntry: null };
+          }
           return;
         }
         const deepest = [...roots].sort((a, b) => b.topo_depth - a.topo_depth)[0]!;
-        await navigate(deepest.fnode, initialHistoryOptions(deepest.fnode));
+        const committed = await navigateInitial(deepest.fnode);
+        if (isCurrent() && !committed) {
+          initialNavigationRetry = { fnode: deepest.fnode, clearedEntry: null };
+        }
       } catch (e) {
         if (isCurrent()) initialError = e instanceof Error ? e.message : String(e);
       } finally {
@@ -314,7 +343,10 @@
   });
 
   $effect(() => {
-    if (appState.load.kind === "ready") initialError = null;
+    if (appState.load.kind === "ready") {
+      initialError = null;
+      initialNavigationRetry = null;
+    }
   });
 
   async function refreshCurrent(
@@ -442,6 +474,7 @@
 
   function markCachedRelationsDirty(fnode: string) {
     if (appState.load.kind === "ready" && appState.load.node.fnode === fnode) {
+      relationRequest++;
       forceRelationsDirty = true;
     }
   }
@@ -564,6 +597,7 @@
         });
         appState.navigationError = null;
         appState.failedNavigationFnode = null;
+        if (initialNavigationRetry?.fnode === fnode) initialNavigationRetry = null;
         committed = true;
       }, "force-editor");
       return committed;
@@ -811,15 +845,21 @@
       <button onclick={() => {
         if (appState.failedNavigationFnode) {
           const target = appState.failedNavigationFnode;
-          if (appState.load.kind !== "ready") {
-            const options = initialHistoryOptions(target);
+          const initialRetry = initialNavigationRetry?.fnode === target
+            ? initialNavigationRetry
+            : null;
+          if (initialRetry) {
             cancelStartup();
-            if (view === "force") void onForceSelect(target, options);
-            else void navigate(target, options);
+            if (view === "force" && !initialRetry.clearedEntry) {
+              void onForceSelect(target, initialHistoryOptions(target));
+            } else {
+              void navigateInitial(target, initialRetry.clearedEntry);
+            }
           } else if (view === "force") {
             void onForceSelect(target);
           } else {
-            const retryingCurrent = appState.load.node.fnode === target;
+            const retryingCurrent = appState.load.kind === "ready" &&
+              appState.load.node.fnode === target;
             cancelStartup();
             void navigate(target, { pushHistory: !retryingCurrent });
           }

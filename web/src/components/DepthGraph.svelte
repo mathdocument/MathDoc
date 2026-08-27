@@ -79,6 +79,7 @@
   let nodesByX: SimNode[] = [];
   let outgoingLinks = new Map<string, SimNode[]>();
   let incomingLinks = new Map<string, SimNode[]>();
+  let selfEdgeNodes = new Set<string>();
   let dprQuery: MediaQueryList | null = null;
   let canvasDpr = 1;
   let edgePathSelection: string | null | undefined;
@@ -99,6 +100,7 @@
     outDegreeMap = new Map<string, number>();
     outgoingLinks = new Map<string, SimNode[]>();
     incomingLinks = new Map<string, SimNode[]>();
+    selfEdgeNodes = new Set<string>();
     for (const n of nodeList) {
       inDegreeMap.set(n.id, 0);
       outDegreeMap.set(n.id, 0);
@@ -108,6 +110,7 @@
       const target = nodeList[targetIndex]!;
       const s = source.id;
       const t = target.id;
+      if (source === target) selfEdgeNodes.add(s);
       outDegreeMap.set(s, (outDegreeMap.get(s) ?? 0) + 1);
       inDegreeMap.set(t, (inDegreeMap.get(t) ?? 0) + 1);
       const outgoing = outgoingLinks.get(s);
@@ -257,6 +260,12 @@
       maxX = Math.max(maxX, node.x + node.baseRadius);
       minY = Math.min(minY, node.y - node.baseRadius);
       maxY = Math.max(maxY, node.y + node.baseRadius);
+      if (selfEdgeNodes.has(node.id)) {
+        const loopRadius = node.baseRadius + 12;
+        minX = Math.min(minX, node.x - loopRadius);
+        maxX = Math.max(maxX, node.x + loopRadius);
+        minY = Math.min(minY, node.y - 2 * loopRadius);
+      }
     }
     graphBounds = { minX, maxX, minY, maxY };
   }

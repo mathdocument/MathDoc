@@ -23,13 +23,14 @@ const redrawEffect = StateEffect.define<number>();
 
 /** Keep syntax decoration memory and retokenization work bounded. */
 const MAX_HIGHLIGHT_LENGTH = 100_000;
+const MAX_HIGHLIGHT_LINES = 2_000;
 
 /** Each callback handles only a small amount of text and a few grammar lines. */
 const HIGHLIGHT_CHUNK_LENGTH = 4_000;
-const HIGHLIGHT_CHUNK_LINES = 8;
+const HIGHLIGHT_CHUNK_LINES = 16;
 
 /** Bound pathological grammar work within a single main-thread task. */
-const TOKENIZE_TIME_LIMIT_MS = 5;
+const TOKENIZE_TIME_LIMIT_MS = 50;
 
 /** Debounce window after the last keystroke before re-tokenizing. */
 const HIGHLIGHT_DEBOUNCE_MS = 140;
@@ -84,14 +85,22 @@ export function shikiHighlight(
         const run = ++this.run;
         this.errorReported = false;
         const doc = view.state.doc;
-        if (doc.length === 0 || doc.length > MAX_HIGHLIGHT_LENGTH) {
+        if (doc.length === 0) {
           this.decorations = Decoration.none;
           onError?.(null);
           return;
         }
 
+        let limit = doc.length;
+        if (doc.length > MAX_HIGHLIGHT_LENGTH) {
+          limit = doc.lineAt(MAX_HIGHLIGHT_LENGTH).from;
+        }
+        if (doc.lines > MAX_HIGHLIGHT_LINES) {
+          limit = Math.min(limit, doc.line(MAX_HIGHLIGHT_LINES).to);
+        }
         this.decorations = Decoration.none;
-        this.scheduleChunk(view, doc, 0, undefined, run);
+        if (limit === 0) onError?.(null);
+        else this.scheduleChunk(view, doc, 0, undefined, run, limit);
       }
 
       private scheduleChunk(
@@ -100,15 +109,16 @@ export function shikiHighlight(
         from: number,
         grammarState: GrammarState | undefined,
         run: number,
+        limit: number,
       ) {
         setTimeout(() => {
           if (run !== this.run || !view.dom.isConnected || view.state.doc !== doc) return;
 
           let to = from;
           let skipChunk = false;
-          for (let lineCount = 0; lineCount < HIGHLIGHT_CHUNK_LINES && to < doc.length; lineCount++) {
+          for (let lineCount = 0; lineCount < HIGHLIGHT_CHUNK_LINES && to < limit; lineCount++) {
             const line = doc.lineAt(to);
-            const lineEnd = line.to < doc.length ? line.to + 1 : line.to;
+            const lineEnd = Math.min(limit, line.to < limit ? line.to + 1 : line.to);
             if (line.to - line.from > HIGHLIGHT_CHUNK_LENGTH) {
               if (to === from) {
                 to = lineEnd;
@@ -120,7 +130,7 @@ export function shikiHighlight(
             to = lineEnd;
           }
           if (skipChunk) {
-            if (to < doc.length) this.scheduleChunk(view, doc, to, undefined, run);
+            if (to < limit) this.scheduleChunk(view, doc, to, grammarState, run, limit);
             else if (!this.errorReported) onError?.(null);
             return;
           }
@@ -138,10 +148,10 @@ export function shikiHighlight(
             if (additions.length > 0) {
               this.decorations = this.decorations.update({ add: additions, sort: true });
             }
-            view.dispatch({ effects: redrawEffect.of(run) });
+            if (additions.length > 0) view.dispatch({ effects: redrawEffect.of(run) });
 
-            if (to < doc.length) {
-              this.scheduleChunk(view, doc, to, result.grammarState, run);
+            if (to < limit) {
+              this.scheduleChunk(view, doc, to, result.grammarState, run, limit);
             } else if (!this.errorReported) {
               onError?.(null);
             }
@@ -149,8 +159,8 @@ export function shikiHighlight(
             this.reportError(error);
             // A pathological chunk should not prevent later parts of a large
             // document from receiving best-effort highlighting.
-            if (to < doc.length) {
-              this.scheduleChunk(view, doc, to, undefined, run);
+            if (to < limit) {
+              this.scheduleChunk(view, doc, to, undefined, run, limit);
             }
           }
         }, 0);
