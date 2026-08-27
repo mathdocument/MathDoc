@@ -18,7 +18,6 @@
     id: string;
     title: string;
     depth: number;
-    broken: boolean;
     isRoot: boolean;
     isLeaf: boolean;
     x: number;
@@ -107,7 +106,6 @@
       id: node.fnode,
       title: node.title,
       depth: node.depth,
-      broken: node.broken,
       isRoot: false,
       isLeaf: false,
       x: 0,
@@ -373,13 +371,11 @@
       const isHovered = hoveredNode?.id === n.id;
       ctx.beginPath();
       ctx.arc(x, y, r, 0, 2 * Math.PI);
-      ctx.fillStyle = n.broken
-        ? "#ff7d8f"
-        : n.isRoot
-          ? ROOT_COLOR
-          : n.isLeaf
-            ? LEAF_COLOR
-            : NODE_COLOR;
+      ctx.fillStyle = n.isRoot
+        ? ROOT_COLOR
+        : n.isLeaf
+          ? LEAF_COLOR
+          : NODE_COLOR;
       ctx.fill();
       if (isSelected) {
         ctx.strokeStyle = "#e7edf6";

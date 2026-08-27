@@ -248,7 +248,7 @@
         if (roots.length === 0) {
           const graph = await api.full();
           if (!isCurrent()) return;
-          const fallback = graph.nodes.find((node) => !node.broken);
+          const fallback = graph.nodes[0];
           if (!fallback) {
             initialError = "workspace has no valid nodes — create one with New node";
             return;
