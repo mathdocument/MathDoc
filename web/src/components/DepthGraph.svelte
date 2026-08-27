@@ -296,6 +296,9 @@
     const showLabels = viewK > 0.6;
     const showShortFnode = viewK > 0.9;
     const labelAlpha = viewK > 0.9 ? 1 : Math.max(0, (viewK - 0.5) / 0.4);
+    const graphSelection = selectedFnode && inDegreeMap.has(selectedFnode)
+      ? selectedFnode
+      : null;
 
     // Build a small number of paths instead of issuing one canvas stroke per
     // edge. Cull links wholly outside the viewport and reduce opacity around
@@ -328,23 +331,29 @@
         (s.y < minY && t.y < minY) || (s.y > maxY && t.y > maxY)) continue;
 
       let path = basePath;
-      if (selectedFnode && s.id === selectedFnode) {
+      if (graphSelection && s.id === graphSelection) {
         path = outgoingPath;
-      } else if (selectedFnode && t.id === selectedFnode) {
+      } else if (graphSelection && t.id === graphSelection) {
         path = incomingPath;
       }
-      path.moveTo(s.x, s.y);
-      path.lineTo(t.x, t.y);
+      if (s === t) {
+        const loopRadius = baseNodeRadius(s) + 8;
+        path.moveTo(s.x, s.y);
+        path.arc(s.x, s.y - loopRadius, loopRadius, Math.PI / 2, Math.PI * 2.5);
+      } else {
+        path.moveTo(s.x, s.y);
+        path.lineTo(t.x, t.y);
+      }
     }
 
     const baseAlpha = Math.max(0.035, 0.28 * Math.min(1, Math.sqrt(5_000 / Math.max(1, links.length))));
-    ctx.strokeStyle = `rgba(102, 115, 134, ${selectedFnode ? baseAlpha * 0.35 : baseAlpha})`;
+    ctx.strokeStyle = `rgba(102, 115, 134, ${graphSelection ? baseAlpha * 0.35 : baseAlpha})`;
     ctx.lineWidth = 1 / viewK;
     ctx.stroke(basePath);
 
-    if (selectedFnode) {
-      const selectedDegree = (inDegreeMap.get(selectedFnode) ?? 0) +
-        (outDegreeMap.get(selectedFnode) ?? 0);
+    if (graphSelection) {
+      const selectedDegree = (inDegreeMap.get(graphSelection) ?? 0) +
+        (outDegreeMap.get(graphSelection) ?? 0);
       const highlightAlpha = Math.max(0.16, Math.min(0.86, 12 / Math.sqrt(Math.max(1, selectedDegree))));
       ctx.lineWidth = (selectedDegree > 1_000 ? 1.25 : 2) / viewK;
       ctx.strokeStyle = `rgba(99, 216, 178, ${highlightAlpha})`;
