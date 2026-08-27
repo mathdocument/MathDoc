@@ -51,11 +51,19 @@
   const LEAF_COLOR = "#63d8b2";
   const MAX_NODE_RADIUS = 24;
   const SPATIAL_CELL_SIZE = 64;
+  const EDGE_BUCKET_SIZE = 512;
+  const MAX_EDGE_BUCKET_SPAN = 256;
   const MIN_ZOOM = 0.0001;
   const MAX_ZOOM = 5;
 
   let inDegreeMap = new Map<string, number>();
   let outDegreeMap = new Map<string, number>();
+  let nodeSpatialIndex = new Map<string, SimNode[]>();
+  let nodesByX: SimNode[] = [];
+  let edgeBuckets = new Map<number, SimLink[]>();
+  let wideEdges: SimLink[] = [];
+  let minEdgeBucket = 0;
+  let maxEdgeBucket = -1;
 
   function baseNodeRadius(n: SimNode): number {
     const inDegree = inDegreeMap.get(n.id) ?? 0;
@@ -109,6 +117,7 @@
     }));
     computeMetadata(nodes, links);
     applyStaticGraphLayout();
+    buildSpatialIndexes();
   }
 
   async function loadGraph(): Promise<boolean> {
@@ -191,6 +200,44 @@
     for (const node of nodes) node.x = (node.x ?? 0) - offsetX;
   }
 
+  function buildSpatialIndexes() {
+    nodeSpatialIndex = new Map();
+    nodesByX = [...nodes].sort((a, b) => a.x! - b.x!);
+    for (const node of nodes) {
+      const key = spatialKey(node.x!, node.y!);
+      const bucket = nodeSpatialIndex.get(key);
+      if (bucket) bucket.push(node);
+      else nodeSpatialIndex.set(key, [node]);
+    }
+
+    edgeBuckets = new Map();
+    wideEdges = [];
+    minEdgeBucket = Infinity;
+    maxEdgeBucket = -Infinity;
+    for (const link of links) {
+      const source = typeof link.source === "string" ? undefined : link.source;
+      const target = typeof link.target === "string" ? undefined : link.target;
+      if (!source || !target) continue;
+      const first = Math.floor(Math.min(source.x!, target.x!) / EDGE_BUCKET_SIZE);
+      const last = Math.floor(Math.max(source.x!, target.x!) / EDGE_BUCKET_SIZE);
+      if (last - first > MAX_EDGE_BUCKET_SPAN) {
+        wideEdges.push(link);
+        continue;
+      }
+      minEdgeBucket = Math.min(minEdgeBucket, first);
+      maxEdgeBucket = Math.max(maxEdgeBucket, last);
+      for (let bucketIndex = first; bucketIndex <= last; bucketIndex++) {
+        const bucket = edgeBuckets.get(bucketIndex);
+        if (bucket) bucket.push(link);
+        else edgeBuckets.set(bucketIndex, [link]);
+      }
+    }
+    if (edgeBuckets.size === 0) {
+      minEdgeBucket = 0;
+      maxEdgeBucket = -1;
+    }
+  }
+
   // Render-on-demand flag. Set by requestRender(), consumed by the RAF loop.
   let needsRender = false;
   function requestRender() {
@@ -217,17 +264,19 @@
 
   // ── Rendering ───────────────────────────────────────────────────────────────
 
-  let spatialIndex = new Map<string, SimNode[]>();
-
   function spatialKey(x: number, y: number): string {
     return `${Math.floor(x / SPATIAL_CELL_SIZE)}:${Math.floor(y / SPATIAL_CELL_SIZE)}`;
   }
 
-  function indexVisibleNode(node: SimNode) {
-    const key = spatialKey(node.x!, node.y!);
-    const bucket = spatialIndex.get(key);
-    if (bucket) bucket.push(node);
-    else spatialIndex.set(key, [node]);
+  function firstNodeAtOrAfter(x: number): number {
+    let low = 0;
+    let high = nodesByX.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (nodesByX[middle]!.x! < x) low = middle + 1;
+      else high = middle;
+    }
+    return low;
   }
 
   function render() {
@@ -262,7 +311,18 @@
     const basePath = new Path2D();
     const outgoingPath = new Path2D();
     const incomingPath = new Path2D();
-    for (const link of links) {
+    const firstBucket = Math.max(minEdgeBucket, Math.floor(minX / EDGE_BUCKET_SIZE));
+    const lastBucket = Math.min(maxEdgeBucket, Math.floor(maxX / EDGE_BUCKET_SIZE));
+    let linkCandidates: Iterable<SimLink> = links;
+    if (lastBucket >= firstBucket && (lastBucket - firstBucket + 1) * 2 < edgeBuckets.size) {
+      const visibleLinks = new Set<SimLink>(wideEdges);
+      for (let bucketIndex = firstBucket; bucketIndex <= lastBucket; bucketIndex++) {
+        const bucket = edgeBuckets.get(bucketIndex);
+        if (bucket) for (const link of bucket) visibleLinks.add(link);
+      }
+      linkCandidates = visibleLinks;
+    }
+    for (const link of linkCandidates) {
       const s = typeof link.source === "string" ? undefined : link.source;
       const t = typeof link.target === "string" ? undefined : link.target;
       if (!s || !t || s.x == null || s.y == null || t.x == null || t.y == null) continue;
@@ -297,13 +357,15 @@
 
     // Keep only visible nodes for drawing, labels, and pointer hit testing.
     const visibleNodes: SimNode[] = [];
-    spatialIndex = new Map();
-    for (const n of nodes) {
+    const nodeMargin = MAX_NODE_RADIUS + 3;
+    const firstNode = firstNodeAtOrAfter(minX - nodeMargin);
+    for (let index = firstNode; index < nodesByX.length; index++) {
+      const n = nodesByX[index]!;
+      if (n.x! > maxX + nodeMargin) break;
       if (n.x == null || n.y == null) continue;
       const r = nodeRadius(n);
       if (n.x + r < minX || n.x - r > maxX || n.y + r < minY || n.y - r > maxY) continue;
       visibleNodes.push(n);
-      indexVisibleNode(n);
     }
 
     const labelStride = Math.max(1, Math.ceil(visibleNodes.length / 500));
@@ -393,13 +455,13 @@
   function findNodeAt(canvasX: number, canvasY: number): SimNode | null {
     const { x: wx, y: wy } = screenToWorld(canvasX, canvasY);
     let candidates = nodes;
-    if (nodes.length > 500 && spatialIndex.size > 0) {
+    if (nodes.length > 500 && nodeSpatialIndex.size > 0) {
       candidates = [];
       const cellX = Math.floor(wx / SPATIAL_CELL_SIZE);
       const cellY = Math.floor(wy / SPATIAL_CELL_SIZE);
       for (let dx = -1; dx <= 1; dx++) {
         for (let dy = -1; dy <= 1; dy++) {
-          const bucket = spatialIndex.get(`${cellX + dx}:${cellY + dy}`);
+          const bucket = nodeSpatialIndex.get(`${cellX + dx}:${cellY + dy}`);
           if (bucket) candidates.push(...bucket);
         }
       }
