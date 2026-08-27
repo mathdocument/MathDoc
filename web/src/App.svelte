@@ -458,7 +458,7 @@
           forceSelectedFnode = node.fnode;
           forceNodeLoad = { kind: "ready", node };
           commitFocusedHistory(node.fnode, { pushHistory: false });
-          await refreshReusedForceNode(node.fnode, forceRequest, draftRevision);
+          void refreshReusedForceNode(node.fnode, forceRequest, draftRevision);
         } else {
           forceSelectedFnode = null;
           forceNodeLoad = { kind: "idle" };
@@ -485,11 +485,12 @@
         if (canReuseColumns && forceNodeLoad.kind === "ready") {
           refreshFocused(forceNodeLoad.node);
         } else if (target) {
-          await navigate(target, {
+          const navigated = await navigate(target, {
             pushHistory: false,
             skipTransition: true,
             skipUnsavedGuard: true,
           });
+          if (!navigated) return;
         }
         if (request !== viewRequest) return;
         const editorReady = new Promise<void>((resolve) => {
@@ -515,7 +516,11 @@
   }
 </script>
 
-<div class="app" inert={overlay.kind !== "none"}>
+<div
+  class="app"
+  inert={overlay.kind !== "none" || viewSwitching}
+  aria-busy={viewSwitching}
+>
   <header class="toolbar">
     <div class="identity" aria-label="MathDoc">
       <img class="brand-mark" src="/mdc-logo.svg" alt="" />
