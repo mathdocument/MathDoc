@@ -8,12 +8,9 @@
   import AddBlockControl from "./AddBlockControl.svelte";
   import { api } from "../lib/api";
   import {
-    confirmDiscardDrafts,
     removeDraft,
-    settlePendingMutations,
     setDraftDirty,
     setMutationPending,
-    unsavedDraftRevision,
   } from "../lib/unsaved";
 
   interface Props {
@@ -29,13 +26,10 @@
   let titleError: string | null = $state(null);
   let titleSaving = $state(false);
   let titleInputEl = $state<HTMLInputElement | null>(null);
-  let refreshError: string | null = $state(null);
   const titleDraftId = Symbol("title draft");
   const titleMutationId = Symbol("title mutation");
   let displayedFnode: string | null = null;
   let titleRequest = 0;
-  let refreshRequest = 0;
-  let editorResetRevision = $state(0);
   let readyReported = false;
   const readyBlocks = new Set<string>();
 
@@ -102,7 +96,6 @@
     if (fnode === displayedFnode) return;
     displayedFnode = fnode;
     titleRequest++;
-    refreshRequest++;
     editingTitle = false;
     titleSaving = false;
     titleError = null;
@@ -116,7 +109,6 @@
 
   onDestroy(() => {
     titleRequest++;
-    refreshRequest++;
     removeDraft(titleDraftId);
   });
 
@@ -132,7 +124,7 @@
   }
 
   async function saveTitle() {
-    if (load.kind !== "ready") return;
+    if (load.kind !== "ready" || titleSaving) return;
     const newTitle = titleDraft.trim();
     if (!newTitle) {
       titleError = "title must be non-empty";
@@ -170,31 +162,6 @@
     titleError = null;
   }
 
-  async function refreshNode() {
-    if (load.kind !== "ready") return;
-    if (!confirmDiscardDrafts()) return;
-    if (!await settlePendingMutations()) return;
-    if (load.kind !== "ready") return;
-    const confirmedDraftRevision = unsavedDraftRevision();
-    const targetFnode = load.node.fnode;
-    const request = ++refreshRequest;
-    refreshError = null;
-    try {
-      const fresh = await api.node(targetFnode, true);
-      if (request !== refreshRequest || load.kind !== "ready" ||
-        load.node.fnode !== targetFnode) return;
-      if (unsavedDraftRevision() !== confirmedDraftRevision) return;
-      titleRequest++;
-      editingTitle = false;
-      titleSaving = false;
-      titleError = null;
-      titleDraft = fresh.title;
-      editorResetRevision++;
-      onRefresh?.(fresh, true);
-    } catch (e) {
-      if (request === refreshRequest) refreshError = errMsg(e);
-    }
-  }
 </script>
 
 <section
@@ -216,12 +183,6 @@
   {:else}
     {@const node = load.node}
     <header class="head">
-      {#if refreshError}
-        <div class="refresh-error" role="alert">
-          <span>refresh failed: {refreshError}</span>
-          <button onclick={() => void refreshNode()}>retry</button>
-        </div>
-      {/if}
       <div class="eyebrow">Current node</div>
       <div class="title-row">
         {#if editingTitle}
@@ -282,7 +243,6 @@
         </span>
       </div>
     </header>
-    {#key `${node.fnode}:${editorResetRevision}`}
     <div class="blocks">
       {#if node.blocks.length === 0}
         <div class="empty-state">
@@ -302,16 +262,13 @@
           />
         {/each}
       {/if}
-      {#key node.fnode}
-        <AddBlockControl
-          fnode={node.fnode}
-          revision={node.revision}
-          existingSrctypes={node.blocks.map((b) => b.srctype)}
-          onAdded={applyAddedBlock}
-        />
-      {/key}
+      <AddBlockControl
+        fnode={node.fnode}
+        revision={node.revision}
+        existingSrctypes={node.blocks.map((b) => b.srctype)}
+        onAdded={applyAddedBlock}
+      />
     </div>
-    {/key}
   {/if}
 </section>
 
@@ -342,21 +299,6 @@
     padding: 1.05rem 1.25rem 0.95rem;
     border-bottom: 1px solid var(--mdc-border);
     background: linear-gradient(180deg, rgba(20, 28, 40, 0.7), rgba(15, 21, 31, 0.2));
-  }
-  .refresh-error {
-    display: flex;
-    gap: 0.5rem;
-    color: var(--mdc-error);
-    font-family: var(--mdc-mono);
-    font-size: 0.7rem;
-    margin-bottom: 0.5rem;
-  }
-  .refresh-error button {
-    color: inherit;
-    background: transparent;
-    border: 1px solid currentColor;
-    border-radius: var(--mdc-radius-sm);
-    cursor: pointer;
   }
   .eyebrow {
     margin-bottom: 0.38rem;
