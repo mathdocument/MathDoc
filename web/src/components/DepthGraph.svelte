@@ -621,11 +621,21 @@
   let graphDirty = false;
   let graphLoadPromise: Promise<void> | null = null;
 
+  function fitGraphWhenMeasurable() {
+    if (canvasEl && canvasEl.clientWidth > 0 && canvasEl.clientHeight > 0) {
+      needsFit = false;
+      fitToNodes();
+    } else {
+      needsFit = true;
+    }
+  }
+
   function ensureGraphLoaded(): Promise<void> {
     if (!running) return Promise.resolve();
     if (graphLoadPromise) return graphLoadPromise;
     if (graphInitialized && !graphDirty) return Promise.resolve();
 
+    let allowImmediateRetry = true;
     graphLoadPromise = (async () => {
       if (!graphInitialized) {
         const loaded = await loadGraph();
@@ -635,22 +645,25 @@
         }
         if (!running) return;
         graphInitialized = true;
-        if (canvasEl && canvasEl.clientWidth > 0) {
-          fitToNodes();
-        } else {
-          needsFit = true;
-        }
+        fitGraphWhenMeasurable();
       }
       if (graphDirty) {
+        const wasEmpty = nodes.length === 0;
+        const reloadRevision = loadedRevision;
         graphDirty = false;
-        if (!await reloadGraph()) return;
+        if (!await reloadGraph()) {
+          graphDirty = true;
+          allowImmediateRetry = loadedRevision !== reloadRevision;
+          return;
+        }
+        if (wasEmpty && nodes.length > 0) fitGraphWhenMeasurable();
       }
       if (!running) return;
       resizeCanvas();
       requestRender();
     })().finally(() => {
       graphLoadPromise = null;
-      if (running && active && graphDirty) void ensureGraphLoaded();
+      if (running && active && graphDirty && allowImmediateRetry) void ensureGraphLoaded();
     });
     return graphLoadPromise;
   }
@@ -666,7 +679,7 @@
       resizeObserver = new ResizeObserver(() => {
         resizeCanvas();
         // Fit after any layout change that gives the canvas usable dimensions.
-        if (needsFit && canvasEl && canvasEl.clientWidth > 0) {
+        if (needsFit && canvasEl && canvasEl.clientWidth > 0 && canvasEl.clientHeight > 0) {
           needsFit = false;
           fitToNodes();
         }
