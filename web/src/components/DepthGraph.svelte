@@ -19,7 +19,7 @@
   interface SimNode {
     id: string;
     title: string;
-    label: string;
+    labelLines: string[];
     depth: number;
     isRoot: boolean;
     isLeaf: boolean;
@@ -131,7 +131,7 @@
     nodes = data.nodes.map((node: NodeInfo) => ({
       id: node.fnode,
       title: node.title,
-      label: truncate(node.title, 20),
+      labelLines: wrapLabel(node.title, 16),
       depth: node.depth,
       isRoot: false,
       isLeaf: false,
@@ -352,10 +352,8 @@
       ctx.setLineDash([]);
       ctx.strokeStyle = `rgba(${palette.outgoing}, ${highlightAlpha})`;
       ctx.stroke(selectedOutgoingPath);
-      ctx.setLineDash([6 / viewK, 4 / viewK]);
       ctx.strokeStyle = `rgba(${palette.incoming}, ${highlightAlpha})`;
       ctx.stroke(selectedIncomingPath);
-      ctx.setLineDash([]);
     }
 
     // Keep only visible nodes for drawing, labels, and pointer hit testing.
@@ -409,19 +407,21 @@
     if (showLabels) {
       ctx.font = `${10 / viewK}px monospace`;
       ctx.fillStyle = `rgba(${palette.shortLabel}, 0.9)`;
-      ctx.textAlign = "center";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
       for (let index = 0; index < visibleNodes.length; index++) {
         const n = visibleNodes[index]!;
         const isSelected = selectedFnode === n.id;
         const isHovered = hoveredNode?.id === n.id;
         if (!isSelected && !isHovered && index % labelStride !== 0) continue;
         const r = nodeRadius(n);
-        ctx.fillText(shortFnode(n.id), n.x, n.y + r + 10 / viewK);
+        ctx.fillText(shortFnode(n.id), n.x - r - 5 / viewK, n.y);
       }
     }
 
     ctx.font = `${11 / viewK}px sans-serif`;
-    ctx.textAlign = "left";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
     for (let index = 0; index < visibleNodes.length; index++) {
       const n = visibleNodes[index]!;
       const isSelected = selectedFnode === n.id;
@@ -432,13 +432,31 @@
       ctx.fillStyle = isSelected || isHovered
         ? palette.outline
         : `rgba(${palette.label}, 0.82)`;
-      ctx.fillText(n.label, n.x + r + 3 / viewK, n.y + 3 / viewK);
+      const labelY = n.y + r + 5 / viewK;
+      for (let line = 0; line < n.labelLines.length; line++) {
+        ctx.fillText(n.labelLines[line]!, n.x, labelY + line * 13 / viewK);
+      }
     }
   }
 
-  function truncate(s: string, max: number): string {
-    const characters = Array.from(s);
-    return characters.length > max ? characters.slice(0, max - 1).join("") + "…" : s;
+  function wrapLabel(value: string, maxLineLength: number): string[] {
+    const characters = Array.from(value.trim().replace(/\s+/g, " "));
+    if (characters.length <= maxLineLength) return [characters.join("")];
+
+    let firstEnd = maxLineLength;
+    for (let index = maxLineLength - 1; index >= Math.ceil(maxLineLength * 0.6); index--) {
+      if (/\s/.test(characters[index]!)) {
+        firstEnd = index;
+        break;
+      }
+    }
+    const first = characters.slice(0, firstEnd).join("").trimEnd();
+    const remainder = characters.slice(firstEnd).join("").trimStart();
+    const rest = Array.from(remainder);
+    const second = rest.length > maxLineLength
+      ? rest.slice(0, maxLineLength - 1).join("") + "…"
+      : remainder;
+    return second ? [first, second] : [first];
   }
 
   // ── Canvas sizing ───────────────────────────────────────────────────────────
