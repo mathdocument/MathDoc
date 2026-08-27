@@ -454,11 +454,9 @@
         const forceRequest = ++forceLoadRequest;
         if (appState.load.kind === "ready") {
           const node = appState.load.node;
-          const draftRevision = unsavedDraftRevision();
           forceSelectedFnode = node.fnode;
           forceNodeLoad = { kind: "ready", node };
           commitFocusedHistory(node.fnode, { pushHistory: false });
-          void refreshReusedForceNode(node.fnode, forceRequest, draftRevision);
         } else {
           forceSelectedFnode = null;
           forceNodeLoad = { kind: "idle" };
@@ -475,6 +473,14 @@
         view = "force";
         await tick();
         columnsMounted = false;
+        await tick();
+        if (forceSelectedFnode) {
+          void refreshReusedForceNode(
+            forceSelectedFnode,
+            forceRequest,
+            unsavedDraftRevision(),
+          );
+        }
       } else {
         // Keep the complete graph view visible until the column data is ready.
         const target = forceSelectedFnode;
