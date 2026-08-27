@@ -7,7 +7,20 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 const apiTarget = process.env.MDC_API_PROXY ?? "http://127.0.0.1:7599";
 
 export default defineConfig({
-  plugins: [svelte()],
+  plugins: [
+    {
+      name: "katex-woff2-only",
+      enforce: "pre",
+      transform(code, id) {
+        if (!id.endsWith("/katex/dist/katex.min.css")) return;
+        return code.replace(
+          /,url\(fonts\/[^)]+\.woff\) format\("woff"\),url\(fonts\/[^)]+\.ttf\) format\("truetype"\)/g,
+          "",
+        );
+      },
+    },
+    svelte(),
+  ],
   server: {
     port: 5173,
     strictPort: false,

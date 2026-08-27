@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy, tick } from "svelte";
+  import { onMount, onDestroy, tick, type Component } from "svelte";
   import {
     AlertTriangle,
     ChevronDown,
@@ -31,7 +31,6 @@
   import { shikiHighlight } from "../lib/cm-shiki";
   import { getHighlighter, srctypeToLang } from "../lib/shiki";
   import { removeDraft, setDraftDirty, setMutationPending } from "../lib/unsaved";
-  import LatexPreview from "./LatexPreview.svelte";
 
   interface Props {
     fnode: string;
@@ -55,6 +54,9 @@
   let shikiError: string | null = $state(null);
   let previewing = $state(false);
   let previewSource = $state("");
+  let previewLoading = $state(false);
+  let LatexPreviewComponent = $state<Component<{ source: string }> | null>(null);
+  let latexPreviewPromise: Promise<Component<{ source: string }>> | null = null;
   let alive = false;
   const draftId = Symbol("block draft");
   const mutationId = Symbol("block mutation");
@@ -260,6 +262,18 @@
     }
     previewSource = editorView?.state.doc.toString() ?? block.content;
     previewing = true;
+    if (LatexPreviewComponent) return;
+    previewLoading = true;
+    latexPreviewPromise ??= import("./LatexPreview.svelte").then((module) => module.default);
+    try {
+      LatexPreviewComponent = await latexPreviewPromise;
+    } catch (loadError) {
+      latexPreviewPromise = null;
+      previewing = false;
+      error = `preview failed: ${errMsg(loadError)}`;
+    } finally {
+      previewLoading = false;
+    }
   }
 
   onDestroy(() => {
@@ -323,7 +337,7 @@
         class="preview-toggle"
         class:active={previewing}
         onclick={() => void toggleLatexPreview()}
-        disabled={!expanded}
+        disabled={!expanded || previewLoading}
         aria-pressed={previewing}
         title={previewing ? "Return to LaTeX editor" : "Render LaTeX preview"}
       >
@@ -344,8 +358,10 @@
     bind:this={host}
   >
   </div>
-  {#if previewing && expanded}
-    <LatexPreview source={previewSource} />
+  {#if previewing && expanded && LatexPreviewComponent}
+    <LatexPreviewComponent source={previewSource} />
+  {:else if previewing && expanded}
+    <div class="preview-loading" aria-busy="true">Loading renderer…</div>
   {/if}
   {#if error}<div class="error-bar">{error}</div>{/if}
 </article>
@@ -477,6 +493,15 @@
     font-family: var(--mdc-mono); font-size: 0.8rem;
   }
   .editor-host :global(.cm-editor .cm-scroller) { font-family: var(--mdc-mono); }
+  .preview-loading {
+    min-height: 9rem;
+    display: grid;
+    place-items: center;
+    color: var(--mdc-muted);
+    background: var(--mdc-code-bg);
+    font-family: var(--mdc-mono);
+    font-size: 0.72rem;
+  }
   .error-bar {
     padding: 0.4rem 0.6rem;
     background: rgba(255, 125, 143, 0.1);
