@@ -5,17 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#090d14" />
     <script>
-      try {
-        const stored = localStorage.getItem("mdc-theme");
-        const theme = stored === "light" || stored === "dark"
-          ? stored
-          : matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-        document.documentElement.dataset.theme = theme;
-        document.querySelector('meta[name="theme-color"]').content =
-          theme === "light" ? "#edf2f8" : "#090d14";
-      } catch {
-        document.documentElement.dataset.theme = "dark";
-      }
+      let storedTheme = null;
+      try { storedTheme = localStorage.getItem("mdc-theme"); } catch {}
+      const initialTheme = storedTheme === "light" || storedTheme === "dark"
+        ? storedTheme
+        : matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      document.documentElement.dataset.theme = initialTheme;
+      document.querySelector('meta[name="theme-color"]').content =
+        initialTheme === "light" ? "#edf2f8" : "#090d14";
     </script>
     <meta
       name="description"

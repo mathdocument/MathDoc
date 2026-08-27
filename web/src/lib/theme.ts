@@ -1,6 +1,7 @@
 export type Theme = "light" | "dark";
 
 const STORAGE_KEY = "mdc-theme";
+let volatileTheme: Theme | null = null;
 
 function storedTheme(): Theme | null {
   try {
@@ -12,6 +13,7 @@ function storedTheme(): Theme | null {
 }
 
 export function preferredTheme(): Theme {
+  if (volatileTheme) return volatileTheme;
   const stored = storedTheme();
   if (stored) return stored;
   return matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
@@ -28,18 +30,21 @@ export function applyTheme(theme: Theme, persist = true) {
   if (!persist) return;
   try {
     localStorage.setItem(STORAGE_KEY, theme);
+    volatileTheme = null;
   } catch {
-    // The active page can still use the selected theme without persistence.
+    volatileTheme = theme;
   }
 }
 
 export function observeTheme(onChange: (theme: Theme) => void): () => void {
   const media = matchMedia("(prefers-color-scheme: light)");
   const onMediaChange = () => {
-    if (!storedTheme()) onChange(media.matches ? "light" : "dark");
+    if (!volatileTheme && !storedTheme()) onChange(media.matches ? "light" : "dark");
   };
   const onStorage = (event: StorageEvent) => {
-    if (event.key === STORAGE_KEY) onChange(preferredTheme());
+    if (event.key !== STORAGE_KEY && event.key !== null) return;
+    volatileTheme = null;
+    onChange(preferredTheme());
   };
   media.addEventListener("change", onMediaChange);
   window.addEventListener("storage", onStorage);
