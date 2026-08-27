@@ -64,6 +64,7 @@
   let wideEdges: SimLink[] = [];
   let minEdgeBucket = 0;
   let maxEdgeBucket = -1;
+  let dprQuery: MediaQueryList | null = null;
 
   function nodeRadius(n: SimNode): number {
     const r = n.baseRadius;
@@ -446,6 +447,13 @@
     requestRender();
   }
 
+  function watchDevicePixelRatio() {
+    dprQuery?.removeEventListener("change", watchDevicePixelRatio);
+    dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    dprQuery.addEventListener("change", watchDevicePixelRatio);
+    resizeCanvas();
+  }
+
   // ── Interaction ─────────────────────────────────────────────────────────────
 
   function screenToWorld(x: number, y: number): { x: number; y: number } {
@@ -695,7 +703,7 @@
   }
 
   onMount(() => {
-    resizeCanvas();
+    watchDevicePixelRatio();
     if (canvasEl) {
       canvasEl.style.cursor = "grab";
       // Wheel must be registered with passive:false so preventDefault works.
@@ -720,6 +728,7 @@
     finishPointer(null, true);
     stopRaf();
     resizeObserver?.disconnect();
+    dprQuery?.removeEventListener("change", watchDevicePixelRatio);
     canvasEl?.removeEventListener("wheel", onWheel);
   });
 
