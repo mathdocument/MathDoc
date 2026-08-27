@@ -78,6 +78,7 @@
   let forceLoadRequest = 0;
   let relationRequest = 0;
   let viewRequest = 0;
+  let viewSwitchDone: Promise<void> | null = null;
   let forceRelationsDirty = false;
   // NodeDetail for the force-graph side panel (fetched on selection).
   let forceNodeLoad = $state<LoadState>({ kind: "idle" });
@@ -175,15 +176,22 @@
       }
     };
     const onPopState = async (event: PopStateEvent) => {
+      const request = ++popstateRequest;
+      cancelStartup();
+      cancelNavigation();
+      forceLoadRequest++;
       const entry = browserHistoryEntry(event.state);
       if (!entry) return;
-      cancelStartup();
       if (restoringHistory) {
         restoringHistory = false;
         return;
       }
 
-      const request = ++popstateRequest;
+      const pendingViewSwitch = viewSwitchDone;
+      if (pendingViewSwitch) await pendingViewSwitch;
+      if (request !== popstateRequest) return;
+      const activeEntry = browserHistoryEntry(window.history.state);
+      if (!activeEntry || activeEntry.index !== entry.index || activeEntry.fnode !== entry.fnode) return;
       const previousIndex = appState.historyIdx;
       const target = browserHistoryTarget(entry);
       const committed = view === "force"
@@ -547,6 +555,11 @@
     viewSwitching = true;
     cancelNavigation();
     const request = ++viewRequest;
+    let resolveViewSwitch: () => void;
+    const switchDone = new Promise<void>((resolve) => {
+      resolveViewSwitch = resolve;
+    });
+    viewSwitchDone = switchDone;
     try {
       if (!await settlePendingMutations()) return;
       if (request !== viewRequest) return;
@@ -599,7 +612,6 @@
             pushHistory: false,
             skipTransition: true,
             skipUnsavedGuard: true,
-            browserHistory: "replace",
           });
           if (!navigated) return;
         }
@@ -620,6 +632,8 @@
         forceRelationsDirty = false;
       }
     } finally {
+      resolveViewSwitch!();
+      if (viewSwitchDone === switchDone) viewSwitchDone = null;
       if (request === viewRequest) {
         viewSwitching = false;
       }
