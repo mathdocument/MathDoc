@@ -14,12 +14,13 @@
   } from "../lib/unsaved";
 
   interface Props {
+    disabled: boolean;
     targetFnode: string;
     targetRevision: string;
     onAdded: (node: NodeDetail, delta: { nodes: number; edges: number }) => void;
     onClose: () => void;
   }
-  let { targetFnode, targetRevision, onAdded, onClose }: Props = $props();
+  let { disabled, targetFnode, targetRevision, onAdded, onClose }: Props = $props();
 
   let query = $state("");
   let results = $state<NodeInfo[]>([]);
@@ -197,6 +198,7 @@
   }
 
   function onKey(e: KeyboardEvent) {
+    if (disabled) return;
     if ((e.key === "Enter" || e.key === " ") &&
       e.target instanceof Element && e.target.closest(".close-btn")) return;
     switch (e.key) {

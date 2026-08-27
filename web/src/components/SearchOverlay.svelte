@@ -6,10 +6,11 @@
   import { modal } from "../lib/modal";
 
   interface Props {
+    disabled: boolean;
     onPick: (fnode: string) => void;
     onClose: () => void;
   }
-  let { onPick, onClose }: Props = $props();
+  let { disabled, onPick, onClose }: Props = $props();
 
   let query = $state("");
   let results = $state<NodeInfo[]>([]);
@@ -82,6 +83,7 @@
   }
 
   function onKey(e: KeyboardEvent) {
+    if (disabled) return;
     if ((e.key === "Enter" || e.key === " ") &&
       e.target instanceof Element && e.target.closest(".close-btn")) return;
     switch (e.key) {

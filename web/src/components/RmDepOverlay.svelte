@@ -9,12 +9,13 @@
   import { setMutationPending } from "../lib/unsaved";
 
   interface Props {
+    disabled: boolean;
     targetFnode: string;
     targetRevision: string;
     onRemoved: (node: NodeDetail, delta: { nodes: number; edges: number }) => void;
     onClose: () => void;
   }
-  let { targetFnode, targetRevision, onRemoved, onClose }: Props = $props();
+  let { disabled, targetFnode, targetRevision, onRemoved, onClose }: Props = $props();
 
   let children = $state<NodeInfo[]>([]);
   let selected = $state<boolean[]>([]);
@@ -56,6 +57,7 @@
   }
 
   function onKey(e: KeyboardEvent) {
+    if (disabled) return;
     if ((e.key === "Enter" || e.key === " ") &&
       e.target instanceof Element && e.target.closest(".close-btn, .actions")) return;
     if (e.key === "Escape") {

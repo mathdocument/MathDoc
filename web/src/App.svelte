@@ -905,6 +905,7 @@
 <div class="overlay-layer" inert={historyNavigating}>
 {#if overlay.kind === "search"}
   <SearchOverlay
+    disabled={historyNavigating}
     onPick={(fnode) => {
       if (historyNavigating) return;
       overlay = { kind: "none" };
@@ -922,6 +923,7 @@
 {#if overlay.kind === "add-dep"}
   {#key overlay.target}
     <AddDepOverlay
+      disabled={historyNavigating}
       targetFnode={overlay.target}
       targetRevision={activeRevision!}
       onAdded={afterDepMutation}
@@ -933,6 +935,7 @@
 {#if overlay.kind === "rm-dep"}
   {#key overlay.target}
     <RmDepOverlay
+      disabled={historyNavigating}
       targetFnode={overlay.target}
       targetRevision={activeRevision!}
       onRemoved={afterDepMutation}
@@ -943,6 +946,7 @@
 
 {#if overlay.kind === "new-node"}
   <NewNodeOverlay
+    disabled={historyNavigating}
     onCreated={afterNodeCreated}
     onClose={() => (overlay = { kind: "none" })}
   />
