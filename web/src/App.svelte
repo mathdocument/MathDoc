@@ -392,11 +392,13 @@
   ): Promise<boolean> {
     if (!opts.skipUnsavedGuard && !confirmDiscardDrafts()) return false;
     if (!await settlePendingMutations()) return false;
+    const confirmedDraftRevision = unsavedDraftRevision();
     const request = ++forceLoadRequest;
     if (!fnode) {
       let committed = false;
       await withViewTransition("neutral", () => {
         if (request !== forceLoadRequest) return;
+        if (unsavedDraftRevision() !== confirmedDraftRevision) return;
         forceEditorRevision++;
         forceSelectedFnode = null;
         forceNodeLoad = { kind: "idle" };
@@ -410,7 +412,6 @@
       }, "force-editor");
       return committed;
     }
-    const confirmedDraftRevision = unsavedDraftRevision();
     try {
       const node = await api.node(fnode);
       if (request !== forceLoadRequest) return false;
