@@ -574,8 +574,15 @@
 
     // Mouse position in world coords before zoom.
     const worldBefore = screenToWorld(x, y);
-    const factor = Math.exp(-e.deltaY * 0.0015);
-    viewK = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, viewK * factor));
+    const deltaY = e.deltaMode === WheelEvent.DOM_DELTA_LINE
+      ? e.deltaY * 16
+      : e.deltaMode === WheelEvent.DOM_DELTA_PAGE
+        ? e.deltaY * Math.max(canvas.clientHeight, 1)
+        : e.deltaY;
+    const factor = Math.exp(-deltaY * 0.0015);
+    const nextScale = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, viewK * factor));
+    if (nextScale === viewK) return;
+    viewK = nextScale;
 
     // Adjust viewX/viewY so the world point under the cursor stays fixed.
     viewX = x - worldBefore.x * viewK;
