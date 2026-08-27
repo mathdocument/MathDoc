@@ -252,14 +252,17 @@
     })();
   });
 
-  async function refreshCurrent(skipUnsavedGuard = false): Promise<boolean> {
+  async function refreshCurrent(
+    skipUnsavedGuard = false,
+    forceDiscovery = true,
+  ): Promise<boolean> {
     if (appState.load.kind !== "ready") return true;
     const fnode = appState.load.node.fnode;
     return navigate(fnode, {
       pushHistory: false,
       skipTransition: true,
       skipUnsavedGuard,
-      forceDiscovery: true,
+      forceDiscovery,
     });
   }
 
@@ -269,12 +272,12 @@
     if (refreshing) return;
     refreshError = null;
     refreshing = true;
-    graphRevision++;
     try {
-      const [refreshed] = await Promise.all([
-        view === "force" ? refreshForceNodeRaw(true) : refreshCurrent(true),
-        refreshGraphCheck(),
-      ]);
+      const checked = await refreshGraphCheck();
+      const refreshed = view === "force"
+        ? await refreshForceNodeRaw(true, !checked)
+        : await refreshCurrent(true, !checked);
+      if (refreshed || checked) graphRevision++;
       if (!refreshed) refreshError = "refresh request failed";
     } finally {
       refreshing = false;
@@ -293,7 +296,10 @@
     refreshFocused(node);
   }
 
-  async function refreshForceNodeRaw(skipUnsavedGuard = false): Promise<boolean> {
+  async function refreshForceNodeRaw(
+    skipUnsavedGuard = false,
+    forceDiscovery = true,
+  ): Promise<boolean> {
     if (!forceSelectedFnode) return true;
     if (!skipUnsavedGuard && !confirmDiscardDrafts()) return false;
     if (!await settlePendingMutations()) return false;
@@ -302,7 +308,7 @@
     const targetFnode = forceSelectedFnode;
     const request = ++forceLoadRequest;
     try {
-      const node = await api.node(targetFnode, true);
+      const node = await api.node(targetFnode, forceDiscovery);
       if (request !== forceLoadRequest || forceSelectedFnode !== targetFnode) return false;
       if (unsavedDraftRevision() !== confirmedDraftRevision) return false;
       forceEditorRevision++;
@@ -600,8 +606,8 @@
 
 <div
   class="app"
-  inert={overlay.kind !== "none" || viewSwitching}
-  aria-busy={viewSwitching}
+  inert={overlay.kind !== "none" || viewSwitching || refreshing}
+  aria-busy={viewSwitching || refreshing}
 >
   <header class="toolbar">
     <div class="identity" aria-label="MathDoc">
