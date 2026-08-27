@@ -420,14 +420,15 @@
       sameBlocks(current.blocks, updated.blocks);
     if (!contentUnchanged) {
       refreshError = "dependencies updated, but node content changed externally; refresh before editing";
-      return { ...current, depens: updated.depens };
+      return {
+        ...current,
+        broken: updated.broken,
+        depth: updated.depth,
+        depens: updated.depens,
+        formalization: updated.formalization,
+      };
     }
-    return {
-      ...current,
-      revision: updated.revision,
-      depens: updated.depens,
-      formalization: updated.formalization,
-    };
+    return updated;
   }
 
   function afterDepMutation(updated: NodeDetail, delta: { nodes: number; edges: number }) {
