@@ -139,12 +139,17 @@
   }
 
   function ensureSyntaxHighlighting() {
-    if (syntaxRequested || !editorView) return;
+    if (syntaxRequested || !editorView || !active) return;
     syntaxRequested = true;
+    shikiError = null;
     const lang = srctypeToLang(block.srctype);
     getHighlighter(lang)
       .then((hl) => {
         if (!alive || !editorView) return;
+        if (!active) {
+          syntaxRequested = false;
+          return;
+        }
         syntaxExtension = shikiHighlight(hl, lang, SHIKI_THEME, (error) => {
           if (alive) shikiError = errMsg(error);
         });
@@ -154,7 +159,9 @@
         });
       })
       .catch((e) => {
-        if (alive) shikiError = errMsg(e);
+        if (!alive) return;
+        syntaxRequested = false;
+        shikiError = errMsg(e);
       });
   }
 
