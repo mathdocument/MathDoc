@@ -148,17 +148,7 @@ fn formal_node(
 }
 
 fn run_mdc(root: &Path, bin: &Path, args: &[&str], lake_fails: bool) -> Output {
-    run_mdc_with_failures(root, bin, args, lake_fails, false)
-}
-
-fn run_mdc_with_failures(
-    root: &Path,
-    bin: &Path,
-    args: &[&str],
-    lake_fails: bool,
-    rocq_fails: bool,
-) -> Output {
-    run_mdc_with_options(root, bin, args, lake_fails, rocq_fails, false, false)
+    run_mdc_with_options(root, bin, args, lake_fails, false, false, false)
 }
 
 fn run_mdc_with_options(
@@ -192,9 +182,7 @@ fn run_mdc_with_options(
 }
 
 fn lean_status(root: &Path, fnode: &str) -> FormalCodeStatus {
-    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
-    cache.refresh_all().unwrap();
-    cache.formalization_status(fnode).unwrap().lean
+    formal_status(root, fnode, "lean")
 }
 
 fn formal_status(root: &Path, fnode: &str, language: &str) -> FormalCodeStatus {
@@ -465,7 +453,15 @@ fn formal_languages_publish_independently() {
     });
     write(&node.path, &node.render().unwrap());
 
-    let output = run_mdc_with_failures(root, &bin, &["work", "mixed-formal.mdoc"], false, true);
+    let output = run_mdc_with_options(
+        root,
+        &bin,
+        &["work", "mixed-formal.mdoc"],
+        false,
+        true,
+        false,
+        false,
+    );
     assert!(!output.status.success());
     assert_eq!(
         formal_status(root, &node.fnode, "lean"),

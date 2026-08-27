@@ -77,13 +77,8 @@ fn build_app(dir: &TempDir) -> (PathBuf, axum::Router) {
     cache.discover_workspace_changes().unwrap();
 
     let state = web::AppState::new(cache);
-    let app = build_router(state);
+    let app = web::server::router(state);
     (root, app)
-}
-
-/// Mirror of the production router, but without graceful shutdown wiring.
-fn build_router(state: web::AppState) -> axum::Router {
-    web::server::router(state)
 }
 
 // Use axum's test helpers — `tower::ServiceExt::oneshot`.
@@ -995,7 +990,7 @@ async fn fabricated_artifacts_never_restore_verified_status() {
     }
     std::fs::write(&artifact, "compiled").unwrap();
     let cache = IndCache::open(root).unwrap();
-    let app = build_router(web::AppState::new(cache));
+    let app = web::server::router(web::AppState::new(cache));
 
     let (_, initial) = get_json(&app, &format!("/api/node/{}", node.fnode)).await;
     assert_eq!(initial["formalization"]["lean"], "unverified");

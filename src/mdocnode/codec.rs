@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use super::{MdocNode, SrcBlock};
+use super::{MdocIdentity, MdocNode, SrcBlock};
 
 #[derive(Debug)]
 pub(super) struct ParsedMdoc {
@@ -11,12 +11,6 @@ pub(super) struct ParsedMdoc {
     pub depens: Vec<String>,
     pub source_types: Vec<String>,
     pub blocks: Vec<SrcBlock>,
-}
-
-#[derive(Default)]
-pub(super) struct ParsedIdentity {
-    pub fnode: Option<String>,
-    pub title: Option<String>,
 }
 
 pub(super) fn parse(path: &Path, content: &[u8], include_blocks: bool) -> Result<ParsedMdoc> {
@@ -194,11 +188,11 @@ pub(super) fn parse(path: &Path, content: &[u8], include_blocks: bool) -> Result
     })
 }
 
-pub(super) fn identity(content: &[u8]) -> ParsedIdentity {
+pub(super) fn identity(content: &[u8]) -> MdocIdentity {
     let Ok(content) = std::str::from_utf8(content) else {
-        return ParsedIdentity::default();
+        return MdocIdentity::default();
     };
-    let mut identity = ParsedIdentity::default();
+    let mut identity = MdocIdentity::default();
 
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Status {

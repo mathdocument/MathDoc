@@ -979,12 +979,6 @@ impl FileSnapshot {
         }
     }
 
-    // Path-only mutation is available only to this module's low-level tests.
-    #[cfg(test)]
-    fn replace(&self, path: &Path, content: &[u8]) -> Result<AppliedWrite> {
-        atomic_replace(path, self, content)
-    }
-
     pub(crate) fn replace_beneath(
         &self,
         root: &Path,
@@ -1280,81 +1274,6 @@ impl FileSnapshotBatch {
     }
 }
 
-#[cfg(test)]
-fn read_regular_file_beneath(root: &Path, path: &Path) -> Result<ReadFileSnapshot> {
-    let binding = DirectoryBinding::open_beneath(root, path)?;
-    let fd = unsafe {
-        libc::openat(
-            binding.raw_fd(),
-            binding.target_name().as_ptr(),
-            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-        )
-    };
-    if fd < 0 {
-        let error = std::io::Error::last_os_error();
-        return match error.raw_os_error() {
-            Some(libc::ELOOP) => bail!("refusing to access symlink {}", path.display()),
-            _ => Err(error).with_context(|| format!("opening {}", path.display())),
-        };
-    }
-
-    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
-    let metadata = file
-        .metadata()
-        .with_context(|| format!("inspecting {}", path.display()))?;
-    if !metadata.is_file() {
-        bail!("refusing to access non-regular file {}", path.display());
-    }
-    if metadata.nlink() > 1 {
-        bail!(
-            "refusing to access hard-linked file {} ({} links)",
-            path.display(),
-            metadata.nlink()
-        );
-    }
-    let identity = file_identity(&metadata);
-    let mut content = Vec::new();
-    file.read_to_end(&mut content)
-        .with_context(|| format!("reading {}", path.display()))?;
-    let final_metadata = file
-        .metadata()
-        .with_context(|| format!("reinspecting {}", path.display()))?;
-    if !same_read_generation(&metadata, &final_metadata) {
-        return Err(FileConflict::new(path).into());
-    }
-    run_test_hook(TestHookPoint::ReadAfterContent);
-    binding.require_current(path)?;
-    let current_fd = unsafe {
-        libc::openat(
-            binding.raw_fd(),
-            binding.target_name().as_ptr(),
-            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-        )
-    };
-    if current_fd < 0 {
-        let error = std::io::Error::last_os_error();
-        return Err(anyhow::Error::from(FileConflict::new(path)))
-            .context(format!("could not verify {}: {error}", path.display()));
-    }
-    let current = unsafe { std::fs::File::from_raw_fd(current_fd) };
-    let current_metadata = current
-        .metadata()
-        .with_context(|| format!("verifying {}", path.display()))?;
-    if !current_metadata.is_file()
-        || current_metadata.nlink() > 1
-        || file_identity(&current_metadata) != identity
-        || !same_read_generation(&final_metadata, &current_metadata)
-    {
-        return Err(FileConflict::new(path).into());
-    }
-    binding.require_current(path)?;
-    Ok(ReadFileSnapshot {
-        content,
-        identity,
-        metadata: final_metadata,
-    })
-}
-
 fn same_read_generation(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
     file_identity(left) == file_identity(right)
         && left.len() == right.len()
@@ -1484,16 +1403,6 @@ impl AppliedWrite {
         run_test_hook(TestHookPoint::RollbackAfterInitialVerification);
         rollback_applied(&self.path, &binding, &self.before, &self.after, true)
     }
-}
-
-#[cfg(test)]
-fn atomic_replace(path: &Path, expected: &FileSnapshot, content: &[u8]) -> Result<AppliedWrite> {
-    let metadata = match expected {
-        FileSnapshot::Missing => None,
-        FileSnapshot::File { metadata, .. } => Some(metadata),
-    };
-    let binding = DirectoryBinding::open(path)?;
-    atomic_replace_inner(path, expected, content, metadata, binding)
 }
 
 fn atomic_replace_beneath(
@@ -1635,19 +1544,6 @@ fn atomic_replace_inner(
         after,
         binding: binding.into_snapshot(),
     })
-}
-
-#[cfg(test)]
-fn atomic_remove(path: &Path, expected: &FileSnapshot) -> Result<Option<AppliedWrite>> {
-    if matches!(expected, FileSnapshot::Missing) {
-        return if expected.unchanged(path)? {
-            Ok(None)
-        } else {
-            Err(FileConflict::new(path).into())
-        };
-    }
-    let binding = DirectoryBinding::open(path)?;
-    atomic_remove_inner(path, expected, binding)
 }
 
 fn atomic_remove_beneath(
@@ -2950,55 +2846,6 @@ mod tests {
     }
 
     #[test]
-    fn read_beneath_rejects_hard_links() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
-        let path = root.join("node.mdoc");
-        std::fs::write(&path, "before").unwrap();
-        std::fs::hard_link(&path, root.join("alias.mdoc")).unwrap();
-
-        let error = read_regular_file_beneath(&root, &path).unwrap_err();
-
-        assert!(error.to_string().contains("hard-linked file"));
-    }
-
-    #[test]
-    fn read_beneath_rejects_final_entry_replacement() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
-        let path = root.join("node.mdoc");
-        std::fs::write(&path, "before").unwrap();
-        let replacement = root.join("replacement.mdoc");
-        std::fs::write(&replacement, "after").unwrap();
-        let hook_path = path.clone();
-        set_test_hook(TestHookPoint::ReadAfterContent, move || {
-            std::fs::rename(&replacement, hook_path).unwrap();
-        });
-
-        let error = read_regular_file_beneath(&root, &path).unwrap_err();
-
-        assert_file_conflict(&error);
-        assert_eq!(std::fs::read_to_string(path).unwrap(), "after");
-    }
-
-    #[test]
-    fn read_beneath_rejects_in_place_write_after_read() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
-        let path = root.join("node.mdoc");
-        std::fs::write(&path, "before").unwrap();
-        let hook_path = path.clone();
-        set_test_hook(TestHookPoint::ReadAfterContent, move || {
-            std::fs::write(hook_path, "after").unwrap();
-        });
-
-        let error = read_regular_file_beneath(&root, &path).unwrap_err();
-
-        assert_file_conflict(&error);
-        assert_eq!(std::fs::read_to_string(path).unwrap(), "after");
-    }
-
-    #[test]
     fn snapshot_batch_captures_existing_and_missing_files() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
@@ -3163,12 +3010,14 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("generated.lean");
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("generated.lean");
         std::fs::write(&path, "before").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let snapshot = FileSnapshot::capture(&path).unwrap();
 
-        atomic_remove(&path, &snapshot)
+        snapshot
+            .remove_beneath(&root, &path)
             .unwrap()
             .unwrap()
             .rollback()
@@ -3202,8 +3051,11 @@ mod tests {
     #[test]
     fn rollback_interleaving_after_initial_verification_preserves_external_edit() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("generated.lean");
-        let receipt = FileSnapshot::Missing.replace(&path, b"generated").unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("generated.lean");
+        let receipt = FileSnapshot::Missing
+            .replace_beneath(&root, &path, b"generated")
+            .unwrap();
         let edited_path = path.clone();
         set_test_hook(TestHookPoint::RollbackAfterInitialVerification, move || {
             std::fs::write(edited_path, b"external edit").unwrap();
@@ -3220,8 +3072,11 @@ mod tests {
         use std::io::{Seek, SeekFrom};
 
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("generated.lean");
-        let receipt = FileSnapshot::Missing.replace(&path, b"generated").unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("generated.lean");
+        let receipt = FileSnapshot::Missing
+            .replace_beneath(&root, &path, b"generated")
+            .unwrap();
         let mut editor = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
         set_test_hook(
             TestHookPoint::RollbackAfterQuarantineVerification,
@@ -3274,7 +3129,8 @@ mod tests {
     #[test]
     fn replacement_conflict_reports_a_failed_quarantine_restoration() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("node.mdoc");
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("node.mdoc");
         std::fs::write(&path, b"before").unwrap();
         let snapshot = FileSnapshot::capture(&path).unwrap();
         let hook_path = path.clone();
@@ -3282,7 +3138,9 @@ mod tests {
             std::fs::write(hook_path, b"external").unwrap();
         });
 
-        let error = snapshot.replace(&path, b"after").unwrap_err();
+        let error = snapshot
+            .replace_beneath(&root, &path, b"after")
+            .unwrap_err();
 
         assert_file_conflict(&error);
         let quarantine = std::fs::read_dir(dir.path())
@@ -3305,7 +3163,8 @@ mod tests {
     #[test]
     fn replacement_mismatch_reports_the_preserved_previous_generation() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("node.mdoc");
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("node.mdoc");
         std::fs::write(&path, b"before").unwrap();
         let snapshot = FileSnapshot::capture(&path).unwrap();
         let hook_path = path.clone();
@@ -3313,7 +3172,9 @@ mod tests {
             std::fs::write(hook_path, b"external").unwrap();
         });
 
-        let error = snapshot.replace(&path, b"after").unwrap_err();
+        let error = snapshot
+            .replace_beneath(&root, &path, b"after")
+            .unwrap_err();
 
         assert_file_conflict(&error);
         let quarantine = std::fs::read_dir(dir.path())
@@ -3336,7 +3197,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("node.mdoc");
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("node.mdoc");
         std::fs::write(&path, b"before").unwrap();
         let snapshot = FileSnapshot::capture(&path).unwrap();
         let hook_parent = dir.path().to_path_buf();
@@ -3344,7 +3206,7 @@ mod tests {
             std::fs::set_permissions(&hook_parent, std::fs::Permissions::from_mode(0o555)).unwrap();
         });
 
-        let result = snapshot.replace(&path, b"after");
+        let result = snapshot.replace_beneath(&root, &path, b"after");
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         let error = result.unwrap_err();
 
@@ -3504,7 +3366,8 @@ mod tests {
     #[test]
     fn extended_attributes_survive_replacement() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("node.mdoc");
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("node.mdoc");
         std::fs::write(&path, "before").unwrap();
         let file = std::fs::OpenOptions::new()
             .read(true)
@@ -3518,7 +3381,7 @@ mod tests {
         drop(file);
 
         let snapshot = FileSnapshot::capture(&path).unwrap();
-        atomic_replace(&path, &snapshot, b"after").unwrap();
+        snapshot.replace_beneath(&root, &path, b"after").unwrap();
 
         let file = std::fs::File::open(&path).unwrap();
         let attributes = read_extended_attributes(&file, &path).unwrap();

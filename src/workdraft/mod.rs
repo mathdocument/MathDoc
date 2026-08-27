@@ -174,11 +174,6 @@ fn reconcile<'a>(
     }
 }
 
-#[cfg(test)]
-pub(crate) fn sync(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> Result<SyncReport> {
-    sync_with_cache(mutation_lock, None)
-}
-
 pub(crate) fn sync_cached(
     mutation_lock: &crate::workspace::WorkspaceMutationLock,
     cache: &mut crate::indcache::IndCache,
@@ -750,11 +745,6 @@ fn join_snapshot_workers<T>(
     } else {
         Ok(result)
     }
-}
-
-#[cfg(test)]
-pub(crate) fn back(mutation_lock: &crate::workspace::WorkspaceMutationLock) -> Result<BackReport> {
-    back_with_cache(mutation_lock, None)
 }
 
 pub(crate) fn back_cached(
@@ -1497,7 +1487,7 @@ mod tests {
             },
         );
 
-        let error = match back(&lock) {
+        let error = match back_with_cache(&lock, None) {
             Ok(_) => panic!("replaced mutation lock should reject back"),
             Err(error) => error,
         };
@@ -1521,7 +1511,7 @@ mod tests {
             .unwrap();
         std::fs::write(&path, node.render().unwrap()).unwrap();
         let lock = crate::workspace::WorkspaceMutationLock::acquire(&root).unwrap();
-        sync(&lock).unwrap();
+        sync_with_cache(&lock, None).unwrap();
         let mirror = root.join(".mdc/lean/Lib/node.lean");
         std::fs::write(&mirror, "first edit\n").unwrap();
         let hook_mirror = mirror.clone();
@@ -1530,7 +1520,7 @@ mod tests {
             move || std::fs::write(hook_mirror, "second edit\n").unwrap(),
         );
 
-        let error = match back(&lock) {
+        let error = match back_with_cache(&lock, None) {
             Ok(_) => panic!("expected concurrent mirror edit to be rejected"),
             Err(error) => error,
         };

@@ -32,30 +32,11 @@ pub(super) struct PreparedManifest<'a> {
     pub(super) content: &'a SourceBlockManifest,
 }
 
-pub(super) trait InputObservation {
-    fn matches_read(&self, current: Option<&ReadFileSnapshot>) -> bool;
-}
-
-impl InputObservation for FileSnapshot {
-    fn matches_read(&self, current: Option<&ReadFileSnapshot>) -> bool {
-        FileSnapshot::matches_read(self, current)
-    }
-}
-
-impl InputObservation for Option<ReadFileSnapshot> {
-    fn matches_read(&self, current: Option<&ReadFileSnapshot>) -> bool {
-        match self {
-            Some(snapshot) => snapshot.matches(current),
-            None => current.is_none(),
-        }
-    }
-}
-
-pub(super) fn apply_changes<I: InputObservation>(
+pub(super) fn apply_changes(
     allowed_root: &Path,
     validate_workspace: impl Fn() -> Result<()>,
     manifest: PreparedManifest<'_>,
-    inputs: &[(PathBuf, I)],
+    inputs: &[(PathBuf, Option<ReadFileSnapshot>)],
     writes: Vec<PreparedWrite>,
     removals: Vec<PreparedRemoval>,
     renames: Vec<PreparedRename>,
@@ -183,9 +164,9 @@ fn ensure_unchanged(allowed_root: &Path, path: &Path, snapshot: &FileSnapshot) -
     Ok(())
 }
 
-fn validate_inputs_parallel<I: InputObservation>(
+fn validate_inputs_parallel(
     allowed_root: &Path,
-    inputs: &[(PathBuf, I)],
+    inputs: &[(PathBuf, Option<ReadFileSnapshot>)],
     skip_paths: Option<&HashSet<&Path>>,
     context: &str,
 ) -> Result<()> {
@@ -197,7 +178,10 @@ fn validate_inputs_parallel<I: InputObservation>(
         let paths: Vec<_> = selected.iter().map(|(path, _)| path.clone()).collect();
         let current = super::read_files_parallel(allowed_root, &paths)?;
         for ((path, snapshot), current) in selected.into_iter().zip(&current) {
-            if !snapshot.matches_read(current.as_ref()) {
+            if !match snapshot {
+                Some(snapshot) => snapshot.matches(current.as_ref()),
+                None => current.is_none(),
+            } {
                 bail!("{} changed {context}", path.display());
             }
         }
@@ -263,7 +247,7 @@ mod tests {
                 snapshot: &manifest_snapshot,
                 content: &manifest,
             },
-            &[] as &[(PathBuf, FileSnapshot)],
+            &[],
             vec![
                 PreparedWrite {
                     path: first_path.clone(),
@@ -317,7 +301,7 @@ mod tests {
                 snapshot: &manifest_snapshot,
                 content: &manifest,
             },
-            &[] as &[(PathBuf, FileSnapshot)],
+            &[],
             vec![PreparedWrite {
                 path: write_path.clone(),
                 snapshot: FileSnapshot::Missing,
@@ -355,7 +339,9 @@ mod tests {
 
         let source_path = root.join("source.mdoc");
         std::fs::write(&source_path, b"before\n").unwrap();
-        let source_snapshot = FileSnapshot::capture(&source_path).unwrap();
+        let mut batch = crate::workspace::FileSnapshotBatch::new(&root).unwrap();
+        let source_snapshot = batch.capture_read(&source_path).unwrap();
+        batch.finish().unwrap();
         std::fs::write(&source_path, b"after\n").unwrap();
 
         let error = apply_changes(
@@ -414,7 +400,7 @@ mod tests {
                 snapshot: &manifest_snapshot,
                 content: &manifest,
             },
-            &[] as &[(PathBuf, FileSnapshot)],
+            &[],
             vec![PreparedWrite {
                 path,
                 snapshot: FileSnapshot::Missing,
@@ -469,7 +455,7 @@ mod tests {
                 snapshot: &manifest_snapshot,
                 content: &manifest,
             },
-            &[] as &[(PathBuf, FileSnapshot)],
+            &[],
             Vec::new(),
             vec![PreparedRemoval {
                 path,
@@ -532,7 +518,7 @@ mod tests {
                 snapshot: &manifest_snapshot,
                 content: &manifest,
             },
-            &[] as &[(PathBuf, FileSnapshot)],
+            &[],
             Vec::new(),
             Vec::new(),
             vec![PreparedRename { from, to, snapshot }],

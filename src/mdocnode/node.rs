@@ -56,11 +56,7 @@ impl MdocIdentity {
     /// Recover header identity from malformed content without interpreting block
     /// bodies as document-level structure.
     pub(crate) fn from_bytes(content: &[u8]) -> Self {
-        let parsed = super::codec::identity(content);
-        Self {
-            fnode: parsed.fnode,
-            title: parsed.title,
-        }
+        super::codec::identity(content)
     }
 
     pub(crate) fn complete(&self) -> Option<(&str, &str)> {
