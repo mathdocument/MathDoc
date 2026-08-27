@@ -766,7 +766,12 @@
         if (appState.failedNavigationFnode) {
           const target = appState.failedNavigationFnode;
           if (view === "force") void onForceSelect(target);
-          else { cancelStartup(); void navigate(target); }
+          else {
+            const retryingCurrent = appState.load.kind === "ready" &&
+              appState.load.node.fnode === target;
+            cancelStartup();
+            void navigate(target, { pushHistory: !retryingCurrent });
+          }
         } else {
           void refreshView();
         }
