@@ -377,46 +377,68 @@
     }
 
     const labelStride = Math.max(1, Math.ceil(visibleNodes.length / 500));
-    for (let index = 0; index < visibleNodes.length; index++) {
-      const n = visibleNodes[index]!;
-      const x = n.x;
-      const y = n.y;
+    const rootPath = new Path2D();
+    const leafPath = new Path2D();
+    const nodePath = new Path2D();
+    for (const n of visibleNodes) {
+      const r = nodeRadius(n);
+      const path = n.isRoot ? rootPath : n.isLeaf ? leafPath : nodePath;
+      path.moveTo(n.x + r, n.y);
+      path.arc(n.x, n.y, r, 0, 2 * Math.PI);
+    }
+    ctx.fillStyle = NODE_COLOR;
+    ctx.fill(nodePath);
+    ctx.fillStyle = ROOT_COLOR;
+    ctx.fill(rootPath);
+    ctx.fillStyle = LEAF_COLOR;
+    ctx.fill(leafPath);
+
+    for (const n of visibleNodes) {
       const r = nodeRadius(n);
       const isSelected = selectedFnode === n.id;
       const isHovered = hoveredNode?.id === n.id;
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, 2 * Math.PI);
-      ctx.fillStyle = n.isRoot
-        ? ROOT_COLOR
-        : n.isLeaf
-          ? LEAF_COLOR
-          : NODE_COLOR;
-      ctx.fill();
       if (isSelected) {
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
         ctx.strokeStyle = "#e7edf6";
         ctx.lineWidth = 2.5 / viewK;
         ctx.stroke();
       } else if (isHovered) {
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
         ctx.strokeStyle = "#e7edf6";
         ctx.lineWidth = 1.5 / viewK;
         ctx.stroke();
       }
+    }
 
+    if (showShortFnode) {
+      ctx.font = `${10 / viewK}px monospace`;
+      ctx.fillStyle = `rgba(135, 147, 165, ${labelAlpha * 0.9})`;
+      ctx.textAlign = "center";
+      for (let index = 0; index < visibleNodes.length; index++) {
+        const n = visibleNodes[index]!;
+        const isSelected = selectedFnode === n.id;
+        const isHovered = hoveredNode?.id === n.id;
+        if (!isSelected && !isHovered && (!showLabels || index % labelStride !== 0)) continue;
+        const r = nodeRadius(n);
+        ctx.fillText(shortFnode(n.id), n.x, n.y + r + 10 / viewK);
+      }
+    }
+
+    ctx.font = `${11 / viewK}px sans-serif`;
+    ctx.textAlign = "left";
+    for (let index = 0; index < visibleNodes.length; index++) {
+      const n = visibleNodes[index]!;
+      const isSelected = selectedFnode === n.id;
+      const isHovered = hoveredNode?.id === n.id;
       const showNodeLabel = isSelected || isHovered || (showLabels && index % labelStride === 0);
       if (!showNodeLabel) continue;
-
-      if (showShortFnode) {
-        ctx.font = `${10 / viewK}px monospace`;
-        ctx.fillStyle = `rgba(135, 147, 165, ${labelAlpha * 0.9})`;
-        ctx.textAlign = "center";
-        ctx.fillText(shortFnode(n.id), x, y + r + 10 / viewK);
-      }
-      ctx.font = `${11 / viewK}px sans-serif`;
+      const r = nodeRadius(n);
       ctx.fillStyle = isSelected || isHovered
         ? "#e7edf6"
         : `rgba(192, 202, 216, ${labelAlpha * 0.82})`;
-      ctx.textAlign = "left";
-      ctx.fillText(n.label, x + r + 3 / viewK, y + 3 / viewK);
+      ctx.fillText(n.label, n.x + r + 3 / viewK, n.y + 3 / viewK);
     }
   }
 
