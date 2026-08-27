@@ -7,7 +7,7 @@
   import { shortFnode } from "../lib/format";
   import { modal } from "../lib/modal";
   import {
-    confirmDiscardDrafts,
+    confirmDiscardDraft,
     removeDraft,
     setDraftDirty,
     setMutationPending,
@@ -138,7 +138,7 @@
   });
 
   function close() {
-    if (saving || !confirmDiscardDrafts()) return;
+    if (saving || !confirmDiscardDraft(draftId)) return;
     onClose();
   }
 

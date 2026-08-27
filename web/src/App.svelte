@@ -324,11 +324,11 @@
     });
   }
 
-  function afterNodeCreated(fnode: string) {
+  function afterNodeCreated(fnode: string, skipUnsavedGuard = false) {
     initialError = null;
     graphRevision++;
-    if (view === "force") void onForceSelect(fnode);
-    else void navigate(fnode);
+    if (view === "force") void onForceSelect(fnode, { skipUnsavedGuard });
+    else void navigate(fnode, { skipUnsavedGuard });
   }
 
   // The fnode that toolbar actions operate on, regardless of view.

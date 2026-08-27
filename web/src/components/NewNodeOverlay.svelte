@@ -5,6 +5,7 @@
   import { errMsg } from "../lib/format";
   import { modal } from "../lib/modal";
   import {
+    confirmDiscardDraft,
     confirmDiscardDrafts,
     removeDraft,
     setDraftDirty,
@@ -12,7 +13,7 @@
   } from "../lib/unsaved";
 
   interface Props {
-    onCreated: (fnode: string) => void;
+    onCreated: (fnode: string, skipUnsavedGuard: boolean) => void;
     onClose: () => void;
   }
   let { onCreated, onClose }: Props = $props();
@@ -38,7 +39,7 @@
   });
 
   function close() {
-    if (!saving && confirmDiscardDrafts()) onClose();
+    if (!saving && confirmDiscardDraft(draftId)) onClose();
   }
 
   $effect(() => {
@@ -88,6 +89,7 @@
       error = "title must be non-empty";
       return;
     }
+    if (!confirmDiscardDrafts(draftId)) return;
     saving = true;
     let pending = true;
     setMutationPending(mutationId, true);
@@ -100,7 +102,7 @@
       pending = false;
       if (!alive) return;
       removeDraft(draftId);
-      onCreated(node.fnode);
+      onCreated(node.fnode, true);
       onClose();
     } catch (e) {
       if (alive) error = errMsg(e);

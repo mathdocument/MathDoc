@@ -46,16 +46,23 @@ export async function settlePendingMutations(): Promise<boolean> {
   return true;
 }
 
-export function hasUnsavedDrafts(): boolean {
-  return dirtyDrafts.size > 0 || pendingMutations.size > 0;
+export function hasUnsavedDrafts(excludeDraft?: symbol): boolean {
+  const hasDirtyDraft = excludeDraft === undefined
+    ? dirtyDrafts.size > 0
+    : dirtyDrafts.size > (dirtyDrafts.has(excludeDraft) ? 1 : 0);
+  return hasDirtyDraft || pendingMutations.size > 0;
 }
 
 export function unsavedDraftRevision(): number {
   return draftRevision;
 }
 
-export function confirmDiscardDrafts(): boolean {
-  return !hasUnsavedDrafts() || window.confirm(
+export function confirmDiscardDrafts(excludeDraft?: symbol): boolean {
+  return !hasUnsavedDrafts(excludeDraft) || window.confirm(
     "You have unsaved edits or pending changes. Discard them?",
   );
+}
+
+export function confirmDiscardDraft(id: symbol): boolean {
+  return !dirtyDrafts.has(id) || window.confirm("Discard this unfinished draft?");
 }
