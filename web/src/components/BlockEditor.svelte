@@ -151,7 +151,7 @@
           return;
         }
         syntaxExtension = shikiHighlight(hl, lang, SHIKI_THEME, (error) => {
-          if (alive) shikiError = errMsg(error);
+          if (alive) shikiError = error === null ? null : errMsg(error);
         });
         editorExtensions = buildEditorExtensions();
         editorView.dispatch({

@@ -37,7 +37,7 @@ export function shikiHighlight(
   highlighter: HighlighterCore,
   lang: string,
   theme: string,
-  onError?: (error: unknown) => void,
+  onError?: (error: unknown | null) => void,
 ): Extension {
   return ViewPlugin.fromClass(
     class {
@@ -81,14 +81,17 @@ export function shikiHighlight(
 
       private recompute(view: EditorView) {
         const run = ++this.run;
+        this.errorReported = false;
         const doc = view.state.doc;
         if (doc.length === 0) {
           this.decorations = Decoration.none;
+          onError?.(null);
           return;
         }
 
         if (doc.length <= SYNC_HIGHLIGHT_LENGTH) {
           this.decorations = this.highlightRange(doc, 0, doc.length);
+          if (!this.errorReported) onError?.(null);
           return;
         }
 
@@ -129,6 +132,8 @@ export function shikiHighlight(
 
             if (to < doc.length) {
               this.scheduleChunk(view, doc, to, result.grammarState, run);
+            } else if (!this.errorReported) {
+              onError?.(null);
             }
           } catch (error) {
             this.reportError(error);
