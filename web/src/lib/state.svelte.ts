@@ -210,10 +210,11 @@ export async function navigate(
   } = {},
 ): Promise<boolean> {
   if (!opts.skipUnsavedGuard && !confirmDiscardDrafts()) return false;
+  const request = ++navigationRequest;
   if (!await settlePendingMutations()) return false;
+  if (request !== navigationRequest) return false;
 
   const confirmedDraftRevision = unsavedDraftRevision();
-  const request = ++navigationRequest;
   const push = opts.pushHistory ?? true;
   const direction = opts.direction ?? "neutral";
   const skipTransition = opts.skipTransition ?? false;

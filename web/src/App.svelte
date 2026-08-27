@@ -316,11 +316,11 @@
   ): Promise<boolean> {
     if (!forceSelectedFnode) return true;
     if (!skipUnsavedGuard && !confirmDiscardDrafts()) return false;
-    if (!await settlePendingMutations()) return false;
-    if (!forceSelectedFnode) return true;
-    const confirmedDraftRevision = unsavedDraftRevision();
     const targetFnode = forceSelectedFnode;
     const request = ++forceLoadRequest;
+    if (!await settlePendingMutations()) return false;
+    if (request !== forceLoadRequest || forceSelectedFnode !== targetFnode) return false;
+    const confirmedDraftRevision = unsavedDraftRevision();
     try {
       const node = await api.node(targetFnode, forceDiscovery);
       if (request !== forceLoadRequest || forceSelectedFnode !== targetFnode) return false;
@@ -476,9 +476,10 @@
   ): Promise<boolean> {
     cancelStartup();
     if (!opts.skipUnsavedGuard && !confirmDiscardDrafts()) return false;
-    if (!await settlePendingMutations()) return false;
-    const confirmedDraftRevision = unsavedDraftRevision();
     const request = ++forceLoadRequest;
+    if (!await settlePendingMutations()) return false;
+    if (request !== forceLoadRequest) return false;
+    const confirmedDraftRevision = unsavedDraftRevision();
     if (!fnode) {
       let committed = false;
       await withViewTransition("neutral", () => {
