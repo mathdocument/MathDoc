@@ -159,6 +159,10 @@
 
   // ── Static depth layout ──────────────────────────────────────────────────────
 
+  function lexicalCompare(left: string, right: string): number {
+    return left < right ? -1 : left > right ? 1 : 0;
+  }
+
   function applyStaticGraphLayout() {
     const layers = new Map<number, SimNode[]>();
     for (const node of nodes) {
@@ -173,7 +177,7 @@
     let cursorX = 0;
     for (const depth of depths) {
       const layer = layers.get(depth)!;
-      layer.sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+      layer.sort((a, b) => lexicalCompare(a.title, b.title) || lexicalCompare(a.id, b.id));
       const columns = Math.ceil(layer.length / rowsPerColumn);
       const rows = Math.min(rowsPerColumn, layer.length);
       for (let index = 0; index < layer.length; index++) {
