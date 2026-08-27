@@ -36,7 +36,7 @@
   import RmDepOverlay from "./components/RmDepOverlay.svelte";
   import NewNodeOverlay from "./components/NewNodeOverlay.svelte";
   import DepthGraph from "./components/DepthGraph.svelte";
-  import type { NodeDetail, SrcBlock } from "./lib/types";
+  import type { GraphCheckReport, NodeDetail, SrcBlock } from "./lib/types";
   import {
     confirmDiscardDrafts,
     hasUnsavedDrafts,
@@ -56,6 +56,10 @@
   let initialError = $state<string | null>(null);
   let refreshError = $state<string | null>(null);
   let refreshing = $state(false);
+  let graphCheck = $state<GraphCheckReport | null>(null);
+  let graphCheckLoading = $state(false);
+  let graphCheckError: string | null = $state(null);
+  let graphCheckRequest = 0;
 
   // Top-level view state: three-column layout vs. full-screen force graph.
   let view = $state<"columns" | "force">("columns");
@@ -75,6 +79,37 @@
   // NodeDetail for the force-graph side panel (fetched on selection).
   let forceNodeLoad = $state<LoadState>({ kind: "idle" });
   let forceEditorRevision = $state(0);
+  let graphIssueCount = $derived(
+    graphCheck
+      ? graphCheck.missing.length + graphCheck.invalid.length + graphCheck.cycles.length
+      : 0,
+  );
+  let graphCheckTitle = $derived(
+    graphCheckError ?? (graphCheck
+      ? graphIssueCount === 0
+        ? "Graph check: no issues"
+        : `Graph check: ${graphIssueCount} issue${graphIssueCount === 1 ? "" : "s"}`
+      : "Checking graph"),
+  );
+
+  async function refreshGraphCheck(): Promise<boolean> {
+    const request = ++graphCheckRequest;
+    graphCheckLoading = true;
+    graphCheckError = null;
+    try {
+      const report = await api.graphCheck();
+      if (request !== graphCheckRequest) return false;
+      graphCheck = report;
+      return true;
+    } catch (error) {
+      if (request === graphCheckRequest) {
+        graphCheckError = error instanceof Error ? error.message : String(error);
+      }
+      return false;
+    } finally {
+      if (request === graphCheckRequest) graphCheckLoading = false;
+    }
+  }
 
   function markColumnsEditorReady() {
     const resolve = resolveColumnsEditorReady;
@@ -150,6 +185,7 @@
     window.addEventListener("popstate", onPopState);
     window.addEventListener("keydown", onKeyDown);
     return () => {
+      graphCheckRequest++;
       resolveColumnsEditorReady?.();
       resolveForceEditorReady?.();
       window.removeEventListener("beforeunload", onBeforeUnload);
@@ -190,6 +226,8 @@
         await navigate(deepest.fnode, initialHistoryOptions(deepest.fnode));
       } catch (e) {
         initialError = e instanceof Error ? e.message : String(e);
+      } finally {
+        void refreshGraphCheck();
       }
     })();
   });
@@ -213,9 +251,10 @@
     refreshing = true;
     graphRevision++;
     try {
-      const refreshed = view === "force"
-        ? await refreshForceNodeRaw(true)
-        : await refreshCurrent(true);
+      const [refreshed] = await Promise.all([
+        view === "force" ? refreshForceNodeRaw(true) : refreshCurrent(true),
+        refreshGraphCheck(),
+      ]);
       if (!refreshed) refreshError = "refresh request failed";
     } finally {
       refreshing = false;
@@ -305,6 +344,7 @@
     const request = ++relationRequest;
     refreshError = null;
     graphRevision++;
+    void refreshGraphCheck();
     if (forceNodeLoad.kind === "ready" && forceNodeLoad.node.fnode === updated.fnode) {
       forceNodeLoad = { kind: "ready", node: relationUpdate(forceNodeLoad.node, updated) };
     }
@@ -327,6 +367,7 @@
   function afterNodeCreated(fnode: string, skipUnsavedGuard = false) {
     initialError = null;
     graphRevision++;
+    void refreshGraphCheck();
     if (view === "force") void onForceSelect(fnode, { skipUnsavedGuard });
     else void navigate(fnode, { skipUnsavedGuard });
   }
@@ -610,6 +651,23 @@
       title="Refresh external file changes"
       aria-label="Refresh external file changes"
     ><RefreshCw size={16} strokeWidth={1.8} /></button>
+    <span
+      class="graph-stats"
+      class:checking={graphCheckLoading}
+      class:issues={graphIssueCount > 0}
+      class:error={graphCheckError !== null}
+      title={graphCheckTitle}
+      aria-live="polite"
+    >
+      <span class="graph-stats-dot"></span>
+      {#if graphCheck}
+        {graphCheck.nodes.toLocaleString()} nodes&nbsp;&nbsp;{graphCheck.edges.toLocaleString()} edges
+      {:else if graphCheckLoading}
+        Checking graph…
+      {:else}
+        Graph check unavailable
+      {/if}
+    </span>
     <span class="spacer"></span>
     {#if statusText}
       <span class="toolbar-divider compact"></span>
@@ -886,6 +944,38 @@
   .spacer {
     flex: 1;
   }
+  .graph-stats {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.42rem;
+    min-height: 28px;
+    padding: 0 0.55rem;
+    color: var(--mdc-muted);
+    font-family: var(--mdc-mono);
+    font-size: 0.66rem;
+    white-space: nowrap;
+  }
+  .graph-stats-dot {
+    width: 6px;
+    height: 6px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--mdc-accent-down);
+    box-shadow: 0 0 0 3px rgba(99, 216, 178, 0.09);
+  }
+  .graph-stats.checking { opacity: 0.65; }
+  .graph-stats.checking .graph-stats-dot { animation: mdc-pulse 1s ease-in-out infinite; }
+  .graph-stats.issues .graph-stats-dot {
+    background: var(--mdc-warning);
+    box-shadow: 0 0 0 3px rgba(232, 184, 109, 0.1);
+  }
+  .graph-stats.error .graph-stats-dot {
+    background: var(--mdc-error);
+    box-shadow: 0 0 0 3px rgba(255, 125, 143, 0.1);
+  }
+  @keyframes mdc-pulse {
+    50% { opacity: 0.35; }
+  }
   .status {
     display: flex;
     align-items: center;
@@ -986,10 +1076,14 @@
     .status {
       max-width: 140px;
     }
+    .graph-stats {
+      padding-inline: 0.2rem;
+    }
   }
 
   @media (max-width: 940px) {
     .brand-copy,
+    .graph-stats,
     .status,
     .toolbar-divider.compact {
       display: none;

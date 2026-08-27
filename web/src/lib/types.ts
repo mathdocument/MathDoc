@@ -76,3 +76,19 @@ export interface GraphRootItem {
   broken: boolean;
   topo_depth: number;
 }
+
+export interface GraphIssue {
+  kind: "Missing" | "Invalid";
+  fnode: string;
+  title: string;
+  rel_path: string;
+  error: string;
+}
+
+export interface GraphCheckReport {
+  nodes: number;
+  edges: number;
+  missing: GraphIssue[];
+  invalid: GraphIssue[];
+  cycles: string[][];
+}

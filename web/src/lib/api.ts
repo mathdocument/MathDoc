@@ -4,6 +4,7 @@
 
 import type {
   DependencyCandidates,
+  GraphCheckReport,
   GraphFull,
   GraphRootItem,
   NodeDetail,
@@ -66,6 +67,7 @@ function mutateNode(
 
 export const api = {
   roots: () => req<GraphRootItem[]>("/api/graph/roots"),
+  graphCheck: () => req<GraphCheckReport>("/api/graph/check"),
   full: (fresh = false) => req<GraphFull>(`/api/graph/full${fresh ? "?fresh=true" : ""}`),
   search: (q: string, n = 200) =>
     req<NodeInfo[]>(`/api/search?q=${encodeURIComponent(q)}&n=${n}`),
