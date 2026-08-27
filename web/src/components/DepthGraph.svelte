@@ -66,6 +66,10 @@
   let minEdgeBucket = 0;
   let maxEdgeBucket = -1;
   let dprQuery: MediaQueryList | null = null;
+  let fullEdgeSelection: string | null | undefined;
+  let fullBasePath = new Path2D();
+  let fullOutgoingPath = new Path2D();
+  let fullIncomingPath = new Path2D();
 
   function nodeRadius(n: SimNode): number {
     const r = n.baseRadius;
@@ -120,6 +124,7 @@
     computeMetadata(nodes, links);
     applyStaticGraphLayout();
     buildSpatialIndexes();
+    fullEdgeSelection = undefined;
   }
 
   async function loadGraph(): Promise<boolean> {
@@ -273,6 +278,34 @@
     return low;
   }
 
+  function appendEdge(path: Path2D, link: SimLink) {
+    const { source, target } = link;
+    if (source === target) {
+      const loopRadius = source.baseRadius + 8;
+      path.moveTo(source.x, source.y);
+      path.arc(source.x, source.y - loopRadius, loopRadius, Math.PI / 2, Math.PI * 2.5);
+    } else {
+      path.moveTo(source.x, source.y);
+      path.lineTo(target.x, target.y);
+    }
+  }
+
+  function ensureFullEdgePaths(selection: string | null) {
+    if (fullEdgeSelection === selection) return;
+    fullEdgeSelection = selection;
+    fullBasePath = new Path2D();
+    fullOutgoingPath = new Path2D();
+    fullIncomingPath = new Path2D();
+    for (const link of links) {
+      const path = selection && link.source.id === selection
+        ? fullOutgoingPath
+        : selection && link.target.id === selection
+          ? fullIncomingPath
+          : fullBasePath;
+      appendEdge(path, link);
+    }
+  }
+
   function render() {
     const canvas = canvasEl;
     if (!canvas) return;
@@ -305,9 +338,6 @@
     // Build a small number of paths instead of issuing one canvas stroke per
     // edge. Cull links wholly outside the viewport and reduce opacity around
     // high-degree selections so dense hubs remain legible.
-    const basePath = new Path2D();
-    const outgoingPath = new Path2D();
-    const incomingPath = new Path2D();
     const firstBucket = Math.max(minEdgeBucket, Math.floor(minX / EDGE_BUCKET_SIZE));
     const lastBucket = Math.min(maxEdgeBucket, Math.floor(maxX / EDGE_BUCKET_SIZE));
     let linkCandidates: Iterable<SimLink> = links;
@@ -327,24 +357,28 @@
         linkCandidates = visibleLinks;
       }
     }
-    for (const link of linkCandidates) {
-      const { source: s, target: t } = link;
-      if ((s.x < minX && t.x < minX) || (s.x > maxX && t.x > maxX) ||
-        (s.y < minY && t.y < minY) || (s.y > maxY && t.y > maxY)) continue;
-
-      let path = basePath;
-      if (graphSelection && s.id === graphSelection) {
-        path = outgoingPath;
-      } else if (graphSelection && t.id === graphSelection) {
-        path = incomingPath;
-      }
-      if (s === t) {
-        const loopRadius = s.baseRadius + 8;
-        path.moveTo(s.x, s.y);
-        path.arc(s.x, s.y - loopRadius, loopRadius, Math.PI / 2, Math.PI * 2.5);
-      } else {
-        path.moveTo(s.x, s.y);
-        path.lineTo(t.x, t.y);
+    let basePath: Path2D;
+    let outgoingPath: Path2D;
+    let incomingPath: Path2D;
+    if (linkCandidates === links) {
+      ensureFullEdgePaths(graphSelection);
+      basePath = fullBasePath;
+      outgoingPath = fullOutgoingPath;
+      incomingPath = fullIncomingPath;
+    } else {
+      basePath = new Path2D();
+      outgoingPath = new Path2D();
+      incomingPath = new Path2D();
+      for (const link of linkCandidates) {
+        const { source, target } = link;
+        if ((source.x < minX && target.x < minX) || (source.x > maxX && target.x > maxX) ||
+          (source.y < minY && target.y < minY) || (source.y > maxY && target.y > maxY)) continue;
+        const path = graphSelection && source.id === graphSelection
+          ? outgoingPath
+          : graphSelection && target.id === graphSelection
+            ? incomingPath
+            : basePath;
+        appendEdge(path, link);
       }
     }
 
