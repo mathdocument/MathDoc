@@ -230,7 +230,7 @@ export async function navigate(
       if (request !== navigationRequest || committed) return;
       if (unsavedDraftRevision() !== confirmedDraftRevision) return;
       const leaving = appState.load.kind === "ready" ? appState.load.node.fnode : null;
-      appState.lastVisitedFnode = leaving;
+      if (leaving !== view.node.fnode) appState.lastVisitedFnode = leaving;
       appState.editorRevision++;
       appState.load = { kind: "ready", node: view.node };
       appState.referrers = { items: view.referrers, selected: -1 };
