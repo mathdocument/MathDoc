@@ -311,8 +311,7 @@
       appendEdge(selectedOutgoingPath, link);
     }
     for (const link of incomingLinks.get(selection) ?? []) {
-      // A self-edge is already represented as outgoing.
-      if (link.source !== link.target) appendEdge(selectedIncomingPath, link);
+      appendEdge(selectedIncomingPath, link);
     }
   }
 
@@ -351,10 +350,13 @@
         (outDegreeMap.get(graphSelection) ?? 0);
       const highlightAlpha = Math.max(0.77, Math.min(0.9, 12 / Math.sqrt(Math.max(1, selectedDegree))));
       ctx.lineWidth = (selectedDegree > 1_000 ? 1.25 : 2) / viewK;
+      ctx.setLineDash([]);
       ctx.strokeStyle = `rgba(${palette.outgoing}, ${highlightAlpha})`;
       ctx.stroke(selectedOutgoingPath);
+      ctx.setLineDash([6 / viewK, 4 / viewK]);
       ctx.strokeStyle = `rgba(${palette.incoming}, ${highlightAlpha})`;
       ctx.stroke(selectedIncomingPath);
+      ctx.setLineDash([]);
     }
 
     // Keep only visible nodes for drawing, labels, and pointer hit testing.
