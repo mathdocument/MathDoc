@@ -20,6 +20,7 @@
     depth: number;
     isRoot: boolean;
     isLeaf: boolean;
+    baseRadius: number;
     x: number;
     y: number;
   }
@@ -64,15 +65,8 @@
   let minEdgeBucket = 0;
   let maxEdgeBucket = -1;
 
-  function baseNodeRadius(n: SimNode): number {
-    const inDegree = inDegreeMap.get(n.id) ?? 0;
-    const outDegree = outDegreeMap.get(n.id) ?? 0;
-    const ior = Math.log1p(inDegree) - Math.log1p(outDegree);
-    return Math.min(MAX_NODE_RADIUS, 6 * (Math.max(0, ior) + 1));
-  }
-
   function nodeRadius(n: SimNode): number {
-    const r = baseNodeRadius(n);
+    const r = n.baseRadius;
     if (selectedFnode && n.id === selectedFnode) return r + 3;
     if (hoveredNode && n.id === hoveredNode.id) return r + 2;
     return r;
@@ -93,8 +87,12 @@
       inDegreeMap.set(t, (inDegreeMap.get(t) ?? 0) + 1);
     }
     for (const n of nodeList) {
-      n.isRoot = (inDegreeMap.get(n.id) ?? 0) === 0;
-      n.isLeaf = (outDegreeMap.get(n.id) ?? 0) === 0;
+      const inDegree = inDegreeMap.get(n.id) ?? 0;
+      const outDegree = outDegreeMap.get(n.id) ?? 0;
+      n.isRoot = inDegree === 0;
+      n.isLeaf = outDegree === 0;
+      const ior = Math.log1p(inDegree) - Math.log1p(outDegree);
+      n.baseRadius = Math.min(MAX_NODE_RADIUS, 6 * (Math.max(0, ior) + 1));
     }
   }
 
@@ -108,6 +106,7 @@
       depth: node.depth,
       isRoot: false,
       isLeaf: false,
+      baseRadius: 6,
       x: 0,
       y: 0,
     }));
@@ -337,7 +336,7 @@
         path = incomingPath;
       }
       if (s === t) {
-        const loopRadius = baseNodeRadius(s) + 8;
+        const loopRadius = s.baseRadius + 8;
         path.moveTo(s.x, s.y);
         path.arc(s.x, s.y - loopRadius, loopRadius, Math.PI / 2, Math.PI * 2.5);
       } else {
