@@ -35,7 +35,6 @@
   let canvasEl = $state<HTMLCanvasElement | null>(null);
   let containerEl = $state<HTMLDivElement | null>(null);
   let nodes: SimNode[] = [];
-  let links: SimLink[] = [];
   let rafId = 0;
   let running = true;
   let loadError: string | null = $state(null);
@@ -102,16 +101,18 @@
     for (const n of nodeList) {
       inDegreeMap.set(n.id, 0);
       outDegreeMap.set(n.id, 0);
-      outgoingLinks.set(n.id, []);
-      incomingLinks.set(n.id, []);
     }
     for (const l of linkList) {
       const s = l.source.id;
       const t = l.target.id;
       outDegreeMap.set(s, (outDegreeMap.get(s) ?? 0) + 1);
       inDegreeMap.set(t, (inDegreeMap.get(t) ?? 0) + 1);
-      outgoingLinks.get(s)?.push(l);
-      incomingLinks.get(t)?.push(l);
+      const outgoing = outgoingLinks.get(s);
+      if (outgoing) outgoing.push(l);
+      else outgoingLinks.set(s, [l]);
+      const incoming = incomingLinks.get(t);
+      if (incoming) incoming.push(l);
+      else incomingLinks.set(t, [l]);
     }
     for (const n of nodeList) {
       const inDegree = inDegreeMap.get(n.id) ?? 0;
@@ -138,7 +139,7 @@
       x: 0,
       y: 0,
     }));
-    links = data.edges.map(([source, target]) => ({
+    const links = data.edges.map(([source, target]) => ({
       source: nodes[source]!,
       target: nodes[target]!,
     }));
@@ -232,13 +233,6 @@
       maxX = Math.max(maxX, node.x + node.baseRadius);
       minY = Math.min(minY, node.y - node.baseRadius);
       maxY = Math.max(maxY, node.y + node.baseRadius);
-    }
-    for (const { source, target } of links) {
-      if (source !== target) continue;
-      const loopRadius = source.baseRadius + 8;
-      minX = Math.min(minX, source.x - loopRadius);
-      maxX = Math.max(maxX, source.x + loopRadius);
-      minY = Math.min(minY, source.y - 2 * loopRadius);
     }
     graphBounds = { minX, maxX, minY, maxY };
   }
