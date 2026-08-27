@@ -160,10 +160,10 @@
     });
     reportReadyAfterMeasure(editorView);
 
-    getHighlighter()
+    const lang = srctypeToLang(block.srctype);
+    getHighlighter(lang)
       .then((hl) => {
         if (!alive || !editorView) return;
-        const lang = srctypeToLang(block.srctype);
         syntaxExtension = shikiHighlight(hl, lang, SHIKI_THEME, (error) => {
           if (alive) shikiError = errMsg(error);
         });

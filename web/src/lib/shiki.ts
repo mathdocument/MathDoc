@@ -1,6 +1,4 @@
-// Shiki highlighter singleton.
-// Pre-loads all mdc srctype grammars so the editor has highlighting
-// once the WASM engine is loaded (async, ~200ms on first use).
+// Shiki highlighter singleton with grammars loaded on demand.
 //
 // All modules are imported dynamically so Shiki + the oniguruma WASM
 // (~1 MB, inlined as base64) stay out of the initial bundle. The chunk is
@@ -8,8 +6,18 @@
 
 import type { HighlighterCore } from "shiki/core";
 
+const LANGUAGE_LOADERS = {
+  markdown: () => import("@shikijs/langs/markdown").then((module) => module.default),
+  latex: () => import("@shikijs/langs/latex").then((module) => module.default),
+  python: () => import("@shikijs/langs/python").then((module) => module.default),
+  lean: () => import("@shikijs/langs/lean").then((module) => module.default),
+  coq: () => import("@shikijs/langs/coq").then((module) => module.default),
+} as const;
+
+type MdcLanguage = keyof typeof LANGUAGE_LOADERS;
+
 // Map mdc srctype → Shiki language id.
-const SRCTYPE_TO_LANG: Record<string, string> = {
+const SRCTYPE_TO_LANG: Record<string, MdcLanguage> = {
   text: "markdown",
   latex: "latex",
   python: "python",
@@ -18,39 +26,24 @@ const SRCTYPE_TO_LANG: Record<string, string> = {
 };
 
 let highlighterPromise: Promise<HighlighterCore> | null = null;
+const languagePromises = new Map<MdcLanguage, Promise<void>>();
 
-export function getHighlighter(): Promise<HighlighterCore> {
+function getHighlighterCore(): Promise<HighlighterCore> {
   if (!highlighterPromise) {
     highlighterPromise = (async () => {
       const [
         { createHighlighterCore },
         { createOnigurumaEngine },
         getWasm,
-        markdown,
-        latex,
-        python,
-        lean,
-        coq,
         tokyoNight,
       ] = await Promise.all([
         import("shiki/core"),
         import("shiki/engine/oniguruma"),
         import("shiki/wasm"),
-        import("@shikijs/langs/markdown"),
-        import("@shikijs/langs/latex"),
-        import("@shikijs/langs/python"),
-        import("@shikijs/langs/lean"),
-        import("@shikijs/langs/coq"),
         import("@shikijs/themes/tokyo-night"),
       ]);
       return createHighlighterCore({
-        langs: [
-          markdown.default,
-          latex.default,
-          python.default,
-          lean.default,
-          coq.default,
-        ],
+        langs: [],
         themes: [tokyoNight.default],
         engine: createOnigurumaEngine(getWasm.default),
       });
@@ -63,6 +56,22 @@ export function getHighlighter(): Promise<HighlighterCore> {
   return highlighterPromise;
 }
 
-export function srctypeToLang(srctype: string): string {
+export async function getHighlighter(lang: MdcLanguage): Promise<HighlighterCore> {
+  const highlighter = await getHighlighterCore();
+  let languagePromise = languagePromises.get(lang);
+  if (!languagePromise) {
+    languagePromise = LANGUAGE_LOADERS[lang]()
+      .then((language) => highlighter.loadLanguage(language))
+      .catch((error) => {
+        languagePromises.delete(lang);
+        throw error;
+      });
+    languagePromises.set(lang, languagePromise);
+  }
+  await languagePromise;
+  return highlighter;
+}
+
+export function srctypeToLang(srctype: string): MdcLanguage {
   return SRCTYPE_TO_LANG[srctype] ?? "markdown";
 }
