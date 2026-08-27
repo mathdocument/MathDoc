@@ -309,9 +309,9 @@
     prevFnode = nextFnode;
     prevSrctype = nextSrctype;
     prevContent = nextContent;
-    identityVersion++;
-    pendingSaveDoc = null;
     if (identityChanged) {
+      identityVersion++;
+      pendingSaveDoc = null;
       saving = false;
       deleting = false;
       previewing = false;
