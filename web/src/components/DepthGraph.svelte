@@ -370,8 +370,10 @@
     }
     const rect = container.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
+    const width = Math.max(1, Math.round(rect.width * dpr));
+    const height = Math.max(1, Math.round(rect.height * dpr));
+    if (canvas.width !== width) canvas.width = width;
+    if (canvas.height !== height) canvas.height = height;
     canvas.style.width = `${rect.width}px`;
     canvas.style.height = `${rect.height}px`;
     // Redraw on the next frame so showing the view is not blocked by an
@@ -538,7 +540,7 @@
     viewK = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.min(scaleX, scaleY) * (1 - margin)));
     viewX = cw / 2 - cx * viewK;
     viewY = ch / 2 - cy * viewK;
-    render();
+    requestRender();
   }
 
   /** Zoom by `factor` around the canvas center (used by the zoom buttons). */
