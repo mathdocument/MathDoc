@@ -166,7 +166,7 @@
   .backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(3, 6, 10, 0.7);
+    background: var(--mdc-backdrop);
     backdrop-filter: blur(6px);
     display: flex;
     align-items: flex-start;
@@ -177,7 +177,7 @@
   }
   .dialog {
     width: min(860px, 92vw);
-    background: rgba(15, 21, 31, 0.98);
+    background: color-mix(in srgb, var(--mdc-panel) 98%, transparent);
     border: 1px solid var(--mdc-border-strong);
     border-radius: var(--mdc-radius-lg);
     overflow: hidden;
@@ -307,7 +307,7 @@
     font-size: 0.64rem;
     color: var(--mdc-muted);
     border-top: 1px solid var(--mdc-border);
-    background: rgba(9, 13, 20, 0.42);
+    background: color-mix(in srgb, var(--mdc-bg) 48%, transparent);
   }
   .hint span {
     display: flex;

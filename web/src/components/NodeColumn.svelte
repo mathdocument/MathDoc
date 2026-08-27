@@ -151,8 +151,8 @@
     overflow: hidden;
     border: 1px solid var(--mdc-border);
     border-radius: var(--mdc-radius-md);
-    background: rgba(15, 21, 31, 0.86);
-    box-shadow: 0 10px 35px rgba(0, 0, 0, 0.14);
+    background: color-mix(in srgb, var(--mdc-panel) 86%, transparent);
+    box-shadow: 0 10px 35px color-mix(in srgb, var(--mdc-fg) 10%, transparent);
   }
   .column-head {
     display: flex;
@@ -292,7 +292,7 @@
     background: var(--mdc-card-hover);
     border-color: var(--mdc-border);
     transform: translateY(-1px);
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+    box-shadow: 0 4px 14px color-mix(in srgb, var(--mdc-fg) 14%, transparent);
   }
   .card.selected {
     background: var(--mdc-card-selected);
@@ -310,7 +310,7 @@
     border-color: var(--mdc-error);
   }
   .card.last-visited {
-    background: rgba(32, 45, 64, 0.52);
+    background: color-mix(in srgb, var(--mdc-card-selected) 52%, transparent);
     border-color: var(--mdc-border);
   }
   .card.last-visited:hover:not(:disabled) {

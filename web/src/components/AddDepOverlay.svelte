@@ -319,7 +319,7 @@
   .backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(3, 6, 10, 0.7);
+    background: var(--mdc-backdrop);
     backdrop-filter: blur(6px);
     display: flex;
     align-items: flex-start;
@@ -330,7 +330,7 @@
   }
   .dialog {
     width: min(860px, 92vw);
-    background: rgba(15, 21, 31, 0.98);
+    background: color-mix(in srgb, var(--mdc-panel) 98%, transparent);
     border: 1px solid var(--mdc-border-strong);
     border-radius: var(--mdc-radius-lg);
     overflow: hidden;
@@ -469,7 +469,7 @@
     box-sizing: border-box;
     flex: initial;
     background: var(--mdc-code-bg);
-    color: var(--mdc-fg);
+    color: var(--mdc-code-fg);
     border: 1px solid var(--mdc-border);
     border-radius: var(--mdc-radius-sm);
     padding: 0.55rem 0.65rem;
@@ -483,7 +483,7 @@
   .create-confirm {
     align-self: flex-start;
     background: var(--mdc-accent);
-    color: var(--mdc-bg);
+    color: var(--mdc-on-accent);
     border: none;
     border-radius: var(--mdc-radius-sm);
     padding: 0.48rem 0.75rem;
@@ -516,7 +516,7 @@
     font-size: 0.64rem;
     color: var(--mdc-muted);
     border-top: 1px solid var(--mdc-border);
-    background: rgba(9, 13, 20, 0.42);
+    background: color-mix(in srgb, var(--mdc-bg) 48%, transparent);
   }
   .hint span {
     display: flex;

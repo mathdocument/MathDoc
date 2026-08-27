@@ -178,7 +178,7 @@
   .backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(3, 6, 10, 0.7);
+    background: var(--mdc-backdrop);
     backdrop-filter: blur(6px);
     display: flex;
     align-items: flex-start;
@@ -189,7 +189,7 @@
   }
   .dialog {
     width: min(560px, 90vw);
-    background: rgba(15, 21, 31, 0.98);
+    background: color-mix(in srgb, var(--mdc-panel) 98%, transparent);
     border: 1px solid var(--mdc-border-strong);
     border-radius: var(--mdc-radius-lg);
     overflow: hidden;
@@ -284,7 +284,7 @@
     width: 100%;
     box-sizing: border-box;
     background: var(--mdc-code-bg);
-    color: var(--mdc-fg);
+    color: var(--mdc-code-fg);
     border: 1px solid var(--mdc-border);
     border-radius: 8px;
     padding: 0.65rem 0.7rem;
@@ -317,7 +317,7 @@
     min-height: 60px;
     padding: 0.65rem 0.8rem;
     border-top: 1px solid var(--mdc-border);
-    background: rgba(9, 13, 20, 0.42);
+    background: color-mix(in srgb, var(--mdc-bg) 48%, transparent);
   }
   .hint {
     display: flex;
@@ -361,7 +361,7 @@
     border: 1px solid var(--mdc-border);
   }
   .primary {
-    color: #0b1020;
+    color: var(--mdc-on-accent);
     background: var(--mdc-accent);
     border: 1px solid var(--mdc-accent);
   }

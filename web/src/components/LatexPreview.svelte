@@ -260,7 +260,7 @@
           { left: "$", right: "$", display: false },
         ],
         throwOnError: false,
-        errorColor: "#ff7d8f",
+        errorColor: "var(--mdc-error)",
         strict: "warn",
         trust: false,
         ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code"],
@@ -299,8 +299,8 @@
     overflow-x: auto;
     color: var(--mdc-fg);
     background:
-      radial-gradient(circle at 20% 0%, rgba(182, 156, 255, 0.07), transparent 38%),
-      var(--mdc-code-bg);
+      radial-gradient(circle at 20% 0%, color-mix(in srgb, var(--mdc-accent-up) 7%, transparent), transparent 38%),
+      var(--mdc-panel);
     font-family: Georgia, "Times New Roman", serif;
     font-size: 1rem;
     line-height: 1.7;
@@ -331,7 +331,7 @@
   }
   .latex-preview :global(.latex-statement.proof) {
     border-left-color: var(--mdc-muted);
-    background: rgba(255, 255, 255, 0.018);
+    background: color-mix(in srgb, var(--mdc-fg) 2%, transparent);
   }
   .latex-preview :global(.latex-statement-label) {
     margin-bottom: 0.28rem;

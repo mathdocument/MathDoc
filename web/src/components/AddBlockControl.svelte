@@ -125,7 +125,7 @@
     align-items: center;
     gap: 0.42rem;
     min-height: 34px;
-    background: rgba(21, 30, 43, 0.6);
+    background: color-mix(in srgb, var(--mdc-card) 60%, transparent);
     color: var(--mdc-dim);
     border: 1px dashed var(--mdc-border-strong);
     border-radius: 8px;

@@ -5,10 +5,12 @@
     ArrowRight,
     Columns3,
     Link2,
+    Moon,
     Network,
     Plus,
     RefreshCw,
     Search,
+    Sun,
     Unlink2,
   } from "@lucide/svelte";
   import {
@@ -44,6 +46,7 @@
     settlePendingMutations,
     unsavedDraftRevision,
   } from "./lib/unsaved";
+  import { applyTheme, currentTheme, type Theme } from "./lib/theme";
 
   type Overlay =
     | { kind: "none" }
@@ -53,6 +56,7 @@
     | { kind: "new-node" };
 
   let overlay = $state<Overlay>({ kind: "none" });
+  let theme = $state<Theme>(currentTheme());
   let initialLoad = $state(true);
   let startupRequest = 0;
   let initialError = $state<string | null>(null);
@@ -123,6 +127,11 @@
 
   function cancelStartup() {
     startupRequest++;
+  }
+
+  function toggleTheme() {
+    theme = theme === "dark" ? "light" : "dark";
+    applyTheme(theme);
   }
 
   function applyGraphStatsDelta(nodes: number, edges: number) {
@@ -756,6 +765,15 @@
     </div>
     <button
       class="tool icon-only"
+      onclick={toggleTheme}
+      title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+      aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+    >
+      {#if theme === "dark"}<Sun size={16} strokeWidth={1.8} />
+      {:else}<Moon size={16} strokeWidth={1.8} />{/if}
+    </button>
+    <button
+      class="tool icon-only"
       class:spinning={refreshing}
       onclick={refreshView}
       disabled={refreshing}
@@ -816,6 +834,7 @@
     <div class="force-canvas-wrap">
         <DepthGraph
           active={view === "force"}
+          {theme}
           onSelect={onForceSelect}
           selectedFnode={forceSelectedFnode}
           revision={graphRevision}
@@ -939,8 +958,8 @@
     min-height: 58px;
     padding: 0 0.85rem;
     border-bottom: 1px solid var(--mdc-border);
-    background: rgba(15, 21, 31, 0.94);
-    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.015);
+    background: color-mix(in srgb, var(--mdc-panel) 94%, transparent);
+    box-shadow: 0 1px 0 color-mix(in srgb, var(--mdc-fg) 4%, transparent);
     flex-shrink: 0;
   }
   .identity {
@@ -1064,7 +1083,7 @@
   .view-switch button.active {
     color: var(--mdc-fg);
     background: var(--mdc-card-selected);
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.22);
+    box-shadow: 0 1px 4px color-mix(in srgb, var(--mdc-fg) 18%, transparent);
   }
   .spacer {
     flex: 1;
@@ -1175,7 +1194,7 @@
     border-radius: var(--mdc-radius-md);
     overflow: hidden;
     position: relative;
-    box-shadow: 0 10px 35px rgba(0, 0, 0, 0.16);
+    box-shadow: 0 10px 35px color-mix(in srgb, var(--mdc-fg) 12%, transparent);
   }
   .force-editor-wrap {
     flex: 0 0 400px;

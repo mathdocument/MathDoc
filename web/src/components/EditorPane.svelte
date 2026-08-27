@@ -314,17 +314,17 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    background: rgba(15, 21, 31, 0.72);
+    background: color-mix(in srgb, var(--mdc-panel) 88%, transparent);
     border: 1px solid var(--mdc-border);
     border-radius: var(--mdc-radius-md);
-    box-shadow: 0 10px 35px rgba(0, 0, 0, 0.16);
+    box-shadow: 0 10px 35px color-mix(in srgb, var(--mdc-fg) 12%, transparent);
   }
   .center::before {
     content: "";
     position: absolute;
     inset: 0 0 auto;
     height: 2px;
-    background: linear-gradient(90deg, var(--mdc-accent) 0%, rgba(124, 156, 255, 0.12) 46%, transparent 78%);
+    background: linear-gradient(90deg, var(--mdc-accent) 0%, color-mix(in srgb, var(--mdc-accent) 12%, transparent) 46%, transparent 78%);
     border-radius: var(--mdc-radius-md) var(--mdc-radius-md) 0 0;
     opacity: 0.9;
     pointer-events: none;
@@ -332,7 +332,7 @@
   .head {
     padding: 1.05rem 1.25rem 0.95rem;
     border-bottom: 1px solid var(--mdc-border);
-    background: linear-gradient(180deg, rgba(20, 28, 40, 0.7), rgba(15, 21, 31, 0.2));
+    background: linear-gradient(180deg, color-mix(in srgb, var(--mdc-panel-raised) 82%, transparent), color-mix(in srgb, var(--mdc-panel) 35%, transparent));
   }
   .eyebrow {
     margin-bottom: 0.38rem;
@@ -371,7 +371,7 @@
     font-size: 1.18rem;
     font-weight: 620;
     font-family: inherit;
-    color: var(--mdc-fg);
+    color: var(--mdc-code-fg);
     background: var(--mdc-code-bg);
     border: 1px solid var(--mdc-accent);
     border-radius: var(--mdc-radius-sm);
@@ -397,12 +397,12 @@
   }
   .title-save:hover {
     background: var(--mdc-accent-down);
-    color: #07110e;
+    color: var(--mdc-on-success);
     border-color: var(--mdc-accent-down);
   }
   .title-cancel:hover {
     background: var(--mdc-error);
-    color: #16090c;
+    color: var(--mdc-on-error);
     border-color: var(--mdc-error);
   }
   .title-error {
@@ -425,7 +425,7 @@
     gap: 0.28rem;
     min-height: 22px;
     padding: 0 0.45rem;
-    background: rgba(9, 13, 20, 0.48);
+    background: color-mix(in srgb, var(--mdc-bg) 55%, transparent);
     border: 1px solid var(--mdc-border);
     border-radius: 999px;
   }
@@ -467,7 +467,7 @@
     gap: 0.3rem;
     min-height: 22px;
     padding: 0 0.48rem;
-    background: rgba(9, 13, 20, 0.3);
+    background: color-mix(in srgb, var(--mdc-bg) 42%, transparent);
     border: 1px solid var(--mdc-border);
     border-radius: 999px;
   }
@@ -530,7 +530,7 @@
     position: absolute;
     inset: 0;
     transform: translateX(-100%);
-    background: linear-gradient(90deg, transparent, rgba(124, 156, 255, 0.09), transparent);
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--mdc-accent) 9%, transparent), transparent);
     animation: mdc-shimmer 1.4s infinite;
   }
   .sk-eyebrow { width: 4.5rem; height: 0.6rem; }

@@ -108,15 +108,15 @@
         ".cm-content": { caretColor: "var(--mdc-accent)" },
         ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--mdc-accent)" },
         "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
-          backgroundColor: "rgba(122, 162, 247, 0.25) !important",
+          backgroundColor: "var(--mdc-editor-selection) !important",
         },
         ".cm-gutters": {
           backgroundColor: "var(--mdc-code-bg)",
           borderRight: "1px solid var(--mdc-border)",
           color: "var(--mdc-dim)",
         },
-        ".cm-activeLine": { backgroundColor: "rgba(122, 162, 247, 0.06)" },
-        ".cm-activeLineGutter": { backgroundColor: "rgba(122, 162, 247, 0.06)" },
+        ".cm-activeLine": { backgroundColor: "var(--mdc-editor-active)" },
+        ".cm-activeLineGutter": { backgroundColor: "var(--mdc-editor-active)" },
       }),
       EditorView.updateListener.of((u) => {
         if (u.docChanged) {

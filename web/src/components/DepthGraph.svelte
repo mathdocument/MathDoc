@@ -2,17 +2,19 @@
   import { onMount, onDestroy, untrack } from "svelte";
   import { Maximize2 } from "@lucide/svelte";
   import type { GraphFull, NodeInfo } from "../lib/types";
+  import type { Theme } from "../lib/theme";
   import { api } from "../lib/api";
   import { shortFnode } from "../lib/format";
 
   interface Props {
     active: boolean;
+    theme: Theme;
     onSelect: (fnode: string | null) => void;
     selectedFnode: string | null;
     /** Increment to trigger a data refresh (after dep mutations). */
     revision?: number;
   }
-  let { active, onSelect, selectedFnode, revision = 0 }: Props = $props();
+  let { active, theme, onSelect, selectedFnode, revision = 0 }: Props = $props();
 
   interface SimNode {
     id: string;
@@ -47,9 +49,26 @@
   let viewY = 0;
   let viewK = 1;
 
-  const NODE_COLOR = "#7c9cff";
-  const ROOT_COLOR = "#e8b86d";
-  const LEAF_COLOR = "#63d8b2";
+  const DARK_PALETTE = {
+    node: "#7c9cff",
+    root: "#e8b86d",
+    leaf: "#63d8b2",
+    outgoing: "99, 216, 178",
+    incoming: "182, 156, 255",
+    outline: "#e7edf6",
+    shortLabel: "135, 147, 165",
+    label: "192, 202, 216",
+  };
+  const LIGHT_PALETTE = {
+    node: "#315fda",
+    root: "#a56800",
+    leaf: "#087f66",
+    outgoing: "8, 127, 102",
+    incoming: "116, 83, 216",
+    outline: "#172233",
+    shortLabel: "101, 117, 140",
+    label: "54, 70, 92",
+  };
   const MAX_NODE_RADIUS = 24;
   const SPATIAL_CELL_SIZE = 64;
   const MIN_ZOOM = 0.0001;
@@ -331,6 +350,7 @@
     const graphSelection = selectedFnode && inDegreeMap.has(selectedFnode)
       ? selectedFnode
       : null;
+    const palette = theme === "light" ? LIGHT_PALETTE : DARK_PALETTE;
 
     ensureSelectedEdgePaths(graphSelection);
     if (graphSelection) {
@@ -338,9 +358,9 @@
         (outDegreeMap.get(graphSelection) ?? 0);
       const highlightAlpha = Math.max(0.16, Math.min(0.86, 12 / Math.sqrt(Math.max(1, selectedDegree))));
       ctx.lineWidth = (selectedDegree > 1_000 ? 1.25 : 2) / viewK;
-      ctx.strokeStyle = `rgba(99, 216, 178, ${highlightAlpha})`;
+      ctx.strokeStyle = `rgba(${palette.outgoing}, ${highlightAlpha})`;
       ctx.stroke(selectedOutgoingPath);
-      ctx.strokeStyle = `rgba(182, 156, 255, ${highlightAlpha})`;
+      ctx.strokeStyle = `rgba(${palette.incoming}, ${highlightAlpha})`;
       ctx.stroke(selectedIncomingPath);
     }
 
@@ -366,11 +386,11 @@
       path.moveTo(n.x + r, n.y);
       path.arc(n.x, n.y, r, 0, 2 * Math.PI);
     }
-    ctx.fillStyle = NODE_COLOR;
+    ctx.fillStyle = palette.node;
     ctx.fill(nodePath);
-    ctx.fillStyle = ROOT_COLOR;
+    ctx.fillStyle = palette.root;
     ctx.fill(rootPath);
-    ctx.fillStyle = LEAF_COLOR;
+    ctx.fillStyle = palette.leaf;
     ctx.fill(leafPath);
 
     for (const n of visibleNodes) {
@@ -380,13 +400,13 @@
       if (isSelected) {
         ctx.beginPath();
         ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
-        ctx.strokeStyle = "#e7edf6";
+        ctx.strokeStyle = palette.outline;
         ctx.lineWidth = 2.5 / viewK;
         ctx.stroke();
       } else if (isHovered) {
         ctx.beginPath();
         ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
-        ctx.strokeStyle = "#e7edf6";
+        ctx.strokeStyle = palette.outline;
         ctx.lineWidth = 1.5 / viewK;
         ctx.stroke();
       }
@@ -394,7 +414,7 @@
 
     if (showShortFnode) {
       ctx.font = `${10 / viewK}px monospace`;
-      ctx.fillStyle = `rgba(135, 147, 165, ${labelAlpha * 0.9})`;
+      ctx.fillStyle = `rgba(${palette.shortLabel}, ${labelAlpha * 0.9})`;
       ctx.textAlign = "center";
       for (let index = 0; index < visibleNodes.length; index++) {
         const n = visibleNodes[index]!;
@@ -416,8 +436,8 @@
       if (!showNodeLabel) continue;
       const r = nodeRadius(n);
       ctx.fillStyle = isSelected || isHovered
-        ? "#e7edf6"
-        : `rgba(192, 202, 216, ${labelAlpha * 0.82})`;
+        ? palette.outline
+        : `rgba(${palette.label}, ${labelAlpha * 0.82})`;
       ctx.fillText(n.label, n.x + r + 3 / viewK, n.y + 3 / viewK);
     }
   }
@@ -735,6 +755,7 @@
   // Re-render when selection changes from outside.
   $effect(() => {
     void selectedFnode;
+    void theme;
     requestRender();
   });
 
@@ -811,8 +832,8 @@
     height: 100%;
     background-color: var(--mdc-bg);
     background-image:
-      linear-gradient(rgba(124, 156, 255, 0.025) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(124, 156, 255, 0.025) 1px, transparent 1px);
+      linear-gradient(var(--mdc-grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--mdc-grid) 1px, transparent 1px);
     background-size: 28px 28px;
     overflow: hidden;
   }
@@ -832,7 +853,7 @@
     justify-content: center;
     gap: 0.55rem;
     color: var(--mdc-dim);
-    background: rgba(9, 13, 20, 0.3);
+    background: color-mix(in srgb, var(--mdc-bg) 72%, transparent);
     font-family: var(--mdc-mono);
     font-size: 0.68rem;
     pointer-events: none;
@@ -855,7 +876,7 @@
     color: var(--mdc-error);
     font-family: var(--mdc-mono);
     font-size: 0.72rem;
-    background: rgba(15, 21, 31, 0.94);
+    background: color-mix(in srgb, var(--mdc-panel) 94%, transparent);
     padding: 0.55rem 0.75rem;
     border-radius: var(--mdc-radius-sm);
     border: 1px solid var(--mdc-error);
@@ -868,7 +889,7 @@
     justify-content: center;
     gap: 0.4rem;
     min-height: 32px;
-    background: rgba(20, 28, 40, 0.94);
+    background: color-mix(in srgb, var(--mdc-panel-raised) 94%, transparent);
     color: var(--mdc-fg-soft);
     border: 1px solid var(--mdc-border);
     border-radius: 7px;
