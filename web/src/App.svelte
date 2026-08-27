@@ -225,7 +225,6 @@
               historyIndex: entry.index,
               historyEntries: entry.entries,
               browserHistory: "replace",
-              preserveOnFailure: true,
             })
           : await navigate(target, {
               pushHistory: false,
@@ -235,6 +234,14 @@
             });
         if (request !== popstateRequest) return;
         if (committed) {
+          if (view === "columns" && entry.fnode === null) {
+            commitClearedHistory({
+              pushHistory: false,
+              historyIndex: entry.index,
+              historyEntries: entry.entries,
+              browserHistory: "replace",
+            });
+          }
           overlay = { kind: "none" };
           return;
         }
@@ -352,6 +359,7 @@
     forceLoadRequest++;
     if (graphChanged) graphRevision++;
     forceNodeLoad = { kind: "ready", node };
+    markCachedRelationsDirty(node.fnode);
   }
 
   function refreshColumnNode(node: NodeDetail, graphChanged = false) {
@@ -377,6 +385,7 @@
       if (unsavedDraftRevision() !== confirmedDraftRevision) return false;
       forceEditorRevision++;
       forceNodeLoad = { kind: "ready", node };
+      markCachedRelationsDirty(node.fnode);
       return true;
     } catch (e) {
       if (request === forceRefreshRequest && forceSelectedFnode === targetFnode) {
@@ -396,6 +405,7 @@
       if (request !== forceLoadRequest || forceSelectedFnode !== targetFnode) return;
       if (unsavedDraftRevision() !== draftRevision) return;
       forceNodeLoad = { kind: "ready", node };
+      markCachedRelationsDirty(node.fnode);
     } catch {
       // Keep the already displayed Knowledge snapshot if background refresh fails.
     }
@@ -416,8 +426,8 @@
   }
 
   function relationUpdate(current: NodeDetail, updated: NodeDetail): NodeDetail {
-    const contentUnchanged = current.title === updated.title &&
-      sameBlocks(current.blocks, updated.blocks);
+    const blocksUnchanged = sameBlocks(current.blocks, updated.blocks);
+    const contentUnchanged = current.title === updated.title && blocksUnchanged;
     if (!contentUnchanged) {
       refreshError = "dependencies updated, but node content changed externally; refresh before editing";
       return {
@@ -425,10 +435,16 @@
         broken: updated.broken,
         depth: updated.depth,
         depens: updated.depens,
-        formalization: updated.formalization,
+        formalization: blocksUnchanged ? updated.formalization : current.formalization,
       };
     }
     return updated;
+  }
+
+  function markCachedRelationsDirty(fnode: string) {
+    if (appState.load.kind === "ready" && appState.load.node.fnode === fnode) {
+      forceRelationsDirty = true;
+    }
   }
 
   function afterDepMutation(updated: NodeDetail, delta: { nodes: number; edges: number }) {
@@ -525,7 +541,6 @@
       historyIndex?: number;
       historyEntries?: string[];
       browserHistory?: BrowserHistoryMode;
-      preserveOnFailure?: boolean;
     } = {},
   ): Promise<boolean> {
     cancelStartup();
@@ -567,6 +582,7 @@
         forceEditorRevision++;
         forceSelectedFnode = fnode;
         forceNodeLoad = { kind: "ready", node };
+        markCachedRelationsDirty(node.fnode);
         commitFocusedHistory(fnode, {
           pushHistory: opts.pushHistory,
           historyIndex: opts.historyIndex,
@@ -581,18 +597,8 @@
     } catch (e) {
       if (request !== forceSelectionRequest) return false;
       if (unsavedDraftRevision() !== confirmedDraftRevision) return false;
-      if (!opts.preserveOnFailure) {
-        await withViewTransition("neutral", () => {
-          if (request !== forceSelectionRequest) return;
-          if (unsavedDraftRevision() !== confirmedDraftRevision) return;
-          forceEditorRevision++;
-          forceSelectedFnode = fnode;
-          forceNodeLoad = {
-            kind: "error",
-            message: e instanceof Error ? e.message : String(e),
-          };
-        }, "force-editor");
-      }
+      appState.navigationError = e instanceof Error ? e.message : String(e);
+      appState.failedNavigationFnode = fnode;
       return false;
     }
   }
@@ -816,10 +822,15 @@
       <button onclick={() => {
         if (appState.failedNavigationFnode) {
           const target = appState.failedNavigationFnode;
-          if (view === "force") void onForceSelect(target);
-          else {
-            const retryingCurrent = appState.load.kind === "ready" &&
-              appState.load.node.fnode === target;
+          if (appState.load.kind !== "ready") {
+            const options = initialHistoryOptions(target);
+            cancelStartup();
+            if (view === "force") void onForceSelect(target, options);
+            else void navigate(target, options);
+          } else if (view === "force") {
+            void onForceSelect(target);
+          } else {
+            const retryingCurrent = appState.load.node.fnode === target;
             cancelStartup();
             void navigate(target, { pushHistory: !retryingCurrent });
           }
