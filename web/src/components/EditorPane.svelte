@@ -14,10 +14,11 @@
 
   interface Props {
     load: LoadState;
+    active?: boolean;
     onRefresh?: (node: NodeDetail, graphChanged?: boolean) => void;
     onReady?: () => void;
   }
-  let { load, onRefresh, onReady }: Props = $props();
+  let { load, active = true, onRefresh, onReady }: Props = $props();
 
   // Inline title editing.
   let editingTitle = $state(false);
@@ -285,6 +286,7 @@
             fnode={node.fnode}
             revision={node.revision}
             {block}
+            {active}
             onDeleted={applyDeletedBlock}
             onSaved={applySavedBlock}
             onReady={() => reportBlockReady(block.srctype)}

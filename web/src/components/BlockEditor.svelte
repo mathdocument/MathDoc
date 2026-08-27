@@ -35,11 +35,12 @@
     fnode: string;
     revision: string;
     block: SrcBlock;
+    active?: boolean;
     onDeleted?: (node: NodeDetail, srctype: string) => void;
     onSaved?: (node: NodeDetail) => void;
     onReady?: () => void;
   }
-  let { fnode, revision, block, onDeleted, onSaved, onReady }: Props = $props();
+  let { fnode, revision, block, active = true, onDeleted, onSaved, onReady }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
   let editorView: EditorView | null = null;
@@ -67,6 +68,7 @@
   const syntaxCompartment = new Compartment();
   let syntaxExtension: Extension = [];
   let readyReported = false;
+  let syntaxRequested = false;
 
   const SHIKI_THEME = "tokyo-night";
 
@@ -136,6 +138,26 @@
     });
   }
 
+  function ensureSyntaxHighlighting() {
+    if (syntaxRequested || !editorView) return;
+    syntaxRequested = true;
+    const lang = srctypeToLang(block.srctype);
+    getHighlighter(lang)
+      .then((hl) => {
+        if (!alive || !editorView) return;
+        syntaxExtension = shikiHighlight(hl, lang, SHIKI_THEME, (error) => {
+          if (alive) shikiError = errMsg(error);
+        });
+        editorExtensions = buildEditorExtensions();
+        editorView.dispatch({
+          effects: syntaxCompartment.reconfigure(syntaxExtension),
+        });
+      })
+      .catch((e) => {
+        if (alive) shikiError = errMsg(e);
+      });
+  }
+
   function setDirty(value: boolean) {
     dirty = value;
     setDraftDirty(draftId, value);
@@ -159,22 +181,11 @@
       parent: host!,
     });
     reportReadyAfterMeasure(editorView);
+    if (active) ensureSyntaxHighlighting();
+  });
 
-    const lang = srctypeToLang(block.srctype);
-    getHighlighter(lang)
-      .then((hl) => {
-        if (!alive || !editorView) return;
-        syntaxExtension = shikiHighlight(hl, lang, SHIKI_THEME, (error) => {
-          if (alive) shikiError = errMsg(error);
-        });
-        editorExtensions = buildEditorExtensions();
-        editorView.dispatch({
-          effects: syntaxCompartment.reconfigure(syntaxExtension),
-        });
-      })
-      .catch((e) => {
-        shikiError = errMsg(e);
-      });
+  $effect(() => {
+    if (active && alive) ensureSyntaxHighlighting();
   });
 
   async function save() {
