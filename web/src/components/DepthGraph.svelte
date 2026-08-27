@@ -72,6 +72,8 @@
   const SPATIAL_CELL_SIZE = 64;
   const MIN_ZOOM = 0.0001;
   const MAX_ZOOM = 5;
+  const MAX_CANVAS_DPR = 2;
+  const MAX_BACKING_PIXELS = 8_000_000;
 
   let inDegreeMap = new Map<string, number>();
   let outDegreeMap = new Map<string, number>();
@@ -80,6 +82,7 @@
   let outgoingLinks = new Map<string, SimLink[]>();
   let incomingLinks = new Map<string, SimLink[]>();
   let dprQuery: MediaQueryList | null = null;
+  let canvasDpr = 1;
   let edgePathSelection: string | null | undefined;
   let selectedOutgoingPath = new Path2D();
   let selectedIncomingPath = new Path2D();
@@ -126,6 +129,8 @@
 
   // ── Data ────────────────────────────────────────────────────────────────────
   let graphRequest = 0;
+  let graphAbortController: AbortController | null = null;
+  let graphLoadCancelled = false;
 
   function installGraph(data: GraphFull) {
     nodes = data.nodes.map((node: NodeInfo) => ({
@@ -150,43 +155,61 @@
     edgePathSelection = undefined;
     selectedOutgoingPath = new Path2D();
     selectedIncomingPath = new Path2D();
+    hoveredNode = null;
+    if (canvasEl) canvasEl.style.cursor = "grab";
   }
 
   async function loadGraph(): Promise<boolean> {
+    const controller = new AbortController();
+    graphAbortController = controller;
     const request = ++graphRequest;
     graphLoading = true;
     try {
       loadError = null;
-      const data = await api.full();
-      if (request !== graphRequest) return false;
+      const data = await api.full(false, controller.signal);
+      if (request !== graphRequest || !active) return false;
       installGraph(data);
       return true;
     } catch (e) {
-      if (request !== graphRequest) return false;
+      if (request !== graphRequest || controller.signal.aborted) return false;
       loadError = e instanceof Error ? e.message : String(e);
       return false;
     } finally {
+      if (graphAbortController === controller) graphAbortController = null;
       if (request === graphRequest) graphLoading = false;
     }
   }
 
   // Reload into the deterministic depth layout after graph mutations.
   async function reloadGraph(): Promise<boolean> {
+    const controller = new AbortController();
+    graphAbortController = controller;
     const request = ++graphRequest;
     try {
       loadError = null;
-      const data = await api.full();
-      if (request !== graphRequest) return false;
+      const data = await api.full(false, controller.signal);
+      if (request !== graphRequest || !active) return false;
       loadError = null;
       installGraph(data);
       requestRender();
       return true;
     } catch (e) {
-      if (request === graphRequest) {
+      if (request === graphRequest && !controller.signal.aborted) {
         loadError = e instanceof Error ? e.message : String(e);
       }
       return false;
+    } finally {
+      if (graphAbortController === controller) graphAbortController = null;
     }
+  }
+
+  function abortGraphRequest() {
+    if (!graphAbortController) return;
+    graphLoadCancelled = true;
+    graphAbortController.abort();
+    graphAbortController = null;
+    graphRequest++;
+    graphLoading = false;
   }
 
   // ── Static depth layout ──────────────────────────────────────────────────────
@@ -320,7 +343,7 @@
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = canvasDpr;
     const w = canvas.width / dpr;
     const h = canvas.height / dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -466,12 +489,19 @@
     const container = containerEl;
     if (!canvas || !container) return;
     if (!active) {
+      canvasDpr = 1;
       canvas.width = 1;
       canvas.height = 1;
       return;
     }
     const rect = container.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
+    const cssPixels = Math.max(1, rect.width * rect.height);
+    const dpr = Math.min(
+      window.devicePixelRatio || 1,
+      MAX_CANVAS_DPR,
+      Math.sqrt(MAX_BACKING_PIXELS / cssPixels),
+    );
+    canvasDpr = dpr;
     const width = Math.max(1, Math.round(rect.width * dpr));
     const height = Math.max(1, Math.round(rect.height * dpr));
     if (canvas.width !== width) canvas.width = width;
@@ -701,6 +731,7 @@
     if (graphLoadPromise) return graphLoadPromise;
     if (graphInitialized && !graphDirty) return Promise.resolve();
 
+    graphLoadCancelled = false;
     let allowImmediateRetry = true;
     graphLoadPromise = (async () => {
       if (!graphInitialized) {
@@ -729,7 +760,8 @@
       requestRender();
     })().finally(() => {
       graphLoadPromise = null;
-      if (running && active && graphDirty && allowImmediateRetry) void ensureGraphLoaded();
+      if (running && active && graphLoadCancelled) void ensureGraphLoaded();
+      else if (running && active && graphDirty && allowImmediateRetry) void ensureGraphLoaded();
     });
     return graphLoadPromise;
   }
@@ -755,8 +787,9 @@
   });
 
   onDestroy(() => {
-    graphRequest++;
     running = false;
+    abortGraphRequest();
+    graphRequest++;
     finishPointer(null, true);
     stopRaf();
     resizeObserver?.disconnect();
@@ -777,8 +810,13 @@
       resizeCanvas();
       requestRender();
     } else {
+      abortGraphRequest();
       finishPointer(null, true);
       stopRaf();
+      edgePathSelection = undefined;
+      selectedOutgoingPath = new Path2D();
+      selectedIncomingPath = new Path2D();
+      hoveredNode = null;
       if (canvasEl) {
         canvasEl.width = 1;
         canvasEl.height = 1;
@@ -816,7 +854,10 @@
     </div>
   {/if}
   {#if loadError}
-    <div class="error">{loadError}</div>
+    <div class="error" role="alert">
+      <span>{loadError}</span>
+      <button onclick={() => void ensureGraphLoaded()}>retry</button>
+    </div>
   {/if}
   <canvas
     bind:this={canvasEl}
@@ -892,6 +933,15 @@
     padding: 0.55rem 0.75rem;
     border-radius: var(--mdc-radius-sm);
     border: 1px solid var(--mdc-error);
+    z-index: 5;
+  }
+  .error button {
+    margin-left: 0.65rem;
+    color: inherit;
+    background: transparent;
+    border: 1px solid currentColor;
+    border-radius: 4px;
+    cursor: pointer;
   }
   .ctrl-btn {
     position: absolute;
