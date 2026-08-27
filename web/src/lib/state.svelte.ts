@@ -103,6 +103,10 @@ export async function withViewTransition(
 
 let navigationRequest = 0;
 
+export function cancelNavigation(): void {
+  navigationRequest++;
+}
+
 export function initialHistoryOptions(fnode: string): {
   pushHistory: boolean;
   historyIndex?: number;

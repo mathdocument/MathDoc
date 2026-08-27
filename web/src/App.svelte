@@ -19,6 +19,7 @@
     goForward,
     canGoBack,
     canGoForward,
+    cancelNavigation,
     refreshFocused,
     browserHistoryEntry,
     browserHistoryTarget,
@@ -493,6 +494,7 @@
   async function toggleGraphView() {
     if (viewSwitching || !confirmDiscardDrafts()) return;
     viewSwitching = true;
+    cancelNavigation();
     const request = ++viewRequest;
     try {
       if (view === "columns") {
@@ -532,6 +534,7 @@
         }
       } else {
         // Keep the complete graph view visible until the column data is ready.
+        forceLoadRequest++;
         const target = forceSelectedFnode ?? appState.history[appState.historyIdx] ?? null;
         const canReuseColumns = target !== null &&
           appState.load.kind === "ready" &&
