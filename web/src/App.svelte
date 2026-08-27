@@ -221,15 +221,15 @@
     }
   }
 
-  function refreshForceNode(node: NodeDetail) {
+  function refreshForceNode(node: NodeDetail, graphChanged = false) {
     if (node.fnode !== forceSelectedFnode) return;
     forceLoadRequest++;
-    graphRevision++;
+    if (graphChanged) graphRevision++;
     forceNodeLoad = { kind: "ready", node };
   }
 
-  function refreshColumnNode(node: NodeDetail) {
-    graphRevision++;
+  function refreshColumnNode(node: NodeDetail, graphChanged = false) {
+    if (graphChanged) graphRevision++;
     refreshFocused(node);
   }
 

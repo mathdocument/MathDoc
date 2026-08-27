@@ -18,7 +18,7 @@
 
   interface Props {
     load: LoadState;
-    onRefresh?: (node: NodeDetail) => void;
+    onRefresh?: (node: NodeDetail, graphChanged?: boolean) => void;
     onReady?: () => void;
   }
   let { load, onRefresh, onReady }: Props = $props();
@@ -155,7 +155,7 @@
       if (!isCurrent() || load.kind !== "ready") return;
       // A title write returns the whole node, but unrelated block drafts may
       // be newer than the blocks in that response.
-      onRefresh?.({ ...load.node, title: updated.title, revision: updated.revision });
+      onRefresh?.({ ...load.node, title: updated.title, revision: updated.revision }, true);
       editingTitle = false;
     } catch (e) {
       if (isCurrent()) titleError = errMsg(e);
@@ -190,7 +190,7 @@
       titleError = null;
       titleDraft = fresh.title;
       editorResetRevision++;
-      onRefresh?.(fresh);
+      onRefresh?.(fresh, true);
     } catch (e) {
       if (request === refreshRequest) refreshError = errMsg(e);
     }

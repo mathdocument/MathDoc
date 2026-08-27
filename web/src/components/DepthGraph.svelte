@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, untrack } from "svelte";
   import { Maximize2 } from "@lucide/svelte";
   import type { GraphFull, NodeInfo } from "../lib/types";
   import { api } from "../lib/api";
@@ -647,20 +647,22 @@
   });
 
   // Reload graph data when revision changes (after dep mutations).
-  let revisionInitialized = false;
+  let loadedRevision: number | null = null;
   $effect(() => {
-    void revision;
-    if (!revisionInitialized) {
-      revisionInitialized = true;
+    const nextRevision = revision;
+    if (loadedRevision === null) {
+      loadedRevision = nextRevision;
       return;
     }
+    if (nextRevision === loadedRevision) return;
+    loadedRevision = nextRevision;
     if (!graphInitialized) {
       if (graphLoadPromise) graphDirty = true;
-      else if (active) void ensureGraphLoaded();
+      else if (untrack(() => active)) void ensureGraphLoaded();
       return;
     }
     graphDirty = true;
-    if (active) void ensureGraphLoaded();
+    if (untrack(() => active)) void ensureGraphLoaded();
   });
 </script>
 
