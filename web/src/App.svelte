@@ -1112,7 +1112,6 @@
     background: var(--mdc-accent-down);
     box-shadow: 0 0 0 3px rgba(99, 216, 178, 0.09);
   }
-  .graph-stats.checking { opacity: 0.65; }
   .graph-stats.checking .graph-stats-dot { animation: mdc-pulse 1s ease-in-out infinite; }
   .graph-stats.issues .graph-stats-dot {
     background: var(--mdc-warning);
@@ -1154,11 +1153,11 @@
     justify-content: center;
     gap: 0.7rem;
     padding: 0.45rem 0.7rem;
-    background: rgba(255, 125, 143, 0.1);
+    background: var(--mdc-panel);
     color: var(--mdc-error);
     font-family: var(--mdc-mono);
     font-size: 0.72rem;
-    border-bottom: 1px solid rgba(255, 125, 143, 0.2);
+    border-bottom: 1px solid color-mix(in srgb, var(--mdc-error) 28%, transparent);
   }
   .app-error button {
     color: inherit;

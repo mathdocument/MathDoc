@@ -203,9 +203,6 @@
     background: transparent;
     color: var(--mdc-fg);
   }
-  input:focus {
-    outline: none;
-  }
   input::placeholder {
     color: var(--mdc-muted);
   }

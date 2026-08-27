@@ -180,7 +180,7 @@
   .dialog {
     width: min(860px, 92vw);
     background: color-mix(in srgb, var(--mdc-panel) 98%, transparent);
-    border: 1px solid var(--mdc-border-strong);
+    border: 1px solid var(--mdc-dim);
     border-radius: var(--mdc-radius-lg);
     overflow: hidden;
     box-shadow: var(--mdc-shadow-panel);

@@ -356,9 +356,6 @@
     background: transparent;
     color: var(--mdc-fg);
   }
-  input:focus {
-    outline: none;
-  }
   input::placeholder {
     color: var(--mdc-muted);
   }
@@ -477,7 +474,6 @@
     font-family: var(--mdc-mono);
   }
   .create-file-input:focus {
-    outline: none;
     border-color: var(--mdc-accent);
   }
   .create-confirm {

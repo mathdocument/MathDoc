@@ -295,9 +295,6 @@
     border-color: var(--mdc-accent);
     box-shadow: 0 0 0 3px rgba(124, 156, 255, 0.08);
   }
-  input:focus {
-    outline: none;
-  }
   input:disabled {
     cursor: default;
   }

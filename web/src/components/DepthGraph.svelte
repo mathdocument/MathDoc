@@ -66,7 +66,7 @@
     outgoing: "8, 127, 102",
     incoming: "116, 83, 216",
     outline: "#172233",
-    shortLabel: "101, 117, 140",
+    shortLabel: "54, 70, 92",
     label: "54, 70, 92",
   };
   const MAX_NODE_RADIUS = 24;
@@ -344,9 +344,8 @@
     const maxY = (h - viewY) / viewK + margin;
 
     // LOD thresholds.
-    const showLabels = viewK > 0.6;
+    const showLabels = viewK > 0.9;
     const showShortFnode = viewK > 0.9;
-    const labelAlpha = viewK > 0.9 ? 1 : Math.max(0, (viewK - 0.5) / 0.4);
     const graphSelection = selectedFnode && inDegreeMap.has(selectedFnode)
       ? selectedFnode
       : null;
@@ -356,7 +355,7 @@
     if (graphSelection) {
       const selectedDegree = (inDegreeMap.get(graphSelection) ?? 0) +
         (outDegreeMap.get(graphSelection) ?? 0);
-      const highlightAlpha = Math.max(0.16, Math.min(0.86, 12 / Math.sqrt(Math.max(1, selectedDegree))));
+      const highlightAlpha = Math.max(0.77, Math.min(0.9, 12 / Math.sqrt(Math.max(1, selectedDegree))));
       ctx.lineWidth = (selectedDegree > 1_000 ? 1.25 : 2) / viewK;
       ctx.strokeStyle = `rgba(${palette.outgoing}, ${highlightAlpha})`;
       ctx.stroke(selectedOutgoingPath);
@@ -414,7 +413,7 @@
 
     if (showShortFnode) {
       ctx.font = `${10 / viewK}px monospace`;
-      ctx.fillStyle = `rgba(${palette.shortLabel}, ${labelAlpha * 0.9})`;
+      ctx.fillStyle = `rgba(${palette.shortLabel}, 0.9)`;
       ctx.textAlign = "center";
       for (let index = 0; index < visibleNodes.length; index++) {
         const n = visibleNodes[index]!;
@@ -437,7 +436,7 @@
       const r = nodeRadius(n);
       ctx.fillStyle = isSelected || isHovered
         ? palette.outline
-        : `rgba(${palette.label}, ${labelAlpha * 0.82})`;
+        : `rgba(${palette.label}, 0.82)`;
       ctx.fillText(n.label, n.x + r + 3 / viewK, n.y + 3 / viewK);
     }
   }

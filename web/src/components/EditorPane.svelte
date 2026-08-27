@@ -378,9 +378,6 @@
     padding: 0.35rem 0.5rem;
     width: min(70%, 680px);
   }
-  .title-input:focus {
-    outline: none;
-  }
   .title-save,
   .title-cancel {
     display: inline-grid;

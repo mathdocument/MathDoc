@@ -103,7 +103,8 @@
           color: "var(--mdc-code-fg)",
         },
         "&.cm-focused": {
-          outline: "none",
+          outline: "2px solid var(--mdc-accent)",
+          outlineOffset: "-2px",
         },
         ".cm-content": { caretColor: "var(--mdc-accent)" },
         ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--mdc-accent)" },
@@ -113,7 +114,7 @@
         ".cm-gutters": {
           backgroundColor: "var(--mdc-code-bg)",
           borderRight: "1px solid var(--mdc-border)",
-          color: "var(--mdc-dim)",
+          color: "var(--mdc-code-dim)",
         },
         ".cm-activeLine": { backgroundColor: "var(--mdc-editor-active)" },
         ".cm-activeLineGutter": { backgroundColor: "var(--mdc-editor-active)" },
@@ -431,11 +432,11 @@
     container-type: inline-size;
   }
   /* Per-srctype accent so block kinds are scannable at a glance. */
-  .block[data-srctype="text"] { --block-accent: var(--mdc-accent); }
-  .block[data-srctype="latex"] { --block-accent: var(--mdc-accent-up); }
-  .block[data-srctype="python"] { --block-accent: var(--mdc-warning); }
-  .block[data-srctype="lean"] { --block-accent: #ff9e64; }
-  .block[data-srctype="rocq"] { --block-accent: var(--mdc-accent-down); }
+  .block[data-srctype="text"] { --block-accent: var(--mdc-block-text); }
+  .block[data-srctype="latex"] { --block-accent: var(--mdc-block-latex); }
+  .block[data-srctype="python"] { --block-accent: var(--mdc-block-python); }
+  .block[data-srctype="lean"] { --block-accent: var(--mdc-block-lean); }
+  .block[data-srctype="rocq"] { --block-accent: var(--mdc-block-rocq); }
   .block::before {
     content: "";
     position: absolute;
@@ -547,7 +548,7 @@
     min-height: 9rem;
     display: grid;
     place-items: center;
-    color: var(--mdc-muted);
+    color: var(--mdc-code-dim);
     background: var(--mdc-code-bg);
     font-family: var(--mdc-mono);
     font-size: 0.72rem;
@@ -555,7 +556,7 @@
   .error-bar {
     padding: 0.4rem 0.6rem;
     background: rgba(255, 125, 143, 0.1);
-    color: var(--mdc-error);
+    color: var(--mdc-code-error);
     font-family: var(--mdc-mono);
     font-size: 0.7rem;
     border-top: 1px solid var(--mdc-border);

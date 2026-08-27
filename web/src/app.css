@@ -10,7 +10,7 @@
   --mdc-fg: #e7edf6;
   --mdc-fg-soft: #c0cad8;
   --mdc-dim: #8793a5;
-  --mdc-muted: #667386;
+  --mdc-muted: #8997aa;
   --mdc-accent: #7c9cff;
   --mdc-accent-strong: #9ab0ff;
   --mdc-accent-up: #b69cff;
@@ -22,6 +22,13 @@
   --mdc-on-error: #19090c;
   --mdc-code-bg: #0b1018;
   --mdc-code-fg: #dbe5f3;
+  --mdc-code-dim: #8793a5;
+  --mdc-code-error: #ff7d8f;
+  --mdc-block-text: #7c9cff;
+  --mdc-block-latex: #b69cff;
+  --mdc-block-python: #e8b86d;
+  --mdc-block-lean: #ff9e64;
+  --mdc-block-rocq: #63d8b2;
   --mdc-backdrop: rgba(3, 6, 10, 0.7);
   --mdc-body-glow: rgba(82, 112, 178, 0.12);
   --mdc-grid: rgba(124, 156, 255, 0.025);
@@ -49,8 +56,8 @@
   --mdc-border-strong: #aebdd0;
   --mdc-fg: #172233;
   --mdc-fg-soft: #36465c;
-  --mdc-dim: #65758c;
-  --mdc-muted: #718198;
+  --mdc-dim: #536277;
+  --mdc-muted: #57667b;
   --mdc-accent: #315fda;
   --mdc-accent-strong: #244bb8;
   --mdc-accent-up: #7453d8;
@@ -63,6 +70,13 @@
   /* Keep source editors dark so the Tokyo Night token palette stays legible. */
   --mdc-code-bg: #111827;
   --mdc-code-fg: #e5edf8;
+  --mdc-code-dim: #8793a5;
+  --mdc-code-error: #ff7d8f;
+  --mdc-block-text: #2853c4;
+  --mdc-block-latex: #6040c0;
+  --mdc-block-python: #805000;
+  --mdc-block-lean: #984900;
+  --mdc-block-rocq: #066b56;
   --mdc-backdrop: rgba(20, 31, 48, 0.38);
   --mdc-body-glow: rgba(49, 95, 218, 0.1);
   --mdc-grid: rgba(49, 95, 218, 0.055);
