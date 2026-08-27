@@ -443,7 +443,7 @@
     position: relative;
     border: 1px solid var(--mdc-border);
     border-radius: var(--mdc-radius-md);
-    overflow: hidden;
+    overflow: clip;
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
@@ -466,6 +466,9 @@
     opacity: 0.85;
   }
   .block-head {
+    position: sticky;
+    top: 0;
+    z-index: 3;
     display: flex;
     align-items: center;
     gap: 0.48rem;
@@ -475,6 +478,7 @@
     font-size: 0.72rem;
     color: var(--mdc-muted);
     border-bottom: 1px solid var(--mdc-border);
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--mdc-code-bg) 70%, transparent);
   }
   .srctype {
     min-width: 52px;
