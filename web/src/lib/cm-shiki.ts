@@ -22,10 +22,13 @@ const recomputeEffect = StateEffect.define<null>();
 const redrawEffect = StateEffect.define<number>();
 
 /** Small documents can still be highlighted atomically. */
-const SYNC_HIGHLIGHT_LENGTH = 40_000;
+const SYNC_HIGHLIGHT_LENGTH = 4_000;
 
 /** Large documents yield to the browser between chunks of roughly this size. */
-const HIGHLIGHT_CHUNK_LENGTH = 20_000;
+const HIGHLIGHT_CHUNK_LENGTH = 8_000;
+
+/** Bound pathological grammar work within a single main-thread task. */
+const TOKENIZE_TIME_LIMIT_MS = 50;
 
 /** Debounce window after the last keystroke before re-tokenizing. */
 const HIGHLIGHT_DEBOUNCE_MS = 140;
@@ -115,7 +118,7 @@ export function shikiHighlight(
               theme,
               grammarState,
               tokenizeMaxLineLength: HIGHLIGHT_CHUNK_LENGTH,
-              tokenizeTimeLimit: 100,
+              tokenizeTimeLimit: TOKENIZE_TIME_LIMIT_MS,
             });
             const additions = this.tokenRanges(result.tokens, from, to);
             if (additions.length > 0) {
@@ -168,7 +171,12 @@ export function shikiHighlight(
 
         try {
           const text = doc.sliceString(from, to);
-          const result = highlighter.codeToTokens(text, { lang: lang as never, theme });
+          const result = highlighter.codeToTokens(text, {
+            lang: lang as never,
+            theme,
+            tokenizeMaxLineLength: HIGHLIGHT_CHUNK_LENGTH,
+            tokenizeTimeLimit: TOKENIZE_TIME_LIMIT_MS,
+          });
           const builder = new RangeSetBuilder<Decoration>();
 
           for (const lineTokens of result.tokens) {
