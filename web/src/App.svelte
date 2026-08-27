@@ -280,6 +280,10 @@
     })();
   });
 
+  $effect(() => {
+    if (appState.load.kind === "ready") initialError = null;
+  });
+
   async function refreshCurrent(
     skipUnsavedGuard = false,
     forceDiscovery = true,
