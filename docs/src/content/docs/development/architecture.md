@@ -4,7 +4,8 @@ description: Product model, Rust module boundaries, parsers, graph APIs, and ref
 ---
 
 MathDoc is a Rust CLI and local application built around three durable artifacts:
-plain-text `.mdoc` sources, a rebuildable SQLite index, and editable language mirrors.
+plain-text `.mdoc` workspace sources of truth, a rebuildable SQLite index, and editable
+language mirrors.
 
 ## Product model
 
@@ -21,22 +22,27 @@ or unique fnode prefixes.
 | Module | Responsibility |
 | --- | --- |
 | `src/mdocnode/` | `.mdoc` parser, serializer, and `MdocNode` model |
-| `src/indcache/` | SQLite-backed workspace index (`IndCache`) |
+| `src/indcache/` | SQLite-backed `WorkspaceStore`, schema and query code, and recoverable `MutationSession` (`IndCache` remains a compatibility alias) |
 | `src/depgraph/` | One-root dependency mutation session (`DepGraph`) |
 | `src/metric/` | Read-only metric registry, context, and formulas |
-| `src/compiler/` | Compiler registry, language implementations, subprocess control |
+| `src/formal/` | Formal receipt and evidence-version contract, attestation persistence, and status validation |
+| `src/compiler/` | Built-in compiler dispatch, language implementations, compiler workspaces, and subprocess control |
 | `src/cli/` | Clap definitions, dispatch, command handlers, and terminal output |
 | `src/web/` | Axum JSON API and embedded SPA asset serving |
 | `src/core/` | Database-independent graph models and algorithms |
 | `src/config.rs` | Source descriptors, config template, parsing, and defaults |
-| `src/workspace/` | Discovery, path validation, mutation locking, safe file updates |
+| `src/workspace/` | Discovery, path validation, distinct work/mutation locks, and safe file updates |
 | `src/workdraft/` | Mirror manifest, reconciliation, batched application, rollback |
 | `editors/vscode/` | Declaration-only VS Code language extension |
 | `web/` | Svelte 5, Vite, TypeScript, CodeMirror, and graph frontend |
 
 `src/core/` owns topological depth, weak-component, strongly connected component, and
-cycle algorithms without depending on SQLite. `IndCache` adapts database rows into
+cycle algorithms without depending on SQLite. `WorkspaceStore` adapts database rows into
 those algorithms and persists derived results.
+
+`src/formal/` owns `FormalCompilationReceipt` and evidence versioning. Compiler
+implementations produce that formal-owned receipt, so formal validation does not depend
+on `src/compiler/`.
 
 ## Parsing boundaries
 
@@ -56,7 +62,7 @@ invalid and duplicate diagnostics.
 ## Dependency mutation
 
 `DepGraph` is the primary API for changing one document's dependency list. It owns one
-root `MdocNode` and borrows an `IndCache`; traversal and reachability remain in the
+root `MdocNode` and borrows a `WorkspaceStore`; traversal and reachability remain in the
 SQLite-backed index rather than a second in-memory graph.
 
 Important entry points include:
@@ -74,18 +80,18 @@ state introduced outside the mutation API.
 
 ## Metrics
 
-Metrics are read-only consumers of `IndCache`, not part of `DepGraph`.
+Metrics are read-only consumers of `WorkspaceStore`, not part of `DepGraph`.
 `src/metric/mod.rs` defines `MetricContext`, `NodeMetric`, and the compile-time
 `NodeMetricKind` registry. Concrete formulas stay together in `function.rs` rather than
 using one module per metric.
 
 Adding a metric requires a formula in `function.rs`, implementation and enum mapping in
 `mod.rs`, and a typed Clap variant plus dispatch arm in `src/cli/`.
-`IndCache::node_degrees()` is the shared data boundary for IOR.
+`WorkspaceStore::node_degrees()` is the shared data boundary for IOR.
 
 ## Reference resolution
 
-`IndCache::resolve_ref(raw_ref, cwd)` probes paths against the current directory and
+`WorkspaceStore::resolve_ref(raw_ref, cwd)` probes paths against the current directory and
 workspace root. Values containing `/`, ending in `.mdoc`, or starting with `.` are
 explicitly path-like; extensionless bare values are also probed after appending `.mdoc`.
 A non-path-like value that already has another extension skips path probing. Explicitly

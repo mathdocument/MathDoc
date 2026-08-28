@@ -3,22 +3,25 @@ title: Index & Cache
 description: SQLite ownership, schemas, refresh paths, derived graph data, and command behavior.
 ---
 
-`IndCache` owns the SQLite database at `.mdc/index.db`, operational indexing and
-materialization transaction boundaries, and the conversion between filesystem state
-and indexed graph state. The current schema version is `22`; compatible schemas starting
-at version `17` are migrated transactionally in place, older managed schemas are rebuilt
-from `.mdoc` files, and newer schemas are rejected without mutation.
+`WorkspaceStore` owns the SQLite database at `.mdc/index.db`, operational indexing and
+materialization boundaries, and recoverable file/index mutation sessions. `.mdoc` files
+are the workspace source of truth; SQLite is derived and can be rebuilt. `IndCache`
+remains a compatibility alias. The current schema version is `23`; compatible schemas
+starting at version `17` are migrated transactionally in place, older managed schemas
+are rebuilt from `.mdoc` files, and newer schemas are rejected without mutation.
 The version 19 migration removes stored missing diagnostics and rebuilds valid in-degree
 before enabling their derived view. Version 21 interns dependency endpoint strings and
 rewrites edges to compact integer references without recomputing graph-derived rows.
 The migration releases the old table and index pages to SQLite's freelist, so they are
 immediately reusable even though the database file does not shrink until `VACUUM`.
 Version 22 adds rebuildable source-reconciliation observations used by `sync` and `back`.
+Version 23 moves the durable, generic `index_dirty` marker from
+`mdoc_workdraft_state` into `mdoc_index_state`.
 
 MathDoc bundles SQLite and requires engine version 3.51.3 or newer so concurrent WAL
 readers cannot encounter older WAL-reset defects. The connection enables WAL mode and
 foreign keys. It is opened without following
-symlinks, and multiply linked database files are rejected. `IndCache` also keeps an open
+symlinks, and multiply linked database files are rejected. `WorkspaceStore` also keeps an open
 guard descriptor for the accepted `index.db` inode. Public operations and mutation
 boundaries reject a pathname replacement instead of continuing against a detached
 SQLite generation. SQLite's `SQLITE_FCNTL_HAS_MOVED` check also verifies that its own
@@ -53,13 +56,15 @@ maintenance.
 - `discovery.rs` enumerates workspace `.mdoc` files and compares `(mtime_ns, size)`
   metadata.
 
-Operational multi-step mutations belong in a transaction created and committed by
-`src/indcache/mod.rs`. Schema initialization and rebuild are the exception:
-`schema.rs::apply_schema()` owns its DDL transaction. Database generation checks bracket
-commits, and cache-owned file writes validate both the workspace mutation lock and the
-database generation before reporting success or attempting recovery. If the file and
-index commit but only the final lock-generation check fails, MathDoc reports uncertainty
-without rolling the file back and creating file/index disagreement.
+Operational SQLite refresh and upsert transactions are owned by `WorkspaceStore`;
+`schema.rs::apply_schema()` separately owns its DDL transaction. Direct `.mdoc`
+create/replace operations and `back` imports run through `MutationSession`. Before its
+first `.mdoc` write, the session persists `index_dirty = 1`; commit validates the
+mutation-lock capability and clears it, while abort rebuilds the index from current
+`.mdoc` files. `WorkspaceStore::open()` performs the same recovery when it finds a marker
+left by an interrupted process. If the file and index commit but only the final
+lock-generation check fails, MathDoc reports uncertainty without rolling the file back
+and creating file/index disagreement.
 
 Reference resolution and pure queries do not delete cached rows when path validation
 fails; they ignore invalid candidates. Discovery, full or targeted refresh, explicit
@@ -79,7 +84,7 @@ updates. Read-facing facades may transactionally materialize derived caches.
 | `mdoc_missing_issues` | valid in-degree and claimant indexes | Derived missing-target diagnostics |
 | `mdoc_in_degree` | `fnode`, `in_degree` | Precomputed valid-source in-degree |
 | `mdoc_weak_component` | `fnode`, `component_size` | Weak component size per node |
-| `mdoc_index_state` | epoch, dirty flags, bootstrap, digest, document count | Global materialization state |
+| `mdoc_index_state` | epoch, graph dirtiness, generic `index_dirty`, bootstrap, digest, document count | Global materialization and durable recovery state |
 | `mdoc_scc_result` | `graph_epoch`, `cycles_json` | Representative cycles for one epoch |
 | `mdoc_workdraft_state` | manifest digest and clean-result counts | Observation-cache generation |
 | `mdoc_workdraft_observations` | encoded source path, source type, file generation | Rebuildable sync/back acceleration |
@@ -107,7 +112,7 @@ sources, which are then reread, reconciled, and validated byte-for-byte. Missing
 legacy or dense observations, source-set changes, or malformed observations fall back to full
 reconciliation.
 
-`IndCache::search(query, limit)` is the canonical ranked search returning
+`WorkspaceStore::search(query, limit)` is the canonical ranked search returning
 `NodeSummary`. Dependency candidate search reuses its patterns, ranking, and projection
 before applying dependency-specific filters. Terms of at least three characters use the
 FTS5 trigram index as a candidate prefilter, followed by the original literal matching
@@ -161,7 +166,7 @@ lazily. Incremental path upserts and deletes clear `index_digest`; the next stro
 streams indexed semantics to distinguish an already synchronized incremental index from
 an ABA edit before deciding whether a complete graph rebuild is necessary.
 
-The first `IndCache::open()` after database creation or schema rebuild performs a full
+The first `WorkspaceStore::open()` after database creation or schema rebuild performs a full
 bootstrap. Node creation and dependency writes also run `refresh_all()` under the
 workspace mutation lock before final duplicate, snapshot, and cycle checks.
 
@@ -197,7 +202,7 @@ size. `graph_check_report()` similarly ensures the SCC cache for the current epo
 | Command | Discovery | Content refresh |
 | --- | --- | --- |
 | `init` | None | None |
-| `new` | None | Full refresh, then cache-owned create/upsert under lock |
+| `new` | None | Full refresh, then store-owned create/upsert under lock |
 | `edit` | Workspace discovery | Source path upsert after successful editor exit |
 | `sync` | None | Full refresh before all-source reconciliation |
 | `search` | Workspace discovery | Reparse new or metadata-changed paths only |

@@ -7,15 +7,17 @@ MathDoc treats workspace writes as generation-sensitive mutations. The goal is t
 silently replacing bytes when a path, ancestor, or file generation changed after it was
 observed.
 
-## Cache-owned creation
+## Store-owned mutations
 
-`IndCache::create_node()` validates the output against the cache root and workspace
-mutation lock, renders the document, creates missing parents, revalidates the final
-path, and writes against `FileSnapshot::Missing`.
+`WorkspaceStore::create_node()` and `WorkspaceStore::replace_node()` route through
+`MutationSession`, the sole owner of the durable dirty marker and commit/abort index
+recovery. Creation validates the output against the store root and workspace mutation
+lock, renders the document, creates missing parents, revalidates the final path, and
+writes against `FileSnapshot::Missing`.
 
 On index failure it attempts file rollback and path-index repair. Either recovery can
 fail, and those failures remain part of the returned error. `MdocNode::render()` only
-validates and serializes bytes; production filesystem creation stays cache-owned.
+validates and serializes bytes; production filesystem creation stays store-owned.
 
 ## Descriptor-relative replacement
 
@@ -67,12 +69,18 @@ only after its bound parent and missing generation are revalidated.
 
 ## Concurrency boundary
 
-The cooperative workspace mutation and work locks coordinate MathDoc processes, but
-cannot constrain arbitrary external editors or other non-cooperating processes. A held
-lock is accepted only while its opened descriptor, pathname generation, and `.mdc`
-directory identity still match. The work-to-mutation handoff acquires the mutation lock
-before revalidating the work lock, so reconciliation state cannot silently cross a
-replaced lock generation.
+`WorkspaceWorkLock` and `WorkspaceMutationLock` are distinct interprocess capabilities.
+The work lock serializes mirror reconciliation and compiler workspace use but does not
+exclude unrelated node mutations; the mutation lock serializes graph and node writes.
+`WorkspaceWorkLock::root()` validates the held lock generation, and `validate_root()`
+binds callers to the requested workspace. Workdraft `sync`/`back` and compiler dispatch
+therefore receive the work lock explicitly.
+
+These cooperative locks coordinate MathDoc processes but cannot constrain arbitrary
+external editors or other non-cooperating processes. A held lock is accepted only while
+its opened descriptor, pathname generation, and `.mdc` directory identity still match.
+The work-to-mutation handoff acquires the mutation lock before revalidating the work lock,
+so reconciliation state cannot silently cross a replaced lock generation.
 
 Unix does not provide a portable atomic content-compare-and-unlink operation. On macOS,
 for example, a process can continue writing through a descriptor opened before a file

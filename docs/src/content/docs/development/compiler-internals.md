@@ -20,8 +20,10 @@ empty placeholder restores the five-file layout.
 
 `src/workdraft/` owns manifest parsing, safe layout, shared change classification,
 snapshot-checked batch application, and reverse-order rollback attempts. Rollback is
-best-effort and batches are not crash-atomic. Work and mutation lock generations are
-revalidated at their handoff and at every applied filesystem boundary.
+best-effort and batches are not crash-atomic. `sync_cached()` and `back_cached()` require
+both a `WorkspaceWorkLock` and `WorkspaceMutationLock`; they validate that the work lock
+is current and belongs to the mutation lock's workspace before reconciliation. The CLI
+retains the work capability across reconciliation, compiler dispatch, and lock handoffs.
 
 After a clean reconciliation, SQLite retains rebuildable file-generation observations
 keyed by manifest digest. Later `sync` and `back` runs compare mdocs and all five expected
@@ -32,20 +34,16 @@ path. They never replace the manifest's content digests or write-time byte valid
 
 ## Compiler boundary
 
-`src/compiler/mod.rs` owns:
-
-- compiler request and result data types
-- the `SrcCompiler` interface
-- the compile-time language registry
-- `CompilerWorkspace`
+`src/compiler/mod.rs` owns compiler request/result types, direct built-in dispatch, and
+`CompilerWorkspace`. `compile_with_receipt()` requires a `WorkspaceWorkLock`, validates
+its root against `CompilerReq::mdcroot` before dispatch, and revalidates the held
+generation afterward. Dispatch canonicalizes the source type and selects `text`,
+`python`, `latex`, `lean`, or `rocq`.
 
 `CompilerWorkspace` centralizes compiler-root validation, source resolution, and
 primitive generated-file operations. Language modules retain orchestration for setup,
-driver generation, cleanup, and inventory tracking.
-
-`SrcCompiler` requires `srctype()` and `compile(req)`. The default registry contains
-`text`, `python`, `latex`, `lean`, and `rocq`. A result succeeds exactly when `rtcode`
-is zero; interruption is separate so CLI dispatch can skip later source types.
+driver generation, cleanup, and inventory tracking. A result succeeds exactly when
+`rtcode` is zero; interruption is separate so CLI dispatch can skip later source types.
 
 ## Language state
 
@@ -69,6 +67,11 @@ Rocq stores `.vo` outputs in a parallel `build/` tree. Its successful `Lib/**/*.
 inventory digest controls complete build-tree cleanup, but compilation itself targets
 only the selected module.
 
+`src/formal/mod.rs` owns `FormalCompilationReceipt` and
+`EVIDENCE_SCHEME_VERSION`, currently `1`. Every receipt carries this version, and
+attestation preparation rejects mismatches. Compiler modules import and produce the
+receipt; formal attestation and status code do not depend on the compiler module.
+
 Successful Lean and Rocq results carry a typed formal compilation receipt. Dependency
 sets come from `lean --src-deps`/`--deps` and `rocq dep`, not source-text scanning. The
 compiler records the selected module and artifact, the canonical compiler binary,
@@ -76,10 +79,15 @@ managed direct dependency artifacts, and external direct dependency artifacts. I
 that existed before compilation are generation-checked again afterward; machine-readable
 dependency output must be complete and untruncated.
 
-`src/formal/attestation.rs` persists versioned receipts, while `src/formal/status.rs`
-revalidates them against authoritative `.mdoc` blocks, mirrors, artifacts, environments,
-compiler inputs, and dependency tokens. Status refresh reads only attested nodes and their
-indexed dependencies; nodes without attestations are downgraded in one database update.
+`src/formal/attestation.rs` persists versioned `FormalAttestation` manifests derived from
+receipts, while `src/formal/status.rs` revalidates them against authoritative `.mdoc`
+blocks, mirrors, artifacts, environments, compiler inputs, and dependency tokens. Status
+refresh reads only attested nodes and their indexed dependencies; nodes without
+attestations are downgraded in one database update.
+Persisted manifests include `evidence_scheme_version`; legacy manifests that omit it are
+scheme v1. Unsupported schemes fail strict manifest operations and fail closed during
+status refresh, where their attestations are ignored and previously verified status is
+downgraded.
 Receipt publication revalidates both work-lock and mutation-lock generations around the
 manifest and status commit, rolling back the manifest if either generation changes.
 Verification propagates with a linear graph walk. Snapshot guards cover the complete

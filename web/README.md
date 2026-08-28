@@ -25,4 +25,7 @@ cd web && npm install && npm run build   # writes web/dist/
 cargo build --release                    # embeds web/dist into the binary
 ```
 
+`web/dist/` is committed. Commit rebuilt assets with the frontend source; CI rebuilds
+them and rejects drift.
+
 The release binary has zero runtime dependency on Node.js.

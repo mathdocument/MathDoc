@@ -27,6 +27,7 @@ The browser UI embedded by `mdc serve` is a separate Svelte 5 and Vite project:
 cd web
 npm ci
 npm run check
+npm test
 npm run build
 ```
 
@@ -68,10 +69,12 @@ server prints the corresponding local URL.
 
 On pushes and pull requests, `.github/workflows/release-check.yml` performs:
 
-1. Reproducible frontend dependency installation, type checking, and build.
+1. Reproducible frontend dependency installation, type checking, tests, and build.
 2. Verification that `web/dist/` matches committed frontend source.
-3. Documentation dependency installation, Astro checking, and static build.
-4. `cargo +stable test --locked` for the default-feature Rust test suite.
+3. Verification of the checked-in VS Code extension package.
+4. Documentation dependency installation, Astro checking, and static build.
+5. `cargo +stable test --locked` for the embedded-asset Rust path.
+6. `cargo +stable test --locked --features dev-web` for the filesystem-asset path.
 
 Documentation deployment is separate: pushes to `main` that touch `docs/` run the
 official Astro GitHub Pages action.

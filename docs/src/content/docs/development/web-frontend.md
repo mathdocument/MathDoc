@@ -3,12 +3,12 @@ title: Web Frontend
 description: Axum state, API contracts, Svelte architecture, and browser write serialization.
 ---
 
-`mdc serve` combines an Axum HTTP server, a JSON API over `IndCache` and `DepGraph`, and
+`mdc serve` combines an Axum HTTP server, a JSON API over `WorkspaceStore` and `DepGraph`, and
 a Svelte 5 single-page application embedded in the Rust binary.
 
 ## Server architecture
 
-- `src/web/mod.rs` defines `AppState`, holding `Arc<Mutex<IndCache>>` and a separate
+- `src/web/mod.rs` defines `AppState`, holding `Arc<Mutex<WorkspaceStore>>` and a separate
   `AppState`-scoped mutation mutex shared by handlers on the router.
 - `src/web/api.rs` implements handlers. Synchronous cache and filesystem work runs on
   Tokio's blocking pool, and no handler holds the cache lock across `.await`.
@@ -17,7 +17,7 @@ a Svelte 5 single-page application embedded in the Rust binary.
 - `src/web/assets.rs` embeds and serves `web/dist` with `rust-embed` in normal builds.
   Under `dev-web`, `src/web/server.rs` uses `ServeDir` over `$MDC_WEB_DIR/dist`, defaulting
   to `web/dist`, with an extensionless SPA fallback and `404` for missing file-like paths.
-- `web/src/lib/state.svelte.ts` stores navigation state using Svelte runes.
+- `web/src/lib/state.svelte.ts` owns the canonical node session using Svelte runes.
 - `web/src/components/BlockEditor.svelte` wraps one CodeMirror 6 editor per source
   block.
 
@@ -36,31 +36,37 @@ before the mutation mutex is acquired.
 GET    /api/graph/roots
 GET    /api/graph/check
 GET    /api/graph/full
+POST   /api/workspace/refresh
 GET    /api/search?q=&n=
 GET    /api/resolve?ref=
 GET    /api/node/:fnode
 GET    /api/node/:fnode/view
 GET    /api/node/:fnode/children
 GET    /api/node/:fnode/dep/candidates?q=&n=
-PUT    /api/node/:fnode/title                 { title, expected_revision? }
-PUT    /api/node/:fnode/block/:srctype        { content, expected_revision? }
-DELETE /api/node/:fnode/block/:srctype        { expected_revision? }
-POST   /api/node/:fnode/dep/add               { dep_fnode }
-POST   /api/node/:fnode/dep/rm                { dep_fnodes: [] }
+PUT    /api/node/:fnode/title                 { title }          + If-Match
+PUT    /api/node/:fnode/block/:srctype        { content }        + If-Match
+DELETE /api/node/:fnode/block/:srctype                           + If-Match
+POST   /api/node/:fnode/dep/add               { dep_fnode }      + If-Match
+POST   /api/node/:fnode/dep/rm                { dep_fnodes: [] } + If-Match
 POST   /api/node/new                          { title, file?, parent_fnode? }
 ```
 
-Read endpoints share a one-second workspace discovery gate so navigation and typing bursts
-do not repeatedly walk every `.mdoc`. The first read and the first read after the gate
-expires still discover external filesystem changes. Explicit refreshes use `fresh=true`,
-successful web mutations update the shared index immediately, and discovery failures do
-not advance the gate.
+Linked node creation also requires `If-Match`, matched against the parent; standalone
+creation does not.
+
+Discovery-backed read endpoints share a one-second workspace discovery gate so navigation
+and typing bursts do not repeatedly walk every `.mdoc`. The first read and the first read
+after the gate expires still discover external filesystem changes. `fresh=true` on node
+and full-graph reads forces discovery through the gate; it is not a strong full refresh.
+`GET /api/graph/check` reports current indexed state without discovery or `refresh_all()`.
+`POST /api/workspace/refresh` runs `WorkspaceStore::refresh_all()` and then returns the
+graph-check report. Successful web mutations update the shared index immediately, and
+discovery failures do not advance the gate.
 
 All `:fnode` parameters accept an exact fnode, unique prefix, or path-like reference via
-`IndCache::resolve_ref`. Write handlers return canonical `NodeDetail` for the affected
-node. The frontend consumes write responses directly and merges them into the focused
-snapshot without replacing unrelated drafts. It refreshes only the dependency summary
-list after relationship changes.
+`WorkspaceStore::resolve_ref`. Write handlers return canonical `NodeDetail` for the
+affected node. The frontend accepts complete write responses without replacing editor-local
+drafts. After relationship changes, `NodeSession` resynchronizes the canonical `NodeView`.
 
 All successful endpoints currently return `200 OK`, including node creation and block
 deletion. Creation does not return `201`, and deletion does not return `204`. Read
@@ -121,20 +127,47 @@ and source blocks containing `srctype`, `content`, and `metadata`. Root items us
   block no metadata. Unknown types and deletion of a missing block return `422`.
 - Titles are trimmed and must remain nonempty. Title or block mutations that would
   produce invalid MathDoc structure return `422`.
-- Title and block clients may send the `revision` returned by a read or prior write as
-  `expected_revision`. A stale value returns `409` without changing the file. The
-  bundled frontend always sends it and serializes writes per node so concurrent local
-  edits carry each committed revision into the next request. Omitting it preserves the
-  API's last-write-wins compatibility behavior. A bodyless block DELETE remains valid.
+- `GET /api/node/:fnode`, `GET /api/node/:fnode/view`, and every successful node mutation
+  return a quoted SHA-256 `ETag` matching `NodeDetail.revision`. Existing-node mutations
+  require that value in `If-Match`; linked creation checks the parent revision. A missing
+  precondition returns `428`, a stale one returns `412` without changing the file, and a
+  malformed header returns `400`. The bundled frontend serializes mutations per node and
+  carries each returned revision into the next request. A bodyless block DELETE remains
+  valid.
 
 After Host validation, API errors use `{ "error": string }`. Common statuses are `400`
-for malformed input, `404` not found, `405` unsupported method, `409` generation
-conflict, `422` rejected mutation, and `500` infrastructure failure. The outer Host
-check returns plain-text `421` before API normalization.
+for malformed input, `404` not found, `405` unsupported method, `409` non-precondition
+generation conflict, `412` stale precondition, `422` rejected mutation, `428` missing
+precondition, and `500` infrastructure failure. The outer Host check returns plain-text
+`421` before API normalization.
+
+## Generated API types
+
+Rust DTOs are the API type source of truth. `web/src/lib/api-types.generated.ts` is
+generated and must not be edited directly. Check it with:
+
+```bash
+cargo test web::api::tests::api_types_are_current -- --exact
+```
+
+Regenerate it with:
+
+```bash
+UPDATE_API_TYPES=1 cargo test web::api::tests::api_types_are_current -- --exact
+```
+
+## Frontend state boundaries
+
+`NodeSession` in `web/src/lib/state.svelte.ts` owns the canonical `NodeView`, shared
+columns/graph selection, navigation history, and navigation/sync request generations.
+The per-node mutation queue remains in `api.ts`; CodeMirror draft state remains
+component-local, while dirty-draft and pending-mutation registries remain in `unsaved.ts`.
+Graph data/layout/pan/zoom remain in `DepthGraph.svelte`, and overlay state remains in
+`App.svelte`.
 
 ## Concurrency and security
 
-`IndCache` owns one SQLite connection, so cache operations serialize on its mutex. The
+`WorkspaceStore` owns one SQLite connection, so store operations serialize on its mutex. The
 separate `AppState` mutex covers each write's mutation critical section for handlers on
 that router. The flock-based workspace mutation lock coordinates across application
 states and other `mdc` processes.
