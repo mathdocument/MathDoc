@@ -101,13 +101,22 @@ fn connection_database_has_moved(connection: &Connection) -> Result<bool> {
 }
 
 /// SQLite-backed index of a MathDoc workspace.
-pub struct IndCache {
+pub struct WorkspaceStore {
     root: PathBuf,
     control_identity: (u64, u64),
     db_path: PathBuf,
     db_identity: (u64, u64),
     db_file: std::fs::File,
     conn: Connection,
+}
+
+/// Existing public name retained for callers that use the workspace as a read cache.
+pub type IndCache = WorkspaceStore;
+
+pub(crate) struct MutationSession<'store, 'lock> {
+    store: &'store mut WorkspaceStore,
+    lock: &'lock crate::workspace::WorkspaceMutationLock,
+    dirty: bool,
 }
 
 pub(crate) struct WorkdraftObservationCache {
@@ -152,7 +161,7 @@ pub(crate) struct WorkdraftObservation {
     pub(crate) stat: Option<crate::workspace::FileStatSnapshot>,
 }
 
-impl IndCache {
+impl WorkspaceStore {
     /// Open (or create) the index database for the workspace rooted at `root`.
     pub fn open(root: PathBuf) -> Result<Self> {
         let _profile = crate::profile::scope("IndCache::open");
@@ -303,7 +312,7 @@ impl IndCache {
         Ok(dirty)
     }
 
-    pub(crate) fn set_index_dirty(&mut self, dirty: bool) -> Result<()> {
+    fn set_index_dirty(&mut self, dirty: bool) -> Result<()> {
         self.require_current_database()?;
         self.conn.execute(
             "UPDATE mdoc_index_state SET index_dirty = ? WHERE id = 1",
@@ -490,6 +499,45 @@ impl IndCache {
         self.require_current_database()
     }
 
+    pub(crate) fn mutation_session<'store, 'lock>(
+        &'store mut self,
+        mutation_lock: &'lock crate::workspace::WorkspaceMutationLock,
+    ) -> Result<MutationSession<'store, 'lock>> {
+        self.validate_mutation_lock(mutation_lock)?;
+        Ok(MutationSession {
+            store: self,
+            lock: mutation_lock,
+            dirty: false,
+        })
+    }
+
+    pub(crate) fn mutate<R>(
+        &mut self,
+        mutation_lock: &crate::workspace::WorkspaceMutationLock,
+        operation: impl FnOnce(&mut MutationSession<'_, '_>) -> Result<R>,
+    ) -> Result<R> {
+        let mut mutation = self.mutation_session(mutation_lock)?;
+        match operation(&mut mutation) {
+            Ok(value) => match mutation.commit() {
+                Ok(()) => Ok(value),
+                Err(error) => Err(crate::workspace::PersistenceRecoveryError::from_attempts(
+                    error,
+                    Ok(()),
+                    mutation.abort(),
+                    "roll back workspace mutation",
+                    "repair the workspace index",
+                )),
+            },
+            Err(error) => Err(crate::workspace::PersistenceRecoveryError::from_attempts(
+                error,
+                Ok(()),
+                mutation.abort(),
+                "roll back workspace mutation",
+                "repair the workspace index",
+            )),
+        }
+    }
+
     // ── Bootstrap / refresh ──────────────────────────────────────────────────
 
     /// Bootstrap the index on first use; no-op if already bootstrapped.
@@ -592,22 +640,7 @@ impl IndCache {
         mutation_lock: &crate::workspace::WorkspaceMutationLock,
         node: &MdocNode,
     ) -> Result<crate::workspace::AppliedWrite> {
-        self.validate_mutation_lock(mutation_lock)?;
-        let path = self.validate_node_path(node)?;
-        let payload = node.render()?;
-
-        if let Some(parent) = path.parent() {
-            crate::workspace::ensure_regular_directory_tree(&self.root, parent)
-                .with_context(|| format!("creating parent dirs for {}", path.display()))?;
-        }
-        self.validate_mutation_lock(mutation_lock)?;
-        let path = self.validate_node_path(node)?;
-        self.write_and_index_node(
-            mutation_lock,
-            &path,
-            payload.as_bytes(),
-            &crate::workspace::FileSnapshot::Missing,
-        )
+        self.mutate(mutation_lock, |mutation| mutation.create_node(node))
     }
 
     /// Replace a node and update its index entry as one recoverable operation.
@@ -617,11 +650,9 @@ impl IndCache {
         node: &MdocNode,
         snapshot: &crate::workspace::FileSnapshot,
     ) -> Result<()> {
-        self.validate_mutation_lock(mutation_lock)?;
-        let path = self.validate_node_path(node)?;
-        let payload = node.render()?;
-        self.write_and_index_node(mutation_lock, &path, payload.as_bytes(), snapshot)?;
-        Ok(())
+        self.mutate(mutation_lock, |mutation| {
+            mutation.replace_node(node, snapshot)
+        })
     }
 
     fn validate_node_path(&self, node: &MdocNode) -> Result<PathBuf> {
@@ -636,7 +667,6 @@ impl IndCache {
         snapshot: &crate::workspace::FileSnapshot,
     ) -> Result<crate::workspace::AppliedWrite> {
         self.validate_mutation_lock(mutation_lock)?;
-        self.set_index_dirty(true)?;
         let created = matches!(snapshot, crate::workspace::FileSnapshot::Missing);
         let applied = match snapshot.replace_beneath(&self.root, path, payload) {
             Ok(applied) => applied,
@@ -672,7 +702,6 @@ impl IndCache {
                     )
                 }) {
                     Ok(()) => {
-                        self.set_index_dirty(false)?;
                         return Ok(applied);
                     }
                     Err(error) => error,
@@ -1299,6 +1328,75 @@ impl IndCache {
     }
 }
 
+impl MutationSession<'_, '_> {
+    pub(crate) fn store_mut(&mut self) -> &mut WorkspaceStore {
+        self.store
+    }
+
+    pub(crate) fn mark_dirty(&mut self) -> Result<()> {
+        if !self.dirty {
+            self.store.validate_mutation_lock(self.lock)?;
+            self.store.set_index_dirty(true)?;
+            self.dirty = true;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn create_node(
+        &mut self,
+        node: &MdocNode,
+    ) -> Result<crate::workspace::AppliedWrite> {
+        self.store.validate_mutation_lock(self.lock)?;
+        let path = self.store.validate_node_path(node)?;
+        let payload = node.render()?;
+        if let Some(parent) = path.parent() {
+            crate::workspace::ensure_regular_directory_tree(&self.store.root, parent)
+                .with_context(|| format!("creating parent dirs for {}", path.display()))?;
+        }
+        self.store.validate_mutation_lock(self.lock)?;
+        let path = self.store.validate_node_path(node)?;
+        self.mark_dirty()?;
+        self.store.write_and_index_node(
+            self.lock,
+            &path,
+            payload.as_bytes(),
+            &crate::workspace::FileSnapshot::Missing,
+        )
+    }
+
+    pub(crate) fn replace_node(
+        &mut self,
+        node: &MdocNode,
+        snapshot: &crate::workspace::FileSnapshot,
+    ) -> Result<()> {
+        self.store.validate_mutation_lock(self.lock)?;
+        let path = self.store.validate_node_path(node)?;
+        let payload = node.render()?;
+        self.mark_dirty()?;
+        self.store
+            .write_and_index_node(self.lock, &path, payload.as_bytes(), snapshot)?;
+        Ok(())
+    }
+
+    fn commit(&mut self) -> Result<()> {
+        self.store.validate_mutation_lock(self.lock)?;
+        if self.dirty {
+            self.store.set_index_dirty(false)?;
+            self.dirty = false;
+        }
+        Ok(())
+    }
+
+    fn abort(&mut self) -> Result<()> {
+        if self.dirty {
+            self.store.validate_mutation_lock(self.lock)?;
+            self.store.recover_index()?;
+            self.dirty = false;
+        }
+        Ok(())
+    }
+}
+
 fn looks_like_path_ref(raw_ref: &str) -> bool {
     raw_ref.contains('/') || raw_ref.ends_with(".mdoc") || raw_ref.starts_with('.')
 }
@@ -1551,6 +1649,23 @@ mod mutation_boundary_tests {
         assert!(path.is_file());
         assert_eq!(cache.exact_fnode_rows("created-node").unwrap().len(), 1);
         assert!(!cache.index_is_dirty().unwrap());
+    }
+
+    #[test]
+    fn mutation_session_owns_the_dirty_marker_until_commit() {
+        let workspace = workspace();
+        let mut store = WorkspaceStore::open(workspace.path().to_path_buf()).unwrap();
+        let mutation_lock = store.acquire_mutation_lock().unwrap();
+        let path = workspace.path().join("node.mdoc");
+        let node = MdocNode::new_at_path(&path, "Node");
+        let mut mutation = store.mutation_session(&mutation_lock).unwrap();
+
+        let _receipt = mutation.create_node(&node).unwrap();
+        assert!(mutation.store_mut().index_is_dirty().unwrap());
+        mutation.commit().unwrap();
+
+        assert!(!store.index_is_dirty().unwrap());
+        assert_eq!(store.node_summary(&node.fnode).unwrap().title, "Node");
     }
 
     #[test]

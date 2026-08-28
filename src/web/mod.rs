@@ -6,7 +6,7 @@ pub mod server;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::indcache::IndCache;
+use crate::indcache::WorkspaceStore;
 
 const READ_DISCOVERY_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -25,19 +25,19 @@ impl ReadDiscoveryGate {
 
 /// Shared server state handed to every axum handler.
 ///
-/// `IndCache` requires `&mut` for bootstrap/discover/upsert and several derived
+/// `WorkspaceStore` requires `&mut` for bootstrap/discover/upsert and several derived
 /// queries, so it is guarded by a mutex. A separate mutex serializes complete
 /// write transactions, including file loading, cycle checks, saves, and reindexing.
 /// Read requests share a short discovery gate to coalesce navigation bursts.
 #[derive(Clone)]
 pub struct AppState {
-    cache: Arc<std::sync::Mutex<IndCache>>,
+    cache: Arc<std::sync::Mutex<WorkspaceStore>>,
     mutation_lock: Arc<std::sync::Mutex<()>>,
     read_discovery: Arc<std::sync::Mutex<ReadDiscoveryGate>>,
 }
 
 impl AppState {
-    pub fn new(cache: IndCache) -> Self {
+    pub fn new(cache: WorkspaceStore) -> Self {
         AppState {
             cache: Arc::new(std::sync::Mutex::new(cache)),
             mutation_lock: Arc::new(std::sync::Mutex::new(())),

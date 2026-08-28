@@ -11,7 +11,7 @@ use axum::Router;
 #[cfg(feature = "dev-web")]
 use tower_http::services::ServeDir;
 
-use crate::indcache::IndCache;
+use crate::indcache::WorkspaceStore;
 
 use super::api;
 #[cfg(not(feature = "dev-web"))]
@@ -23,7 +23,7 @@ use super::AppState;
 /// `bind` — `host:port`; port `0` picks a free port.
 /// `open_browser` — if true, open the default browser once listening.
 pub(crate) async fn serve(
-    cache: IndCache,
+    cache: WorkspaceStore,
     bind: &str,
     open_browser: bool,
     initial_fnode: Option<&str>,

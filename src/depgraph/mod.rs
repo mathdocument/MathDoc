@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::core::{short_fnode, DependencyCandidates, DependencyItem};
-use crate::indcache::IndCache;
+use crate::indcache::WorkspaceStore;
 use crate::mdocnode::MdocNode;
 use crate::workspace::to_rel_path;
 
@@ -11,7 +11,7 @@ use crate::workspace::to_rel_path;
 
 /// Dependency mutation session for one root node.
 pub struct DepGraph<'cache> {
-    cache: &'cache mut IndCache,
+    cache: &'cache mut WorkspaceStore,
     root: MdocNode,
 }
 
@@ -22,7 +22,7 @@ impl<'cache> DepGraph<'cache> {
     ///
     /// `file_path`: relative path (without `.mdoc`) or `"."` for `{fnode}.mdoc` in root.
     pub fn create_root(
-        cache: &'cache mut IndCache,
+        cache: &'cache mut WorkspaceStore,
         file_path: &str,
         title: &str,
         fnode: Option<&str>,
@@ -32,7 +32,7 @@ impl<'cache> DepGraph<'cache> {
     }
 
     pub(crate) fn create_root_under_lock(
-        cache: &'cache mut IndCache,
+        cache: &'cache mut WorkspaceStore,
         mutation_lock: &crate::workspace::WorkspaceMutationLock,
         file_path: &str,
         title: &str,
@@ -56,7 +56,7 @@ impl<'cache> DepGraph<'cache> {
 
     /// Load an existing `.mdoc` via `ref` (fnode, path, or fnode prefix) and build a DepGraph.
     pub fn from_ref(
-        cache: &'cache mut IndCache,
+        cache: &'cache mut WorkspaceStore,
         ref_str: &str,
         cwd: Option<&Path>,
     ) -> Result<Self> {
@@ -65,7 +65,7 @@ impl<'cache> DepGraph<'cache> {
     }
 
     pub(crate) fn from_ref_under_lock(
-        cache: &'cache mut IndCache,
+        cache: &'cache mut WorkspaceStore,
         mutation_lock: &crate::workspace::WorkspaceMutationLock,
         ref_str: &str,
         cwd: Option<&Path>,
@@ -621,7 +621,7 @@ fn duplicate_fnode_error(mdcroot: &Path, fnode: &str, paths: &[PathBuf]) -> Stri
 mod mutation_conflict_tests {
     use super::*;
 
-    fn setup_graph(with_dependency: bool) -> (tempfile::TempDir, IndCache, String, String) {
+    fn setup_graph(with_dependency: bool) -> (tempfile::TempDir, WorkspaceStore, String, String) {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
         std::fs::create_dir(root.join(".mdc")).unwrap();
@@ -639,7 +639,7 @@ mod mutation_conflict_tests {
         let source_fnode = source.fnode.clone();
         std::fs::write(&source_path, source.render().unwrap()).unwrap();
 
-        let cache = IndCache::open(root.to_path_buf()).unwrap();
+        let cache = WorkspaceStore::open(root.to_path_buf()).unwrap();
         (dir, cache, source_fnode, target_fnode)
     }
 

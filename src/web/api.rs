@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::{
     DependencyCandidates, FormalizationStatus, GraphCheckReport, GraphRootItem, NodeSummary,
 };
-use crate::indcache::IndCache;
+use crate::indcache::WorkspaceStore;
 use crate::mdocnode::MdocNode;
 use crate::workspace::to_rel_path;
 
@@ -345,7 +345,7 @@ where
 /// Lock the cache, run a closure, return the result.
 fn with_cache<R>(
     state: &AppState,
-    f: impl FnOnce(&mut IndCache) -> anyhow::Result<R>,
+    f: impl FnOnce(&mut WorkspaceStore) -> anyhow::Result<R>,
 ) -> ApiResult<R> {
     let mut cache = state
         .cache
@@ -356,7 +356,7 @@ fn with_cache<R>(
 
 fn refresh_read_index(
     state: &AppState,
-    cache: &mut IndCache,
+    cache: &mut WorkspaceStore,
     required_after: Option<std::time::Instant>,
 ) -> anyhow::Result<()> {
     let due = {
@@ -408,7 +408,7 @@ fn lock_until<'a, T>(
 fn with_workspace_mutation<R>(
     state: &AppState,
     deadline: std::time::Instant,
-    f: impl FnOnce(&mut IndCache, &crate::workspace::WorkspaceMutationLock) -> ApiResult<R>,
+    f: impl FnOnce(&mut WorkspaceStore, &crate::workspace::WorkspaceMutationLock) -> ApiResult<R>,
 ) -> ApiResult<R> {
     let _process_guard = lock_until(&state.mutation_lock, deadline, "mutation")?;
     let root = {
@@ -431,7 +431,7 @@ fn with_workspace_mutation<R>(
 }
 
 fn resolve_with_cache(
-    cache: &mut IndCache,
+    cache: &mut WorkspaceStore,
     raw: &str,
 ) -> anyhow::Result<(String, String, std::path::PathBuf)> {
     cache.discover_workspace_changes()?;
@@ -440,7 +440,7 @@ fn resolve_with_cache(
 
 fn resolve_with_read_cache(
     state: &AppState,
-    cache: &mut IndCache,
+    cache: &mut WorkspaceStore,
     raw: &str,
     required_after: Option<std::time::Instant>,
 ) -> anyhow::Result<(String, String, std::path::PathBuf)> {
@@ -468,7 +468,7 @@ pub(super) async fn graph_check(
     State(state): State<AppState>,
 ) -> ApiResult<Json<GraphCheckReport>> {
     spawn_blocking_api(move || {
-        let report = with_cache(&state, IndCache::graph_check_report)?;
+        let report = with_cache(&state, WorkspaceStore::graph_check_report)?;
         Ok(Json(report))
     })
     .await
@@ -664,7 +664,7 @@ pub(super) async fn node_children(
 }
 
 fn load_node_generation(
-    cache: &mut IndCache,
+    cache: &mut WorkspaceStore,
     fnode: &str,
     abs_path: &std::path::Path,
 ) -> ApiResult<(crate::workspace::FileSnapshot, MdocNode)> {
@@ -849,14 +849,14 @@ fn mutate_node(
 }
 
 fn committed_node_detail(
-    cache: &mut IndCache,
+    cache: &mut WorkspaceStore,
     node: &MdocNode,
 ) -> ApiResult<Revisioned<NodeDetail>> {
     Ok(revisioned(node_detail_from_committed_cache(cache, node)?))
 }
 
 fn current_node_detail(
-    cache: &mut IndCache,
+    cache: &mut WorkspaceStore,
     fnode: &str,
     abs_path: &std::path::Path,
 ) -> ApiResult<Revisioned<NodeDetail>> {
@@ -873,7 +873,7 @@ fn current_node_detail(
 }
 
 fn node_detail_from_committed_cache(
-    cache: &mut IndCache,
+    cache: &mut WorkspaceStore,
     node: &MdocNode,
 ) -> anyhow::Result<NodeDetail> {
     let summary = cache.node_summary(&node.fnode)?;
@@ -922,7 +922,7 @@ fn snapshot_node(
 }
 
 fn save_and_index(
-    cache: &mut IndCache,
+    cache: &mut WorkspaceStore,
     mutation_lock: &crate::workspace::WorkspaceMutationLock,
     node: &MdocNode,
     snapshot: &crate::workspace::FileSnapshot,
@@ -1115,7 +1115,7 @@ mod tests {
         let fnode = node.fnode.clone();
         std::fs::write(&path, node.render().unwrap()).unwrap();
 
-        let mut cache = IndCache::open(root.clone()).unwrap();
+        let mut cache = WorkspaceStore::open(root.clone()).unwrap();
         cache.refresh_all().unwrap();
         let state = AppState::new(cache);
         (dir, state, path, fnode)

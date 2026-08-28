@@ -176,14 +176,14 @@ fn reconcile<'a>(
 
 pub(crate) fn sync_cached(
     mutation_lock: &crate::workspace::WorkspaceMutationLock,
-    cache: &mut crate::indcache::IndCache,
+    cache: &mut crate::indcache::WorkspaceStore,
 ) -> Result<SyncReport> {
     sync_with_cache(mutation_lock, Some(cache))
 }
 
 fn sync_with_cache(
     mutation_lock: &crate::workspace::WorkspaceMutationLock,
-    mut cache: Option<&mut crate::indcache::IndCache>,
+    mut cache: Option<&mut crate::indcache::WorkspaceStore>,
 ) -> Result<SyncReport> {
     let _profile = crate::profile::scope("workdraft::sync");
     let mdcroot = mutation_lock.root()?.to_path_buf();
@@ -749,14 +749,14 @@ fn join_snapshot_workers<T>(
 
 pub(crate) fn back_cached(
     mutation_lock: &crate::workspace::WorkspaceMutationLock,
-    cache: &mut crate::indcache::IndCache,
+    cache: &mut crate::indcache::WorkspaceStore,
 ) -> Result<BackReport> {
     back_with_cache(mutation_lock, Some(cache))
 }
 
 fn back_with_cache(
     mutation_lock: &crate::workspace::WorkspaceMutationLock,
-    mut cache: Option<&mut crate::indcache::IndCache>,
+    mut cache: Option<&mut crate::indcache::WorkspaceStore>,
 ) -> Result<BackReport> {
     let _profile = crate::profile::scope("workdraft::back");
     let mdcroot = mutation_lock.root()?.to_path_buf();
@@ -991,12 +991,7 @@ fn back_with_cache(
     let updated_paths: Vec<_> = node_writes.iter().map(|write| write.path.clone()).collect();
     node_writes.append(&mut raw_writes);
     let write_count = node_writes.len();
-    if updated_mdocs != 0 {
-        if let Some(cache) = cache.as_deref_mut() {
-            cache.set_index_dirty(true)?;
-        }
-    }
-    {
+    let apply = || {
         let _phase = crate::profile::scope("workdraft::apply_back_changes");
         apply_changes(
             &mdcroot,
@@ -1010,15 +1005,21 @@ fn back_with_cache(
             node_writes,
             Vec::new(),
             Vec::new(),
-        )?;
-    }
-    let mut index_refreshed = false;
+        )
+    };
     if updated_mdocs != 0 {
-        if let Some(cache) = cache.as_deref_mut() {
-            cache.discover_workspace_changes()?;
-            cache.upsert_paths(&updated_paths)?;
-            index_refreshed = true;
+        if let Some(store) = cache.as_deref_mut() {
+            store.mutate(mutation_lock, |mutation| {
+                mutation.mark_dirty()?;
+                apply()?;
+                mutation.store_mut().discover_workspace_changes()?;
+                mutation.store_mut().upsert_paths(&updated_paths)
+            })?;
+        } else {
+            apply()?;
         }
+    } else {
+        apply()?;
     }
     if conflicts.is_empty() && warnings.is_empty() {
         let source_file_count = manifest
@@ -1038,7 +1039,7 @@ fn back_with_cache(
             )?;
         } else if write_count == 0 {
             store_observation_cache(
-                cache.as_deref_mut(),
+                cache,
                 &mdcroot,
                 &manifest,
                 &source_files,
@@ -1046,11 +1047,6 @@ fn back_with_cache(
                 manifest.sources.len(),
                 source_file_count,
             )?;
-        }
-    }
-    if index_refreshed {
-        if let Some(cache) = cache {
-            cache.set_index_dirty(false)?;
         }
     }
     Ok(BackReport {
@@ -1062,7 +1058,7 @@ fn back_with_cache(
 }
 
 fn check_observation_cache(
-    cache: Option<&crate::indcache::IndCache>,
+    cache: Option<&crate::indcache::WorkspaceStore>,
     root: &Path,
     manifest_snapshot: &FileSnapshot,
     manifest: &SourceBlockManifest,
@@ -1124,7 +1120,7 @@ fn require_fast_path_current(
 }
 
 fn store_observation_cache(
-    cache: Option<&mut crate::indcache::IndCache>,
+    cache: Option<&mut crate::indcache::WorkspaceStore>,
     root: &Path,
     manifest: &SourceBlockManifest,
     source_files: &[PathBuf],
@@ -1177,7 +1173,7 @@ fn store_observation_cache(
 }
 
 fn update_observation_cache(
-    cache: Option<&mut crate::indcache::IndCache>,
+    cache: Option<&mut crate::indcache::WorkspaceStore>,
     root: &Path,
     manifest: &SourceBlockManifest,
     changed_sources: &BTreeSet<String>,
