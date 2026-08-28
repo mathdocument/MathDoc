@@ -5,7 +5,6 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::core::{
     DependencyCandidates, FormalizationStatus, GraphCheckReport, GraphRootItem, NodeSummary,
@@ -52,6 +51,25 @@ pub(super) struct NodeView {
     children: Vec<NodeSummary>,
 }
 
+#[derive(Debug)]
+pub(super) struct Revisioned<T> {
+    revision: String,
+    body: T,
+}
+
+impl<T: Serialize> IntoResponse for Revisioned<T> {
+    fn into_response(self) -> Response {
+        let mut response = Json(self.body).into_response();
+        response.headers_mut().insert(
+            header::ETAG,
+            format!("\"{}\"", self.revision)
+                .parse()
+                .expect("a SHA-256 digest is a valid ETag"),
+        );
+        response
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub(super) struct SearchQuery {
     q: String,
@@ -85,6 +103,8 @@ enum ApiErrorKind {
     NotFound,
     Validation,
     Conflict,
+    PreconditionRequired,
+    PreconditionFailed,
     Internal,
 }
 
@@ -140,14 +160,31 @@ impl ApiError {
 
     fn stale_client_revision(path: &std::path::Path) -> Self {
         Self::new(
-            ApiErrorKind::Conflict,
+            ApiErrorKind::PreconditionFailed,
             "resource changed; refresh and retry",
             anyhow::anyhow!("client revision is stale for {}", path.display()),
         )
     }
 
+    fn precondition_required() -> Self {
+        Self::new(
+            ApiErrorKind::PreconditionRequired,
+            "If-Match header is required",
+            anyhow::anyhow!("node mutation omitted If-Match"),
+        )
+    }
+
     fn rejected(detail: anyhow::Error) -> Self {
-        if crate::workspace::error_has_file_conflict(&detail)
+        if detail
+            .downcast_ref::<crate::mdocnode::RevisionMismatch>()
+            .is_some()
+        {
+            Self::new(
+                ApiErrorKind::PreconditionFailed,
+                "resource changed; refresh and retry",
+                detail,
+            )
+        } else if crate::workspace::error_has_file_conflict(&detail)
             || crate::workspace::error_has_infrastructure_failure(&detail)
         {
             Self::from(detail)
@@ -222,6 +259,8 @@ impl IntoResponse for ApiError {
             ApiErrorKind::NotFound => StatusCode::NOT_FOUND,
             ApiErrorKind::Validation => StatusCode::UNPROCESSABLE_ENTITY,
             ApiErrorKind::Conflict => StatusCode::CONFLICT,
+            ApiErrorKind::PreconditionRequired => StatusCode::PRECONDITION_REQUIRED,
+            ApiErrorKind::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
             ApiErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         };
         if matches!(self.kind, ApiErrorKind::Internal) {
@@ -273,6 +312,20 @@ pub(super) async fn normalize_error_response(
 
 fn json_error_response(status: StatusCode, message: &str) -> Response {
     (status, Json(serde_json::json!({ "error": message }))).into_response()
+}
+
+fn required_if_match(headers: &HeaderMap) -> ApiResult<String> {
+    let raw = headers
+        .get(header::IF_MATCH)
+        .ok_or_else(ApiError::precondition_required)?
+        .to_str()
+        .map_err(|_| ApiError::bad_request("If-Match must be a quoted SHA-256 ETag"))?;
+    let revision = raw
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| ApiError::bad_request("If-Match must be a quoted SHA-256 ETag"))?;
+    Ok(revision.to_string())
 }
 
 // ── Cache helpers ─────────────────────────────────────────────────────────────
@@ -513,7 +566,7 @@ pub(super) async fn node_detail(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
     Query(fresh): Query<FreshQuery>,
-) -> ApiResult<Json<NodeDetail>> {
+) -> ApiResult<Revisioned<NodeDetail>> {
     let required_after = fresh.fresh.then(std::time::Instant::now);
     spawn_blocking_api(move || {
         let mut cache = state
@@ -532,12 +585,9 @@ pub(super) async fn node_detail(
         })();
         ensure_snapshot_unchanged(&snapshot, &abs_path)?;
         let (summary, formalization) = cache_fields?;
-        Ok(Json(node_detail_from_generation(
-            summary,
-            node,
-            formalization,
-            snapshot_revision(&snapshot),
-        )))
+        let detail =
+            node_detail_from_generation(summary, node, formalization, snapshot_revision(&snapshot));
+        Ok(revisioned(detail))
     })
     .await
 }
@@ -546,7 +596,7 @@ pub(super) async fn node_view(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
     Query(fresh): Query<FreshQuery>,
-) -> ApiResult<Json<NodeView>> {
+) -> ApiResult<Revisioned<NodeView>> {
     let required_after = fresh.fresh.then(std::time::Instant::now);
     spawn_blocking_api(move || {
         let _profile = crate::profile::scope("web::api::node_view");
@@ -568,7 +618,7 @@ pub(super) async fn node_view(
         })();
         ensure_snapshot_unchanged(&snapshot, &abs_path)?;
         let (summary, formalization, referrers, children) = cache_fields?;
-        Ok(Json(NodeView {
+        let view = NodeView {
             node: node_detail_from_generation(
                 summary,
                 node,
@@ -577,7 +627,11 @@ pub(super) async fn node_view(
             ),
             referrers,
             children,
-        }))
+        };
+        Ok(Revisioned {
+            revision: view.node.revision.clone(),
+            body: view,
+        })
     })
     .await
 }
@@ -681,25 +735,18 @@ pub(super) async fn node_dependency_candidates(
 pub(super) async fn node_put_block(
     State(state): State<AppState>,
     Path((fnode, srctype)): Path<(String, String)>,
+    headers: HeaderMap,
     Json(body): Json<BlockBody>,
-) -> ApiResult<Json<NodeDetail>> {
+) -> ApiResult<Revisioned<NodeDetail>> {
+    let expected_revision = required_if_match(&headers)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     spawn_blocking_api(move || {
         let srctype = validate_srctype(&srctype)?;
-        let BlockBody {
-            content,
-            expected_revision,
-        } = body;
-        mutate_node(
-            &state,
-            deadline,
-            &fnode,
-            expected_revision.as_deref(),
-            move |node| {
-                node.upsert_source_block(srctype, content)?;
-                Ok(())
-            },
-        )
+        let BlockBody { content } = body;
+        mutate_node(&state, deadline, &fnode, &expected_revision, move |node| {
+            node.upsert_source_block(srctype, content)?;
+            Ok(())
+        })
     })
     .await
 }
@@ -710,42 +757,20 @@ pub(super) async fn node_delete_block(
     Path((fnode, srctype)): Path<(String, String)>,
     headers: HeaderMap,
     body: Bytes,
-) -> ApiResult<Json<NodeDetail>> {
+) -> ApiResult<Revisioned<NodeDetail>> {
+    let expected_revision = required_if_match(&headers)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     spawn_blocking_api(move || {
         let srctype = validate_srctype(&srctype)?;
-        let body = if body.is_empty() {
-            None
-        } else {
-            let is_json = headers
-                .get(header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.split(';').next())
-                .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"));
-            if !is_json {
-                return Err(ApiError::bad_request(
-                    "non-empty DELETE body must use application/json",
-                ));
+        if !body.is_empty() {
+            return Err(ApiError::bad_request("DELETE request body must be empty"));
+        }
+        mutate_node(&state, deadline, &fnode, &expected_revision, move |node| {
+            if !node.remove_source_block(srctype) {
+                bail!("no '@src: {srctype}' block on this node");
             }
-            Some(
-                serde_json::from_slice::<RevisionBody>(&body).map_err(|error| {
-                    ApiError::bad_request(format!("invalid DELETE request body: {error}"))
-                })?,
-            )
-        };
-        mutate_node(
-            &state,
-            deadline,
-            &fnode,
-            body.as_ref()
-                .and_then(|body| body.expected_revision.as_deref()),
-            move |node| {
-                if !node.remove_source_block(srctype) {
-                    bail!("no '@src: {srctype}' block on this node");
-                }
-                Ok(())
-            },
-        )
+            Ok(())
+        })
     })
     .await
 }
@@ -754,8 +779,10 @@ pub(super) async fn node_delete_block(
 pub(super) async fn node_put_title(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<TitleBody>,
-) -> ApiResult<Json<NodeDetail>> {
+) -> ApiResult<Revisioned<NodeDetail>> {
+    let expected_revision = required_if_match(&headers)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     spawn_blocking_api(move || {
         let title = body.title.trim();
@@ -763,16 +790,10 @@ pub(super) async fn node_put_title(
             bail!("@title must be non-empty");
         }
         let title = title.to_string();
-        mutate_node(
-            &state,
-            deadline,
-            &fnode,
-            body.expected_revision.as_deref(),
-            move |node| {
-                node.set_title(title);
-                Ok(())
-            },
-        )
+        mutate_node(&state, deadline, &fnode, &expected_revision, move |node| {
+            node.set_title(title);
+            Ok(())
+        })
     })
     .await
 }
@@ -780,23 +801,15 @@ pub(super) async fn node_put_title(
 // ── Write helpers ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct BlockBody {
     content: String,
-    #[serde(default)]
-    expected_revision: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct TitleBody {
     title: String,
-    #[serde(default)]
-    expected_revision: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct RevisionBody {
-    #[serde(default)]
-    expected_revision: Option<String>,
 }
 
 /// The five built-in srctypes. Rejecting unknown srctypes keeps the work/back
@@ -809,14 +822,14 @@ fn mutate_node(
     state: &AppState,
     deadline: std::time::Instant,
     raw_ref: &str,
-    expected_revision: Option<&str>,
+    expected_revision: &str,
     mutate: impl FnOnce(&mut MdocNode) -> ApiResult<()>,
-) -> ApiResult<Json<NodeDetail>> {
+) -> ApiResult<Revisioned<NodeDetail>> {
     with_workspace_mutation(state, deadline, |cache, mutation_lock| {
         let (fnode, _, abs_path) =
             resolve_with_cache(cache, raw_ref).map_err(ApiError::from_resolve)?;
         let (snapshot, mut node) = load_node_generation(cache, &fnode, &abs_path)?;
-        if expected_revision.is_some_and(|expected| expected != snapshot_revision(&snapshot)) {
+        if expected_revision != snapshot_revision(&snapshot) {
             return Err(ApiError::stale_client_revision(&abs_path));
         }
         mutate(&mut node)?;
@@ -825,20 +838,23 @@ fn mutate_node(
     })
 }
 
-fn committed_node_detail(cache: &mut IndCache, node: &MdocNode) -> ApiResult<Json<NodeDetail>> {
-    Ok(Json(node_detail_from_committed_cache(cache, node)?))
+fn committed_node_detail(
+    cache: &mut IndCache,
+    node: &MdocNode,
+) -> ApiResult<Revisioned<NodeDetail>> {
+    Ok(revisioned(node_detail_from_committed_cache(cache, node)?))
 }
 
 fn current_node_detail(
     cache: &mut IndCache,
     fnode: &str,
     abs_path: &std::path::Path,
-) -> ApiResult<Json<NodeDetail>> {
+) -> ApiResult<Revisioned<NodeDetail>> {
     let (snapshot, node) = load_node_generation(cache, fnode, abs_path)?;
     let summary = cache.node_summary(fnode)?;
     let formalization = cache.indexed_formalization_status(fnode)?;
     ensure_snapshot_unchanged(&snapshot, abs_path)?;
-    Ok(Json(node_detail_from_generation(
+    Ok(revisioned(node_detail_from_generation(
         summary,
         node,
         formalization,
@@ -866,18 +882,21 @@ fn node_detail_from_committed_cache(
 }
 
 fn snapshot_revision(snapshot: &crate::workspace::FileSnapshot) -> String {
-    revision_digest(snapshot.content().unwrap_or_default())
+    crate::mdocnode::content_revision(snapshot.content().unwrap_or_default())
 }
 
 fn rendered_node_revision(node: &MdocNode) -> String {
     let rendered = node
         .render()
         .expect("a committed node must remain structurally renderable");
-    revision_digest(rendered.as_bytes())
+    crate::mdocnode::content_revision(rendered.as_bytes())
 }
 
-fn revision_digest(content: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(content))
+fn revisioned(detail: NodeDetail) -> Revisioned<NodeDetail> {
+    Revisioned {
+        revision: detail.revision.clone(),
+        body: detail,
+    }
 }
 
 #[cfg(test)]
@@ -906,6 +925,7 @@ fn save_and_index(
 // ── Dependency mutation handlers ──────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct AddDepBody {
     dep_fnode: String,
 }
@@ -915,8 +935,10 @@ pub(super) struct AddDepBody {
 pub(super) async fn node_add_dep(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<AddDepBody>,
-) -> ApiResult<Json<NodeDetail>> {
+) -> ApiResult<Revisioned<NodeDetail>> {
+    let expected_revision = required_if_match(&headers)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     spawn_blocking_api(move || {
         with_workspace_mutation(&state, deadline, |cache, mutation_lock| {
@@ -925,7 +947,12 @@ pub(super) async fn node_add_dep(
             let mut graph =
                 crate::depgraph::DepGraph::from_ref_under_lock(cache, mutation_lock, &fnode, None)?;
             let (added, skipped_existing, skipped_self) = graph
-                .add_direct_dependency_ref_under_lock(mutation_lock, &body.dep_fnode, None)
+                .add_direct_dependency_ref_under_lock(
+                    mutation_lock,
+                    &body.dep_fnode,
+                    None,
+                    Some(&expected_revision),
+                )
                 .map_err(ApiError::rejected)?;
             if !skipped_self.is_empty() {
                 bail!("a node cannot depend on itself");
@@ -947,6 +974,7 @@ pub(super) async fn node_add_dep(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct RmDepBody {
     dep_fnodes: Vec<String>,
 }
@@ -955,8 +983,10 @@ pub(super) struct RmDepBody {
 pub(super) async fn node_rm_deps(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<RmDepBody>,
-) -> ApiResult<Json<NodeDetail>> {
+) -> ApiResult<Revisioned<NodeDetail>> {
+    let expected_revision = required_if_match(&headers)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     spawn_blocking_api(move || {
         with_workspace_mutation(&state, deadline, |cache, mutation_lock| {
@@ -968,7 +998,11 @@ pub(super) async fn node_rm_deps(
             let mut graph =
                 crate::depgraph::DepGraph::from_ref_under_lock(cache, mutation_lock, &fnode, None)?;
             let removed = graph
-                .remove_direct_dependencies_under_lock(mutation_lock, body.dep_fnodes)
+                .remove_direct_dependencies_under_lock(
+                    mutation_lock,
+                    body.dep_fnodes,
+                    Some(&expected_revision),
+                )
                 .map_err(ApiError::rejected)?;
             if removed.is_empty() {
                 bail!("none of the given fnodes are direct dependencies");
@@ -982,6 +1016,7 @@ pub(super) async fn node_rm_deps(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct NewNodeBody {
     title: String,
     /// Optional relative path (without .mdoc suffix). Defaults to {fnode}.mdoc.
@@ -994,8 +1029,14 @@ pub(super) struct NewNodeBody {
 /// dependency of that node (cycle-checked, atomic via DepGraph).
 pub(super) async fn node_new(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<NewNodeBody>,
-) -> ApiResult<Json<NodeDetail>> {
+) -> ApiResult<Revisioned<NodeDetail>> {
+    let expected_revision = body
+        .parent_fnode
+        .as_ref()
+        .map(|_| required_if_match(&headers))
+        .transpose()?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     spawn_blocking_api(move || {
         with_workspace_mutation(&state, deadline, |cache, mutation_lock| {
@@ -1019,7 +1060,11 @@ pub(super) async fn node_new(
                     .prepare_new_dependency_node(file_path, title, None)
                     .map_err(ApiError::rejected)?;
                 graph
-                    .create_and_add_dependency_under_lock(mutation_lock, new_node)
+                    .create_and_add_dependency_under_lock(
+                        mutation_lock,
+                        new_node,
+                        expected_revision.as_deref(),
+                    )
                     .map_err(ApiError::rejected)?;
                 // Return the parent (the user is editing the parent and just added a
                 // dep — they want to see it appear in the children column).
@@ -1328,8 +1373,11 @@ mod tests {
         use std::task::Poll;
         use std::time::{Duration, Instant};
 
-        let (_dir, state, _path, fnode) = setup_state();
+        let (_dir, state, path, fnode) = setup_state();
         let root = state.cache.lock().unwrap().root().to_path_buf();
+        let revision = crate::mdocnode::content_revision(&std::fs::read(path).unwrap());
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_MATCH, format!("\"{revision}\"").parse().unwrap());
         let external_lock = crate::workspace::WorkspaceMutationLock::acquire(&root).unwrap();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let holder = std::thread::spawn(move || {
@@ -1341,9 +1389,9 @@ mod tests {
         let mut operation = Box::pin(node_put_title(
             State(state),
             Path(fnode),
+            headers,
             Json(TitleBody {
                 title: "Updated title".to_string(),
-                expected_revision: None,
             }),
         ));
         std::future::poll_fn(|cx| match operation.as_mut().poll(cx) {
@@ -1424,7 +1472,7 @@ mod tests {
             .unwrap();
         let node = graph.root_node().clone();
         drop(graph);
-        let detail = committed_node_detail(&mut cache, &node).unwrap().0;
+        let detail = committed_node_detail(&mut cache, &node).unwrap().body;
 
         assert_eq!(detail.depens, vec![target_fnode.clone()]);
         assert_eq!(MdocNode::load(&path).unwrap().depens, vec![target_fnode]);

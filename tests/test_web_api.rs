@@ -100,22 +100,57 @@ async fn get_json(app: &axum::Router, path: &str) -> (StatusCode, serde_json::Va
     (status, val)
 }
 
+async fn mutation_revision(
+    app: &axum::Router,
+    path: &str,
+    body: Option<&serde_json::Value>,
+) -> Option<String> {
+    if let Some(revision) = body
+        .and_then(|body| body.get("expected_revision"))
+        .and_then(serde_json::Value::as_str)
+    {
+        return Some(revision.to_string());
+    }
+    let fnode = if path == "/api/node/new" {
+        body?.get("parent_fnode")?.as_str()?
+    } else {
+        path.strip_prefix("/api/node/")?.split('/').next()?
+    };
+    let (status, detail) = get_json(app, &format!("/api/node/{fnode}")).await;
+    Some(
+        (status == StatusCode::OK)
+            .then(|| detail["revision"].as_str().map(str::to_string))
+            .flatten()
+            .unwrap_or_else(|| "0".repeat(64)),
+    )
+}
+
 async fn send_json(
     app: &axum::Router,
     method: &str,
     path: &str,
-    body: serde_json::Value,
+    mut body: serde_json::Value,
 ) -> (StatusCode, serde_json::Value) {
+    let revision = mutation_revision(app, path, Some(&body)).await;
+    if let Some(object) = body.as_object_mut() {
+        object.remove("expected_revision");
+    }
+    let mut request = local_request()
+        .method(method)
+        .uri(path)
+        .header("content-type", "application/json");
+    if let Some(revision) = revision {
+        request = request.header("if-match", format!("\"{revision}\""));
+    }
+    let request_body = if method == "DELETE" && body.as_object().is_some_and(|body| body.is_empty())
+    {
+        Body::empty()
+    } else {
+        Body::from(serde_json::to_vec(&body).unwrap())
+    };
     let resp = app
         .clone()
-        .oneshot(
-            local_request()
-                .method(method)
-                .uri(path)
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&body).unwrap()))
-                .unwrap(),
-        )
+        .oneshot(request.body(request_body).unwrap())
         .await
         .unwrap();
     let status = resp.status();
@@ -131,15 +166,14 @@ async fn send_empty(
     method: &str,
     path: &str,
 ) -> (StatusCode, serde_json::Value) {
+    let revision = mutation_revision(app, path, None).await;
+    let mut request = local_request().method(method).uri(path);
+    if let Some(revision) = revision {
+        request = request.header("if-match", format!("\"{revision}\""));
+    }
     let resp = app
         .clone()
-        .oneshot(
-            local_request()
-                .method(method)
-                .uri(path)
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(request.body(Body::empty()).unwrap())
         .await
         .unwrap();
     let status = resp.status();
@@ -157,16 +191,18 @@ async fn send_raw(
     content_type: &str,
     body: &str,
 ) -> (StatusCode, serde_json::Value) {
+    let parsed = serde_json::from_str(body).ok();
+    let revision = mutation_revision(app, path, parsed.as_ref()).await;
+    let mut request = local_request()
+        .method(method)
+        .uri(path)
+        .header("content-type", content_type);
+    if let Some(revision) = revision {
+        request = request.header("if-match", format!("\"{revision}\""));
+    }
     let resp = app
         .clone()
-        .oneshot(
-            local_request()
-                .method(method)
-                .uri(path)
-                .header("content-type", content_type)
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
+        .oneshot(request.body(Body::from(body.to_string())).unwrap())
         .await
         .unwrap();
     let status = resp.status();
@@ -1223,6 +1259,46 @@ async fn put_title_updates_title() {
 }
 
 #[tokio::test]
+async fn node_mutations_require_if_match_and_node_reads_return_etags() {
+    let dir = TempDir::new().unwrap();
+    let (_root, app) = build_app(&dir);
+    let (_, roots) = get_json(&app, "/api/graph/roots").await;
+    let fnode = roots.as_array().unwrap()[0]["fnode"].as_str().unwrap();
+    let response = app
+        .clone()
+        .oneshot(
+            local_request()
+                .uri(format!("/api/node/{fnode}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let etag = response.headers()["etag"].to_str().unwrap().to_string();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let detail: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        etag,
+        format!("\"{}\"", detail["revision"].as_str().unwrap())
+    );
+
+    let response = app
+        .oneshot(
+            local_request()
+                .method("PUT")
+                .uri(format!("/api/node/{fnode}/title"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"title":"No precondition"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PRECONDITION_REQUIRED);
+}
+
+#[tokio::test]
 async fn stale_client_revision_cannot_overwrite_an_external_edit() {
     let dir = TempDir::new().unwrap();
     let (root, app) = build_app(&dir);
@@ -1253,7 +1329,7 @@ async fn stale_client_revision_cannot_overwrite_an_external_edit() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::CONFLICT, "value={value}");
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED, "value={value}");
     assert_eq!(std::fs::read(&path).unwrap(), external_bytes);
 }
 
@@ -1296,7 +1372,7 @@ async fn stale_block_revisions_cannot_overwrite_an_external_edit() {
 
         assert_eq!(
             status,
-            StatusCode::CONFLICT,
+            StatusCode::PRECONDITION_FAILED,
             "method={method}, value={value}"
         );
         assert_eq!(std::fs::read(&path).unwrap(), external_bytes);
@@ -1372,7 +1448,7 @@ async fn writes_reject_structural_injection_without_changing_the_file() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn concurrent_block_updates_do_not_lose_changes() {
+async fn concurrent_stale_block_updates_are_rejected() {
     use std::sync::{Arc, Barrier};
 
     let dir = TempDir::new().unwrap();
@@ -1394,11 +1470,14 @@ async fn concurrent_block_updates_do_not_lose_changes() {
         ("lean", "lean body"),
         ("rocq", "rocq body"),
     ];
+    let (_, detail) = get_json(&app, &format!("/api/node/{fnode}")).await;
+    let revision = detail["revision"].as_str().unwrap().to_string();
     let barrier = Arc::new(Barrier::new(updates.len() + 1));
     let mut tasks = Vec::new();
     for (srctype, content) in updates {
         let app = app.clone();
         let fnode = fnode.clone();
+        let revision = revision.clone();
         let barrier = Arc::clone(&barrier);
         tasks.push(tokio::spawn(async move {
             barrier.wait();
@@ -1406,16 +1485,30 @@ async fn concurrent_block_updates_do_not_lose_changes() {
                 &app,
                 "PUT",
                 &format!("/api/node/{fnode}/block/{srctype}"),
-                serde_json::json!({ "content": content }),
+                serde_json::json!({ "content": content, "expected_revision": revision }),
             )
             .await
         }));
     }
     barrier.wait();
+    let mut results = Vec::new();
     for task in tasks {
-        let (status, val) = task.await.unwrap();
-        assert_eq!(status, StatusCode::OK, "val={val}");
+        results.push(task.await.unwrap());
     }
+    assert_eq!(
+        results
+            .iter()
+            .filter(|(status, _)| *status == StatusCode::OK)
+            .count(),
+        1
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|(status, _)| *status == StatusCode::PRECONDITION_FAILED)
+            .count(),
+        3
+    );
 
     let (_, node) = get_json(&app, &format!("/api/node/{fnode}")).await;
     let srctypes: std::collections::HashSet<&str> = node["blocks"]
@@ -1424,13 +1517,8 @@ async fn concurrent_block_updates_do_not_lose_changes() {
         .iter()
         .filter_map(|block| block["srctype"].as_str())
         .collect();
-    assert_eq!(srctypes.len(), 5);
-    for expected in ["latex", "text", "python", "lean", "rocq"] {
-        assert!(
-            srctypes.contains(expected),
-            "missing block {expected}: {node}"
-        );
-    }
+    assert_eq!(srctypes.len(), 2);
+    assert!(srctypes.contains("latex"));
 }
 
 // ── Dependency mutation tests ─────────────────────────────────────────────────
@@ -1507,6 +1595,66 @@ async fn add_and_remove_dep_via_api() {
         .as_array()
         .unwrap()
         .contains(&serde_json::json!(bg_fnode)));
+}
+
+#[tokio::test]
+async fn stale_parent_revision_rejects_dependency_and_linked_creation() {
+    let dir = TempDir::new().unwrap();
+    let (root, app) = build_app(&dir);
+    let (_, roots) = get_json(&app, "/api/graph/roots").await;
+    let main = roots
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["title"] == "Main Theorem")
+        .unwrap();
+    let background = roots
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["title"] == "Background Lemma")
+        .unwrap();
+    let main_fnode = main["fnode"].as_str().unwrap();
+    let background_fnode = background["fnode"].as_str().unwrap();
+    let (_, detail) = get_json(&app, &format!("/api/node/{main_fnode}")).await;
+    let revision = detail["revision"].as_str().unwrap();
+    let path = root.join(detail["rel_path"].as_str().unwrap());
+    let mut external = MdocNode::load(&path).unwrap();
+    external.title = "External parent edit".to_string();
+    write_node(&external);
+
+    let (status, _) = send_json(
+        &app,
+        "POST",
+        &format!("/api/node/{main_fnode}/dep/add"),
+        serde_json::json!({
+            "dep_fnode": background_fnode,
+            "expected_revision": revision,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+
+    let (status, _) = send_json(
+        &app,
+        "POST",
+        "/api/node/new",
+        serde_json::json!({
+            "title": "Stale linked child",
+            "parent_fnode": main_fnode,
+            "expected_revision": revision,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+    assert_eq!(
+        std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "mdoc"))
+            .count(),
+        2
+    );
 }
 
 #[tokio::test]

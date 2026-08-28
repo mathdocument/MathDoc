@@ -239,7 +239,7 @@ impl<'cache> DepGraph<'cache> {
         dep_fnodes: Vec<String>,
     ) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
         let root = self.root.fnode.clone();
-        let snapshot = self.snapshot_root_under_lock(mutation_lock, &root)?;
+        let snapshot = self.snapshot_root_under_lock(mutation_lock, &root, None)?;
         self.add_direct_dependencies_locked(mutation_lock, &root, dep_fnodes, &snapshot)
     }
 
@@ -251,7 +251,7 @@ impl<'cache> DepGraph<'cache> {
         cwd: Option<&Path>,
     ) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
         let mutation_lock = self.cache.acquire_mutation_lock()?;
-        self.add_direct_dependency_ref_under_lock(&mutation_lock, target_ref, cwd)
+        self.add_direct_dependency_ref_under_lock(&mutation_lock, target_ref, cwd, None)
     }
 
     pub(crate) fn add_direct_dependency_ref_under_lock(
@@ -259,6 +259,7 @@ impl<'cache> DepGraph<'cache> {
         mutation_lock: &crate::workspace::WorkspaceMutationLock,
         target_ref: &str,
         cwd: Option<&Path>,
+        expected_revision: Option<&str>,
     ) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
         let target_ref = target_ref.trim();
         if target_ref.is_empty() {
@@ -266,7 +267,7 @@ impl<'cache> DepGraph<'cache> {
         }
 
         let root = self.root.fnode.clone();
-        let snapshot = self.snapshot_root_under_lock(mutation_lock, &root)?;
+        let snapshot = self.snapshot_root_under_lock(mutation_lock, &root, expected_revision)?;
         let base = cwd.unwrap_or_else(|| self.cache.root());
         let (target_fnode, _, _) = self.cache.resolve_ref(target_ref, Some(base))?;
 
@@ -356,16 +357,17 @@ impl<'cache> DepGraph<'cache> {
     /// Remove `dep_fnodes` from the root node's direct dependencies. Returns removed fnodes.
     pub fn remove_direct_dependencies(&mut self, dep_fnodes: Vec<String>) -> Result<Vec<String>> {
         let mutation_lock = self.cache.acquire_mutation_lock()?;
-        self.remove_direct_dependencies_under_lock(&mutation_lock, dep_fnodes)
+        self.remove_direct_dependencies_under_lock(&mutation_lock, dep_fnodes, None)
     }
 
     pub(crate) fn remove_direct_dependencies_under_lock(
         &mut self,
         mutation_lock: &crate::workspace::WorkspaceMutationLock,
         dep_fnodes: Vec<String>,
+        expected_revision: Option<&str>,
     ) -> Result<Vec<String>> {
         let root = self.root.fnode.clone();
-        let snapshot = self.snapshot_root_under_lock(mutation_lock, &root)?;
+        let snapshot = self.snapshot_root_under_lock(mutation_lock, &root, expected_revision)?;
 
         let mut updated = self.root.clone();
         let mut removed: Vec<String> = Vec::new();
@@ -393,16 +395,17 @@ impl<'cache> DepGraph<'cache> {
     ///    index (root → new_node → declared_dep → … → root).
     pub fn create_and_add_dependency(&mut self, new_node: MdocNode) -> Result<bool> {
         let mutation_lock = self.cache.acquire_mutation_lock()?;
-        self.create_and_add_dependency_under_lock(&mutation_lock, new_node)
+        self.create_and_add_dependency_under_lock(&mutation_lock, new_node, None)
     }
 
     pub(crate) fn create_and_add_dependency_under_lock(
         &mut self,
         mutation_lock: &crate::workspace::WorkspaceMutationLock,
         mut new_node: MdocNode,
+        expected_revision: Option<&str>,
     ) -> Result<bool> {
         let root = self.root.fnode.clone();
-        let snapshot = self.snapshot_root_under_lock(mutation_lock, &root)?;
+        let snapshot = self.snapshot_root_under_lock(mutation_lock, &root, expected_revision)?;
 
         // Reject duplicate fnode before touching disk.
         if !self
@@ -543,6 +546,7 @@ impl<'cache> DepGraph<'cache> {
         &mut self,
         mutation_lock: &crate::workspace::WorkspaceMutationLock,
         root: &str,
+        expected_revision: Option<&str>,
     ) -> Result<crate::workspace::FileSnapshot> {
         self.cache.validate_mutation_lock(mutation_lock)?;
         self.cache.refresh_all()?;
@@ -554,6 +558,11 @@ impl<'cache> DepGraph<'cache> {
         let content = snapshot
             .content()
             .ok_or_else(|| anyhow!("mdoc file disappeared: {}", path.display()))?;
+        if expected_revision
+            .is_some_and(|expected| expected != crate::mdocnode::content_revision(content))
+        {
+            return Err(crate::mdocnode::RevisionMismatch.into());
+        }
         let node = MdocNode::load_bytes(&path, content)?;
         if node.fnode != root {
             bail!("fnode changed while preparing mutation: {root}");
@@ -720,7 +729,7 @@ mod mutation_conflict_tests {
         );
 
         let error = graph
-            .create_and_add_dependency_under_lock(&mutation_lock, child)
+            .create_and_add_dependency_under_lock(&mutation_lock, child, None)
             .unwrap_err();
 
         assert!(error.to_string().contains("uncertain lock"));

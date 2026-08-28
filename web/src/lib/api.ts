@@ -86,8 +86,8 @@ export const api = {
       `/api/node/${encodeURIComponent(fnode)}/block/${encodeURIComponent(srctype)}`,
       {
         method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ content, expected_revision: revision }),
+        headers: { "content-type": "application/json", "if-match": `"${revision}"` },
+        body: JSON.stringify({ content }),
       },
     )),
   deleteBlock: (fnode: string, srctype: string, expectedRevision: string) =>
@@ -95,35 +95,37 @@ export const api = {
       `/api/node/${encodeURIComponent(fnode)}/block/${encodeURIComponent(srctype)}`,
       {
         method: "DELETE",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ expected_revision: revision }),
+        headers: { "if-match": `"${revision}"` },
       },
     )),
   putTitle: (fnode: string, title: string, expectedRevision: string) =>
     mutateNode(fnode, expectedRevision, (revision) => req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}/title`, {
       method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ title, expected_revision: revision }),
+      headers: { "content-type": "application/json", "if-match": `"${revision}"` },
+      body: JSON.stringify({ title }),
     })),
   addDep: (fnode: string, depFnode: string, expectedRevision: string) =>
-    mutateNode(fnode, expectedRevision, () => req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}/dep/add`, {
+    mutateNode(fnode, expectedRevision, (revision) => req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}/dep/add`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "if-match": `"${revision}"` },
       body: JSON.stringify({ dep_fnode: depFnode }),
     })),
   rmDeps: (fnode: string, depFnodes: string[], expectedRevision: string) =>
-    mutateNode(fnode, expectedRevision, () => req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}/dep/rm`, {
+    mutateNode(fnode, expectedRevision, (revision) => req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}/dep/rm`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "if-match": `"${revision}"` },
       body: JSON.stringify({ dep_fnodes: depFnodes }),
     })),
   newNode: (
     params: { title: string; file?: string; parent_fnode?: string },
     expectedRevision?: string,
   ) => {
-    const create = () => req<NodeDetail>(`/api/node/new`, {
+    const create = (revision?: string) => req<NodeDetail>(`/api/node/new`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...(revision ? { "if-match": `"${revision}"` } : {}),
+      },
       body: JSON.stringify(params),
     });
     return params.parent_fnode && expectedRevision

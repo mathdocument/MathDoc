@@ -32,10 +32,10 @@ describe("node mutations", () => {
     await Promise.all([first, second]);
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    const firstBody = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
-    const secondBody = JSON.parse(fetchMock.mock.calls[1]![1]!.body as string);
-    expect(firstBody.expected_revision).toBe("revision-1");
-    expect(secondBody.expected_revision).toBe("revision-2");
+    const firstHeaders = fetchMock.mock.calls[0]![1]!.headers as Record<string, string>;
+    const secondHeaders = fetchMock.mock.calls[1]![1]!.headers as Record<string, string>;
+    expect(firstHeaders["if-match"]).toBe('"revision-1"');
+    expect(secondHeaders["if-match"]).toBe('"revision-2"');
   });
 
   it("preserves the latest revision after a queued write fails", async () => {
@@ -54,7 +54,22 @@ describe("node mutations", () => {
     const results = await Promise.allSettled([first, second, third]);
 
     expect(results.map((result) => result.status)).toEqual(["fulfilled", "rejected", "fulfilled"]);
-    const thirdBody = JSON.parse(fetchMock.mock.calls[2]![1]!.body as string);
-    expect(thirdBody.expected_revision).toBe("revision-2");
+    const thirdHeaders = fetchMock.mock.calls[2]![1]!.headers as Record<string, string>;
+    expect(thirdHeaders["if-match"]).toBe('"revision-2"');
+  });
+
+  it("sends preconditions for relationship mutations", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(jsonResponse("revision-2"))
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.addDep("parent", "child", "revision-1");
+    await api.newNode({ title: "Child", parent_fnode: "parent" }, "revision-1");
+
+    for (const call of fetchMock.mock.calls) {
+      const headers = call[1]!.headers as Record<string, string>;
+      expect(headers["if-match"]).toBeDefined();
+    }
   });
 });
