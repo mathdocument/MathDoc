@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
 use axum::body::Body;
-#[cfg(not(feature = "dev-web"))]
 use axum::http::Uri;
 use axum::http::{Request, StatusCode};
 use tempfile::TempDir;
@@ -100,6 +99,15 @@ async fn get_json(app: &axum::Router, path: &str) -> (StatusCode, serde_json::Va
     (status, val)
 }
 
+async fn get_node(app: &axum::Router, fnode: &str) -> (StatusCode, serde_json::Value) {
+    let (status, view) = get_json(app, &format!("/api/node/{fnode}/view")).await;
+    if status == StatusCode::OK {
+        (status, view["node"].clone())
+    } else {
+        (status, view)
+    }
+}
+
 async fn mutation_revision(
     app: &axum::Router,
     path: &str,
@@ -116,7 +124,7 @@ async fn mutation_revision(
     } else {
         path.strip_prefix("/api/node/")?.split('/').next()?
     };
-    let (status, detail) = get_json(app, &format!("/api/node/{fnode}")).await;
+    let (status, detail) = get_node(app, fnode).await;
     Some(
         (status == StatusCode::OK)
             .then(|| detail["revision"].as_str().map(str::to_string))
@@ -345,7 +353,7 @@ async fn api_errors_use_json_status_contract() {
     let dir = TempDir::new().unwrap();
     let (_root, app) = build_app(&dir);
 
-    let (status, value) = get_json(&app, "/api/node/missing-node").await;
+    let (status, value) = get_node(&app, "missing-node").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(value["error"], "node not found");
 
@@ -393,7 +401,6 @@ async fn spa_index_is_not_cached() {
 }
 
 #[tokio::test]
-#[cfg(not(feature = "dev-web"))]
 async fn embedded_index_assets_use_release_mime_and_cache_policy() {
     let dir = TempDir::new().unwrap();
     let (_root, app) = build_app(&dir);
@@ -701,35 +708,6 @@ async fn graph_check_reports_the_cache_until_explicit_workspace_refresh() {
 }
 
 #[tokio::test]
-async fn node_detail_returns_blocks_and_depens() {
-    let dir = TempDir::new().unwrap();
-    let (root, app) = build_app(&dir);
-
-    // Find the fnode of Main Theorem.
-    let (_, roots) = get_json(&app, "/api/graph/roots").await;
-    let main = roots
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|r| r["title"] == "Main Theorem")
-        .unwrap();
-    let fnode = main["fnode"].as_str().unwrap();
-
-    let (status, val) = get_json(&app, &format!("/api/node/{}", fnode)).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(val["title"], "Main Theorem");
-    assert_eq!(val["blocks"][0]["srctype"], "latex");
-    assert_eq!(val["blocks"][0]["content"], "y = 2\n");
-    assert_eq!(val["depens"], serde_json::json!([]));
-    assert_eq!(
-        val["formalization"],
-        serde_json::json!({ "lean": "no_code", "rocq": "no_code" })
-    );
-
-    let _ = root;
-}
-
-#[tokio::test]
 async fn resolve_ref_with_prefix_works() {
     let dir = TempDir::new().unwrap();
     let (_root, app) = build_app(&dir);
@@ -774,6 +752,9 @@ async fn node_view_returns_detail_referrers_and_children_together() {
     )
     .await;
     assert_eq!(view["node"]["title"], "Main Theorem");
+    assert_eq!(view["node"]["blocks"][0]["srctype"], "latex");
+    assert_eq!(view["node"]["blocks"][0]["content"], "y = 2\n");
+    assert_eq!(view["node"]["depens"], serde_json::json!([]));
     assert_eq!(view["node"]["formalization"]["lean"], "no_code");
     assert!(view["referrers"].as_array().unwrap().is_empty());
     assert!(view["children"].as_array().unwrap().is_empty());
@@ -808,7 +789,7 @@ async fn node_view_returns_detail_referrers_and_children_together() {
 }
 
 #[tokio::test]
-async fn node_detail_and_view_refresh_same_fnode_file_generation() {
+async fn node_view_refreshes_same_fnode_file_generation() {
     let dir = TempDir::new().unwrap();
     let (root, app) = build_app(&dir);
     let (_, roots) = get_json(&app, "/api/graph/roots").await;
@@ -838,20 +819,8 @@ async fn node_detail_and_view_refresh_same_fnode_file_generation() {
     assert_eq!(status, StatusCode::OK);
 
     rewrite_preserving_mtime_and_size(&main_path, |node| {
-        node.title = "Main Revised".to_string();
-        node.depens = vec![replacement_fnode.clone()];
-        node.blocks[0].content = "z = 3\n".to_string();
-    });
-
-    let (status, detail) = get_json(&app, &format!("/api/node/{main_fnode}")).await;
-    assert_eq!(status, StatusCode::OK, "detail={detail}");
-    assert_eq!(detail["title"], "Main Revised");
-    assert_eq!(detail["depens"], serde_json::json!([replacement_fnode]));
-    assert_eq!(detail["blocks"][0]["content"], "z = 3\n");
-
-    rewrite_preserving_mtime_and_size(&main_path, |node| {
         node.title = "View Version".to_string();
-        node.depens = vec![background_fnode.to_string()];
+        node.depens = vec![replacement_fnode.clone()];
         node.blocks[0].content = "w = 4\n".to_string();
     });
 
@@ -860,18 +829,18 @@ async fn node_detail_and_view_refresh_same_fnode_file_generation() {
     assert_eq!(view["node"]["title"], "View Version");
     assert_eq!(
         view["node"]["depens"],
-        serde_json::json!([background_fnode])
+        serde_json::json!([replacement_fnode])
     );
     assert_eq!(view["node"]["blocks"][0]["content"], "w = 4\n");
     assert!(view["referrers"].as_array().unwrap().is_empty());
     let children = view["children"].as_array().unwrap();
     assert_eq!(children.len(), 1);
-    assert_eq!(children[0]["fnode"], background_fnode);
-    assert_eq!(children[0]["title"], "Background Lemma");
+    assert_eq!(children[0]["fnode"], replacement_fnode);
+    assert_eq!(children[0]["title"], "Replacement Lemma");
 }
 
 #[tokio::test]
-async fn node_detail_repairs_index_after_external_fnode_change() {
+async fn node_view_repairs_index_after_external_fnode_change() {
     let dir = TempDir::new().unwrap();
     let (root, app) = build_app(&dir);
     let (_, roots) = get_json(&app, "/api/graph/roots").await;
@@ -889,17 +858,17 @@ async fn node_detail_repairs_index_after_external_fnode_change() {
         node.fnode = new_fnode.clone();
     });
 
-    let (status, _) = get_json(&app, &format!("/api/node/{old_fnode}")).await;
+    let (status, _) = get_node(&app, old_fnode).await;
     assert_eq!(status, StatusCode::CONFLICT);
 
-    let (status, detail) = get_json(&app, &format!("/api/node/{new_fnode}")).await;
+    let (status, detail) = get_node(&app, &new_fnode).await;
     assert_eq!(status, StatusCode::OK, "detail={detail}");
     assert_eq!(detail["fnode"], new_fnode);
     assert_eq!(detail["title"], "Main Theorem");
 }
 
 #[tokio::test]
-async fn fresh_node_read_discovers_external_nodes() {
+async fn node_view_discovers_external_nodes() {
     let dir = TempDir::new().unwrap();
     let (root, app) = build_app(&dir);
     let (status, _) = get_json(&app, "/api/graph/roots").await;
@@ -908,13 +877,13 @@ async fn fresh_node_read_discovers_external_nodes() {
     let fnode = external.fnode.clone();
     write_node(&external);
 
-    let (status, detail) = get_json(&app, &format!("/api/node/{fnode}?fresh=true")).await;
+    let (status, detail) = get_node(&app, &fnode).await;
     assert_eq!(status, StatusCode::OK, "detail={detail}");
     assert_eq!(detail["title"], "External Node");
 }
 
 #[tokio::test]
-async fn node_detail_and_view_classify_malformed_nodes_as_validation_errors() {
+async fn node_view_classifies_malformed_nodes_as_validation_errors() {
     let dir = TempDir::new().unwrap();
     let (root, app) = build_app(&dir);
     let (_, roots) = get_json(&app, "/api/graph/roots").await;
@@ -932,11 +901,9 @@ async fn node_detail_and_view_classify_malformed_nodes_as_validation_errors() {
     )
     .unwrap();
 
-    for suffix in ["", "/view"] {
-        let (status, value) = get_json(&app, &format!("/api/node/{fnode}{suffix}")).await;
-        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(value["error"], "node is structurally invalid");
-    }
+    let (status, value) = get_node(&app, fnode).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(value["error"], "node is structurally invalid");
 }
 
 #[tokio::test]
@@ -968,7 +935,7 @@ async fn malformed_same_metadata_read_repairs_the_index() {
     assert_eq!(current.len(), metadata.len());
     assert_eq!(current.modified().unwrap(), modified);
 
-    let (status, value) = get_json(&app, &format!("/api/node/{fnode}")).await;
+    let (status, value) = get_node(&app, fnode).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(value["error"], "node is structurally invalid");
 
@@ -1030,7 +997,7 @@ async fn put_block_creates_and_updates_block() {
     assert_eq!(text_block["content"], "updated\n");
 
     // Verify persistence on disk via a fresh GET.
-    let (_, fresh) = get_json(&app, &format!("/api/node/{}", fnode)).await;
+    let (_, fresh) = get_node(&app, fnode).await;
     let text_block = fresh["blocks"]
         .as_array()
         .unwrap()
@@ -1091,7 +1058,7 @@ async fn fabricated_artifacts_never_restore_verified_status() {
     let cache = IndCache::open(root).unwrap();
     let app = web::server::router(web::AppState::new(cache));
 
-    let (_, initial) = get_json(&app, &format!("/api/node/{}", node.fnode)).await;
+    let (_, initial) = get_node(&app, &node.fnode).await;
     assert_eq!(initial["formalization"]["lean"], "unverified");
 
     let (status, changed) = send_json(
@@ -1232,7 +1199,7 @@ async fn malformed_delete_bodies_do_not_bypass_revision_validation() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "value={value}");
     }
 
-    let (_, detail) = get_json(&app, &format!("/api/node/{fnode}")).await;
+    let (_, detail) = get_node(&app, fnode).await;
     assert!(detail["blocks"]
         .as_array()
         .unwrap()
@@ -1287,7 +1254,7 @@ async fn node_mutations_require_if_match_and_node_reads_return_etags() {
         .clone()
         .oneshot(
             local_request()
-                .uri(format!("/api/node/{fnode}"))
+                .uri(format!("/api/node/{fnode}/view"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1300,7 +1267,7 @@ async fn node_mutations_require_if_match_and_node_reads_return_etags() {
     let detail: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(
         etag,
-        format!("\"{}\"", detail["revision"].as_str().unwrap())
+        format!("\"{}\"", detail["node"]["revision"].as_str().unwrap())
     );
 
     let response = app
@@ -1329,7 +1296,7 @@ async fn stale_client_revision_cannot_overwrite_an_external_edit() {
         .find(|node| node["title"] == "Main Theorem")
         .unwrap();
     let fnode = main["fnode"].as_str().unwrap();
-    let (_, detail) = get_json(&app, &format!("/api/node/{fnode}")).await;
+    let (_, detail) = get_node(&app, fnode).await;
     let revision = detail["revision"].as_str().unwrap();
     let path = root.join(detail["rel_path"].as_str().unwrap());
     let mut external = MdocNode::load(&path).unwrap();
@@ -1365,7 +1332,7 @@ async fn stale_block_revisions_cannot_overwrite_an_external_edit() {
             .find(|node| node["title"] == "Main Theorem")
             .unwrap();
         let fnode = main["fnode"].as_str().unwrap();
-        let (_, detail) = get_json(&app, &format!("/api/node/{fnode}")).await;
+        let (_, detail) = get_node(&app, fnode).await;
         let revision = detail["revision"].as_str().unwrap();
         let path = root.join(detail["rel_path"].as_str().unwrap());
         let mut external = MdocNode::load(&path).unwrap();
@@ -1407,7 +1374,7 @@ async fn title_write_restores_file_when_index_update_fails() {
         .as_str()
         .unwrap()
         .to_string();
-    let (_, detail) = get_json(&app, &format!("/api/node/{fnode}")).await;
+    let (_, detail) = get_node(&app, &fnode).await;
     let path = root.join(detail["rel_path"].as_str().unwrap());
     let original_title = MdocNode::load(&path).unwrap().title;
 
@@ -1489,7 +1456,7 @@ async fn concurrent_stale_block_updates_are_rejected() {
         ("lean", "lean body"),
         ("rocq", "rocq body"),
     ];
-    let (_, detail) = get_json(&app, &format!("/api/node/{fnode}")).await;
+    let (_, detail) = get_node(&app, &fnode).await;
     let revision = detail["revision"].as_str().unwrap().to_string();
     let barrier = Arc::new(Barrier::new(updates.len() + 1));
     let mut tasks = Vec::new();
@@ -1529,7 +1496,7 @@ async fn concurrent_stale_block_updates_are_rejected() {
         3
     );
 
-    let (_, node) = get_json(&app, &format!("/api/node/{fnode}")).await;
+    let (_, node) = get_node(&app, &fnode).await;
     let srctypes: std::collections::HashSet<&str> = node["blocks"]
         .as_array()
         .unwrap()
@@ -1576,11 +1543,6 @@ async fn add_and_remove_dep_via_api() {
         .as_array()
         .unwrap()
         .contains(&serde_json::json!(bg_fnode)));
-
-    // Children column should now show Background.
-    let (_, children) = get_json(&app, &format!("/api/node/{}/children", main_fnode)).await;
-    assert_eq!(children.as_array().unwrap().len(), 1);
-    assert_eq!(children[0]["title"], "Background Lemma");
 
     // Adding the same dep again is an idempotent success.
     let (status, val) = send_json(
@@ -1635,7 +1597,7 @@ async fn stale_parent_revision_rejects_dependency_and_linked_creation() {
         .unwrap();
     let main_fnode = main["fnode"].as_str().unwrap();
     let background_fnode = background["fnode"].as_str().unwrap();
-    let (_, detail) = get_json(&app, &format!("/api/node/{main_fnode}")).await;
+    let (_, detail) = get_node(&app, main_fnode).await;
     let revision = detail["revision"].as_str().unwrap();
     let path = root.join(detail["rel_path"].as_str().unwrap());
     let mut external = MdocNode::load(&path).unwrap();
@@ -1695,7 +1657,7 @@ async fn duplicate_dep_returns_the_persisted_noncanonical_revision() {
         .unwrap();
     let main_fnode = main["fnode"].as_str().unwrap();
     let background_fnode = background["fnode"].as_str().unwrap();
-    let (_, detail) = get_json(&app, &format!("/api/node/{main_fnode}")).await;
+    let (_, detail) = get_node(&app, main_fnode).await;
     let path = root.join(detail["rel_path"].as_str().unwrap());
     let mut node = MdocNode::load(&path).unwrap();
     node.add_dependency(background_fnode);
@@ -1708,7 +1670,7 @@ async fn duplicate_dep_returns_the_persisted_noncanonical_revision() {
         serde_json::json!({ "dep_fnode": background_fnode }),
     )
     .await;
-    let (_, fresh) = get_json(&app, &format!("/api/node/{main_fnode}")).await;
+    let (_, fresh) = get_node(&app, main_fnode).await;
 
     assert_eq!(status, StatusCode::OK, "duplicate={duplicate}");
     assert_eq!(duplicate["revision"], fresh["revision"]);

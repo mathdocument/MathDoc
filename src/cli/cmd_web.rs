@@ -6,7 +6,7 @@ use crate::indcache::IndCache;
 use crate::web;
 
 /// `mdc serve` — start the interactive web frontend.
-pub(super) fn cmd_serve(source: Option<String>, bind: String, no_open: bool) -> Result<i32> {
+pub(super) fn cmd_serve(source: Option<String>, bind: String) -> Result<i32> {
     let _profile = crate::profile::scope("cli::cmd_serve");
     let mut cache = IndCache::open(require_mdcroot()?)?;
 
@@ -24,12 +24,7 @@ pub(super) fn cmd_serve(source: Option<String>, bind: String, no_open: bool) -> 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    rt.block_on(web::server::serve(
-        cache,
-        &bind,
-        !no_open,
-        initial_fnode.as_deref(),
-    ))?;
+    rt.block_on(web::server::serve(cache, &bind, initial_fnode.as_deref()))?;
     Ok(0)
 }
 

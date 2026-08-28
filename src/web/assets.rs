@@ -2,11 +2,7 @@ use axum::http::header;
 use axum::http::{HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 
-/// Embedded frontend assets (release builds).
-///
-/// In `dev-web` builds this module is unused — `tower-http ServeDir` serves
-/// `web/` directly so Vite hot-reload works. The struct still needs to compile,
-/// so we point rust-embed at the committed production build in `web/dist`.
+/// Embedded frontend assets.
 #[derive(rust_embed::RustEmbed)]
 #[folder = "web/dist"]
 #[prefix = ""]

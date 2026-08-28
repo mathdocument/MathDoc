@@ -44,8 +44,6 @@ export type SearchQuery = { q: string, n?: number, };
 
 export type ResolveQuery = { ref: string, };
 
-export type FreshQuery = { fresh?: boolean, };
-
 export type BlockBody = { content: string, };
 
 export type TitleBody = { title: string, };

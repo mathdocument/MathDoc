@@ -140,9 +140,6 @@ enum Commands {
         /// Bind address. Default 127.0.0.1:0 picks a free port.
         #[arg(long, default_value = "127.0.0.1:0")]
         bind: String,
-        /// Do not auto-open the browser.
-        #[arg(long)]
-        no_open: bool,
     },
 }
 
@@ -249,11 +246,7 @@ fn dispatch(cmd: Commands) -> Result<i32> {
             DepCommands::Rm { source, target } => cmd_deps::cmd_dep_rm(source, target),
             DepCommands::Refs { target, depth } => cmd_deps::cmd_dep_refs(target, depth),
         },
-        Commands::Serve {
-            source,
-            bind,
-            no_open,
-        } => cmd_web::cmd_serve(source, bind, no_open),
+        Commands::Serve { source, bind } => cmd_web::cmd_serve(source, bind),
     }
 }
 
