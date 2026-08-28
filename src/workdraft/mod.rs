@@ -772,8 +772,8 @@ fn back_with_cache(
     }
     let mut manifest = loaded.manifest;
     if let Some(cache) = cache.as_deref_mut() {
-        if cache.workdraft_index_is_dirty()? {
-            cache.recover_workdraft_index()?;
+        if cache.index_is_dirty()? {
+            cache.recover_index()?;
         }
     }
     if manifest.sources.is_empty() {
@@ -993,7 +993,7 @@ fn back_with_cache(
     let write_count = node_writes.len();
     if updated_mdocs != 0 {
         if let Some(cache) = cache.as_deref_mut() {
-            cache.set_workdraft_index_dirty(true)?;
+            cache.set_index_dirty(true)?;
         }
     }
     {
@@ -1050,7 +1050,7 @@ fn back_with_cache(
     }
     if index_refreshed {
         if let Some(cache) = cache {
-            cache.set_workdraft_index_dirty(false)?;
+            cache.set_index_dirty(false)?;
         }
     }
     Ok(BackReport {

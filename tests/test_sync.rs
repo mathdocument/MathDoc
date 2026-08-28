@@ -155,7 +155,7 @@ fn back_imports_multiple_mdocs_and_clears_index_recovery_state() {
     let dirty: bool = rusqlite::Connection::open(root.join(".mdc/index.db"))
         .unwrap()
         .query_row(
-            "SELECT index_dirty FROM mdoc_workdraft_state WHERE id = 1",
+            "SELECT index_dirty FROM mdoc_index_state WHERE id = 1",
             [],
             |row| row.get(0),
         )
@@ -226,7 +226,7 @@ fn ordinary_cache_open_repairs_an_index_update_interrupted_after_reconciliation(
         .execute_batch(
             "UPDATE mdocs SET title = 'Stale', title_lc = 'stale'
              WHERE path = 'data/A.mdoc';
-             UPDATE mdoc_workdraft_state SET index_dirty = 1 WHERE id = 1;",
+             UPDATE mdoc_index_state SET index_dirty = 1 WHERE id = 1;",
         )
         .unwrap();
     drop(connection);
@@ -241,7 +241,7 @@ fn ordinary_cache_open_repairs_an_index_update_interrupted_after_reconciliation(
     let (title, dirty): (String, bool) = connection
         .query_row(
             "SELECT m.title, s.index_dirty
-             FROM mdocs m CROSS JOIN mdoc_workdraft_state s
+             FROM mdocs m CROSS JOIN mdoc_index_state s
              WHERE m.path = 'data/A.mdoc' AND s.id = 1",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),

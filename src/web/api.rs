@@ -1148,7 +1148,7 @@ mod tests {
             assert_eq!(std::fs::read(&path).unwrap(), external_bytes);
 
             let summary = cache.node_summary(&fnode).unwrap();
-            assert_eq!(summary.title, "Original");
+            assert_eq!(summary.title, format!("External edit during {operation}"));
         }
     }
 

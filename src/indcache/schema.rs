@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 22;
+const SCHEMA_VERSION: i32 = 23;
 const FIRST_INCREMENTAL_SCHEMA_VERSION: i32 = 17;
 const MIN_SQLITE_VERSION_NUMBER: i32 = 3_051_003;
 
@@ -67,8 +67,7 @@ CREATE TABLE IF NOT EXISTS mdoc_workdraft_state (
     id              INTEGER PRIMARY KEY CHECK (id = 1),
     manifest_digest BLOB    NOT NULL DEFAULT X'',
     valid_mdocs     INTEGER NOT NULL DEFAULT 0 CHECK (valid_mdocs >= 0),
-    source_files    INTEGER NOT NULL DEFAULT 0 CHECK (source_files >= 0),
-    index_dirty     INTEGER NOT NULL DEFAULT 0 CHECK (index_dirty IN (0, 1))
+    source_files    INTEGER NOT NULL DEFAULT 0 CHECK (source_files >= 0)
 );
 INSERT OR IGNORE INTO mdoc_workdraft_state (id) VALUES (1);
 
@@ -128,7 +127,8 @@ CREATE TABLE IF NOT EXISTS mdoc_index_state (
     graph_epoch          INTEGER NOT NULL DEFAULT 0,
     weak_component_dirty INTEGER NOT NULL DEFAULT 1,
     index_digest         TEXT    NOT NULL DEFAULT '',
-    document_count       INTEGER NOT NULL DEFAULT 0 CHECK (document_count >= 0)
+    document_count       INTEGER NOT NULL DEFAULT 0 CHECK (document_count >= 0),
+    index_dirty          INTEGER NOT NULL DEFAULT 0 CHECK (index_dirty IN (0, 1))
 );
 INSERT OR IGNORE INTO mdoc_index_state (id, bootstrapped) VALUES (1, 0);
 
@@ -374,6 +374,9 @@ fn apply_schema(conn: &mut Connection) -> Result<()> {
             tx.execute_batch(MIGRATE_20_TO_21_SQL)?;
         }
         tx.execute_batch(CREATE_SQL)?;
+        if user_version < 23 {
+            migrate_index_dirty(&tx)?;
+        }
         if rebuild_search {
             tx.execute(
                 "INSERT INTO mdoc_search(mdoc_search) VALUES ('rebuild')",
@@ -384,6 +387,39 @@ fn apply_schema(conn: &mut Connection) -> Result<()> {
     }
 
     tx.commit()?;
+    Ok(())
+}
+
+fn migrate_index_dirty(conn: &Connection) -> Result<()> {
+    let index_has_marker: bool = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM pragma_table_info('mdoc_index_state') WHERE name = 'index_dirty'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if !index_has_marker {
+        conn.execute_batch(
+            "ALTER TABLE mdoc_index_state
+                 ADD COLUMN index_dirty INTEGER NOT NULL DEFAULT 0
+                 CHECK (index_dirty IN (0, 1));",
+        )?;
+    }
+    let workdraft_has_marker: bool = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM pragma_table_info('mdoc_workdraft_state') WHERE name = 'index_dirty'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if workdraft_has_marker {
+        conn.execute_batch(
+            "UPDATE mdoc_index_state
+             SET index_dirty = (SELECT index_dirty FROM mdoc_workdraft_state WHERE id = 1)
+             WHERE id = 1;
+             ALTER TABLE mdoc_workdraft_state DROP COLUMN index_dirty;",
+        )?;
+    }
     Ok(())
 }
 
@@ -1048,6 +1084,55 @@ mod tests {
             })
             .unwrap();
         assert_eq!(state_rows, 1);
+    }
+
+    #[test]
+    fn schema_twenty_two_moves_the_dirty_marker_without_discarding_rows() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("index.db");
+        let conn = open_db(&path).unwrap();
+        conn.execute(
+            "INSERT INTO mdocs (path, fnode, title, title_lc) VALUES (?, ?, ?, ?)",
+            ["node.mdoc", "node", "Node", "node"],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "ALTER TABLE mdoc_workdraft_state
+                 ADD COLUMN index_dirty INTEGER NOT NULL DEFAULT 0
+                 CHECK (index_dirty IN (0, 1));
+             UPDATE mdoc_workdraft_state SET index_dirty = 1 WHERE id = 1;
+             ALTER TABLE mdoc_index_state DROP COLUMN index_dirty;
+             PRAGMA user_version = 22;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open_db(&path).unwrap();
+
+        assert_eq!(checked_user_version(&conn).unwrap(), SCHEMA_VERSION);
+        let dirty: bool = conn
+            .query_row(
+                "SELECT index_dirty FROM mdoc_index_state WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(dirty);
+        let workdraft_has_marker: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM pragma_table_info('mdoc_workdraft_state')
+                     WHERE name = 'index_dirty'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!workdraft_has_marker);
+        let nodes: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mdocs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(nodes, 1);
     }
 
     #[test]

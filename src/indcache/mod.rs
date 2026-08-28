@@ -212,8 +212,8 @@ impl IndCache {
             conn,
         };
         cache.validate_mutation_lock(mutation_lock)?;
-        if cache.workdraft_index_is_dirty()? {
-            cache.recover_workdraft_index()?;
+        if cache.index_is_dirty()? {
+            cache.recover_index()?;
         } else if refresh {
             cache.refresh_all()?;
         } else {
@@ -292,10 +292,10 @@ impl IndCache {
         }))
     }
 
-    pub(crate) fn workdraft_index_is_dirty(&self) -> Result<bool> {
+    pub(crate) fn index_is_dirty(&self) -> Result<bool> {
         self.require_current_database()?;
         let dirty = self.conn.query_row(
-            "SELECT index_dirty FROM mdoc_workdraft_state WHERE id = 1",
+            "SELECT index_dirty FROM mdoc_index_state WHERE id = 1",
             [],
             |row| row.get(0),
         )?;
@@ -303,24 +303,24 @@ impl IndCache {
         Ok(dirty)
     }
 
-    pub(crate) fn set_workdraft_index_dirty(&mut self, dirty: bool) -> Result<()> {
+    pub(crate) fn set_index_dirty(&mut self, dirty: bool) -> Result<()> {
         self.require_current_database()?;
         self.conn.execute(
-            "UPDATE mdoc_workdraft_state SET index_dirty = ? WHERE id = 1",
+            "UPDATE mdoc_index_state SET index_dirty = ? WHERE id = 1",
             [dirty],
         )?;
         self.require_current_database()?;
         Ok(())
     }
 
-    pub(crate) fn recover_workdraft_index(&mut self) -> Result<()> {
+    pub(crate) fn recover_index(&mut self) -> Result<()> {
         self.require_current_database()?;
         self.conn.execute(
             "UPDATE mdoc_index_state SET index_digest = '' WHERE id = 1",
             [],
         )?;
         self.refresh_all()?;
-        self.set_workdraft_index_dirty(false)
+        self.set_index_dirty(false)
     }
 
     pub(crate) fn store_workdraft_observations(
@@ -636,8 +636,23 @@ impl IndCache {
         snapshot: &crate::workspace::FileSnapshot,
     ) -> Result<crate::workspace::AppliedWrite> {
         self.validate_mutation_lock(mutation_lock)?;
+        self.set_index_dirty(true)?;
         let created = matches!(snapshot, crate::workspace::FileSnapshot::Missing);
-        let applied = snapshot.replace_beneath(&self.root, path, payload)?;
+        let applied = match snapshot.replace_beneath(&self.root, path, payload) {
+            Ok(applied) => applied,
+            Err(error) => {
+                let index_repair = self
+                    .validate_mutation_lock(mutation_lock)
+                    .and_then(|_| self.recover_index());
+                return Err(crate::workspace::PersistenceRecoveryError::from_attempts(
+                    error,
+                    Ok(()),
+                    index_repair,
+                    &format!("restore {}", path.display()),
+                    &format!("repair the index for {}", path.display()),
+                ));
+            }
+        };
         let index_error = match self.upsert_path(path) {
             Ok(()) => {
                 crate::workspace::run_test_hook(
@@ -656,7 +671,10 @@ impl IndCache {
                         path.display()
                     )
                 }) {
-                    Ok(()) => return Ok(applied),
+                    Ok(()) => {
+                        self.set_index_dirty(false)?;
+                        return Ok(applied);
+                    }
                     Err(error) => error,
                 }
             }
@@ -673,7 +691,8 @@ impl IndCache {
         let restore_index_result = match lock_validation {
             Ok(()) => self
                 .upsert_path(path)
-                .and_then(|_| self.validate_mutation_lock(mutation_lock)),
+                .and_then(|_| self.validate_mutation_lock(mutation_lock))
+                .and_then(|_| self.set_index_dirty(false)),
             Err(error) => Err(error),
         };
         let rollback_action = if created { "remove" } else { "restore" };
@@ -1531,6 +1550,7 @@ mod mutation_boundary_tests {
 
         assert!(path.is_file());
         assert_eq!(cache.exact_fnode_rows("created-node").unwrap().len(), 1);
+        assert!(!cache.index_is_dirty().unwrap());
     }
 
     #[test]
@@ -1558,6 +1578,7 @@ mod mutation_boundary_tests {
         assert!(error.to_string().contains("injected index failure"));
         assert!(!path.exists());
         assert!(cache.exact_fnode_rows("created-node").unwrap().is_empty());
+        assert!(!cache.index_is_dirty().unwrap());
     }
 
     #[test]

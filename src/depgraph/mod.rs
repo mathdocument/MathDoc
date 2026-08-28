@@ -672,7 +672,7 @@ mod mutation_conflict_tests {
             assert_eq!(std::fs::read(&external.path).unwrap(), external_bytes);
 
             let summary = graph.cache.node_summary(&source_fnode).unwrap();
-            assert_eq!(summary.title, "Source");
+            assert_eq!(summary.title, "External edit");
         }
     }
 
