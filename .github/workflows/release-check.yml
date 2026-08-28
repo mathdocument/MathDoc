@@ -68,5 +68,7 @@ jobs:
       - name: Install stable Rust
         run: rustup toolchain install stable --profile minimal --no-self-update
 
-      - name: Test release inputs
-        run: cargo +stable test --locked
+      - name: Test Rust feature paths
+        run: |
+          cargo +stable test --locked
+          cargo +stable test --locked --features dev-web
