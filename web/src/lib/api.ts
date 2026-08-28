@@ -3,14 +3,20 @@
 // server's { error: string } message.
 
 import type {
+  AddDepBody,
+  BlockBody,
   DependencyCandidates,
+  ErrorResponse,
   GraphCheckReport,
   GraphFull,
   GraphRootItem,
+  NewNodeBody,
   NodeDetail,
   NodeInfo,
   NodeView,
   ResolveResponse,
+  RmDepBody,
+  TitleBody,
 } from "./types";
 
 export function isAbortError(error: unknown): boolean {
@@ -31,7 +37,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   if (!resp.ok) {
     const msg =
       typeof body === "object" && body !== null && "error" in body
-        ? String((body as { error: unknown }).error)
+        ? String((body as ErrorResponse).error)
         : `HTTP ${resp.status}`;
     throw new Error(msg);
   }
@@ -57,6 +63,29 @@ function mutateNode(
     if (nodeMutationTails.get(fnode) === tail) nodeMutationTails.delete(fnode);
   });
   return response;
+}
+
+function newNode(
+  params: NewNodeBody & { parent_fnode: string },
+  expectedRevision: string,
+): Promise<NodeDetail>;
+function newNode(
+  params: NewNodeBody & { parent_fnode?: null },
+): Promise<NodeDetail>;
+function newNode(params: NewNodeBody, expectedRevision?: string): Promise<NodeDetail> {
+  const create = (revision?: string) => req<NodeDetail>(`/api/node/new`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(revision ? { "if-match": `"${revision}"` } : {}),
+    },
+    body: JSON.stringify(params),
+  });
+  if (params.parent_fnode) {
+    if (!expectedRevision) throw new Error("linked node creation requires a revision");
+    return mutateNode(params.parent_fnode, expectedRevision, create);
+  }
+  return create();
 }
 
 export const api = {
@@ -88,7 +117,7 @@ export const api = {
       {
         method: "PUT",
         headers: { "content-type": "application/json", "if-match": `"${revision}"` },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content } satisfies BlockBody),
       },
     )),
   deleteBlock: (fnode: string, srctype: string, expectedRevision: string) =>
@@ -103,34 +132,19 @@ export const api = {
     mutateNode(fnode, expectedRevision, (revision) => req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}/title`, {
       method: "PUT",
       headers: { "content-type": "application/json", "if-match": `"${revision}"` },
-      body: JSON.stringify({ title }),
+      body: JSON.stringify({ title } satisfies TitleBody),
     })),
   addDep: (fnode: string, depFnode: string, expectedRevision: string) =>
     mutateNode(fnode, expectedRevision, (revision) => req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}/dep/add`, {
       method: "POST",
       headers: { "content-type": "application/json", "if-match": `"${revision}"` },
-      body: JSON.stringify({ dep_fnode: depFnode }),
+      body: JSON.stringify({ dep_fnode: depFnode } satisfies AddDepBody),
     })),
   rmDeps: (fnode: string, depFnodes: string[], expectedRevision: string) =>
     mutateNode(fnode, expectedRevision, (revision) => req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}/dep/rm`, {
       method: "POST",
       headers: { "content-type": "application/json", "if-match": `"${revision}"` },
-      body: JSON.stringify({ dep_fnodes: depFnodes }),
+      body: JSON.stringify({ dep_fnodes: depFnodes } satisfies RmDepBody),
     })),
-  newNode: (
-    params: { title: string; file?: string; parent_fnode?: string },
-    expectedRevision?: string,
-  ) => {
-    const create = (revision?: string) => req<NodeDetail>(`/api/node/new`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(revision ? { "if-match": `"${revision}"` } : {}),
-      },
-      body: JSON.stringify(params),
-    });
-    return params.parent_fnode && expectedRevision
-      ? mutateNode(params.parent_fnode, expectedRevision, create)
-      : create();
-  },
+  newNode,
 };

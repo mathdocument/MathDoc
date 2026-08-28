@@ -29,6 +29,7 @@ macro_rules! bail {
 
 /// Full node detail returned by `GET /api/node/:fnode`.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub(super) struct NodeDetail {
     fnode: String,
     title: String,
@@ -45,6 +46,7 @@ pub(super) struct NodeDetail {
 
 /// Focused node data needed by the three-column browser in one response.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub(super) struct NodeView {
     node: NodeDetail,
     referrers: Vec<NodeSummary>,
@@ -71,10 +73,11 @@ impl<T: Serialize> IntoResponse for Revisioned<T> {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub(super) struct SearchQuery {
     q: String,
-    #[serde(default = "default_n")]
-    n: usize,
+    #[cfg_attr(test, ts(optional))]
+    n: Option<usize>,
 }
 fn default_n() -> usize {
     200
@@ -82,6 +85,7 @@ fn default_n() -> usize {
 const MAX_SEARCH_RESULTS: usize = 200;
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub(super) struct ResolveResponse {
     fnode: String,
     title: String,
@@ -90,6 +94,7 @@ pub(super) struct ResolveResponse {
 
 /// Full workspace graph: nodes + edges, for the force-directed view.
 #[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub(super) struct GraphFull {
     nodes: Vec<NodeSummary>,
     edges: Vec<[usize; 2]>,
@@ -106,6 +111,12 @@ enum ApiErrorKind {
     PreconditionRequired,
     PreconditionFailed,
     Internal,
+}
+
+#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+struct ErrorResponse {
+    error: String,
 }
 
 #[derive(Debug)]
@@ -271,7 +282,9 @@ impl IntoResponse for ApiError {
         }
         (
             status,
-            Json(serde_json::json!({ "error": self.public_message })),
+            Json(ErrorResponse {
+                error: self.public_message,
+            }),
         )
             .into_response()
     }
@@ -311,7 +324,13 @@ pub(super) async fn normalize_error_response(
 }
 
 fn json_error_response(status: StatusCode, message: &str) -> Response {
-    (status, Json(serde_json::json!({ "error": message }))).into_response()
+    (
+        status,
+        Json(ErrorResponse {
+            error: message.to_string(),
+        }),
+    )
+        .into_response()
 }
 
 fn required_if_match(headers: &HeaderMap) -> ApiResult<String> {
@@ -492,7 +511,10 @@ pub(super) async fn graph_full(
     State(state): State<AppState>,
     Query(fresh): Query<FreshQuery>,
 ) -> ApiResult<Json<GraphFull>> {
-    let required_after = fresh.fresh.then(std::time::Instant::now);
+    let required_after = fresh
+        .fresh
+        .unwrap_or_default()
+        .then(std::time::Instant::now);
     spawn_blocking_api(move || {
         let _profile = crate::profile::scope("web::api::graph_full");
         let (nodes, edges) = with_cache(&state, |c| {
@@ -530,7 +552,7 @@ pub(super) async fn search(
     Query(q): Query<SearchQuery>,
 ) -> ApiResult<Json<Vec<NodeSummary>>> {
     spawn_blocking_api(move || {
-        let limit = q.n.min(MAX_SEARCH_RESULTS);
+        let limit = q.n.unwrap_or_else(default_n).min(MAX_SEARCH_RESULTS);
         let out = with_cache(&state, |c| {
             refresh_read_index(&state, c, None)?;
             c.search(&q.q, limit)
@@ -541,14 +563,16 @@ pub(super) async fn search(
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub(super) struct ResolveQuery {
     r#ref: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub(super) struct FreshQuery {
-    #[serde(default)]
-    fresh: bool,
+    #[cfg_attr(test, ts(optional))]
+    fresh: Option<bool>,
 }
 
 pub(super) async fn resolve_ref(
@@ -577,7 +601,10 @@ pub(super) async fn node_detail(
     Path(fnode): Path<String>,
     Query(fresh): Query<FreshQuery>,
 ) -> ApiResult<Revisioned<NodeDetail>> {
-    let required_after = fresh.fresh.then(std::time::Instant::now);
+    let required_after = fresh
+        .fresh
+        .unwrap_or_default()
+        .then(std::time::Instant::now);
     spawn_blocking_api(move || {
         let mut cache = state
             .cache
@@ -607,7 +634,10 @@ pub(super) async fn node_view(
     Path(fnode): Path<String>,
     Query(fresh): Query<FreshQuery>,
 ) -> ApiResult<Revisioned<NodeView>> {
-    let required_after = fresh.fresh.then(std::time::Instant::now);
+    let required_after = fresh
+        .fresh
+        .unwrap_or_default()
+        .then(std::time::Instant::now);
     spawn_blocking_api(move || {
         let _profile = crate::profile::scope("web::api::node_view");
         let mut cache = state
@@ -723,7 +753,7 @@ pub(super) async fn node_dependency_candidates(
     Query(q): Query<SearchQuery>,
 ) -> ApiResult<Json<DependencyCandidates>> {
     spawn_blocking_api(move || {
-        let limit = q.n.min(MAX_SEARCH_RESULTS);
+        let limit = q.n.unwrap_or_else(default_n).min(MAX_SEARCH_RESULTS);
         let mut cache = state
             .cache
             .lock()
@@ -811,12 +841,14 @@ pub(super) async fn node_put_title(
 // ── Write helpers ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub(super) struct BlockBody {
     content: String,
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub(super) struct TitleBody {
     title: String,
@@ -935,6 +967,7 @@ fn save_and_index(
 // ── Dependency mutation handlers ──────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub(super) struct AddDepBody {
     dep_fnode: String,
@@ -984,6 +1017,7 @@ pub(super) async fn node_add_dep(
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub(super) struct RmDepBody {
     dep_fnodes: Vec<String>,
@@ -1026,6 +1060,8 @@ pub(super) async fn node_rm_deps(
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(test, ts(optional_fields = nullable))]
 #[serde(deny_unknown_fields)]
 pub(super) struct NewNodeBody {
     title: String,
@@ -1103,6 +1139,53 @@ pub(super) async fn node_new(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_types_are_current() {
+        use ts_rs::{Config, TS};
+
+        let config = Config::default();
+        let declarations = [
+            NodeSummary::decl(&config),
+            crate::core::FormalCodeStatus::decl(&config),
+            FormalizationStatus::decl(&config),
+            crate::core::DependencyCandidatesEmpty::decl(&config),
+            DependencyCandidates::decl(&config),
+            GraphRootItem::decl(&config),
+            crate::core::IssueKind::decl(&config),
+            crate::core::GraphIssue::decl(&config),
+            GraphCheckReport::decl(&config),
+            crate::mdocnode::SrcBlock::decl(&config),
+            NodeDetail::decl(&config),
+            NodeView::decl(&config),
+            ResolveResponse::decl(&config),
+            GraphFull::decl(&config),
+            SearchQuery::decl(&config),
+            ResolveQuery::decl(&config),
+            FreshQuery::decl(&config),
+            BlockBody::decl(&config),
+            TitleBody::decl(&config),
+            AddDepBody::decl(&config),
+            RmDepBody::decl(&config),
+            NewNodeBody::decl(&config),
+            ErrorResponse::decl(&config),
+        ];
+        let generated = format!(
+            "// @generated by Rust; do not edit.\n\nexport {}\n",
+            declarations.join("\n\nexport ")
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("web/src/lib/api-types.generated.ts");
+        if std::env::var_os("UPDATE_API_TYPES").is_some() {
+            std::fs::write(path, generated).unwrap();
+            return;
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            generated,
+            "API types changed; regenerate with UPDATE_API_TYPES=1 cargo test web::api::tests::api_types_are_current -- --exact"
+        );
+    }
 
     fn setup_state() -> (tempfile::TempDir, AppState, std::path::PathBuf, String) {
         let dir = tempfile::TempDir::new().unwrap();

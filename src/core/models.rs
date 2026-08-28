@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct NodeSummary {
     pub fnode: String,
     pub title: String,
@@ -18,6 +19,7 @@ pub struct NodeDegrees {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum FormalCodeStatus {
     #[default]
@@ -27,12 +29,14 @@ pub enum FormalCodeStatus {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct FormalizationStatus {
     pub lean: FormalCodeStatus,
     pub rocq: FormalCodeStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct DependencyCandidates {
     pub nodes: Vec<NodeSummary>,
     /// `None` when `nodes` is non-empty; otherwise explains why no node was returned.
@@ -40,6 +44,7 @@ pub struct DependencyCandidates {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DependencyCandidatesEmpty {
     NoMatch,
@@ -63,6 +68,7 @@ pub struct DependencyItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct GraphRootItem {
     pub fnode: String,
     pub title: String,
@@ -75,12 +81,14 @@ pub struct GraphRootItem {
 /// Issue kind surfaced through the API.
 /// "duplicate" and "broken" are internal DB/depgraph states; both map to Invalid here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub enum IssueKind {
     Missing,
     Invalid,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct GraphIssue {
     pub kind: IssueKind,
     pub fnode: String,
@@ -90,6 +98,7 @@ pub struct GraphIssue {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct GraphCheckReport {
     pub nodes: u32,
     pub edges: u32,
