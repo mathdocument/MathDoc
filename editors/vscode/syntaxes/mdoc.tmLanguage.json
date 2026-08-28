@@ -1,9 +1,6 @@
 {
   "name": "mdoc",
   "scopeName": "source.mdoc",
-  "fileTypes": [
-    "mdoc"
-  ],
   "patterns": [
     {
       "include": "#directive-fnode"
