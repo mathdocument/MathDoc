@@ -15,20 +15,19 @@
   } from "@lucide/svelte";
   import {
     navigate,
-    withViewTransition,
     appState,
+    nodeSession,
     canGoBack,
     canGoForward,
     cancelNavigation,
+    clearSelection,
     refreshFocused,
     browserHistoryEntry,
     browserHistoryTarget,
     commitClearedHistory,
-    commitFocusedHistory,
     initialHistoryOptions,
     type BrowserHistoryEntry,
     type BrowserHistoryMode,
-    type LoadState,
   } from "./lib/state.svelte";
   import { api } from "./lib/api";
   import NodeColumn from "./components/NodeColumn.svelte";
@@ -38,12 +37,11 @@
   import RmDepOverlay from "./components/RmDepOverlay.svelte";
   import NewNodeOverlay from "./components/NewNodeOverlay.svelte";
   import DepthGraph from "./components/DepthGraph.svelte";
-  import type { GraphCheckReport, NodeDetail, SrcBlock } from "./lib/types";
+  import type { GraphCheckReport, NodeDetail } from "./lib/types";
   import {
     confirmDiscardDrafts,
     hasUnsavedDrafts,
     settlePendingMutations,
-    unsavedDraftRevision,
   } from "./lib/unsaved";
   import { applyTheme, currentTheme, observeTheme, type Theme } from "./lib/theme";
 
@@ -77,19 +75,9 @@
   let forceEditorMounted = $state(false);
   let resolveColumnsEditorReady: (() => void) | null = null;
   let resolveForceEditorReady: (() => void) | null = null;
-  // Selected fnode in the force graph (drives the side editor panel).
-  let forceSelectedFnode = $state<string | null>(null);
   // Increment after dependency mutations to refresh the graph data.
   let graphRevision = $state(0);
-  let forceLoadRequest = 0;
-  let forceSelectionRequest = 0;
-  let forceRefreshRequest = 0;
-  let relationRequest = 0;
   let viewSwitchDone: Promise<void> | null = null;
-  let forceRelationsDirty = false;
-  // NodeDetail for the force-graph side panel (fetched on selection).
-  let forceNodeLoad = $state<LoadState>({ kind: "idle" });
-  let forceEditorRevision = $state(0);
   let graphIssueCount = $derived(
     graphCheck
       ? graphCheck.missing.length + graphCheck.invalid.length + graphCheck.cycles.length
@@ -212,9 +200,6 @@
       const request = ++popstateRequest;
       cancelStartup();
       cancelNavigation();
-      forceLoadRequest++;
-      forceSelectionRequest++;
-      forceRefreshRequest++;
       refreshRequest++;
       if (restoringHistory) {
         restoringHistory = false;
@@ -372,9 +357,9 @@
       if (request !== refreshRequest) return;
       const checked = await refreshGraphCheck(true);
       if (request !== refreshRequest) return;
-      const refreshed = view === "force"
-        ? await refreshForceNodeRaw(true, !checked)
-        : await refreshCurrent(true, !checked);
+      const selectionWasCleared = nodeSession.selectionCleared;
+      const refreshed = await refreshCurrent(true, !checked);
+      if (selectionWasCleared && view === "force") nodeSession.selectionCleared = true;
       if (request !== refreshRequest) return;
       if (refreshed || checked) graphRevision++;
       if (!refreshed) refreshError = "refresh request failed";
@@ -383,125 +368,18 @@
     }
   }
 
-  function refreshForceNode(node: NodeDetail, graphChanged = false) {
-    if (node.fnode !== forceSelectedFnode) return;
-    forceLoadRequest++;
-    if (graphChanged) graphRevision++;
-    forceNodeLoad = { kind: "ready", node };
-    markCachedRelationsDirty(node.fnode);
-  }
-
-  function refreshColumnNode(node: NodeDetail, graphChanged = false) {
+  function refreshNode(node: NodeDetail, graphChanged = false) {
     if (graphChanged) graphRevision++;
     refreshFocused(node);
   }
 
-  async function refreshForceNodeRaw(
-    skipUnsavedGuard = false,
-    forceDiscovery = true,
-  ): Promise<boolean> {
-    if (!forceSelectedFnode) return true;
-    if (!skipUnsavedGuard && !confirmDiscardDrafts()) return false;
-    const targetFnode = forceSelectedFnode;
-    forceLoadRequest++;
-    const request = ++forceRefreshRequest;
-    if (!await settlePendingMutations()) return false;
-    if (request !== forceRefreshRequest || forceSelectedFnode !== targetFnode) return false;
-    const confirmedDraftRevision = unsavedDraftRevision();
-    try {
-      const node = await api.node(targetFnode, forceDiscovery);
-      if (request !== forceRefreshRequest || forceSelectedFnode !== targetFnode) return false;
-      if (unsavedDraftRevision() !== confirmedDraftRevision) return false;
-      forceEditorRevision++;
-      forceNodeLoad = { kind: "ready", node };
-      markCachedRelationsDirty(node.fnode);
-      return true;
-    } catch (e) {
-      if (request === forceRefreshRequest && forceSelectedFnode === targetFnode) {
-        forceNodeLoad = { kind: "error", message: e instanceof Error ? e.message : String(e) };
-      }
-      return false;
-    }
-  }
-
-  async function refreshReusedForceNode(
-    targetFnode: string,
-    request: number,
-    draftRevision: number,
-  ) {
-    try {
-      const node = await api.node(targetFnode);
-      if (request !== forceLoadRequest || forceSelectedFnode !== targetFnode) return;
-      if (unsavedDraftRevision() !== draftRevision) return;
-      forceNodeLoad = { kind: "ready", node };
-      markCachedRelationsDirty(node.fnode);
-    } catch {
-      // Keep the already displayed Knowledge snapshot if background refresh fails.
-    }
-  }
-
-  function sameBlocks(left: SrcBlock[], right: SrcBlock[]): boolean {
-    return left.length === right.length && left.every((block, index) => {
-      const other = right[index];
-      if (!other || block.srctype !== other.srctype || block.content !== other.content) {
-        return false;
-      }
-      const keys = Object.keys(block.metadata).sort();
-      const otherKeys = Object.keys(other.metadata).sort();
-      return keys.length === otherKeys.length &&
-        keys.every((key, keyIndex) =>
-          key === otherKeys[keyIndex] && block.metadata[key] === other.metadata[key]);
-    });
-  }
-
-  function relationUpdate(current: NodeDetail, updated: NodeDetail): NodeDetail {
-    const blocksUnchanged = sameBlocks(current.blocks, updated.blocks);
-    const contentUnchanged = current.title === updated.title && blocksUnchanged;
-    if (!contentUnchanged) {
-      refreshError = "dependencies updated, but node content changed externally; refresh before editing";
-      return {
-        ...current,
-        broken: updated.broken,
-        depth: updated.depth,
-        depens: updated.depens,
-        formalization: blocksUnchanged ? updated.formalization : current.formalization,
-      };
-    }
-    return updated;
-  }
-
-  function markCachedRelationsDirty(fnode: string) {
-    if (appState.load.kind === "ready" && appState.load.node.fnode === fnode) {
-      relationRequest++;
-      forceRelationsDirty = true;
-    }
-  }
-
   function afterDepMutation(updated: NodeDetail, delta: { nodes: number; edges: number }) {
-    const request = ++relationRequest;
     refreshError = null;
     graphRevision++;
     applyGraphStatsDelta(delta.nodes, delta.edges);
-    if (forceNodeLoad.kind === "ready" && forceNodeLoad.node.fnode === updated.fnode) {
-      forceNodeLoad = { kind: "ready", node: relationUpdate(forceNodeLoad.node, updated) };
-    }
-    if (appState.load.kind === "ready" && appState.load.node.fnode === updated.fnode) {
-      refreshFocused(relationUpdate(appState.load.node, updated));
-    }
-    forceRelationsDirty = true;
-    if (appState.load.kind !== "ready" || appState.load.node.fnode !== updated.fnode) return;
-    const editorRevision = appState.editorRevision;
-    const isCurrentRelation = () => request === relationRequest &&
-      appState.editorRevision === editorRevision &&
-      appState.load.kind === "ready" && appState.load.node.fnode === updated.fnode;
-    void api.nodeView(updated.fnode).then((nodeView) => {
-      if (!isCurrentRelation()) return;
-      appState.referrers = { items: nodeView.referrers, selected: -1 };
-      appState.children = { items: nodeView.children, selected: -1 };
-      forceRelationsDirty = false;
-    }).catch((e) => {
-      if (!isCurrentRelation()) return;
-      refreshError = e instanceof Error ? e.message : String(e);
+    refreshFocused(updated);
+    void nodeSession.syncView(updated.fnode).catch((error) => {
+      refreshError = error instanceof Error ? error.message : String(error);
     });
   }
 
@@ -517,14 +395,10 @@
 
   // The fnode that toolbar actions operate on, regardless of view.
   let activeFnode = $derived(
-    view === "force"
-      ? forceSelectedFnode
-      : appState.load.kind === "ready" ? appState.load.node.fnode : null,
+    view === "force" ? nodeSession.selectedFnode : nodeSession.node?.fnode ?? null,
   );
   let activeNode = $derived(
-    view === "force"
-      ? forceNodeLoad.kind === "ready" ? forceNodeLoad.node : null
-      : appState.load.kind === "ready" ? appState.load.node : null,
+    view === "force" && nodeSession.selectionCleared ? null : nodeSession.node,
   );
   // Whether the active node is editable (non-broken).
   let activeReady = $derived(activeFnode !== null && activeNode !== null && !activeNode.broken);
@@ -539,13 +413,7 @@
   });
 
   let statusText = $derived.by(() => {
-    if (view === "force") {
-      const s = forceNodeLoad;
-      if (s.kind === "ready") return `${s.node.title}  ·  ${s.node.fnode.slice(0, 8)}`;
-      if (s.kind === "error") return `error: ${s.message}`;
-      return "";
-    }
-    const s = appState.load;
+    const s = view === "force" ? nodeSession.selectedLoad : nodeSession.load;
     if (s.kind === "ready") {
       return `${s.node.title}  ·  ${s.node.fnode.slice(0, 8)}`;
     }
@@ -564,64 +432,7 @@
     } = {},
   ): Promise<boolean> {
     cancelStartup();
-    if (!opts.skipUnsavedGuard && !confirmDiscardDrafts()) return false;
-    forceLoadRequest++;
-    forceRefreshRequest++;
-    const request = ++forceSelectionRequest;
-    if (!await settlePendingMutations()) return false;
-    if (request !== forceSelectionRequest) return false;
-    const confirmedDraftRevision = unsavedDraftRevision();
-    if (!fnode) {
-      let committed = false;
-      await withViewTransition("neutral", () => {
-        if (request !== forceSelectionRequest) return;
-        if (unsavedDraftRevision() !== confirmedDraftRevision) return;
-        forceEditorRevision++;
-        forceSelectedFnode = null;
-        forceNodeLoad = { kind: "idle" };
-        commitClearedHistory({
-          pushHistory: opts.pushHistory,
-          historyIndex: opts.historyIndex,
-          historyEntries: opts.historyEntries,
-          browserHistory: opts.browserHistory,
-        });
-        appState.navigationError = null;
-        appState.failedNavigationFnode = null;
-        if (initialNavigationRetry?.fnode === fnode) initialNavigationRetry = null;
-        committed = true;
-      }, "force-editor");
-      return committed;
-    }
-    try {
-      const node = await api.node(fnode);
-      if (request !== forceSelectionRequest) return false;
-      if (unsavedDraftRevision() !== confirmedDraftRevision) return false;
-      let committed = false;
-      await withViewTransition("neutral", () => {
-        if (request !== forceSelectionRequest || committed) return;
-        if (unsavedDraftRevision() !== confirmedDraftRevision) return;
-        forceEditorRevision++;
-        forceSelectedFnode = fnode;
-        forceNodeLoad = { kind: "ready", node };
-        markCachedRelationsDirty(node.fnode);
-        commitFocusedHistory(fnode, {
-          pushHistory: opts.pushHistory,
-          historyIndex: opts.historyIndex,
-          historyEntries: opts.historyEntries,
-          browserHistory: opts.browserHistory,
-        });
-        appState.navigationError = null;
-        appState.failedNavigationFnode = null;
-        committed = true;
-      }, "force-editor");
-      return committed;
-    } catch (e) {
-      if (request !== forceSelectionRequest) return false;
-      if (unsavedDraftRevision() !== confirmedDraftRevision) return false;
-      appState.navigationError = e instanceof Error ? e.message : String(e);
-      appState.failedNavigationFnode = fnode;
-      return false;
-    }
+    return fnode ? navigate(fnode, opts) : clearSelection(opts);
   }
 
   async function toggleGraphView() {
@@ -629,8 +440,6 @@
     cancelStartup();
     viewSwitching = true;
     cancelNavigation();
-    forceSelectionRequest++;
-    forceRefreshRequest++;
     let resolveViewSwitch: () => void;
     const switchDone = new Promise<void>((resolve) => {
       resolveViewSwitch = resolve;
@@ -639,26 +448,11 @@
     try {
       if (!await settlePendingMutations()) return;
       if (view === "columns") {
-        // Reuse the node already displayed by Knowledge. The graph data loads
-        // progressively after the view changes, so switching never waits for
-        // a full-workspace fetch or layout pass.
-        const forceRequest = ++forceLoadRequest;
-        if (appState.load.kind === "ready") {
-          const node = appState.load.node;
+        if (nodeSession.node) {
           const entry = browserHistoryEntry(window.history.state);
           const selectionWasCleared = entry?.fnode === null &&
-            browserHistoryTarget(entry) === node.fnode;
-          if (selectionWasCleared) {
-            forceSelectedFnode = null;
-            forceNodeLoad = { kind: "idle" };
-          } else {
-            forceSelectedFnode = node.fnode;
-            forceNodeLoad = { kind: "ready", node };
-            commitFocusedHistory(node.fnode, { pushHistory: false });
-          }
-        } else {
-          forceSelectedFnode = null;
-          forceNodeLoad = { kind: "idle" };
+            browserHistoryTarget(entry) === nodeSession.node.fnode;
+          nodeSession.selectionCleared = selectionWasCleared;
         }
         const editorReady = new Promise<void>((resolve) => {
           resolveForceEditorReady = resolve;
@@ -670,31 +464,9 @@
         await tick();
         columnsMounted = false;
         await tick();
-        if (forceSelectedFnode) {
-          void refreshReusedForceNode(
-            forceSelectedFnode,
-            forceRequest,
-            unsavedDraftRevision(),
-          );
-        }
       } else {
-        // Keep the complete graph view visible until the column data is ready.
-        forceLoadRequest++;
-        const target = forceSelectedFnode ?? appState.history[appState.historyIdx] ?? null;
-        const canReuseColumns = target !== null &&
-          appState.load.kind === "ready" &&
-          appState.load.node.fnode === target &&
-          !forceRelationsDirty;
-        if (canReuseColumns && forceNodeLoad.kind === "ready") {
-          refreshFocused(forceNodeLoad.node);
-        } else if (target) {
-          const navigated = await navigate(target, {
-            pushHistory: false,
-            skipTransition: true,
-            skipUnsavedGuard: true,
-          });
-          if (!navigated) return;
-        }
+        // The backing NodeView remains loaded when graph selection is cleared.
+        nodeSession.selectionCleared = false;
         const editorReady = new Promise<void>((resolve) => {
           resolveColumnsEditorReady = resolve;
         });
@@ -704,10 +476,6 @@
         view = "columns";
         await tick();
         forceEditorMounted = false;
-        forceSelectedFnode = null;
-        forceLoadRequest++;
-        forceNodeLoad = { kind: "idle" };
-        forceRelationsDirty = false;
       }
     } finally {
       resolveViewSwitch!();
@@ -872,18 +640,18 @@
           active={view === "force"}
           {theme}
           onSelect={onForceSelect}
-          selectedFnode={forceSelectedFnode}
+          selectedFnode={nodeSession.selectedFnode}
           revision={graphRevision}
         />
     </div>
     <div class="force-editor-wrap">
       {#if forceEditorMounted}
-        {#key forceEditorRevision}
+        {#key nodeSession.editorRevision}
           <EditorPane
-            load={forceNodeLoad}
+            load={nodeSession.selectedLoad}
             {theme}
             active={view === "force"}
-            onRefresh={refreshForceNode}
+            onRefresh={refreshNode}
             onReady={markForceEditorReady}
           />
         {/key}
@@ -909,14 +677,14 @@
         accent="up"
         lastVisitedFnode={appState.lastVisitedFnode}
         onSelect={(fnode) => { cancelStartup(); return navigate(fnode, { direction: "up" }); }}
-        onHover={(i) => (appState.referrers.selected = i)}
+        onHover={(i) => (appState.referrersSelected = i)}
       />
       {#key appState.editorRevision}
         <EditorPane
           load={appState.load}
           {theme}
           active={view === "columns"}
-          onRefresh={refreshColumnNode}
+          onRefresh={refreshNode}
           onReady={markColumnsEditorReady}
         />
       {/key}
@@ -927,7 +695,7 @@
         accent="down"
         lastVisitedFnode={appState.lastVisitedFnode}
         onSelect={(fnode) => { cancelStartup(); return navigate(fnode, { direction: "down" }); }}
-        onHover={(i) => (appState.children.selected = i)}
+        onHover={(i) => (appState.childrenSelected = i)}
       />
     {/if}
   </main>

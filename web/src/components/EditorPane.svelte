@@ -46,37 +46,17 @@
 
   function applySavedBlock(updated: NodeDetail) {
     if (load.kind !== "ready" || load.node.fnode !== updated.fnode) return;
-    const updatedBlocks = new Map(updated.blocks.map((block) => [block.srctype, block]));
-    onRefresh?.({
-      ...load.node,
-      revision: updated.revision,
-      formalization: updated.formalization,
-      blocks: load.node.blocks.map((block) => updatedBlocks.get(block.srctype) ?? block),
-    });
+    onRefresh?.(updated);
   }
 
-  function applyDeletedBlock(updated: NodeDetail, srctype: string) {
+  function applyDeletedBlock(updated: NodeDetail) {
     if (load.kind !== "ready" || load.node.fnode !== updated.fnode) return;
-    onRefresh?.({
-      ...load.node,
-      revision: updated.revision,
-      formalization: updated.formalization,
-      blocks: load.node.blocks.filter((block) => block.srctype !== srctype),
-    });
+    onRefresh?.(updated);
   }
 
   function applyAddedBlock(updated: NodeDetail) {
     if (load.kind !== "ready" || load.node.fnode !== updated.fnode) return;
-    const existing = new Set(load.node.blocks.map((block) => block.srctype));
-    onRefresh?.({
-      ...load.node,
-      revision: updated.revision,
-      formalization: updated.formalization,
-      blocks: [
-        ...load.node.blocks,
-        ...updated.blocks.filter((block) => !existing.has(block.srctype)),
-      ],
-    });
+    onRefresh?.(updated);
   }
 
   function reportReady() {
@@ -173,9 +153,7 @@
     try {
       const updated = await api.putTitle(targetFnode, newTitle, load.node.revision);
       if (!isCurrent() || load.kind !== "ready") return;
-      // A title write returns the whole node, but unrelated block drafts may
-      // be newer than the blocks in that response.
-      onRefresh?.({ ...load.node, title: updated.title, revision: updated.revision }, true);
+      onRefresh?.(updated, true);
       editingTitle = false;
     } catch (e) {
       if (isCurrent()) titleError = errMsg(e);

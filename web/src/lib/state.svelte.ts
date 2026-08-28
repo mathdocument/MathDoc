@@ -1,4 +1,4 @@
-import type { NodeDetail, NodeInfo } from "./types";
+import type { NodeDetail, NodeInfo, NodeView } from "./types";
 import { api } from "./api";
 import {
   confirmDiscardDrafts,
@@ -26,22 +26,152 @@ export interface ColumnState {
   selected: number; // -1 = none
 }
 
-function emptyColumn(): ColumnState {
-  return { items: [], selected: -1 };
+interface NavigateOptions {
+  pushHistory?: boolean;
+  direction?: "up" | "down" | "neutral";
+  skipTransition?: boolean;
+  skipUnsavedGuard?: boolean;
+  historyIndex?: number;
+  historyEntries?: string[];
+  browserHistory?: BrowserHistoryMode;
+  forceDiscovery?: boolean;
 }
 
-export const appState = $state({
-  load: { kind: "idle" } as LoadState,
-  referrers: emptyColumn(),
-  children: emptyColumn(),
-  history: [] as string[],
-  historyIdx: -1,
-  editorRevision: 0,
+export class NodeSession {
+  snapshot = $state<NodeView | null>(null);
+  selectionCleared = $state(false);
+  history = $state<string[]>([]);
+  historyIdx = $state(-1);
+  editorRevision = $state(0);
   /** fnode of the previously focused node — highlighted in columns. */
-  lastVisitedFnode: null as string | null,
-  navigationError: null as string | null,
-  failedNavigationFnode: null as string | null,
-});
+  lastVisitedFnode = $state<string | null>(null);
+  navigationError = $state<string | null>(null);
+  failedNavigationFnode = $state<string | null>(null);
+  referrersSelected = $state(-1);
+  childrenSelected = $state(-1);
+  private loadError = $state<string | null>(null);
+  private navigationRequest = 0;
+  private syncRequest = 0;
+
+  get load(): LoadState {
+    if (this.snapshot) return { kind: "ready", node: this.snapshot.node };
+    return this.loadError ? { kind: "error", message: this.loadError } : { kind: "idle" };
+  }
+
+  get selectedLoad(): LoadState {
+    return this.selectionCleared ? { kind: "idle" } : this.load;
+  }
+
+  get node(): NodeDetail | null {
+    return this.snapshot?.node ?? null;
+  }
+
+  get selectedFnode(): string | null {
+    return this.selectionCleared ? null : this.node?.fnode ?? null;
+  }
+
+  get referrers(): ColumnState {
+    return { items: this.snapshot?.referrers ?? [], selected: this.referrersSelected };
+  }
+
+  get children(): ColumnState {
+    return { items: this.snapshot?.children ?? [], selected: this.childrenSelected };
+  }
+
+  cancel(): void {
+    this.navigationRequest++;
+    this.syncRequest++;
+  }
+
+  acceptNode(node: NodeDetail): void {
+    if (!this.snapshot || this.snapshot.node.fnode !== node.fnode) return;
+    this.syncRequest++;
+    this.snapshot = { ...this.snapshot, node };
+  }
+
+  async select(fnode: string, opts: NavigateOptions = {}): Promise<boolean> {
+    if (!opts.skipUnsavedGuard && !confirmDiscardDrafts()) return false;
+    const request = ++this.navigationRequest;
+    this.syncRequest++;
+    if (!await settlePendingMutations()) return false;
+    if (request !== this.navigationRequest) return false;
+
+    const confirmedDraftRevision = unsavedDraftRevision();
+    try {
+      const view = await api.nodeView(fnode, opts.forceDiscovery);
+      let committed = false;
+      const apply = () => {
+        if (request !== this.navigationRequest || committed) return;
+        if (unsavedDraftRevision() !== confirmedDraftRevision) return;
+        const leaving = this.node?.fnode ?? null;
+        if (leaving !== view.node.fnode) this.lastVisitedFnode = leaving;
+        this.editorRevision++;
+        this.snapshot = view;
+        this.selectionCleared = false;
+        this.loadError = null;
+        this.referrersSelected = -1;
+        this.childrenSelected = -1;
+        commitFocusedHistory(view.node.fnode, opts);
+        this.navigationError = null;
+        this.failedNavigationFnode = null;
+        committed = true;
+      };
+      if (opts.skipTransition) apply();
+      else await withViewTransition(opts.direction ?? "neutral", apply);
+      return committed;
+    } catch (error) {
+      if (request !== this.navigationRequest ||
+        unsavedDraftRevision() !== confirmedDraftRevision) return false;
+      this.navigationError = error instanceof Error ? error.message : String(error);
+      this.failedNavigationFnode = fnode;
+      if (!this.snapshot) this.loadError = this.navigationError;
+      return false;
+    }
+  }
+
+  async clearSelection(opts: NavigateOptions = {}): Promise<boolean> {
+    if (!opts.skipUnsavedGuard && !confirmDiscardDrafts()) return false;
+    const request = ++this.navigationRequest;
+    this.syncRequest++;
+    if (!await settlePendingMutations()) return false;
+    if (request !== this.navigationRequest) return false;
+    const confirmedDraftRevision = unsavedDraftRevision();
+    let committed = false;
+    await withViewTransition("neutral", () => {
+      if (request !== this.navigationRequest ||
+        unsavedDraftRevision() !== confirmedDraftRevision) return;
+      this.editorRevision++;
+      this.selectionCleared = true;
+      commitClearedHistory(opts);
+      this.navigationError = null;
+      this.failedNavigationFnode = null;
+      committed = true;
+    }, "force-editor");
+    return committed;
+  }
+
+  async syncView(fnode = this.node?.fnode): Promise<boolean> {
+    if (!fnode || this.node?.fnode !== fnode) return false;
+    const request = ++this.syncRequest;
+    const revision = this.node.revision;
+    const draftRevision = unsavedDraftRevision();
+    try {
+      const view = await api.nodeView(fnode);
+      if (request !== this.syncRequest || this.node?.fnode !== fnode ||
+        this.node.revision !== revision || unsavedDraftRevision() !== draftRevision) return false;
+      this.snapshot = view;
+      this.referrersSelected = -1;
+      this.childrenSelected = -1;
+      return true;
+    } catch (error) {
+      if (request !== this.syncRequest || this.node?.fnode !== fnode) return false;
+      throw error;
+    }
+  }
+}
+
+export const nodeSession = new NodeSession();
+export const appState = nodeSession;
 
 /** True if the current browser supports the View Transitions API. */
 function supportsViewTransitions(): boolean {
@@ -100,24 +230,22 @@ export async function withViewTransition(
   }
 }
 
-let navigationRequest = 0;
-
 export function cancelNavigation(): void {
-  navigationRequest++;
+  nodeSession.cancel();
 }
 
 export function initialHistoryOptions(fnode: string): {
   pushHistory: boolean;
   historyIndex?: number;
+  historyEntries?: string[];
   browserHistory: BrowserHistoryMode;
 } {
   const entry = browserHistoryEntry(window.history.state);
   if (entry && browserHistoryTarget(entry) === fnode) {
-    appState.history = [...entry.entries];
-    appState.historyIdx = entry.index;
     return {
       pushHistory: false,
       historyIndex: entry.index,
+      historyEntries: entry.entries,
       browserHistory: "replace",
     };
   }
@@ -197,81 +325,18 @@ export function commitClearedHistory(
 /** Navigate to a node by fnode. Updates the center, both columns, and history. */
 export async function navigate(
   fnode: string,
-  opts: {
-    pushHistory?: boolean;
-    direction?: "up" | "down" | "neutral";
-    skipTransition?: boolean;
-    skipUnsavedGuard?: boolean;
-    historyIndex?: number;
-    historyEntries?: string[];
-    browserHistory?: BrowserHistoryMode;
-    forceDiscovery?: boolean;
-  } = {},
+  opts: NavigateOptions = {},
 ): Promise<boolean> {
-  if (!opts.skipUnsavedGuard && !confirmDiscardDrafts()) return false;
-  const request = ++navigationRequest;
-  if (!await settlePendingMutations()) return false;
-  if (request !== navigationRequest) return false;
+  return nodeSession.select(fnode, opts);
+}
 
-  const confirmedDraftRevision = unsavedDraftRevision();
-  const push = opts.pushHistory ?? true;
-  const direction = opts.direction ?? "neutral";
-  const skipTransition = opts.skipTransition ?? false;
-
-  // Fetch new node data while keeping the old node visible.
-  // The old content stays on screen until the View Transition snapshot
-  // is taken (inside withViewTransition's callback), so there's no flash.
-  try {
-    const view = await api.nodeView(fnode, opts.forceDiscovery);
-
-    let committed = false;
-    const apply = () => {
-      if (request !== navigationRequest || committed) return;
-      if (unsavedDraftRevision() !== confirmedDraftRevision) return;
-      const leaving = appState.load.kind === "ready" ? appState.load.node.fnode : null;
-      if (leaving !== view.node.fnode) appState.lastVisitedFnode = leaving;
-      appState.editorRevision++;
-      appState.load = { kind: "ready", node: view.node };
-      appState.referrers = { items: view.referrers, selected: -1 };
-      appState.children = { items: view.children, selected: -1 };
-      commitFocusedHistory(fnode, {
-        pushHistory: push,
-        historyIndex: opts.historyIndex,
-        historyEntries: opts.historyEntries,
-        browserHistory: opts.browserHistory,
-      });
-      committed = true;
-      appState.navigationError = null;
-      appState.failedNavigationFnode = null;
-    };
-
-    if (skipTransition) {
-      apply();
-    } else {
-      await withViewTransition(direction, apply);
-    }
-    return committed;
-  } catch (e) {
-    if (request !== navigationRequest) return false;
-    appState.navigationError = e instanceof Error ? e.message : String(e);
-    appState.failedNavigationFnode = fnode;
-    // Keep an existing editor mounted on navigation failure; replacing it with
-    // an error page could discard drafts created while the request was pending.
-    if (appState.load.kind === "ready") return false;
-    appState.load = {
-      kind: "error",
-      message: appState.navigationError,
-    };
-    return false;
-  }
+export function clearSelection(opts: NavigateOptions = {}): Promise<boolean> {
+  return nodeSession.clearSelection(opts);
 }
 
 /** Refresh only the focused node detail after a write (no view transition). */
 export function refreshFocused(node: NodeDetail) {
-  // Replace the ready node in place so the editor doesn't remount.
-  if (appState.load.kind === "ready" && appState.load.node.fnode === node.fnode) {
-    appState.load = { kind: "ready", node };
-  }
+  nodeSession.acceptNode(node);
 }
 
 export function canGoBack(): boolean {
