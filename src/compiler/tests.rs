@@ -1,7 +1,15 @@
 use super::*;
 
 fn compile(srctype: &str, req: &CompilerReq) -> CompilerRes {
-    compile_with_receipt(srctype, req).0
+    compile_receipt(srctype, req).0
+}
+
+fn compile_receipt(
+    srctype: &str,
+    req: &CompilerReq,
+) -> (CompilerRes, Option<FormalCompilationReceipt>) {
+    let work_lock = crate::workspace::WorkspaceWorkLock::acquire(&req.mdcroot).unwrap();
+    compile_with_receipt(&work_lock, srctype, req)
 }
 
 fn make_req(mdcroot: &std::path::Path, srctype: &str) -> CompilerReq {
@@ -245,6 +253,7 @@ fn test_python_preserves_nested_script_import_and_main_semantics() {
 #[test]
 fn timed_compilers_reject_unresolved_configuration_without_panicking() {
     let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(tmp.path().join(".mdc")).unwrap();
 
     for srctype in ["python", "latex", "lean", "rocq"] {
         let req = CompilerReq {
@@ -375,7 +384,7 @@ fn test_lean_builds_imports_from_lib_tree() {
 
     let mut req = make_req(mdcroot, "lean");
     req.source = lib.join("data/A.lean");
-    let (result, formal_receipt) = compile_with_receipt("lean", &req);
+    let (result, formal_receipt) = compile_receipt("lean", &req);
 
     assert!(
         result.is_success(),
@@ -509,7 +518,7 @@ fn test_rocq_compiles_hello_world() {
         "Require Import Corelib.Init.Logic.\nTheorem trivial : True.\nProof. exact I. Qed.\n",
     );
     let req = make_req(mdcroot, "rocq");
-    let (res, receipt) = compile_with_receipt("rocq", &req);
+    let (res, receipt) = compile_receipt("rocq", &req);
     assert!(res.is_success(), "rocq compilation failed: {}", res.stderr);
     assert!(receipt
         .as_ref()
@@ -553,7 +562,7 @@ fn test_rocq_imports_previous_lib_build_artifacts() {
         dependency.stderr
     );
     req.source = lib.join("A.v");
-    let (result, formal_receipt) = compile_with_receipt("rocq", &req);
+    let (result, formal_receipt) = compile_receipt("rocq", &req);
     assert!(
         result.is_success(),
         "Rocq compilation failed: {}",

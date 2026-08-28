@@ -15,7 +15,7 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
         let mutation_lock = work_lock.acquire_mutation_lock()?;
         let mut cache = IndCache::open_refreshed_under_mutation_lock(&mutation_lock)?;
         let (source_fnode, _, source_path) = cache.resolve_ref(&source, Some(&cwd()))?;
-        let sync = crate::workdraft::sync_cached(&mutation_lock, &mut cache)?;
+        let sync = crate::workdraft::sync_cached(&work_lock, &mutation_lock, &mut cache)?;
         print_workdraft_issues(&sync.warnings);
         print_workdraft_issues(&sync.dirty);
         print_workdraft_issues(&sync.conflicts);
@@ -88,7 +88,8 @@ pub(super) fn cmd_work(source: String) -> Result<i32> {
             config: config.src_config(srctype),
             progress: Some(Box::new(compile_progress)),
         };
-        let (result, formal_receipt) = crate::compiler::compile_with_receipt(srctype, &req);
+        let (result, formal_receipt) =
+            crate::compiler::compile_with_receipt(&work_lock, srctype, &req);
         print_compile_result(&result);
         if let Some((_, succeeded, receipt)) = formal_outcomes
             .iter_mut()
@@ -139,7 +140,7 @@ pub(super) fn cmd_back() -> Result<i32> {
         let mutation_lock = work_lock.acquire_mutation_lock()?;
         let mut cache = IndCache::open_under_mutation_lock(&mutation_lock)?;
         cache.discover_workspace_changes()?;
-        let report = crate::workdraft::back_cached(&mutation_lock, &mut cache)?;
+        let report = crate::workdraft::back_cached(&work_lock, &mutation_lock, &mut cache)?;
         cache.refresh_formal_statuses()?;
         work_lock.require_current()?;
         report

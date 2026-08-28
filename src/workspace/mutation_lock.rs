@@ -220,6 +220,24 @@ impl WorkspaceWorkLock {
         Ok(mutation_lock)
     }
 
+    pub(crate) fn root(&self) -> Result<&Path> {
+        self.require_current()?;
+        Ok(&self.root)
+    }
+
+    pub(crate) fn validate_root(&self, expected_root: &Path) -> Result<()> {
+        let root = self.root()?;
+        let expected_root = super::validate_mdcroot(expected_root)?;
+        if root != expected_root {
+            bail!(
+                "workspace work lock root {} does not match requested root {}",
+                root.display(),
+                expected_root.display()
+            );
+        }
+        Ok(())
+    }
+
     pub(crate) fn require_current(&self) -> Result<()> {
         require_current_lock_file(
             &self.file,
@@ -410,6 +428,19 @@ mod tests {
 
         let error = lock.require_current().unwrap_err();
         assert!(crate::workspace::error_has_infrastructure_failure(&error));
+    }
+
+    #[test]
+    fn work_lock_rejects_another_workspace() {
+        let first = tempfile::TempDir::new().unwrap();
+        let second = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(first.path().join(".mdc")).unwrap();
+        std::fs::create_dir(second.path().join(".mdc")).unwrap();
+        let lock = WorkspaceWorkLock::acquire(first.path()).unwrap();
+
+        let error = lock.validate_root(second.path()).unwrap_err();
+
+        assert!(error.to_string().contains("does not match requested root"));
     }
 
     #[test]

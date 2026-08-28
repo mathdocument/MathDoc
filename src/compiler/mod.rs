@@ -106,10 +106,14 @@ impl CompilerRes {
 }
 
 pub(crate) fn compile_with_receipt(
+    work_lock: &crate::workspace::WorkspaceWorkLock,
     srctype: &str,
     req: &CompilerReq,
 ) -> (CompilerRes, Option<FormalCompilationReceipt>) {
-    match crate::config::canonical_srctype(srctype) {
+    if let Err(error) = work_lock.validate_root(&req.mdcroot) {
+        return (CompilerRes::err(format!("{error:#}")), None);
+    }
+    let result = match crate::config::canonical_srctype(srctype) {
         "text" => (text::compile(req), None),
         "python" => (python::compile(req), None),
         "latex" => (latex::compile(req), None),
@@ -119,7 +123,11 @@ pub(crate) fn compile_with_receipt(
             CompilerRes::err(format!("unknown srctype: {srctype}")),
             None,
         ),
+    };
+    if let Err(error) = work_lock.require_current() {
+        return (CompilerRes::err(format!("{error:#}")), None);
     }
+    result
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────────────

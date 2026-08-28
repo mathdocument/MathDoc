@@ -175,18 +175,21 @@ fn reconcile<'a>(
 }
 
 pub(crate) fn sync_cached(
+    work_lock: &crate::workspace::WorkspaceWorkLock,
     mutation_lock: &crate::workspace::WorkspaceMutationLock,
     cache: &mut crate::indcache::WorkspaceStore,
 ) -> Result<SyncReport> {
-    sync_with_cache(mutation_lock, Some(cache))
+    sync_with_cache(work_lock, mutation_lock, Some(cache))
 }
 
 fn sync_with_cache(
+    work_lock: &crate::workspace::WorkspaceWorkLock,
     mutation_lock: &crate::workspace::WorkspaceMutationLock,
     mut cache: Option<&mut crate::indcache::WorkspaceStore>,
 ) -> Result<SyncReport> {
     let _profile = crate::profile::scope("workdraft::sync");
     let mdcroot = mutation_lock.root()?.to_path_buf();
+    work_lock.validate_root(&mdcroot)?;
     let manifest_path = mdcroot.join(".mdc").join(MANIFEST_NAME);
     let (manifest_snapshot, loaded_manifest) = {
         let _phase = crate::profile::scope("workdraft::load_manifest");
@@ -748,18 +751,21 @@ fn join_snapshot_workers<T>(
 }
 
 pub(crate) fn back_cached(
+    work_lock: &crate::workspace::WorkspaceWorkLock,
     mutation_lock: &crate::workspace::WorkspaceMutationLock,
     cache: &mut crate::indcache::WorkspaceStore,
 ) -> Result<BackReport> {
-    back_with_cache(mutation_lock, Some(cache))
+    back_with_cache(work_lock, mutation_lock, Some(cache))
 }
 
 fn back_with_cache(
+    work_lock: &crate::workspace::WorkspaceWorkLock,
     mutation_lock: &crate::workspace::WorkspaceMutationLock,
     mut cache: Option<&mut crate::indcache::WorkspaceStore>,
 ) -> Result<BackReport> {
     let _profile = crate::profile::scope("workdraft::back");
     let mdcroot = mutation_lock.root()?.to_path_buf();
+    work_lock.validate_root(&mdcroot)?;
     let manifest_path = mdcroot.join(".mdc").join(MANIFEST_NAME);
     let (manifest_snapshot, loaded) = {
         let _phase = crate::profile::scope("workdraft::load_manifest");
@@ -1472,7 +1478,8 @@ mod tests {
             b"{\"version\":4,\"sources\":{}}\n",
         )
         .unwrap();
-        let lock = crate::workspace::WorkspaceMutationLock::acquire(&root).unwrap();
+        let work_lock = crate::workspace::WorkspaceWorkLock::acquire(&root).unwrap();
+        let lock = work_lock.acquire_mutation_lock().unwrap();
         let lock_path = control.join("mutation.lock");
         let displaced = control.join("displaced.lock");
         crate::workspace::set_test_hook(
@@ -1483,7 +1490,7 @@ mod tests {
             },
         );
 
-        let error = match back_with_cache(&lock, None) {
+        let error = match back_with_cache(&work_lock, &lock, None) {
             Ok(_) => panic!("replaced mutation lock should reject back"),
             Err(error) => error,
         };
@@ -1506,8 +1513,9 @@ mod tests {
         node.upsert_source_block("lean", "original\n".to_string())
             .unwrap();
         std::fs::write(&path, node.render().unwrap()).unwrap();
-        let lock = crate::workspace::WorkspaceMutationLock::acquire(&root).unwrap();
-        sync_with_cache(&lock, None).unwrap();
+        let work_lock = crate::workspace::WorkspaceWorkLock::acquire(&root).unwrap();
+        let lock = work_lock.acquire_mutation_lock().unwrap();
+        sync_with_cache(&work_lock, &lock, None).unwrap();
         let mirror = root.join(".mdc/lean/Lib/node.lean");
         std::fs::write(&mirror, "first edit\n").unwrap();
         let hook_mirror = mirror.clone();
@@ -1516,7 +1524,7 @@ mod tests {
             move || std::fs::write(hook_mirror, "second edit\n").unwrap(),
         );
 
-        let error = match back_with_cache(&lock, None) {
+        let error = match back_with_cache(&work_lock, &lock, None) {
             Ok(_) => panic!("expected concurrent mirror edit to be rejected"),
             Err(error) => error,
         };
