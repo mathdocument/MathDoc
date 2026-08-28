@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 23;
+const SCHEMA_VERSION: i32 = 24;
 const FIRST_INCREMENTAL_SCHEMA_VERSION: i32 = 17;
 const MIN_SQLITE_VERSION_NUMBER: i32 = 3_051_003;
 
@@ -29,7 +29,6 @@ CREATE VIRTUAL TABLE IF NOT EXISTS mdoc_search USING fts5(
     detail = none,
     columnsize = 0
 );
-CREATE VIRTUAL TABLE IF NOT EXISTS mdoc_search_vocab USING fts5vocab(mdoc_search, 'row');
 CREATE TRIGGER IF NOT EXISTS mdocs_search_insert AFTER INSERT ON mdocs BEGIN
     INSERT INTO mdoc_search(rowid, fnode_lc, title_lc)
     VALUES (new.id, new.fnode_lc, new.title_lc);
@@ -122,13 +121,9 @@ WHERE NOT EXISTS (
 );
 
 CREATE TABLE IF NOT EXISTS mdoc_index_state (
-    id                   INTEGER PRIMARY KEY CHECK (id = 1),
-    bootstrapped         INTEGER NOT NULL DEFAULT 0,
-    graph_epoch          INTEGER NOT NULL DEFAULT 0,
-    weak_component_dirty INTEGER NOT NULL DEFAULT 1,
-    index_digest         TEXT    NOT NULL DEFAULT '',
-    document_count       INTEGER NOT NULL DEFAULT 0 CHECK (document_count >= 0),
-    index_dirty          INTEGER NOT NULL DEFAULT 0 CHECK (index_dirty IN (0, 1))
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    bootstrapped INTEGER NOT NULL DEFAULT 0,
+    index_dirty  INTEGER NOT NULL DEFAULT 0 CHECK (index_dirty IN (0, 1))
 );
 INSERT OR IGNORE INTO mdoc_index_state (id, bootstrapped) VALUES (1, 0);
 
@@ -149,16 +144,6 @@ WHERE d.in_degree > 0
     WHERE claimant.fnode = d.fnode
 );
 
-CREATE TABLE IF NOT EXISTS mdoc_scc_result (
-    id          INTEGER PRIMARY KEY CHECK (id = 1),
-    graph_epoch INTEGER NOT NULL DEFAULT -1,
-    cycles_json TEXT    NOT NULL DEFAULT '[]'
-);
-
-CREATE TABLE IF NOT EXISTS mdoc_weak_component (
-    fnode          TEXT    PRIMARY KEY,
-    component_size INTEGER NOT NULL DEFAULT 1
-);
 ";
 
 const RESET_SQL: &str = "
@@ -217,11 +202,6 @@ SELECT path, fnode, title, title_lc, topo_depth
 FROM mdocs_schema_19
 ORDER BY path;
 DROP TABLE mdocs_schema_19;
-ALTER TABLE mdoc_index_state
-    ADD COLUMN document_count INTEGER NOT NULL DEFAULT 0 CHECK (document_count >= 0);
-UPDATE mdoc_index_state
-SET document_count = (SELECT COUNT(*) FROM mdocs)
-WHERE id = 1;
 ";
 
 const MIGRATE_20_TO_21_SQL: &str = "
@@ -377,6 +357,9 @@ fn apply_schema(conn: &mut Connection) -> Result<()> {
         if user_version < 23 {
             migrate_index_dirty(&tx)?;
         }
+        if user_version < 24 {
+            remove_obsolete_cache_state(&tx)?;
+        }
         if rebuild_search {
             tx.execute(
                 "INSERT INTO mdoc_search(mdoc_search) VALUES ('rebuild')",
@@ -419,6 +402,34 @@ fn migrate_index_dirty(conn: &Connection) -> Result<()> {
              WHERE id = 1;
              ALTER TABLE mdoc_workdraft_state DROP COLUMN index_dirty;",
         )?;
+    }
+    Ok(())
+}
+
+fn remove_obsolete_cache_state(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS mdoc_search_vocab;
+         DROP TABLE IF EXISTS mdoc_scc_result;
+         DROP TABLE IF EXISTS mdoc_weak_component;",
+    )?;
+    for column in [
+        "graph_epoch",
+        "weak_component_dirty",
+        "index_digest",
+        "document_count",
+    ] {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM pragma_table_info('mdoc_index_state') WHERE name = ?
+             )",
+            [column],
+            |row| row.get(0),
+        )?;
+        if exists {
+            conn.execute_batch(&format!(
+                "ALTER TABLE mdoc_index_state DROP COLUMN {column};"
+            ))?;
+        }
     }
     Ok(())
 }
@@ -485,7 +496,6 @@ mod tests {
             "DROP TRIGGER mdocs_search_update;
              DROP TRIGGER mdocs_search_delete;
              DROP TRIGGER mdocs_search_insert;
-             DROP TABLE mdoc_search_vocab;
              DROP TABLE mdoc_search;
              DROP VIEW mdoc_missing_issues;
              ALTER TABLE mdocs RENAME TO mdocs_schema_20;
@@ -498,8 +508,7 @@ mod tests {
              );
              INSERT INTO mdocs (path, fnode, title, title_lc, topo_depth)
              SELECT path, fnode, title, title_lc, topo_depth FROM mdocs_schema_20;
-             DROP TABLE mdocs_schema_20;
-             ALTER TABLE mdoc_index_state DROP COLUMN document_count;",
+             DROP TABLE mdocs_schema_20;",
         )
         .unwrap();
     }
@@ -726,26 +735,51 @@ mod tests {
     }
 
     #[test]
-    fn schema_fifteen_is_rebuilt_with_an_index_digest() {
+    fn schema_twenty_three_removes_obsolete_cache_state_without_discarding_rows() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("index.db");
         let conn = open_db(&path).unwrap();
         conn.execute_batch(
-            "ALTER TABLE mdoc_index_state DROP COLUMN index_digest;
-             PRAGMA user_version = 15;",
+            "INSERT INTO mdocs (path, fnode, title, title_lc)
+                 VALUES ('node.mdoc', 'node', 'Node', 'node');
+             ALTER TABLE mdoc_index_state ADD COLUMN graph_epoch INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE mdoc_index_state
+                 ADD COLUMN weak_component_dirty INTEGER NOT NULL DEFAULT 1;
+             ALTER TABLE mdoc_index_state ADD COLUMN index_digest TEXT NOT NULL DEFAULT '';
+             ALTER TABLE mdoc_index_state
+                 ADD COLUMN document_count INTEGER NOT NULL DEFAULT 0;
+             CREATE TABLE mdoc_scc_result (id INTEGER PRIMARY KEY, cycles_json TEXT);
+             CREATE TABLE mdoc_weak_component (fnode TEXT PRIMARY KEY, component_size INTEGER);
+             CREATE VIRTUAL TABLE mdoc_search_vocab USING fts5vocab(mdoc_search, 'row');
+             PRAGMA user_version = 23;",
         )
         .unwrap();
         drop(conn);
 
         let conn = open_db(&path).unwrap();
-        let digest: String = conn
+        let nodes: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mdocs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(nodes, 1);
+        let obsolete_objects: i64 = conn
             .query_row(
-                "SELECT index_digest FROM mdoc_index_state WHERE id = 1",
+                "SELECT COUNT(*) FROM sqlite_schema
+                 WHERE name IN ('mdoc_scc_result', 'mdoc_weak_component', 'mdoc_search_vocab')",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(digest.is_empty());
+        assert_eq!(obsolete_objects, 0);
+        let obsolete_columns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('mdoc_index_state')
+                 WHERE name IN ('graph_epoch', 'weak_component_dirty',
+                                'index_digest', 'document_count')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(obsolete_columns, 0);
     }
 
     #[test]
@@ -816,7 +850,6 @@ mod tests {
              DROP VIEW mdoc_missing_issues;
              DROP INDEX idx_mdoc_edges_src_dst;
              DROP INDEX idx_mdoc_edges_dst_src;
-             ALTER TABLE mdoc_index_state DROP COLUMN document_count;
              PRAGMA user_version = 17;",
         )
         .unwrap();
@@ -881,7 +914,6 @@ mod tests {
                   ('source.mdoc', 'missing', 'target-node', 'legacy missing target'),
                   ('bad.mdoc', 'invalid', 'bad-node', 'invalid node');
              DROP VIEW mdoc_missing_issues;
-             ALTER TABLE mdoc_index_state DROP COLUMN document_count;
              PRAGMA user_version = 18;",
         )
         .unwrap();

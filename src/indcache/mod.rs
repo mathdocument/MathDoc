@@ -324,10 +324,6 @@ impl WorkspaceStore {
 
     pub(crate) fn recover_index(&mut self) -> Result<()> {
         self.require_current_database()?;
-        self.conn.execute(
-            "UPDATE mdoc_index_state SET index_digest = '' WHERE id = 1",
-            [],
-        )?;
         self.refresh_all()?;
         self.set_index_dirty(false)
     }
@@ -578,13 +574,8 @@ impl WorkspaceStore {
         }
         crate::workspace::run_test_hook(crate::workspace::TestHookPoint::DiscoveryBeforeApply);
         let tx = self.conn.transaction()?;
-        let (changed_fnodes, has_deletion) =
-            discovery::apply_workspace_changes(&tx, &self.root, changes)?;
-        if has_deletion {
-            // Deletions can decrease ancestor depths; full backfill is needed.
+        if discovery::apply_workspace_changes(&tx, &self.root, changes)? {
             derived::backfill_all_topo_depths(&tx)?;
-        } else {
-            derived::refresh_topo_depth_upward_from_many(&tx, &changed_fnodes)?;
         }
         let formal_validation = crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
         tx.commit()?;
@@ -611,22 +602,12 @@ impl WorkspaceStore {
             }
         }
         let tx = self.conn.transaction()?;
-        let mut changed_fnodes = HashSet::new();
-        let mut needs_full_topo_backfill = false;
+        let mut graph_changed = false;
         for file_path in resolved_paths {
-            let outcome = refresh::upsert_mdoc_row(&tx, &self.root, &file_path)?;
-            if outcome.graph_changed {
-                if outcome.old_fnode.is_none() && outcome.new_fnode.is_none() {
-                    needs_full_topo_backfill = true;
-                }
-                changed_fnodes.extend(outcome.old_fnode);
-                changed_fnodes.extend(outcome.new_fnode);
-            }
+            graph_changed |= refresh::upsert_mdoc_row(&tx, &self.root, &file_path)?;
         }
-        if needs_full_topo_backfill {
+        if graph_changed {
             derived::backfill_all_topo_depths(&tx)?;
-        } else {
-            derived::refresh_topo_depth_upward_from_many(&tx, &changed_fnodes)?;
         }
         let formal_validation = crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
 
@@ -739,15 +720,13 @@ impl WorkspaceStore {
         let _profile = crate::profile::scope("IndCache::refresh_reachable_from_path");
         self.require_current_database()?;
         let tx = self.conn.transaction()?;
-        let upserted_fnodes = {
+        let graph_changed = {
             let _phase = crate::profile::scope("refresh::reachable_upserts");
             refresh::refresh_reachable_from_path(&tx, &self.root, root_path, depth)?
         };
-        // Incremental topo update for each upserted fnode. Weak components are
-        // rebuilt lazily from the dirty flag when roots are queried.
-        {
+        if graph_changed {
             let _phase = crate::profile::scope("derived::refresh_reachable_topo");
-            derived::refresh_topo_depth_upward_from_many(&tx, &upserted_fnodes)?;
+            derived::backfill_all_topo_depths(&tx)?;
         }
         let formal_validation = crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
         let _commit = crate::profile::scope("sqlite::refresh_reachable_commit");
@@ -996,7 +975,7 @@ impl WorkspaceStore {
         self.require_current_database()?;
         let tx = self.conn.transaction()?;
         let mut paths_by_fnode = HashMap::with_capacity(fnodes.len());
-        let mut changed_fnodes = HashSet::new();
+        let mut graph_changed = false;
         for &fnode in fnodes {
             if paths_by_fnode.contains_key(fnode) {
                 continue;
@@ -1007,20 +986,19 @@ impl WorkspaceStore {
                 match refresh::current_cached_mdoc_path(&self.root, &rel_path)? {
                     Some(path) => paths.push(path),
                     None => {
-                        refresh::delete_indexed_path(&tx, &rel_path)?;
-                        changed_fnodes.insert(fnode.to_string());
+                        graph_changed |= refresh::delete_indexed_path(&tx, &rel_path)?;
                     }
                 }
             }
             paths_by_fnode.insert(fnode.to_string(), paths);
         }
-        let formal_validation = if changed_fnodes.is_empty() {
-            None
-        } else {
-            derived::refresh_topo_depth_upward_from_many(&tx, &changed_fnodes)?;
+        let formal_validation = if graph_changed {
+            derived::backfill_all_topo_depths(&tx)?;
             Some(crate::formal::status::refresh_index_statuses(
                 &tx, &self.root,
             )?)
+        } else {
+            None
         };
         tx.commit()?;
         if let Some(formal_validation) = formal_validation {
@@ -1107,27 +1085,15 @@ impl WorkspaceStore {
         })
     }
 
-    // ── Write-then-read (need &mut for transaction) ───────────────────────────
+    // ── Graph-wide reads ─────────────────────────────────────────────────────
 
     pub fn global_root_items(&mut self) -> Result<Vec<GraphRootItem>> {
-        self.require_current_database()?;
-        let tx = self.conn.transaction()?;
-        derived::ensure_weak_components(&tx)?;
-        let result = queries::global_root_items(&tx)?;
-        tx.commit()?;
-        self.require_current_database()?;
-        Ok(result)
+        self.with_current_database(queries::global_root_items)
     }
 
     pub fn graph_check_report(&mut self) -> Result<GraphCheckReport> {
         let _profile = crate::profile::scope("IndCache::graph_check_report");
-        self.require_current_database()?;
-        let tx = self.conn.transaction()?;
-        let cycles = derived::ensure_scc_cache(&tx)?;
-        let result = queries::graph_check_report(&tx, cycles)?;
-        tx.commit()?;
-        self.require_current_database()?;
-        Ok(result)
+        self.with_current_database(queries::graph_check_report)
     }
 
     // ── Reference resolution ─────────────────────────────────────────────────

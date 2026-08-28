@@ -5,9 +5,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 pub(super) const CHUNK_SIZE: usize = 500;
 
 use crate::core::{
-    representative_cycles, DependencyCandidates, DependencyCandidatesEmpty, DependencyItem,
-    DependencyTraversalReport, FormalCodeStatus, FormalizationStatus, GraphCheckReport, GraphIssue,
-    GraphRootItem, IssueKind, NodeDegrees, NodeSummary,
+    representative_cycles, weak_component_sizes, DependencyCandidates, DependencyCandidatesEmpty,
+    DependencyItem, DependencyTraversalReport, FormalCodeStatus, FormalizationStatus,
+    GraphCheckReport, GraphIssue, GraphRootItem, IssueKind, NodeDegrees, NodeSummary,
 };
 
 // ── Public query functions ──────────────────────────────────────────────────
@@ -51,11 +51,8 @@ pub(super) fn referrer_items(
     if depth == 0 {
         return Ok(Vec::new());
     }
-    let reached = if depth == -1 {
-        unbounded_reverse_bfs(conn, target_fnode)?
-    } else {
-        bounded_reverse_bfs(conn, target_fnode, depth as u32)?
-    };
+    let max_depth = (depth != -1).then_some(depth as u32);
+    let reached = reverse_bfs(target_fnode, &reverse_graph(conn)?, max_depth);
     let fnodes = reached
         .iter()
         .map(|(fnode, _)| fnode.as_str())
@@ -72,21 +69,10 @@ pub(super) fn referrer_items(
 /// `from_fnode` (including the trivial case where they are equal).
 pub(super) fn is_reachable(conn: &Connection, from_fnode: &str, to_fnode: &str) -> Result<bool> {
     let _profile = crate::profile::scope("queries::is_reachable");
-    if from_fnode == to_fnode {
-        return Ok(true);
-    }
-    Ok(conn.query_row(
-        "WITH RECURSIVE reachable(fnode) AS (
-             SELECT ?1
-             UNION
-             SELECT e.dst_fnode
-             FROM mdoc_valid_edges e
-             JOIN reachable r ON r.fnode = e.src_fnode
-         )
-         SELECT EXISTS(SELECT 1 FROM reachable WHERE fnode = ?2)",
-        rusqlite::params![from_fnode, to_fnode],
-        |row| row.get(0),
-    )?)
+    Ok(from_fnode == to_fnode
+        || reverse_bfs(to_fnode, &reverse_graph(conn)?, None)
+            .iter()
+            .any(|(fnode, _)| fnode == from_fnode))
 }
 
 pub(super) fn reverse_reachable_fnodes(
@@ -94,19 +80,11 @@ pub(super) fn reverse_reachable_fnodes(
     target_fnode: &str,
 ) -> Result<HashSet<String>> {
     let _profile = crate::profile::scope("queries::reverse_reachable_fnodes");
-    let mut stmt = conn.prepare(
-        "WITH RECURSIVE reachable(fnode) AS (
-             SELECT ?1
-             UNION
-             SELECT e.src_fnode
-             FROM mdoc_valid_edges e
-             JOIN reachable r ON r.fnode = e.dst_fnode
-         )
-         SELECT fnode FROM reachable",
-    )?;
-    let reached = stmt
-        .query_map([target_fnode], |row| row.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
+    let mut reached = reverse_bfs(target_fnode, &reverse_graph(conn)?, None)
+        .into_iter()
+        .map(|(fnode, _)| fnode)
+        .collect::<HashSet<_>>();
+    reached.insert(target_fnode.to_string());
     Ok(reached)
 }
 
@@ -238,25 +216,54 @@ pub(super) fn direct_dependency_summaries(
     conn: &Connection,
     root_fnode: &str,
 ) -> Result<Vec<NodeSummary>> {
-    let report = dependency_report(conn, root_fnode, 1)?;
-    let items: Vec<DependencyItem> = report
-        .items
+    let root_nodes = node_lookup_for_fnodes(conn, &[root_fnode])?;
+    let root_issues = issue_lookup_for_fnodes(conn, &[root_fnode])?;
+    if let Some(issue) = root_issues.get(root_fnode) {
+        bail!("{}", issue.error);
+    }
+    if !root_nodes.contains_key(root_fnode) {
+        bail!("no mdoc matched reference: {root_fnode}");
+    }
+
+    let mut seen = HashSet::from([root_fnode.to_string()]);
+    let dependencies = edge_lookup_for_sources(conn, &[root_fnode])?
+        .remove(root_fnode)
+        .unwrap_or_default()
         .into_iter()
-        .filter(|item| item.depth == 1)
+        .filter(|fnode| seen.insert(fnode.clone()))
+        .collect::<Vec<_>>();
+    let fnodes = dependencies.iter().map(String::as_str).collect::<Vec<_>>();
+    let nodes = node_lookup_for_fnodes(conn, &fnodes)?;
+    let issues = issue_lookup_for_fnodes(conn, &fnodes)?;
+    let items = dependencies
+        .into_iter()
+        .map(|fnode| dependency_item(&fnode, 1, &nodes, &issues))
         .collect();
-    summaries_for_items(conn, items, &report.issues_by_fnode)
+    summaries_for_items(conn, items, &issues)
 }
 
 pub(super) fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>> {
     let _profile = crate::profile::scope("queries::global_root_items");
-    // Valid root nodes: join with component table and read persisted topo_depth — no graph load.
-    let valid_roots: Vec<(String, String, String, u32, u32)> = {
+    let valid_nodes = valid_node_rows(conn)?;
+    let invalid_issues = invalid_issue_rows(conn)?;
+    let graph = dep_graph_snapshot(conn)?;
+    let component_members = valid_nodes
+        .iter()
+        .map(|(fnode, _, _)| fnode.clone())
+        .chain(
+            invalid_issues
+                .iter()
+                .filter(|issue| !is_placeholder(&issue.fnode))
+                .map(|issue| issue.fnode.clone()),
+        )
+        .collect::<HashSet<_>>();
+    let component_sizes = weak_component_sizes(&graph, &component_members);
+
+    let valid_roots: Vec<(String, String, String, u32)> = {
         let mut stmt = conn.prepare(
-            "SELECT m.fnode, m.title, m.path, m.topo_depth,
-                    COALESCE(w.component_size, 1)
+            "SELECT m.fnode, m.title, m.path, m.topo_depth
              FROM mdocs m
              LEFT JOIN mdoc_in_degree id ON m.fnode = id.fnode
-             LEFT JOIN mdoc_weak_component w ON m.fnode = w.fnode
              WHERE (id.in_degree IS NULL OR id.in_degree = 0)
                AND NOT EXISTS (
                  SELECT 1 FROM mdoc_issues
@@ -265,32 +272,30 @@ pub(super) fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>>
                )",
         )?;
         let rows: Vec<_> = stmt
-            .query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-            })?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
             .collect::<rusqlite::Result<_>>()?;
         rows
     };
 
     let mut items: Vec<GraphRootItem> = valid_roots
         .into_iter()
-        .map(
-            |(fnode, title, path, topo_depth, component_size)| GraphRootItem {
+        .map(|(fnode, title, path, topo_depth)| {
+            let component_size = component_sizes.get(&fnode).copied().unwrap_or(1);
+            GraphRootItem {
                 fnode,
                 title,
                 rel_path: path,
                 component_size,
                 broken: false,
                 topo_depth,
-            },
-        )
+            }
+        })
         .collect();
 
     let mut stmt = conn.prepare(
-        "SELECT issue.ref_fnode, issue.path, COALESCE(component.component_size, 1)
+        "SELECT issue.ref_fnode, issue.path
          FROM mdoc_issues issue
          LEFT JOIN mdoc_in_degree degree ON degree.fnode = issue.ref_fnode
-         LEFT JOIN mdoc_weak_component component ON component.fnode = issue.ref_fnode
          WHERE issue.kind IN ('invalid', 'duplicate')
            AND NOT EXISTS (
              SELECT 1 FROM mdocs claimant
@@ -312,17 +317,14 @@ pub(super) fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>>
     )?;
     let mut broken_paths = HashSet::new();
     let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, u32>(2)?,
-        ))
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
     for row in rows {
-        let (fnode, rel_path, component_size) = row?;
+        let (fnode, rel_path) = row?;
         if !broken_paths.insert(rel_path.clone()) {
             continue;
         }
+        let component_size = component_sizes.get(&fnode).copied().unwrap_or(1);
         items.push(GraphRootItem {
             fnode,
             title: "<invalid>".to_string(),
@@ -345,10 +347,7 @@ pub(super) fn global_root_items(conn: &Connection) -> Result<Vec<GraphRootItem>>
     Ok(items)
 }
 
-pub(super) fn graph_check_report(
-    conn: &Connection,
-    cycles: Vec<Vec<String>>,
-) -> Result<GraphCheckReport> {
+pub(super) fn graph_check_report(conn: &Connection) -> Result<GraphCheckReport> {
     let nodes: i64 = conn.query_row("SELECT COUNT(*) FROM mdoc_files", [], |r| r.get(0))?;
     let edges: i64 = conn.query_row(
         "SELECT COALESCE(SUM(in_degree), 0) FROM mdoc_in_degree",
@@ -361,7 +360,7 @@ pub(super) fn graph_check_report(
         edges: edges as u32,
         missing: missing_issue_rows(conn)?,
         invalid: invalid_issue_rows(conn)?,
-        cycles,
+        cycles: representative_cycles(&dep_graph_snapshot(conn)?),
     })
 }
 
@@ -510,35 +509,28 @@ fn missing_issue_rows(conn: &Connection) -> Result<Vec<GraphIssue>> {
     Ok(deduped)
 }
 
-pub(super) fn dep_graph_snapshot(
-    conn: &Connection,
-    valid_nodes: Option<&[(String, String, String)]>,
-    inv_issues: Option<&[GraphIssue]>,
-) -> Result<HashMap<String, Vec<String>>> {
-    let owned_nodes;
-    let owned_issues;
-    let nodes = match valid_nodes {
-        Some(v) => v,
-        None => {
-            owned_nodes = valid_node_rows(conn)?;
-            &owned_nodes
-        }
-    };
-    let issues = match inv_issues {
-        Some(i) => i,
-        None => {
-            owned_issues = invalid_issue_rows(conn)?;
-            &owned_issues
-        }
-    };
-
+pub(super) fn dep_graph_snapshot(conn: &Connection) -> Result<HashMap<String, Vec<String>>> {
     let mut graph: HashMap<String, Vec<String>> = HashMap::new();
-    for (fnode, _, _) in nodes {
-        graph.entry(fnode.clone()).or_default();
+    let mut stmt = conn.prepare(
+        "SELECT mdocs.fnode
+         FROM mdocs
+         WHERE NOT EXISTS (
+             SELECT 1 FROM mdoc_issues
+             WHERE mdoc_issues.path = mdocs.path
+               AND mdoc_issues.kind IN ('invalid', 'duplicate')
+         )",
+    )?;
+    for row in stmt.query_map([], |row| row.get::<_, String>(0))? {
+        graph.entry(row?).or_default();
     }
-    for issue in issues {
-        if !(issue.fnode.starts_with('<') && issue.fnode.ends_with('>')) {
-            graph.entry(issue.fnode.clone()).or_default();
+    let mut stmt = conn.prepare(
+        "SELECT ref_fnode FROM mdoc_issues
+         WHERE kind IN ('invalid', 'duplicate')",
+    )?;
+    for row in stmt.query_map([], |row| row.get::<_, String>(0))? {
+        let fnode = row?;
+        if !is_placeholder(&fnode) {
+            graph.entry(fnode).or_default();
         }
     }
 
@@ -552,109 +544,8 @@ pub(super) fn dep_graph_snapshot(
     Ok(graph)
 }
 
-fn bounded_reverse_bfs(
-    conn: &Connection,
-    target_fnode: &str,
-    max_depth: u32,
-) -> Result<Vec<(String, u32)>> {
-    let mut reached = Vec::new();
-    let mut seen = HashSet::from([target_fnode.to_string()]);
-    let mut frontier = vec![target_fnode.to_string()];
-    for item_depth in 1..=max_depth {
-        let reverse = referrer_lookup_for_targets(conn, &frontier)?;
-        let mut next = Vec::new();
-        for target in &frontier {
-            for referrer in reverse.get(target).into_iter().flatten() {
-                if seen.insert(referrer.clone()) {
-                    reached.push((referrer.clone(), item_depth));
-                    next.push(referrer.clone());
-                }
-            }
-        }
-        if next.is_empty() {
-            break;
-        }
-        frontier = next;
-    }
-    Ok(reached)
-}
-
-fn unbounded_reverse_bfs(conn: &Connection, target_fnode: &str) -> Result<Vec<(String, u32)>> {
-    const FULL_GRAPH_NODE_THRESHOLD: usize = 4096;
-    const FULL_GRAPH_DEPTH_THRESHOLD: u32 = 64;
-
-    let mut reached = Vec::new();
-    let mut seen = HashSet::from([target_fnode.to_string()]);
-    let mut frontier = vec![target_fnode.to_string()];
-    for item_depth in 1.. {
-        let reverse = referrer_lookup_for_targets(conn, &frontier)?;
-        let mut next = Vec::new();
-        for target in &frontier {
-            for referrer in reverse.get(target).into_iter().flatten() {
-                if seen.insert(referrer.clone()) {
-                    reached.push((referrer.clone(), item_depth));
-                    next.push(referrer.clone());
-                }
-            }
-        }
-        if next.is_empty() {
-            return Ok(reached);
-        }
-        if reached.len() >= FULL_GRAPH_NODE_THRESHOLD || item_depth >= FULL_GRAPH_DEPTH_THRESHOLD {
-            return Ok(reverse_bfs(target_fnode, &reverse_graph(conn)?));
-        }
-        frontier = next;
-    }
-    unreachable!("unbounded range exits only by returning")
-}
-
-fn referrer_lookup_for_targets(
-    conn: &Connection,
-    targets: &[String],
-) -> Result<HashMap<String, Vec<String>>> {
-    if targets.is_empty() {
-        return Ok(HashMap::new());
-    }
-    let positions = targets
-        .iter()
-        .enumerate()
-        .map(|(position, fnode)| (fnode.as_str(), position))
-        .collect::<HashMap<_, _>>();
-    let mut rows = Vec::new();
-    for chunk in targets.chunks(CHUNK_SIZE) {
-        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!(
-            "SELECT src_fnode, dst_fnode, src_path, ord
-             FROM mdoc_valid_edges
-             WHERE dst_fnode IN ({placeholders})"
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        for row in stmt.query_map(rusqlite::params_from_iter(chunk), |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i32>(3)?,
-            ))
-        })? {
-            let (source, target, path, order) = row?;
-            rows.push((positions[target.as_str()], path, order, source, target));
-        }
-    }
-    rows.sort_unstable_by(|left, right| {
-        (&left.0, &left.1, &left.2).cmp(&(&right.0, &right.1, &right.2))
-    });
-    let mut result = targets
-        .iter()
-        .map(|target| (target.clone(), Vec::new()))
-        .collect::<HashMap<_, _>>();
-    for (_, _, _, source, target) in rows {
-        result
-            .get_mut(&target)
-            .expect("queried target was initialized")
-            .push(source);
-    }
-    Ok(result)
+fn is_placeholder(fnode: &str) -> bool {
+    fnode.starts_with('<') && fnode.ends_with('>')
 }
 
 fn reverse_graph(conn: &Connection) -> Result<HashMap<String, Vec<String>>> {
@@ -674,22 +565,21 @@ fn reverse_graph(conn: &Connection) -> Result<HashMap<String, Vec<String>>> {
     Ok(reverse)
 }
 
-fn reverse_bfs(target_fnode: &str, reverse: &HashMap<String, Vec<String>>) -> Vec<(String, u32)> {
+fn reverse_bfs(
+    target_fnode: &str,
+    reverse: &HashMap<String, Vec<String>>,
+    max_depth: Option<u32>,
+) -> Vec<(String, u32)> {
     let mut reached = Vec::new();
     let mut seen = HashSet::from([target_fnode.to_string()]);
-    let mut queue = reverse
-        .get(target_fnode)
-        .into_iter()
-        .flatten()
-        .map(|fnode| (fnode.clone(), 1))
-        .collect::<VecDeque<_>>();
+    let mut queue = VecDeque::from([(target_fnode.to_string(), 0)]);
     while let Some((fnode, item_depth)) = queue.pop_front() {
-        if !seen.insert(fnode.clone()) {
+        if max_depth.is_some_and(|max_depth| item_depth >= max_depth) {
             continue;
         }
-        reached.push((fnode.clone(), item_depth));
         for referrer in reverse.get(&fnode).into_iter().flatten() {
-            if referrer != target_fnode {
+            if seen.insert(referrer.clone()) {
+                reached.push((referrer.clone(), item_depth + 1));
                 queue.push_back((referrer.clone(), item_depth + 1));
             }
         }
@@ -1012,7 +902,7 @@ fn search_patterns(query: &str) -> (String, String, String) {
     (query_lc, like, prefix_like)
 }
 
-fn fts5_query(query_lc: &str) -> Option<(Vec<String>, String)> {
+fn fts5_query(query_lc: &str) -> Option<String> {
     if query_lc.contains('\0') {
         return None;
     }
@@ -1034,27 +924,7 @@ fn fts5_query(query_lc: &str) -> Option<(Vec<String>, String)> {
         .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
         .collect::<Vec<_>>()
         .join(" AND ");
-    Some((terms, expression))
-}
-
-fn selective_fts5_query(conn: &Connection, query_lc: &str) -> Result<Option<String>> {
-    let Some((terms, expression)) = fts5_query(query_lc) else {
-        return Ok(None);
-    };
-    let placeholders = terms.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let sql = format!(
-        "SELECT COUNT(*), COALESCE(MIN(doc), 0),
-                (SELECT document_count FROM mdoc_index_state WHERE id = 1)
-         FROM mdoc_search_vocab
-         WHERE term IN ({placeholders})"
-    );
-    let (matched_terms, min_documents, document_count): (i64, i64, i64) =
-        conn.query_row(&sql, rusqlite::params_from_iter(&terms), |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })?;
-    let all_terms_present = matched_terms == i64::try_from(terms.len()).unwrap_or(i64::MAX);
-    let candidate_threshold = document_count.saturating_add(3) / 4;
-    Ok((!all_terms_present || min_documents <= candidate_threshold).then_some(expression))
+    Some(expression)
 }
 
 fn search_index_predicate(fts_query: Option<&String>) -> &'static str {
@@ -1081,7 +951,7 @@ fn node_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NodeSummar
 pub(super) fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<NodeSummary>> {
     let _profile = crate::profile::scope("queries::search");
     let (query_lc, like_pattern, prefix_pattern) = search_patterns(query);
-    let fts_query = selective_fts5_query(conn, &query_lc)?;
+    let fts_query = fts5_query(&query_lc);
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
     let sql = format!(
         "SELECT {NODE_SUMMARY_COLUMNS_SQL}
@@ -1129,7 +999,7 @@ pub(super) fn dependency_candidates(
 ) -> Result<DependencyCandidates> {
     let _profile = crate::profile::scope("queries::dependency_candidates");
     let (query_lc, like_pattern, prefix_pattern) = search_patterns(query);
-    let fts_query = selective_fts5_query(conn, &query_lc)?;
+    let fts_query = fts5_query(&query_lc);
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
     let sql = format!(
         "SELECT {NODE_SUMMARY_COLUMNS_SQL}
@@ -1180,7 +1050,7 @@ fn dependency_candidates_empty(
     query_lc: &str,
     like_pattern: &str,
 ) -> Result<DependencyCandidatesEmpty> {
-    let fts_query = selective_fts5_query(conn, query_lc)?;
+    let fts_query = fts5_query(query_lc);
     let sql = format!(
         "WITH matching(reason) AS (
              SELECT CASE
@@ -1401,56 +1271,7 @@ mod tests {
     #[test]
     fn fts5_queries_quote_user_input_and_skip_short_terms() {
         assert_eq!(fts5_query("ab"), None);
-        assert_eq!(
-            fts5_query("a\"b"),
-            Some((vec!["a\"b".to_string()], "\"a\"\"b\"".to_string()))
-        );
-        assert_eq!(
-            fts5_query("ababa"),
-            Some((
-                vec!["aba".to_string(), "bab".to_string()],
-                "\"aba\" AND \"bab\"".to_string()
-            ))
-        );
-    }
-
-    #[test]
-    fn fts5_prefilter_is_used_only_for_selective_terms() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let conn = crate::indcache::schema::open_db(&dir.path().join("index.db")).unwrap();
-        for index in 0..8 {
-            let title = if index == 7 {
-                "common title with rarexyz"
-            } else {
-                "common title"
-            };
-            conn.execute(
-                "INSERT INTO mdocs (path, fnode, title, title_lc) VALUES (?, ?, ?, ?)",
-                rusqlite::params![
-                    format!("node-{index}.mdoc"),
-                    format!("node-{index}"),
-                    title,
-                    title
-                ],
-            )
-            .unwrap();
-        }
-        conn.execute(
-            "UPDATE mdoc_index_state SET document_count = 8 WHERE id = 1",
-            [],
-        )
-        .unwrap();
-
-        assert_eq!(selective_fts5_query(&conn, "common").unwrap(), None);
-        assert!(selective_fts5_query(&conn, "rarexyz").unwrap().is_some());
-        assert!(selective_fts5_query(&conn, "absent").unwrap().is_some());
-
-        conn.execute_batch(
-            "DELETE FROM mdocs WHERE id <= 6;
-             UPDATE mdoc_index_state SET document_count = 2 WHERE id = 1;",
-        )
-        .unwrap();
-        assert_eq!(selective_fts5_query(&conn, "common").unwrap(), None);
-        assert!(selective_fts5_query(&conn, "rarexyz").unwrap().is_some());
+        assert_eq!(fts5_query("a\"b"), Some("\"a\"\"b\"".to_string()));
+        assert_eq!(fts5_query("ababa"), Some("\"aba\" AND \"bab\"".to_string()));
     }
 }

@@ -1,6 +1,5 @@
 use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OptionalExtension, ToSql};
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::Metadata;
 use std::os::unix::fs::MetadataExt;
@@ -26,91 +25,29 @@ pub(super) fn refresh_search_index(
         let _phase = crate::profile::scope("refresh::scan_workspace");
         scan_workspace(root)?
     };
-    let digest = {
-        let _phase = crate::profile::scope("refresh::index_digest");
-        index_digest(&files)
-    };
-    let (old_digest, bootstrapped): (String, bool) = conn.query_row(
-        "SELECT index_digest, bootstrapped FROM mdoc_index_state WHERE id = 1",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
-    let index_matches = if old_digest == digest {
-        true
-    } else if bootstrapped && old_digest.is_empty() {
-        let _phase = crate::profile::scope("refresh::indexed_digest");
-        indexed_digest(conn)? == digest
-    } else {
-        false
-    };
-    let delta = if bootstrapped && !index_matches {
-        let _phase = crate::profile::scope("refresh::semantic_delta_paths");
-        semantic_delta_paths(conn, &files)?
-    } else {
-        None
-    };
     {
         let _phase = crate::profile::scope("refresh::sync_file_states");
         sync_file_states(conn, &files)?;
     }
-    if !bootstrapped || (!index_matches && delta.is_none()) {
-        let issues = {
-            let _phase = crate::profile::scope("refresh::build_issues");
-            build_issues(&files)
-        };
-        {
-            let _phase = crate::profile::scope("refresh::replace_index_rows");
-            replace_index_rows(conn, &files, &issues)?;
-        }
-        {
-            let _phase = crate::profile::scope("refresh::rebuild_in_degree");
-            rebuild_in_degree(conn)?;
-        }
-        super::derived::bump_graph_epoch(conn)?;
-        super::derived::refresh_all_derived_data(conn)?;
-    } else if let Some((changed, stale)) = delta {
-        let _phase = crate::profile::scope("refresh::apply_semantic_delta");
-        apply_semantic_delta(conn, root, &files, &changed, &stale)?;
+    let issues = {
+        let _phase = crate::profile::scope("refresh::build_issues");
+        build_issues(&files)
+    };
+    {
+        let _phase = crate::profile::scope("refresh::replace_index_rows");
+        replace_index_rows(conn, &files, &issues)?;
     }
+    {
+        let _phase = crate::profile::scope("refresh::rebuild_in_degree");
+        rebuild_in_degree(conn)?;
+    }
+    super::derived::backfill_all_topo_depths(conn)?;
     let formal_validation = crate::formal::status::refresh_index_statuses(conn, root)?;
     conn.execute(
-        "UPDATE mdoc_index_state SET bootstrapped = 1, index_digest = ? WHERE id = 1",
-        [&digest],
+        "UPDATE mdoc_index_state SET bootstrapped = 1 WHERE id = 1",
+        [],
     )?;
     Ok(formal_validation)
-}
-
-const MAX_STRONG_REFRESH_DELTA_PATHS: usize = 1024;
-
-fn apply_semantic_delta(
-    conn: &Connection,
-    root: &Path,
-    files: &[ScannedMdoc],
-    changed: &[usize],
-    stale: &[String],
-) -> Result<()> {
-    let mut topo_seeds = HashSet::new();
-    let mut deletion_changed_graph = false;
-    for path in stale {
-        let old_fnode = fnode_for_path(conn, path)?;
-        let old_had_blocking_issue = path_has_blocking_issue(conn, path)?;
-        delete_indexed_path(conn, path)?;
-        deletion_changed_graph |= old_fnode.is_some() || old_had_blocking_issue;
-    }
-    for index in changed {
-        let file = &files[*index];
-        let outcome = upsert_mdoc_row(conn, root, &root.join(&file.path))?;
-        if outcome.graph_changed {
-            topo_seeds.extend(outcome.old_fnode);
-            topo_seeds.extend(outcome.new_fnode);
-        }
-    }
-    if deletion_changed_graph {
-        super::derived::backfill_all_topo_depths(conn)?;
-    } else if !topo_seeds.is_empty() {
-        super::derived::refresh_topo_depth_upward_from_many(conn, &topo_seeds)?;
-    }
-    Ok(())
 }
 
 const BULK_ROWS: usize = 200;
@@ -139,12 +76,6 @@ struct IndexIssue {
     kind: &'static str,
     ref_fnode: String,
     error: String,
-}
-
-pub(super) struct UpsertOutcome {
-    pub(super) old_fnode: Option<String>,
-    pub(super) new_fnode: Option<String>,
-    pub(super) graph_changed: bool,
 }
 
 #[derive(PartialEq, Eq)]
@@ -306,272 +237,6 @@ fn build_issues(files: &[ScannedMdoc]) -> Vec<IndexIssue> {
         (&left.path, left.kind, &left.ref_fnode).cmp(&(&right.path, right.kind, &right.ref_fnode))
     });
     issues
-}
-
-fn index_digest(files: &[ScannedMdoc]) -> String {
-    let mut digest = Sha256::new();
-    hash_value(&mut digest, b"mathdoc-index-v1");
-    for file in files {
-        hash_value(&mut digest, file.path.as_bytes());
-        match &file.node {
-            Some(node) => {
-                hash_value(&mut digest, b"node");
-                hash_value(&mut digest, node.fnode.as_bytes());
-                hash_value(&mut digest, node.title.as_bytes());
-                hash_value(&mut digest, &[u8::from(node.structurally_valid)]);
-                for dependency in &node.dependencies {
-                    hash_value(&mut digest, dependency.as_bytes());
-                }
-            }
-            None => hash_value(&mut digest, b"no-node"),
-        }
-        if let Some(invalid) = &file.invalid {
-            hash_value(&mut digest, invalid.ref_fnode.as_bytes());
-            hash_value(&mut digest, invalid.error.as_bytes());
-        }
-    }
-    format!("{:x}", digest.finalize())
-}
-
-fn read_next_edge(rows: &mut rusqlite::Rows<'_>) -> rusqlite::Result<Option<(String, String)>> {
-    rows.next()?
-        .map(|row| Ok((row.get(0)?, row.get(1)?)))
-        .transpose()
-}
-
-fn read_next_invalid(
-    rows: &mut rusqlite::Rows<'_>,
-) -> rusqlite::Result<Option<(String, String, String)>> {
-    rows.next()?
-        .map(|row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-        .transpose()
-}
-
-fn indexed_digest(conn: &Connection) -> Result<String> {
-    let mut digest = Sha256::new();
-    hash_value(&mut digest, b"mathdoc-index-v1");
-    let mut file_stmt = conn.prepare(
-        "SELECT f.path, m.fnode, m.title
-         FROM mdoc_files f LEFT JOIN mdocs m ON m.path = f.path
-         ORDER BY f.path",
-    )?;
-    let mut edge_stmt = conn.prepare(
-        "SELECT e.src_path, dst.fnode
-         FROM mdoc_edges e
-         JOIN mdoc_symbols dst ON dst.id = e.dst_symbol_id
-         ORDER BY e.src_path, e.ord",
-    )?;
-    let mut invalid_stmt = conn.prepare(
-        "SELECT path, ref_fnode, error FROM mdoc_issues
-         WHERE kind = 'invalid' ORDER BY path, ref_fnode, error",
-    )?;
-    let mut file_rows = file_stmt.query([])?;
-    let mut edge_rows = edge_stmt.query([])?;
-    let mut invalid_rows = invalid_stmt.query([])?;
-    let mut next_edge = read_next_edge(&mut edge_rows)?;
-    let mut next_invalid = read_next_invalid(&mut invalid_rows)?;
-    while let Some(row) = file_rows.next()? {
-        let path: String = row.get(0)?;
-        hash_value(&mut digest, path.as_bytes());
-        while next_invalid
-            .as_ref()
-            .is_some_and(|(invalid_path, _, _)| invalid_path < &path)
-        {
-            hash_value(&mut digest, b"unexpected-invalid-row");
-            next_invalid = read_next_invalid(&mut invalid_rows)?;
-        }
-        let invalid = next_invalid
-            .as_ref()
-            .filter(|(invalid_path, _, _)| invalid_path == &path)
-            .map(|(_, ref_fnode, error)| (ref_fnode.clone(), error.clone()));
-        if invalid.is_some() {
-            next_invalid = read_next_invalid(&mut invalid_rows)?;
-            if next_invalid
-                .as_ref()
-                .is_some_and(|(invalid_path, _, _)| invalid_path == &path)
-            {
-                hash_value(&mut digest, b"duplicate-invalid-row");
-            }
-        }
-        match (
-            row.get::<_, Option<String>>(1)?,
-            row.get::<_, Option<String>>(2)?,
-        ) {
-            (Some(fnode), Some(title)) => {
-                hash_value(&mut digest, b"node");
-                hash_value(&mut digest, fnode.as_bytes());
-                hash_value(&mut digest, title.as_bytes());
-                hash_value(&mut digest, &[u8::from(invalid.is_none())]);
-            }
-            (None, None) => hash_value(&mut digest, b"no-node"),
-            _ => hash_value(&mut digest, b"invalid-index-row"),
-        }
-        while next_edge
-            .as_ref()
-            .is_some_and(|(source_path, _)| source_path < &path)
-        {
-            hash_value(&mut digest, b"unexpected-edge-row");
-            next_edge = read_next_edge(&mut edge_rows)?;
-        }
-        while let Some((source_path, dependency)) = next_edge.as_ref() {
-            if source_path != &path {
-                break;
-            }
-            hash_value(&mut digest, dependency.as_bytes());
-            next_edge = read_next_edge(&mut edge_rows)?;
-        }
-        if let Some((ref_fnode, error)) = invalid {
-            hash_value(&mut digest, ref_fnode.as_bytes());
-            hash_value(&mut digest, error.as_bytes());
-        }
-    }
-    if next_edge.is_some() || next_invalid.is_some() {
-        hash_value(&mut digest, b"unexpected-index-row");
-    }
-    let has_orphaned_nodes: bool = conn.query_row(
-        "SELECT EXISTS(
-             SELECT 1 FROM mdocs m
-             WHERE NOT EXISTS (SELECT 1 FROM mdoc_files f WHERE f.path = m.path)
-         )",
-        [],
-        |row| row.get(0),
-    )?;
-    if has_orphaned_nodes {
-        hash_value(&mut digest, b"unexpected-node-row");
-    }
-    Ok(format!("{:x}", digest.finalize()))
-}
-
-fn semantic_delta_paths(
-    conn: &Connection,
-    files: &[ScannedMdoc],
-) -> Result<Option<(Vec<usize>, Vec<String>)>> {
-    let mut file_stmt = conn.prepare(
-        "SELECT f.path, m.fnode, m.title
-         FROM mdoc_files f LEFT JOIN mdocs m ON m.path = f.path
-         ORDER BY f.path",
-    )?;
-    let mut edge_stmt = conn.prepare(
-        "SELECT e.src_path, dst.fnode
-         FROM mdoc_edges e
-         JOIN mdoc_symbols dst ON dst.id = e.dst_symbol_id
-         ORDER BY e.src_path, e.ord",
-    )?;
-    let mut invalid_stmt = conn.prepare(
-        "SELECT path, ref_fnode, error FROM mdoc_issues
-         WHERE kind = 'invalid' ORDER BY path, ref_fnode, error",
-    )?;
-    let mut file_rows = file_stmt.query([])?;
-    let mut edge_rows = edge_stmt.query([])?;
-    let mut invalid_rows = invalid_stmt.query([])?;
-    let mut next_edge = read_next_edge(&mut edge_rows)?;
-    let mut next_invalid = read_next_invalid(&mut invalid_rows)?;
-    let mut changed = Vec::new();
-    let mut stale = Vec::new();
-    let mut scan_index = 0;
-
-    while let Some(row) = file_rows.next()? {
-        let path: String = row.get(0)?;
-        while scan_index < files.len() && files[scan_index].path < path {
-            changed.push(scan_index);
-            scan_index += 1;
-            if changed.len() + stale.len() > MAX_STRONG_REFRESH_DELTA_PATHS {
-                return Ok(None);
-            }
-        }
-        let invalid = match next_invalid.as_ref() {
-            Some((invalid_path, ref_fnode, error)) if invalid_path == &path => {
-                let invalid = Some((ref_fnode.clone(), error.clone()));
-                next_invalid = read_next_invalid(&mut invalid_rows)?;
-                if next_invalid
-                    .as_ref()
-                    .is_some_and(|(invalid_path, _, _)| invalid_path == &path)
-                {
-                    return Ok(None);
-                }
-                invalid
-            }
-            Some((invalid_path, _, _)) if invalid_path < &path => return Ok(None),
-            _ => None,
-        };
-        if next_edge
-            .as_ref()
-            .is_some_and(|(source_path, _)| source_path < &path)
-        {
-            return Ok(None);
-        }
-        let mut dependencies = Vec::new();
-        while let Some((source_path, dependency)) = next_edge.as_ref() {
-            if source_path != &path {
-                break;
-            }
-            dependencies.push(dependency.clone());
-            next_edge = read_next_edge(&mut edge_rows)?;
-        }
-        let node = match (
-            row.get::<_, Option<String>>(1)?,
-            row.get::<_, Option<String>>(2)?,
-        ) {
-            (Some(fnode), Some(title)) => Some((fnode, title, dependencies)),
-            (None, None) if dependencies.is_empty() => None,
-            _ => return Ok(None),
-        };
-        let current = IndexedFileSemantics { node, invalid };
-        if scan_index < files.len() && files[scan_index].path == path {
-            if current != scanned_file_semantics(&files[scan_index]) {
-                changed.push(scan_index);
-            }
-            scan_index += 1;
-        } else {
-            stale.push(path);
-        }
-        if changed.len() + stale.len() > MAX_STRONG_REFRESH_DELTA_PATHS {
-            return Ok(None);
-        }
-    }
-    if next_edge.is_some() || next_invalid.is_some() {
-        return Ok(None);
-    }
-    let has_orphaned_nodes: bool = conn.query_row(
-        "SELECT EXISTS(
-             SELECT 1 FROM mdocs m
-             WHERE NOT EXISTS (SELECT 1 FROM mdoc_files f WHERE f.path = m.path)
-         )",
-        [],
-        |row| row.get(0),
-    )?;
-    if has_orphaned_nodes {
-        return Ok(None);
-    }
-    while scan_index < files.len() {
-        changed.push(scan_index);
-        scan_index += 1;
-        if changed.len() + stale.len() > MAX_STRONG_REFRESH_DELTA_PATHS {
-            return Ok(None);
-        }
-    }
-    Ok(Some((changed, stale)))
-}
-
-fn scanned_file_semantics(file: &ScannedMdoc) -> IndexedFileSemantics {
-    IndexedFileSemantics {
-        node: file.node.as_ref().map(|node| {
-            (
-                node.fnode.clone(),
-                node.title.clone(),
-                node.dependencies.clone(),
-            )
-        }),
-        invalid: file
-            .invalid
-            .as_ref()
-            .map(|issue| (issue.ref_fnode.clone(), issue.error.clone())),
-    }
-}
-
-fn hash_value(digest: &mut Sha256, value: &[u8]) {
-    digest.update((value.len() as u64).to_le_bytes());
-    digest.update(value);
 }
 
 fn formal_status_value(status: FormalCodeStatus) -> i64 {
@@ -740,10 +405,6 @@ fn replace_index_rows(
             params.as_slice(),
         )?;
     }
-    conn.execute(
-        "UPDATE mdoc_index_state SET document_count = ? WHERE id = 1",
-        [i64::try_from(nodes.len()).unwrap_or(i64::MAX)],
-    )?;
     Ok(())
 }
 
@@ -833,18 +494,17 @@ fn rebuild_in_degree(conn: &Connection) -> Result<()> {
 }
 
 /// Upsert the root path and all reachable dependencies up to `depth` hops (-1 = infinite).
-/// Returns the fnodes of all successfully upserted files (for incremental topo updates).
 pub(super) fn refresh_reachable_from_path(
     conn: &Connection,
     root: &Path,
     root_path: &Path,
     depth: i32,
-) -> Result<HashSet<String>> {
+) -> Result<bool> {
     if depth < -1 {
         bail!("depth must be -1 (infinite) or >= 0");
     }
     let mut seen: HashSet<String> = HashSet::new();
-    let mut affected_fnodes: HashSet<String> = HashSet::new();
+    let mut graph_changed = false;
     let mut queue: std::collections::VecDeque<(std::path::PathBuf, u32)> =
         std::collections::VecDeque::new();
     let canonical_root = crate::workspace::resolve_mdoc_path(root, root_path)?;
@@ -856,11 +516,7 @@ pub(super) fn refresh_reachable_from_path(
         if !seen.insert(rel_path.clone()) {
             continue;
         }
-        let outcome = upsert_mdoc_row(conn, root, &file_path)?;
-        if outcome.graph_changed {
-            affected_fnodes.extend(outcome.old_fnode);
-            affected_fnodes.extend(outcome.new_fnode);
-        }
+        graph_changed |= upsert_mdoc_row(conn, root, &file_path)?;
         if !file_path.exists() {
             continue;
         }
@@ -876,7 +532,7 @@ pub(super) fn refresh_reachable_from_path(
             }
         }
     }
-    Ok(affected_fnodes)
+    Ok(graph_changed)
 }
 
 pub(super) fn current_cached_mdoc_path(root: &Path, rel_path: &str) -> Result<Option<PathBuf>> {
@@ -917,11 +573,7 @@ fn cached_path_error_is_stale(error: &anyhow::Error) -> bool {
 }
 
 /// Upsert a single .mdoc file: update metadata, parse, rebuild edges and issues.
-pub(super) fn upsert_mdoc_row(
-    conn: &Connection,
-    root: &Path,
-    file_path: &Path,
-) -> Result<UpsertOutcome> {
+pub(super) fn upsert_mdoc_row(conn: &Connection, root: &Path, file_path: &Path) -> Result<bool> {
     let root_resolved = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let file_path = crate::workspace::resolve_mdoc_path(&root_resolved, file_path)?;
     let rel_path = to_indexed_rel_path(&root_resolved, &file_path)?;
@@ -935,12 +587,7 @@ pub(super) fn upsert_mdoc_row(
     let source_snapshot = match source_snapshot {
         Some(snapshot) => snapshot,
         None => {
-            delete_indexed_path(conn, &rel_path)?;
-            return Ok(UpsertOutcome {
-                graph_changed: old_fnode.is_some() || old_had_blocking_issue,
-                old_fnode,
-                new_fnode: None,
-            });
+            return delete_indexed_path(conn, &rel_path);
         }
     };
     let content = source_snapshot.content();
@@ -963,11 +610,7 @@ pub(super) fn upsert_mdoc_row(
         if indexed_file_state(conn, &rel_path)? != Some(file_state) {
             upsert_file_state(conn, &rel_path, file_state)?;
         }
-        return Ok(UpsertOutcome {
-            graph_changed: false,
-            old_fnode: old_fnode.clone(),
-            new_fnode: old_fnode,
-        });
+        return Ok(false);
     }
     if !old_had_blocking_issue && old_semantics.invalid.is_none() && new_semantics.invalid.is_none()
     {
@@ -979,12 +622,7 @@ pub(super) fn upsert_mdoc_row(
             if old_fnode == new_fnode && old_dependencies == new_dependencies {
                 upsert_file_state(conn, &rel_path, file_state)?;
                 upsert_search_row(conn, &rel_path, new_fnode, new_title)?;
-                invalidate_index_digest(conn)?;
-                return Ok(UpsertOutcome {
-                    graph_changed: false,
-                    old_fnode: Some(old_fnode.clone()),
-                    new_fnode: Some(new_fnode.clone()),
-                });
+                return Ok(false);
             }
         }
     }
@@ -1059,10 +697,6 @@ pub(super) fn upsert_mdoc_row(
     for fnode in &identity_fnodes {
         refresh_duplicate_issues_for_fnode(conn, Some(fnode))?;
     }
-    let new_has_node = fnode_for_path(conn, &rel_path)?.is_some();
-    let old_count = if old_fnode.is_some() { 1 } else { 0 };
-    let new_count = if new_has_node { 1 } else { 0 };
-    adjust_document_count(conn, new_count - old_count)?;
     let new_has_blocking_issue = path_has_blocking_issue(conn, &rel_path)?;
 
     // Collect all fnodes whose in_degree may have changed
@@ -1089,24 +723,13 @@ pub(super) fn upsert_mdoc_row(
     // Blocking issues filter edges and nodes without changing their stored
     // identities. In particular, a duplicate claimant becoming a malformed
     // partial identity can make another claimant valid while this path remains
-    // blocking and reports the same fallback fnode. Conservatively invalidate
-    // graph-derived caches whenever a touched path is or was blocking.
+    // blocking and reports the same fallback fnode. Conservatively treat the
+    // graph as changed whenever a touched path is or was blocking.
     let graph_changed = old_fnode != new_fnode
         || old_dst_fnodes != new_dst_fnodes
         || old_had_blocking_issue
         || new_has_blocking_issue;
-    let semantic_changed = old_semantics != indexed_file_semantics(conn, &rel_path)?;
-    if graph_changed {
-        super::derived::bump_graph_epoch(conn)?;
-    }
-    if graph_changed || semantic_changed {
-        invalidate_index_digest(conn)?;
-    }
-    Ok(UpsertOutcome {
-        old_fnode,
-        new_fnode,
-        graph_changed,
-    })
+    Ok(graph_changed)
 }
 
 fn upsert_file_state(
@@ -1129,7 +752,7 @@ fn upsert_file_state(
 }
 
 /// Remove all index entries for a path (file deleted or moved).
-pub(super) fn delete_indexed_path(conn: &Connection, stale_path: &str) -> Result<()> {
+pub(super) fn delete_indexed_path(conn: &Connection, stale_path: &str) -> Result<bool> {
     let old_fnode = fnode_for_path(conn, stale_path)?;
     let old_had_blocking_issue = path_has_blocking_issue(conn, stale_path)?;
     let old_symbol_ids = symbol_ids_for_source_path(conn, stale_path)?;
@@ -1149,10 +772,6 @@ pub(super) fn delete_indexed_path(conn: &Connection, stale_path: &str) -> Result
     conn.execute("DELETE FROM mdocs WHERE path = ?", [stale_path])?;
     conn.execute("DELETE FROM mdoc_edges WHERE src_path = ?", [stale_path])?;
     conn.execute("DELETE FROM mdoc_issues WHERE path = ?", [stale_path])?;
-    if old_fnode.is_some() {
-        adjust_document_count(conn, -1)?;
-    }
-
     refresh_duplicate_issues_for_fnode(conn, old_fnode.as_deref())?;
 
     let mut affected = old_dst_fnodes;
@@ -1172,22 +791,10 @@ pub(super) fn delete_indexed_path(conn: &Connection, stale_path: &str) -> Result
     super::derived::refresh_in_degree_for_fnodes(conn, &affected)?;
     prune_orphaned_symbols(conn, &old_symbol_ids)?;
 
-    if old_fnode.is_some() || !affected.is_empty() || old_had_blocking_issue {
-        super::derived::bump_graph_epoch(conn)?;
-    }
-    invalidate_index_digest(conn)?;
-    Ok(())
+    Ok(old_fnode.is_some() || !affected.is_empty() || old_had_blocking_issue)
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
-
-fn invalidate_index_digest(conn: &Connection) -> Result<()> {
-    conn.execute(
-        "UPDATE mdoc_index_state SET index_digest = '' WHERE id = 1",
-        [],
-    )?;
-    Ok(())
-}
 
 fn symbol_ids_for_source_path(conn: &Connection, rel_path: &str) -> Result<HashSet<i64>> {
     let mut stmt =
@@ -1219,18 +826,6 @@ fn prune_orphaned_symbols(conn: &Connection, ids: &HashSet<i64>) -> Result<()> {
                    )"
             ),
             rusqlite::params_from_iter(chunk),
-        )?;
-    }
-    Ok(())
-}
-
-fn adjust_document_count(conn: &Connection, delta: i64) -> Result<()> {
-    if delta != 0 {
-        conn.execute(
-            "UPDATE mdoc_index_state
-             SET document_count = MAX(0, document_count + ?)
-             WHERE id = 1",
-            [delta],
         )?;
     }
     Ok(())

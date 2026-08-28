@@ -1,6 +1,6 @@
 //! Workspace change detection using a metadata fast path.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -56,33 +56,22 @@ pub(super) fn apply_workspace_changes(
     conn: &Connection,
     root: &Path,
     changes: WorkspaceChanges,
-) -> Result<(HashSet<String>, bool)> {
-    let mut changed_fnodes = HashSet::new();
+) -> Result<bool> {
+    let mut graph_changed = false;
 
     for file_path in changes.changed_paths {
-        let outcome = upsert_mdoc_row(conn, root, &file_path)?;
-        if outcome.graph_changed {
-            changed_fnodes.extend(outcome.old_fnode);
-            changed_fnodes.extend(outcome.new_fnode);
-        }
+        graph_changed |= upsert_mdoc_row(conn, root, &file_path)?;
     }
 
-    let mut has_deletion = false;
     for stale_path in changes.stale_paths {
         if let Some(file_path) = current_cached_mdoc_path(root, &stale_path)? {
-            let outcome = upsert_mdoc_row(conn, root, &file_path)?;
-            has_deletion |= outcome.new_fnode.is_none();
-            if outcome.graph_changed {
-                changed_fnodes.extend(outcome.old_fnode);
-                changed_fnodes.extend(outcome.new_fnode);
-            }
+            graph_changed |= upsert_mdoc_row(conn, root, &file_path)?;
         } else {
-            delete_indexed_path(conn, &stale_path)?;
-            has_deletion = true;
+            graph_changed |= delete_indexed_path(conn, &stale_path)?;
         }
     }
 
-    Ok((changed_fnodes, has_deletion))
+    Ok(graph_changed)
 }
 
 fn orphaned_index_paths(conn: &Connection) -> Result<Vec<String>> {

@@ -68,17 +68,6 @@ fn stored_missing_issue_count(cache: &IndCache) -> i64 {
         .unwrap()
 }
 
-fn indexed_document_count(cache: &IndCache) -> i64 {
-    rusqlite::Connection::open(index_path(cache))
-        .unwrap()
-        .query_row(
-            "SELECT document_count FROM mdoc_index_state WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap()
-}
-
 fn topo_depth(cache: &IndCache, fnode: &str) -> u32 {
     cache.node_summary(fnode).unwrap().depth
 }
@@ -664,7 +653,7 @@ fn full_refresh_crosses_bulk_insert_boundaries() {
     assert_eq!(report.edges, 201);
     assert_eq!(report.missing.len(), 201);
     assert_eq!(stored_missing_issue_count(&cache), 0);
-    assert_eq!(indexed_document_count(&cache), 201);
+    assert_eq!(cache.count().unwrap(), 201);
 }
 
 #[test]
@@ -1608,7 +1597,7 @@ fn test_in_degree_decrements_on_dep_remove() {
 // ── topo_depth rebuild / crash-safe backfill ──────────────────────────────────
 
 #[test]
-fn test_incremental_topo_depth_converges_across_short_and_long_paths() {
+fn graph_mutation_backfills_topo_depths_across_short_and_long_paths() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     setup(root);
@@ -1640,7 +1629,7 @@ fn test_incremental_topo_depth_converges_across_short_and_long_paths() {
 }
 
 #[test]
-fn batched_topo_refresh_merges_overlapping_ancestor_sets() {
+fn batched_graph_mutations_backfill_overlapping_ancestor_depths() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     setup(root);
@@ -1672,7 +1661,32 @@ fn batched_topo_refresh_merges_overlapping_ancestor_sets() {
 }
 
 #[test]
-fn test_lazy_component_rebuild_updates_every_member_size() {
+fn graph_mutation_resets_depth_for_a_new_placeholder_identity() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    let source = root.join("source.mdoc");
+    write(
+        &source,
+        "@fnode: source-node\n@title: Source\n\n@dep:\nleaf-node\n@end\n",
+    );
+    write(&root.join("leaf.mdoc"), "@fnode: leaf-node\n@title: Leaf\n");
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    assert_eq!(topo_depth(&cache, "source-node"), 1);
+
+    write(
+        &source,
+        "@fnode: <invalid>\n@title: Invalid\n@unknown: value\n",
+    );
+    cache.upsert_path(&source).unwrap();
+
+    let summary = cache.node_summary("<invalid>").unwrap();
+    assert!(summary.broken);
+    assert_eq!(summary.depth, 0);
+}
+
+#[test]
+fn graph_roots_compute_updated_component_sizes() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     setup(root);
@@ -1701,35 +1715,9 @@ fn test_lazy_component_rebuild_updates_every_member_size() {
         .all_valid_edges()
         .unwrap()
         .contains(&("a-node".to_string(), "c-node".to_string())));
-    cache.global_root_items().unwrap();
-
-    let conn = rusqlite::Connection::open(index_path(&cache)).unwrap();
-    let rows: Vec<(String, u32)> = conn
-        .prepare(
-            "SELECT fnode, component_size
-             FROM mdoc_weak_component ORDER BY fnode",
-        )
-        .unwrap()
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap();
-    assert_eq!(rows.len(), 4);
-    assert!(
-        rows.iter().all(|(_, size)| *size == 4),
-        "unexpected component rows: {rows:?}"
-    );
-    let has_component_id: bool = conn
-        .query_row(
-            "SELECT EXISTS (
-                 SELECT 1 FROM pragma_table_info('mdoc_weak_component')
-                 WHERE name = 'component_id'
-             )",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert!(!has_component_id);
+    let roots = cache.global_root_items().unwrap();
+    let a = roots.iter().find(|item| item.fnode == "a-node").unwrap();
+    assert_eq!(a.component_size, 4);
 }
 
 #[test]
@@ -2004,10 +1992,10 @@ fn test_old_schema_rebuilds_in_degree() {
     );
 }
 
-// ── SCC cache invalidation ────────────────────────────────────────────────────
+// ── Graph recomputation ───────────────────────────────────────────────────────
 
 #[test]
-fn test_graph_check_report_invalidates_scc_cache_on_fnode_rename() {
+fn graph_check_report_updates_cycles_on_fnode_rename() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     setup(root);
@@ -2038,62 +2026,8 @@ fn test_graph_check_report_invalidates_scc_cache_on_fnode_rename() {
     assert_eq!(
         second_report.cycles.len(),
         0,
-        "SCC cache must be invalidated after fnode rename"
+        "cycle should disappear after fnode rename"
     );
-}
-
-#[test]
-fn full_refresh_skips_graph_rebuild_when_index_semantics_are_unchanged() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let root = dir.path();
-    setup(root);
-    let source = root.join("source.mdoc");
-    write(
-        &source,
-        "@fnode: source-node\n@title: Source\n\n@src: text\nfirst body\n@end\n",
-    );
-
-    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
-    let epoch = |cache: &IndCache| -> i64 {
-        rusqlite::Connection::open(index_path(cache))
-            .unwrap()
-            .query_row(
-                "SELECT graph_epoch FROM mdoc_index_state WHERE id = 1",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap()
-    };
-    let initial_epoch = epoch(&cache);
-
-    cache.refresh_all().unwrap();
-    assert_eq!(epoch(&cache), initial_epoch);
-
-    write(
-        &source,
-        "@fnode: source-node\n@title: Renamed Source\n\n@src: text\nchanged body\n@end\n",
-    );
-    cache.refresh_all().unwrap();
-    assert_eq!(epoch(&cache), initial_epoch);
-    assert_eq!(
-        cache.node_summary("source-node").unwrap().title,
-        "Renamed Source"
-    );
-
-    write(
-        &source,
-        "@fnode: source-node\n@title: Source\n\n@src: text\nchanged body\n@end\n",
-    );
-    cache.refresh_all().unwrap();
-    assert_eq!(epoch(&cache), initial_epoch);
-
-    write(
-        &source,
-        "@fnode: source-node\n@title: Source\n\n@dep:\nmissing-node\n@end\n",
-    );
-    cache.refresh_all().unwrap();
-    assert!(epoch(&cache) > initial_epoch);
-    assert_eq!(cache.graph_check_report().unwrap().missing.len(), 1);
 }
 
 #[test]
@@ -2152,42 +2086,7 @@ fn title_only_upsert_does_not_rewrite_graph_tables() {
 }
 
 #[test]
-fn unchanged_reachable_refresh_preserves_the_workspace_digest() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let root = dir.path();
-    setup(root);
-    let source = root.join("source.mdoc");
-    write(
-        &source,
-        "@fnode: source-node\n@title: Source\n\n@dep:\ndep-node\n@end\n",
-    );
-    write(
-        &root.join("dep.mdoc"),
-        "@fnode: dep-node\n@title: Dependency\n",
-    );
-
-    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
-    cache.refresh_all().unwrap();
-    let digest = |cache: &IndCache| -> String {
-        rusqlite::Connection::open(index_path(cache))
-            .unwrap()
-            .query_row(
-                "SELECT index_digest FROM mdoc_index_state WHERE id = 1",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap()
-    };
-    let initial_digest = digest(&cache);
-    assert!(!initial_digest.is_empty());
-
-    cache.refresh_reachable_from_path(&source, -1).unwrap();
-
-    assert_eq!(digest(&cache), initial_digest);
-}
-
-#[test]
-fn semantic_upsert_invalidates_digest_for_an_aba_full_refresh() {
+fn full_refresh_restores_aba_semantic_changes() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     setup(root);
@@ -2226,7 +2125,7 @@ fn semantic_upsert_invalidates_digest_for_an_aba_full_refresh() {
 }
 
 #[test]
-fn full_refresh_recognizes_an_incrementally_synchronized_index() {
+fn full_refresh_preserves_an_incrementally_synchronized_index() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     setup(root);
@@ -2263,35 +2162,9 @@ fn full_refresh_recognizes_an_incrementally_synchronized_index() {
         "@fnode: source-node\n@title: Source\n\n@dep:\nsecond-node\n@end\n",
     );
     cache.upsert_path(&source).unwrap();
-    let connection = rusqlite::Connection::open(index_path(&cache)).unwrap();
-    let epoch: i64 = connection
-        .query_row(
-            "SELECT graph_epoch FROM mdoc_index_state WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    drop(connection);
 
     cache.refresh_all().unwrap();
 
-    let connection = rusqlite::Connection::open(index_path(&cache)).unwrap();
-    let refreshed_epoch: i64 = connection
-        .query_row(
-            "SELECT graph_epoch FROM mdoc_index_state WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let digest: String = connection
-        .query_row(
-            "SELECT index_digest FROM mdoc_index_state WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(refreshed_epoch, epoch);
-    assert!(!digest.is_empty());
     assert_eq!(
         cache
             .direct_dependency_summaries("source-node")
@@ -2304,7 +2177,7 @@ fn full_refresh_recognizes_an_incrementally_synchronized_index() {
 }
 
 #[test]
-fn strong_refresh_applies_small_addition_and_deletion_deltas() {
+fn full_refresh_applies_additions_and_deletions() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     setup(root);
@@ -2316,24 +2189,24 @@ fn strong_refresh_applies_small_addition_and_deletion_deltas() {
     write(&target, "@fnode: target-node\n@title: Target\n");
     let mut cache = IndCache::open(root.to_path_buf()).unwrap();
     assert!(cache.graph_check_report().unwrap().missing.is_empty());
-    assert_eq!(indexed_document_count(&cache), 2);
+    assert_eq!(cache.count().unwrap(), 2);
 
     std::fs::remove_file(&target).unwrap();
     cache.refresh_all().unwrap();
     let report = cache.graph_check_report().unwrap();
     assert_eq!(report.missing.len(), 1);
     assert_eq!(report.missing[0].fnode, "target-node");
-    assert_eq!(indexed_document_count(&cache), 1);
+    assert_eq!(cache.count().unwrap(), 1);
 
     write(&target, "@fnode: target-node\n@title: Restored\n");
     cache.refresh_all().unwrap();
     assert!(cache.graph_check_report().unwrap().missing.is_empty());
     assert_eq!(cache.node_summary("target-node").unwrap().title, "Restored");
-    assert_eq!(indexed_document_count(&cache), 2);
+    assert_eq!(cache.count().unwrap(), 2);
 }
 
 #[test]
-fn blocking_claimant_transition_refreshes_graph_caches_and_invalid_deletion_epoch() {
+fn blocking_claimant_transition_updates_cycles_and_components() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     setup(root);
@@ -2382,7 +2255,7 @@ fn blocking_claimant_transition_refreshes_graph_caches_and_invalid_deletion_epoc
     cache.upsert_path(&claimant_b).unwrap();
 
     let report = cache.graph_check_report().unwrap();
-    assert_eq!(report.cycles.len(), 1, "stale SCC cache: {report:?}");
+    assert_eq!(report.cycles.len(), 1, "missing cycle: {report:?}");
     let refreshed_roots = cache.global_root_items().unwrap();
     assert_eq!(
         refreshed_roots
@@ -2398,28 +2271,6 @@ fn blocking_claimant_transition_refreshes_graph_caches_and_invalid_deletion_epoc
         1,
         "the malformed claimant must have no mdocs identity"
     );
-
-    let epoch_before_delete: i64 = rusqlite::Connection::open(index_path(&cache))
-        .unwrap()
-        .query_row(
-            "SELECT graph_epoch FROM mdoc_index_state WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    fs::remove_file(&claimant_b).unwrap();
-    cache.discover_workspace_changes().unwrap();
-
-    let conn = rusqlite::Connection::open(index_path(&cache)).unwrap();
-    let (epoch_after_delete, component_dirty): (i64, bool) = conn
-        .query_row(
-            "SELECT graph_epoch, weak_component_dirty FROM mdoc_index_state WHERE id = 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert!(epoch_after_delete > epoch_before_delete);
-    assert!(component_dirty);
 }
 
 #[test]
