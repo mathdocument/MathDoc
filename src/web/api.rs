@@ -604,7 +604,7 @@ fn load_node_generation(
     fnode: &str,
     abs_path: &std::path::Path,
 ) -> ApiResult<(crate::workspace::FileSnapshot, MdocNode)> {
-    let (snapshot, node) = snapshot_node(abs_path)?;
+    let snapshot = crate::workspace::FileSnapshot::capture(abs_path)?;
 
     // This is deliberately a strong single-path upsert: discovery's metadata
     // fast path cannot detect every external edit.
@@ -613,6 +613,10 @@ fn load_node_generation(
         return Err(error.into());
     }
     ensure_snapshot_unchanged(&snapshot, abs_path)?;
+    let content = snapshot
+        .content()
+        .ok_or_else(|| anyhow::anyhow!("mdoc file disappeared: {}", abs_path.display()))?;
+    let node = MdocNode::load_bytes(abs_path, content).map_err(ApiError::invalid_node)?;
     if node.fnode != fnode {
         return Err(ApiError::generation_conflict(fnode, &node.fnode));
     }
@@ -876,6 +880,7 @@ fn revision_digest(content: &[u8]) -> String {
     format!("{:x}", Sha256::digest(content))
 }
 
+#[cfg(test)]
 fn snapshot_node(
     abs_path: &std::path::Path,
 ) -> ApiResult<(crate::workspace::FileSnapshot, MdocNode)> {

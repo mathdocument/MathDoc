@@ -884,6 +884,49 @@ async fn node_detail_and_view_classify_malformed_nodes_as_validation_errors() {
     }
 }
 
+#[tokio::test]
+async fn malformed_same_metadata_read_repairs_the_index() {
+    let dir = TempDir::new().unwrap();
+    let (root, app) = build_app(&dir);
+    let (_, roots) = get_json(&app, "/api/graph/roots").await;
+    let main = roots
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["title"] == "Main Theorem")
+        .unwrap();
+    let fnode = main["fnode"].as_str().unwrap();
+    let path = root.join(main["rel_path"].as_str().unwrap());
+    let metadata = std::fs::metadata(&path).unwrap();
+    let modified = metadata.modified().unwrap();
+    let malformed = std::fs::read_to_string(&path)
+        .unwrap()
+        .replacen("@title:", "@bogus:", 1);
+    std::fs::write(&path, malformed).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    let current = std::fs::metadata(&path).unwrap();
+    assert_eq!(current.len(), metadata.len());
+    assert_eq!(current.modified().unwrap(), modified);
+
+    let (status, value) = get_json(&app, &format!("/api/node/{fnode}")).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(value["error"], "node is structurally invalid");
+
+    let (_, roots) = get_json(&app, "/api/graph/roots").await;
+    let indexed = roots
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["fnode"] == fnode)
+        .unwrap();
+    assert_eq!(indexed["broken"], true);
+}
+
 // ── Write endpoint tests ──────────────────────────────────────────────────────
 
 #[tokio::test]
