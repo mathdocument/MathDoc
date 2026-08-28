@@ -12,18 +12,10 @@ mappings for source blocks.
 Embedded highlighting recognizes source-type names case-insensitively and permits
 metadata after the type, matching the `.mdoc` parser.
 
-Install the checked-in package locally:
-
-```bash
-code --install-extension editors/vscode/mdc-mdoc-0.1.1.vsix --force
-```
-
-Build a VSIX from source:
-
-```bash
-cd editors/vscode
-npx @vscode/vsce package
-```
+Use the canonical package and local-install commands in
+[Development Setup](../setup/#vs-code-extension-commands). Keep the checked-in VSIX at
+the filename derived from `package.json`; release checking compares its manifest,
+license, language configuration, and grammar byte for byte with source.
 
 Publish through an authenticated publisher session:
 
@@ -45,29 +37,16 @@ Marketplace presentation metadata such as a README and icon.
 
 ## Embedded web assets
 
-Any change under `web/src/` must be followed by:
-
-```bash
-cd web
-npm ci
-npm run check
-npm test
-npm run build
-```
+Use the canonical frontend commands in
+[Development Setup](../setup/#web-frontend-commands) after changes under `web/src/`.
 
 Commit the resulting `web/dist/` changes with the source. Release checking repeats the
 build and rejects stale or untracked generated assets.
 
 ## Documentation site
 
-Documentation source lives under `docs/src/content/docs/`. Validate it with:
-
-```bash
-cd docs
-npm ci
-npm run check
-npm run build
-```
+Documentation source lives under `docs/src/content/docs/`. Use the canonical validation
+commands in [Development Setup](../setup/#documentation-commands).
 
 `.github/workflows/docs-deploy.yml` deploys `main` to GitHub Pages at
 `https://mathdocument.github.io/MathDoc/`. In repository settings, Pages must use

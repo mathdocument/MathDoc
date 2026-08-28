@@ -12,18 +12,19 @@ a Svelte 5 single-page application embedded in the Rust binary.
   `AppState`-scoped mutation mutex shared by handlers on the router.
 - `src/web/api.rs` implements handlers. Synchronous cache and filesystem work runs on
   Tokio's blocking pool, and no handler holds the cache lock across `.await`.
-- `src/web/server.rs` builds the router, binds a loopback port, opens the browser, and
-  handles graceful SIGINT/SIGTERM shutdown.
-- `src/web/assets.rs` embeds and serves `web/dist` with `rust-embed` in normal builds.
-  Under `dev-web`, `src/web/server.rs` uses `ServeDir` over `$MDC_WEB_DIR/dist`, defaulting
-  to `web/dist`, with an extensionless SPA fallback and `404` for missing file-like paths.
+- `src/web/server.rs` builds the router, binds a loopback port, prints the URL, and
+  handles graceful SIGINT/SIGTERM shutdown. It does not launch a browser.
+- `src/web/assets.rs` always embeds and serves `web/dist` with `rust-embed`, with an
+  extensionless SPA fallback and `404` for missing file-like paths. Rust has no second
+  development asset-serving path.
 - `web/src/lib/state.svelte.ts` owns the canonical node session using Svelte runes.
 - `web/src/components/BlockEditor.svelte` wraps one CodeMirror 6 editor per source
   block.
 
-`node_view` performs one discovery and reference resolution while holding one cache
-lock, then returns focused node detail, direct referrers, and direct dependencies. The
-frontend uses this combined request for three-column navigation.
+`node_view` performs discovery and reference resolution while holding one cache lock,
+strongly upserts the focused path, then returns focused node detail, direct referrers,
+and direct dependencies as `NodeView.children`. The frontend uses this combined request
+for three-column navigation.
 
 Title and block writes share one local resolve, snapshot, fnode recheck, mutation,
 replacement, reindex, and detail-response transaction helper. Dependency writes remain
@@ -39,9 +40,7 @@ GET    /api/graph/full
 POST   /api/workspace/refresh
 GET    /api/search?q=&n=
 GET    /api/resolve?ref=
-GET    /api/node/:fnode
 GET    /api/node/:fnode/view
-GET    /api/node/:fnode/children
 GET    /api/node/:fnode/dep/candidates?q=&n=
 PUT    /api/node/:fnode/title                 { title }          + If-Match
 PUT    /api/node/:fnode/block/:srctype        { content }        + If-Match
@@ -54,19 +53,19 @@ POST   /api/node/new                          { title, file?, parent_fnode? }
 Linked node creation also requires `If-Match`, matched against the parent; standalone
 creation does not.
 
-Discovery-backed read endpoints share a one-second workspace discovery gate so navigation
-and typing bursts do not repeatedly walk every `.mdoc`. The first read and the first read
-after the gate expires still discover external filesystem changes. `fresh=true` on node
-and full-graph reads forces discovery through the gate; it is not a strong full refresh.
+Graph roots, full graph, search, resolve, node view, and dependency-candidate reads run
+workspace discovery on every request. There is no discovery gate or query parameter for
+requesting a fresher read. Discovery remains metadata-based rather than a strong full
+refresh; node view additionally performs a strong focused-path upsert.
 `GET /api/graph/check` reports current indexed state without discovery or `refresh_all()`.
 `POST /api/workspace/refresh` runs `WorkspaceStore::refresh_all()` and then returns the
-graph-check report. Successful web mutations update the shared index immediately, and
-discovery failures do not advance the gate.
+graph-check report. Successful web mutations update the shared index immediately.
 
 All `:fnode` parameters accept an exact fnode, unique prefix, or path-like reference via
 `WorkspaceStore::resolve_ref`. Write handlers return canonical `NodeDetail` for the
 affected node. The frontend accepts complete write responses without replacing editor-local
-drafts. After relationship changes, `NodeSession` resynchronizes the canonical `NodeView`.
+drafts. `NodeSession` owns the canonical `NodeView`; after relationship changes it
+resynchronizes that view rather than maintaining a separate children result.
 
 All successful endpoints currently return `200 OK`, including node creation and block
 deletion. Creation does not return `201`, and deletion does not return `204`. Read
@@ -77,9 +76,8 @@ responses use these shapes:
 | `graph/roots` | `GraphRootItem[]` |
 | `graph/check` | `{ nodes, edges, missing, invalid, cycles }` |
 | `graph/full` | `{ nodes: NodeSummary[], edges: [sourceIndex, targetIndex][] }` |
-| `search`, `node/:fnode/children` | `NodeSummary[]` |
+| `search` | `NodeSummary[]` |
 | `resolve` | `{ fnode, title, rel_path }` |
-| `node/:fnode` | `NodeDetail` |
 | `node/:fnode/view` | `{ node, referrers, children }` |
 | `node/:fnode/dep/candidates` | `{ nodes, empty }` |
 | Every write | `NodeDetail` |
@@ -127,7 +125,7 @@ and source blocks containing `srctype`, `content`, and `metadata`. Root items us
   block no metadata. Unknown types and deletion of a missing block return `422`.
 - Titles are trimmed and must remain nonempty. Title or block mutations that would
   produce invalid MathDoc structure return `422`.
-- `GET /api/node/:fnode`, `GET /api/node/:fnode/view`, and every successful node mutation
+- `GET /api/node/:fnode/view` and every successful node mutation
   return a quoted SHA-256 `ETag` matching `NodeDetail.revision`. Existing-node mutations
   require that value in `If-Match`; linked creation checks the parent revision. A missing
   precondition returns `428`, a stale one returns `412` without changing the file, and a
@@ -194,3 +192,7 @@ Production Rust builds embed the committed `web/dist` at compile time. Frontend 
 changes must include `npm run build` so hashed JavaScript, CSS, and `index.html` stay in
 sync. The release workflow builds the frontend and fails if the committed distribution
 changes.
+
+For live development, Vite owns frontend serving and HMR. It proxies `/api` to an
+ordinary `mdc serve` process; the Rust server still uses the same embedded-asset path as
+every other build.

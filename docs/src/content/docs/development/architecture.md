@@ -28,7 +28,7 @@ or unique fnode prefixes.
 | `src/formal/` | Formal receipt and evidence-version contract, attestation persistence, and status validation |
 | `src/compiler/` | Built-in compiler dispatch, language implementations, compiler workspaces, and subprocess control |
 | `src/cli/` | Clap definitions, dispatch, command handlers, and terminal output |
-| `src/web/` | Axum JSON API and embedded SPA asset serving |
+| `src/web/` | Axum JSON API, loopback server, and the single embedded SPA asset path |
 | `src/core/` | Database-independent graph models and algorithms |
 | `src/config.rs` | Source descriptors, config template, parsing, and defaults |
 | `src/workspace/` | Discovery, path validation, distinct work/mutation locks, and safe file updates |
@@ -38,11 +38,15 @@ or unique fnode prefixes.
 
 `src/core/` owns topological depth, weak-component, strongly connected component, and
 cycle algorithms without depending on SQLite. `WorkspaceStore` adapts database rows into
-those algorithms and persists derived results.
+those algorithms. Topological depth is persisted after a complete recomputation; weak
+components and representative cycles are calculated directly for each requesting query.
 
 `src/formal/` owns `FormalCompilationReceipt` and evidence versioning. Compiler
 implementations produce that formal-owned receipt, so formal validation does not depend
 on `src/compiler/`.
+
+Compiler dispatch handles `text` as an immediate successful no-op. Python, LaTeX, Lean,
+and Rocq retain language modules; there is no separate text compiler implementation.
 
 ## Parsing boundaries
 

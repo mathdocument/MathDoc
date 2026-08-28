@@ -51,9 +51,9 @@ Profiling writes an inclusive elapsed-time tree to standard error while preservi
 command's normal standard output. This is particularly useful for full refresh, graph,
 and synchronization costs.
 
-The current scopes cover CLI dispatch, cache open/bootstrap, workspace scans, digest
-calculation, issue construction, bulk row replacement, in-degree rebuild, derived graph
-algorithms, selected SQLite commits, and parent-level parallel read phases. Parallel
+The current scopes cover CLI dispatch, cache open/bootstrap, workspace scans, file-state
+synchronization, issue construction, bulk row replacement, in-degree rebuild, derived
+graph algorithms, selected SQLite commits, and parent-level parallel read phases. Parallel
 scan workers do not currently emit separate profiling trees.
 
 :::note

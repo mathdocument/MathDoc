@@ -20,10 +20,9 @@ The report contains:
 - invalid files, including duplicate fnodes
 - one representative cycle from each cyclic strongly connected component
 
-The strong refresh reads and parses every document. If indexed paths, identities,
-titles, dependency order, and parse issues are unchanged, a semantic digest allows
-MathDoc to skip graph-row and derived-data reconstruction. Source block bodies are not
-part of that digest.
+The strong refresh reads and parses every document, replaces the base graph rows,
+rebuilds in-degree, and recomputes all topological depths. Representative cycles are
+then calculated directly for the report.
 
 ## `mdc graph roots`
 
@@ -36,7 +35,7 @@ mdc graph roots
 Recoverable broken entries remain visible. Results are ordered by descending
 topological depth, then weak-component size, path, and fnode. The command discovers
 filesystem changes using cached `(mtime, size)` metadata and reads persisted topological
-depths; it rebuilds weak-component data only when graph changes marked that cache dirty.
+depths; weak-component sizes are calculated directly for the query.
 An external same-size edit that retains its timestamp may remain stale until a strong
 refresh such as `mdc graph check` or `mdc sync`.
 
@@ -49,7 +48,7 @@ mdc graph tui
 mdc graph tui <ref>
 ```
 
-Without a start reference, the browser opens the first root in `graph roots` ordering,
+Without a start reference, the TUI selects the first root in `graph roots` ordering,
 which is the deepest root rather than necessarily the largest subtree. The optional
 start value also accepts a unique case-insensitive exact title.
 

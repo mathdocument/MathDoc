@@ -101,15 +101,15 @@ Start the local browser interface:
 ```bash
 mdc serve
 mdc serve notes/theorem.mdoc
-mdc serve --bind 127.0.0.1:7878 --no-open
+mdc serve --bind 127.0.0.1:7878
 ```
 
 | Argument or option | Meaning |
 | --- | --- |
 | `source` | Optional start reference or unique case-insensitive exact title |
 | `--bind <address>` | Numeric loopback address; defaults to `127.0.0.1:0` |
-| `--no-open` | Do not launch the default browser |
 
-Port `0` asks the operating system for a free port. Binding is restricted to numeric
-loopback addresses. See the [web interface guide](../concepts/web-interface/) for UI
-features and its local-only security model.
+Port `0` asks the operating system for a free port. The command prints the URL but does
+not launch a browser. Binding is restricted to numeric loopback addresses. See the
+[web interface guide](../concepts/web-interface/) for UI features and its local-only
+security model.

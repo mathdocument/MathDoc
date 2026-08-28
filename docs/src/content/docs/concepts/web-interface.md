@@ -3,18 +3,19 @@ title: Web Interface
 description: Navigate and edit a workspace through MathDoc's local browser interface.
 ---
 
-`mdc serve` starts a local HTTP server and opens the embedded single-page application.
+`mdc serve` starts a local HTTP server for the embedded single-page application and
+prints its URL.
 
 ```bash
 mdc serve
 mdc serve notes/theorem.mdoc
-mdc serve --bind 127.0.0.1:7878 --no-open
+mdc serve --bind 127.0.0.1:7878
 ```
 
 The default bind is `127.0.0.1:0`, where port `0` asks the operating system for a free
-port, and the browser opens by default. `--no-open` suppresses browser launch. `--bind`
-must be a numeric loopback socket such as `127.0.0.1:7878` or `[::1]:7878`; hostnames
-such as `localhost:7878` are rejected as bind values.
+port. Open the printed URL in a browser. `--bind` must be a numeric loopback socket such
+as `127.0.0.1:7878` or `[::1]:7878`; hostnames such as `localhost:7878` are rejected as
+bind values.
 
 Without an initial source, the interface opens the deepest root in the same ordering as
 `mdc graph roots`. The optional source accepts a path, exact fnode, unique prefix, or

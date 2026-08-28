@@ -38,7 +38,7 @@ supported source languages and one syntax theme.
 For live frontend development, run the Rust API and Vite in separate terminals:
 
 ```bash title="Terminal 1"
-cargo run --features dev-web -- serve --bind 127.0.0.1:7599 --no-open
+cargo run -- serve --bind 127.0.0.1:7599
 ```
 
 ```bash title="Terminal 2"
@@ -46,9 +46,10 @@ cd web
 npm run dev
 ```
 
-With `dev-web`, `tower-http::ServeDir` serves `$MDC_WEB_DIR/dist`, defaulting to
-`web/dist`. Vite normally uses port 5173 and falls back if occupied. Requests under
-`/api` are proxied to `$MDC_API_PROXY`, defaulting to `http://127.0.0.1:7599`.
+Open the URL printed by Vite, normally port 5173. Vite owns frontend serving and HMR in
+development; requests under `/api` are proxied to `$MDC_API_PROXY`, defaulting to
+`http://127.0.0.1:7599`. The ordinary Rust server provides the API and keeps the same
+embedded-asset path used by production builds.
 
 ## Documentation commands
 
@@ -65,6 +66,20 @@ npm run dev
 The site uses `/MathDoc` as its production base path for GitHub Pages. The development
 server prints the corresponding local URL.
 
+## VS Code extension commands
+
+Package and install the declaration-only extension locally:
+
+```bash
+cd editors/vscode
+npx @vscode/vsce package
+code --install-extension mdc-mdoc-0.1.1.vsix --force
+```
+
+The archive name is derived from the version in `package.json`. The release workflow
+compares the packaged manifest, license, language configuration, and grammar byte for
+byte with these source files.
+
 ## Release check
 
 On pushes and pull requests, `.github/workflows/release-check.yml` performs:
@@ -73,8 +88,7 @@ On pushes and pull requests, `.github/workflows/release-check.yml` performs:
 2. Verification that `web/dist/` matches committed frontend source.
 3. Verification of the checked-in VS Code extension package.
 4. Documentation dependency installation, Astro checking, and static build.
-5. `cargo +stable test --locked` for the embedded-asset Rust path.
-6. `cargo +stable test --locked --features dev-web` for the filesystem-asset path.
+5. One Rust CI command: `cargo +stable test --locked`.
 
 Documentation deployment is separate: pushes to `main` that touch `docs/` run the
 official Astro GitHub Pages action.

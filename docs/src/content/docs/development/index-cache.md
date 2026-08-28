@@ -6,7 +6,7 @@ description: SQLite ownership, schemas, refresh paths, derived graph data, and c
 `WorkspaceStore` owns the SQLite database at `.mdc/index.db`, operational indexing and
 materialization boundaries, and recoverable file/index mutation sessions. `.mdoc` files
 are the workspace source of truth; SQLite is derived and can be rebuilt. `IndCache`
-remains a compatibility alias. The current schema version is `23`; compatible schemas
+remains a compatibility alias. The current schema version is `24`; compatible schemas
 starting at version `17` are migrated transactionally in place, older managed schemas
 are rebuilt from `.mdoc` files, and newer schemas are rejected without mutation.
 The version 19 migration removes stored missing diagnostics and rebuilds valid in-degree
@@ -17,6 +17,9 @@ immediately reusable even though the database file does not shrink until `VACUUM
 Version 22 adds rebuildable source-reconciliation observations used by `sync` and `back`.
 Version 23 moves the durable, generic `index_dirty` marker from
 `mdoc_workdraft_state` into `mdoc_index_state`.
+Version 24 removes obsolete graph epochs, weak-component and SCC tables, the index
+digest and document count, and the FTS selectivity vocabulary. Base index rows survive
+the migration; the removed values were rebuildable cache state.
 
 MathDoc bundles SQLite and requires engine version 3.51.3 or newer so concurrent WAL
 readers cannot encounter older WAL-reset defects. The connection enables WAL mode and
@@ -39,17 +42,17 @@ a new database-owner daemon and IPC protocol. Its columnar scans also do not rep
 point-update, ordered-adjacency, and prefix-resolution indexes used here. DuckDB may be
 appropriate for exported offline analytics, but it is not the primary workspace index.
 
-Large-workspace scaling therefore keeps the embedded transactional engine while reducing
-the work performed inside it: compact derived diagnostics, stable integer identities,
-indexed substring search, covering adjacency indexes, and bounded incremental graph
-maintenance.
+Large-workspace scaling therefore keeps the embedded transactional engine and simple
+data paths: compact derived diagnostics, stable integer identities, indexed substring
+search, covering adjacency indexes, and direct graph algorithms.
 
 ## Internal boundaries
 
 - `schema.rs` owns table DDL, indexes, views, and `PRAGMA user_version` handling.
-- `queries.rs` contains pure database reads and no materialization or invalidation.
-- `derived.rs` owns topological depth, weak components, graph epochs, SCC/cycle cache
-  maintenance, and incremental in-degree maintenance.
+- `queries.rs` contains pure database reads, including direct weak-component and cycle
+  calculation, with no materialization or invalidation.
+- `derived.rs` owns complete topological-depth recomputation and targeted in-degree
+  maintenance.
 - `refresh.rs` owns file-backed row, edge, and issue upserts/deletes, including the full
   in-degree rebuild during strong refresh. Helpers borrow a connection and do not own
   transactions.
@@ -69,7 +72,7 @@ and creating file/index disagreement.
 Reference resolution and pure queries do not delete cached rows when path validation
 fails; they ignore invalid candidates. Discovery, full or targeted refresh, explicit
 path upsert, and `reconcile_fnode_paths()` own stale-row deletion and derived-state
-updates. Read-facing facades may transactionally materialize derived caches.
+updates. Read-facing graph queries calculate non-persisted derived results directly.
 
 ## Database objects
 
@@ -83,9 +86,7 @@ updates. Read-facing facades may transactionally materialize derived caches.
 | `mdoc_issues` | `path`, `kind`, `ref_fnode`, `error` | Stored invalid and duplicate diagnostics |
 | `mdoc_missing_issues` | valid in-degree and claimant indexes | Derived missing-target diagnostics |
 | `mdoc_in_degree` | `fnode`, `in_degree` | Precomputed valid-source in-degree |
-| `mdoc_weak_component` | `fnode`, `component_size` | Weak component size per node |
-| `mdoc_index_state` | epoch, graph dirtiness, generic `index_dirty`, bootstrap, digest, document count | Global materialization and durable recovery state |
-| `mdoc_scc_result` | `graph_epoch`, `cycles_json` | Representative cycles for one epoch |
+| `mdoc_index_state` | `bootstrapped`, `index_dirty` | Bootstrap and durable mutation-recovery state |
 | `mdoc_workdraft_state` | manifest digest and clean-result counts | Observation-cache generation |
 | `mdoc_workdraft_observations` | encoded source path, source type, file generation | Rebuildable sync/back acceleration |
 
@@ -117,19 +118,18 @@ reconciliation.
 before applying dependency-specific filters. Terms of at least three characters use the
 FTS5 trigram index as a candidate prefilter, followed by the original literal matching
 and ranking predicates. The index omits position and column-size detail; queries combine
-their distinct trigrams and do not rely on FTS phrase semantics. FTS vocabulary counts
-bound the candidate set before use; terms whose rarest trigram still covers more than
-roughly one quarter of the document IDs use the linear fallback instead. One- and
-two-character terms also retain that compatibility scan. Explicit integer document IDs
+their distinct trigrams and do not rely on FTS phrase semantics. Terms of one or two
+characters use the linear fallback; longer terms use trigram candidates without a
+persisted selectivity vocabulary. Explicit integer document IDs
 keep external-content FTS references stable across `VACUUM`. `all_node_summaries()` is
 the unbounded non-search query used by the full graph API.
 
 ## Fast discovery
 
 `discover_workspace_changes()` enumerates `.mdoc` files and compares cached
-`(mtime_ns, size)` values. Adds and updates trigger incremental topological-depth
-refresh. Any deletion triggers full depth backfill because ancestor depths may decrease
-without one safe starting node.
+`(mtime_ns, size)` values. It upserts changed paths and removes stale paths. If any of
+those operations changes graph semantics, the transaction recomputes every topological
+depth.
 
 Same-metadata external edits are intentionally deferred to strong refresh paths. File
 time is stored as `secs * 1_000_000_000 + subsec_nanos`.
@@ -145,26 +145,13 @@ workspace scan on every cache open.
 ## Strong refresh
 
 `refresh_all()` descriptor-relatively rereads and reparses every discovered document.
-A deterministic `index_digest` covers sorted paths, recovered identity, title,
-dependency order, and parse status, but not source block bodies.
+Every call replaces the base node, edge, symbol, and issue rows, rebuilds in-degree, and
+recomputes all topological depths. There is no digest or document-count shortcut.
 
-Focused and reachable refreshes also retain strong byte reads. When the parsed identity,
-title, ordered dependencies, parse error, file state, and blocking status are unchanged,
-they preserve the existing search, edge, issue, and derived rows instead of replaying
-equivalent SQLite writes. Metadata or formal-presence changes still update file state.
-
-If the digest matches, existing node, edge, issue, in-degree, epoch, and derived rows are
-retained. If it differs, refresh streams the indexed and scanned semantics in path order.
-Up to 1,024 changed or stale paths use the same incremental maintenance as focused
-upserts; larger changes fall back to constructing stored issues, replacing base rows with
-multi-value inserts, rebuilding in-degree, and eagerly rebuilding topological depths and
-weak components. The threshold bounds incremental statement and ancestor-update costs
-without making small edits rewrite the complete index.
-
-Graph changes invalidate the epoch-keyed SCC result; `graph_check_report()` rebuilds it
-lazily. Incremental path upserts and deletes clear `index_digest`; the next strong refresh
-streams indexed semantics to distinguish an already synchronized incremental index from
-an ABA edit before deciding whether a complete graph rebuild is necessary.
+Focused and reachable refreshes retain strong byte reads. A path whose parsed identity,
+title, ordered dependencies, parse error, file state, and blocking status are unchanged
+can preserve its search, edge, and issue rows. Any graph-semantic change still triggers
+a complete topological-depth recomputation before commit.
 
 The first `WorkspaceStore::open()` after database creation or schema rebuild performs a full
 bootstrap. Node creation and dependency writes also run `refresh_all()` under the
@@ -183,19 +170,13 @@ Leaves have topological depth `0`; each acyclic parent has
 depend on them, may retain partial Kahn accumulation. Cycle reporting is authoritative
 in those regions.
 
-Bulk paths call `derived::refresh_all_derived_data()`, loading the graph once, running
-core Kahn-style depth and weak-component algorithms, and persisting both results.
+Every graph-changing path calls `derived::backfill_all_topo_depths()`. It loads the graph
+once, runs the core Kahn-style algorithm, resets stored depths, and persists the complete
+result.
 
-Incremental paths call `refresh_topo_depth_upward_from(fnode)`. They recompute the node
-and all reverse-reachable ancestors in dependency-first order. An encountered cycle
-falls back to full depth backfill. Changing one node's `@dep` list without changing its
-fnode therefore rewrites only that node's edges, recomputes its depth, and propagates
-upward.
-
-Weak-component dirtiness is independent of topological depth. A graph change increments
-`graph_epoch` and sets `weak_component_dirty = 1`. `global_root_items()` ensures weak
-components transactionally before a pure query joins persisted depth and component
-size. `graph_check_report()` similarly ensures the SCC cache for the current epoch.
+Weak-component sizes are calculated directly by `global_root_items()`. Representative
+cycles are calculated directly by `graph_check_report()`. Neither result has a persisted
+cache, dirty flag, or graph epoch.
 
 ## Refresh behavior by command
 
@@ -211,13 +192,13 @@ size. `graph_check_report()` similarly ensures the SCC cache for the current epo
 | `dep show` | Workspace discovery | Reachable refresh from source |
 | `dep leaf` | Workspace discovery | Reachable refresh from source |
 | `dep refs` | Workspace discovery | Target path upsert |
-| `graph check` | None | Full refresh |
-| `graph roots` | Workspace discovery | Persisted depth; weak graph only if dirty |
+| `graph check` | None | Full refresh before the report |
+| `graph roots` | Workspace discovery | Persisted depth and direct weak-component calculation |
 | `graph tui` | Workspace discovery | DepGraph APIs and post-operation discovery |
 | `metric ior` | None | Full refresh |
 | `work` | Workspace discovery | Workspace-wide mirror reconciliation |
 | `back` | Discovery before write | Full refresh when mdocs changed |
-| `serve` | Discovery in read handlers | Guarded cache replacement after edits |
+| `serve` | Every applicable read handler | Focused node upsert for `NodeView`; full refresh only through `workspace/refresh` |
 
 CLI-managed writes call `upsert_path()` directly or use a `DepGraph` mutation that does
 so. External additions, deletions, and renames are found by discovery. Commands needing

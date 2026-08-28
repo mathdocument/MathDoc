@@ -38,7 +38,8 @@ path. They never replace the manifest's content digests or write-time byte valid
 `CompilerWorkspace`. `compile_with_receipt()` requires a `WorkspaceWorkLock`, validates
 its root against `CompilerReq::mdcroot` before dispatch, and revalidates the held
 generation afterward. Dispatch canonicalizes the source type and selects `text`,
-`python`, `latex`, `lean`, or `rocq`.
+`python`, `latex`, `lean`, or `rocq`. Text succeeds immediately as a no-op; the other
+four types dispatch to language modules.
 
 `CompilerWorkspace` centralizes compiler-root validation, source resolution, and
 primitive generated-file operations. Language modules retain orchestration for setup,

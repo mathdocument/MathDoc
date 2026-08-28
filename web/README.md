@@ -8,15 +8,15 @@ binary at compile time via `rust-embed`.
 Two terminals:
 
 ```bash
-# 1) Backend (serves web/dist as a restricted fallback)
-cargo run --features dev-web -- serve
+# 1) Ordinary backend, on Vite's default proxy target
+cargo run -- serve --bind 127.0.0.1:7599
 
-# 2) Vite dev server (HMR)
-cd web && npm install && npm run dev
+# 2) Vite dev server
+cd web && npm ci && npm run dev
 ```
 
 Point your browser at the Vite dev URL (default http://localhost:5173); it
-proxies `/api` to the Rust backend.
+owns frontend serving and HMR in development and proxies `/api` to the Rust backend.
 
 ## Release build
 

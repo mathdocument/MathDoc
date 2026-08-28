@@ -12,7 +12,7 @@ export default defineConfig({
         src: './src/assets/mdc-logo.svg',
         alt: 'MathDoc',
       },
-      favicon: '/favicon.png',
+      favicon: '/mdc-logo.png',
       customCss: [
         '@fontsource-variable/manrope',
         '@fontsource-variable/newsreader',
