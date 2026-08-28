@@ -12,10 +12,10 @@ use process::{
     ensure_complete_machine_output, process_error_result, require_tool, run_process,
     run_process_with_inherited_fd,
 };
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-pub(crate) const ROCQ_CLEAN_MARKER_FILENAME: &str = ".mdc-clean-needed";
+use crate::formal::FormalCompilationReceipt;
+
 pub(crate) const ROCQ_CLEAN_MARKER_CONTENT: &[u8] = b"Lib tree changed\n";
 
 // ── Compiler contract ─────────────────────────────────────────────────────────
@@ -55,21 +55,6 @@ pub(crate) struct CompilerRes {
     pub(crate) stderr: String,
     pub(crate) rtcode: i32,
     pub(crate) interrupted: bool,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct FormalCompilationReceipt {
-    pub(crate) language: String,
-    pub(crate) target_module: String,
-    pub(crate) source_sha256: String,
-    pub(crate) artifact_sha256: String,
-    pub(crate) environment_sha256: String,
-    pub(crate) compiler_path: String,
-    pub(crate) compiler_sha256: String,
-    /// Direct workspace module key to the artifact digest consumed by the build.
-    pub(crate) direct_dependencies: BTreeMap<String, String>,
-    /// Canonical external artifact path to the digest consumed by the build.
-    pub(crate) external_dependencies: BTreeMap<String, String>,
 }
 
 impl CompilerRes {

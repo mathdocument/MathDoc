@@ -4,7 +4,6 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
 
-use crate::compiler::FormalCompilationReceipt;
 use crate::core::FormalCodeStatus;
 use crate::mdocnode::MdocNode;
 use crate::workspace::{FileSnapshot, FileSnapshotBatch, ReadFileSnapshot};
@@ -12,6 +11,7 @@ use crate::workspace::{FileSnapshot, FileSnapshotBatch, ReadFileSnapshot};
 use super::attestation::{
     self as formal_attestation, FormalAttestation, FormalAttestationManifest,
 };
+use super::{FormalCompilationReceipt, EVIDENCE_SCHEME_VERSION, ROCQ_CLEAN_MARKER_FILENAME};
 
 pub(crate) const FORMAL_LANGUAGES: [&str; 2] = ["lean", "rocq"];
 
@@ -224,6 +224,12 @@ pub(crate) fn prepare_attestation(
     receipt: &FormalCompilationReceipt,
 ) -> Result<FormalAttestation> {
     let _profile = crate::profile::scope("formal_status::prepare_attestation");
+    if receipt.evidence_scheme_version != EVIDENCE_SCHEME_VERSION {
+        bail!(
+            "unsupported formal evidence scheme version {} in compiler receipt",
+            receipt.evidence_scheme_version
+        );
+    }
     let evaluation = evaluate_workspace(conn, root, manifest, Some(fnode))?;
     let index = evaluation
         .index_by_fnode
@@ -776,13 +782,15 @@ fn environment_digest_internal(
         _ => bail!("unsupported formal language: {language}"),
     };
     if language == "rocq" {
-        let marker = language_root.join(crate::compiler::ROCQ_CLEAN_MARKER_FILENAME);
+        let marker = language_root.join(ROCQ_CLEAN_MARKER_FILENAME);
         if guarded_or_stable_content(root, &marker, guards.as_deref_mut())?.is_some() {
             return Ok(None);
         }
     }
     let mut digest = Sha256::new();
-    digest.update(b"mathdoc-formal-environment-v1\0");
+    digest.update(format!(
+        "mathdoc-formal-environment-v{EVIDENCE_SCHEME_VERSION}\0"
+    ));
     digest.update(language.as_bytes());
     for name in required {
         let path = language_root.join(name);
@@ -1224,6 +1232,7 @@ mod tests {
         let compiler = std::env::current_exe().unwrap();
         let (compiler_path, compiler_sha256) = compiler_identity(&compiler).unwrap();
         FormalCompilationReceipt {
+            evidence_scheme_version: EVIDENCE_SCHEME_VERSION,
             language: "lean".to_string(),
             target_module: module_key(relative).unwrap(),
             source_sha256: file_digest(root, &lean_source_path(root, relative)).unwrap(),
@@ -1305,6 +1314,27 @@ mod tests {
         let artifact = lean_artifact_path(root, Path::new("leaf.mdoc"));
         write(&artifact, "replaced artifact");
         cache.upsert_path(&node.path).unwrap();
+        assert_eq!(
+            cache.formalization_status(&node.fnode).unwrap().lean,
+            FormalCodeStatus::Unverified
+        );
+    }
+
+    #[test]
+    fn publication_rejects_another_evidence_scheme() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        lean_environment(root);
+        let node = lean_node(root, "leaf.mdoc", "Leaf", &[], "def leaf : Nat := 1\n");
+        let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+        let mut receipt = lean_receipt(&mut cache, root, &node.fnode);
+        receipt.evidence_scheme_version += 1;
+
+        let errors = publish_receipt(&mut cache, root, &node.fnode, receipt);
+
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].1.contains("unsupported formal evidence scheme"));
         assert_eq!(
             cache.formalization_status(&node.fnode).unwrap().lean,
             FormalCodeStatus::Unverified

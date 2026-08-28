@@ -169,6 +169,7 @@ fn collect_formal_receipt(
     let artifact_root = workspace.root().join(".lake/build/lib/lean/Lib");
     let artifact = artifact_root.join(relative.with_extension("olean"));
     Ok(FormalCompilationReceipt {
+        evidence_scheme_version: crate::formal::EVIDENCE_SCHEME_VERSION,
         language: "lean".to_string(),
         target_module,
         source_sha256,

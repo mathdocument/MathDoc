@@ -167,6 +167,7 @@ fn collect_formal_receipt(
     environment.ensure_current()?;
     let target_module = crate::formal::status::module_key(source.strip_prefix("Lib")?)?;
     Ok(FormalCompilationReceipt {
+        evidence_scheme_version: crate::formal::EVIDENCE_SCHEME_VERSION,
         language: "rocq".to_string(),
         target_module,
         source_sha256,
@@ -431,7 +432,7 @@ fn ensure_workspace(
     {
         workspace.replace_generated(&project_path, &snapshot, b"-Q build \"\"\n-Q Lib \"\"\n")?;
     }
-    let clean_marker = root.join(crate::compiler::ROCQ_CLEAN_MARKER_FILENAME);
+    let clean_marker = root.join(crate::formal::ROCQ_CLEAN_MARKER_FILENAME);
     let clean_snapshot = workspace.snapshot(&clean_marker)?;
     let inventory = source_tree_digest(&root.join("Lib"), "v")?;
     let inventory_path = root.join(INVENTORY_FILE);
@@ -459,7 +460,7 @@ fn record_module_inventory(
     let root = workspace.root();
     let current = source_tree_digest(&root.join("Lib"), "v")?;
     if current != expected {
-        let marker = root.join(crate::compiler::ROCQ_CLEAN_MARKER_FILENAME);
+        let marker = root.join(crate::formal::ROCQ_CLEAN_MARKER_FILENAME);
         let marker_snapshot = workspace.snapshot(&marker)?;
         if marker_snapshot.content() != Some(crate::compiler::ROCQ_CLEAN_MARKER_CONTENT) {
             workspace.replace_generated(
@@ -569,7 +570,7 @@ mod tests {
         std::fs::create_dir_all(root.join("build/Data")).unwrap();
         std::fs::write(root.join("build/Data/Stale.vo"), "stale").unwrap();
         std::fs::write(
-            root.join(crate::compiler::ROCQ_CLEAN_MARKER_FILENAME),
+            root.join(crate::formal::ROCQ_CLEAN_MARKER_FILENAME),
             crate::compiler::ROCQ_CLEAN_MARKER_CONTENT,
         )
         .unwrap();
@@ -578,7 +579,7 @@ mod tests {
 
         assert!(!root.join("build").exists());
         assert!(!root
-            .join(crate::compiler::ROCQ_CLEAN_MARKER_FILENAME)
+            .join(crate::formal::ROCQ_CLEAN_MARKER_FILENAME)
             .exists());
     }
 
@@ -599,7 +600,7 @@ mod tests {
 
         assert!(!root.join("build").exists());
         assert!(!root
-            .join(crate::compiler::ROCQ_CLEAN_MARKER_FILENAME)
+            .join(crate::formal::ROCQ_CLEAN_MARKER_FILENAME)
             .exists());
     }
 
@@ -653,7 +654,7 @@ mod tests {
         std::fs::write(outside.path().join("keep.vo"), "outside").unwrap();
         symlink(outside.path(), root.join("build")).unwrap();
         std::fs::write(
-            root.join(crate::compiler::ROCQ_CLEAN_MARKER_FILENAME),
+            root.join(crate::formal::ROCQ_CLEAN_MARKER_FILENAME),
             crate::compiler::ROCQ_CLEAN_MARKER_CONTENT,
         )
         .unwrap();
@@ -674,7 +675,7 @@ mod tests {
         let root = compiler_workspace.root();
         std::fs::write(root.join("build"), "not a directory").unwrap();
         std::fs::write(
-            root.join(crate::compiler::ROCQ_CLEAN_MARKER_FILENAME),
+            root.join(crate::formal::ROCQ_CLEAN_MARKER_FILENAME),
             crate::compiler::ROCQ_CLEAN_MARKER_CONTENT,
         )
         .unwrap();
@@ -701,7 +702,7 @@ mod tests {
         std::fs::write(outside.path().join("keep.vo"), "outside").unwrap();
         symlink(outside.path(), root.join("build/Data/link")).unwrap();
         std::fs::write(
-            root.join(crate::compiler::ROCQ_CLEAN_MARKER_FILENAME),
+            root.join(crate::formal::ROCQ_CLEAN_MARKER_FILENAME),
             crate::compiler::ROCQ_CLEAN_MARKER_CONTENT,
         )
         .unwrap();
@@ -731,7 +732,7 @@ mod tests {
             std::fs::create_dir_all(root.join("build/Data")).unwrap();
             std::fs::write(root.join("build/Data/stale.vo"), "stale").unwrap();
             std::fs::write(
-                root.join(crate::compiler::ROCQ_CLEAN_MARKER_FILENAME),
+                root.join(crate::formal::ROCQ_CLEAN_MARKER_FILENAME),
                 crate::compiler::ROCQ_CLEAN_MARKER_CONTENT,
             )
             .unwrap();

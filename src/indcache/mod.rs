@@ -875,7 +875,7 @@ impl WorkspaceStore {
         outcomes: &[(
             String,
             bool,
-            Option<crate::compiler::FormalCompilationReceipt>,
+            Option<crate::formal::FormalCompilationReceipt>,
         )],
     ) -> Result<Vec<(String, String)>> {
         self.validate_formal_publication_locks(work_lock, mutation_lock)?;

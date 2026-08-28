@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 use crate::workspace::{AppliedWrite, FileSnapshot};
 
+use super::EVIDENCE_SCHEME_VERSION;
+
 const MANIFEST_VERSION: u32 = 1;
 const MANIFEST_NAME: &str = "formal-attestations.json";
 
@@ -38,6 +40,8 @@ pub(crate) struct NodeAttestations {
 #[serde(deny_unknown_fields)]
 pub(crate) struct FormalAttestationManifest {
     version: u32,
+    #[serde(default = "legacy_evidence_scheme_version")]
+    evidence_scheme_version: u32,
     pub(crate) nodes: BTreeMap<String, NodeAttestations>,
 }
 
@@ -162,7 +166,9 @@ pub(crate) fn save(root: &Path, loaded: LoadedManifest) -> Result<Option<Applied
 
 pub(crate) fn token(language: &str, attestation: &FormalAttestation) -> Result<String> {
     let mut digest = Sha256::new();
-    digest.update(b"mathdoc-formal-attestation-v1\0");
+    digest.update(format!(
+        "mathdoc-formal-attestation-v{EVIDENCE_SCHEME_VERSION}\0"
+    ));
     digest.update(language.as_bytes());
     digest.update([0]);
     digest.update(serde_json::to_vec(attestation)?);
@@ -172,6 +178,7 @@ pub(crate) fn token(language: &str, attestation: &FormalAttestation) -> Result<S
 fn empty_manifest() -> FormalAttestationManifest {
     FormalAttestationManifest {
         version: MANIFEST_VERSION,
+        evidence_scheme_version: EVIDENCE_SCHEME_VERSION,
         nodes: BTreeMap::new(),
     }
 }
@@ -187,6 +194,13 @@ fn validate_manifest(manifest: &FormalAttestationManifest, path: &Path) -> Resul
         bail!(
             "unsupported formal attestation manifest version {} in {}",
             manifest.version,
+            path.display()
+        );
+    }
+    if manifest.evidence_scheme_version != EVIDENCE_SCHEME_VERSION {
+        bail!(
+            "unsupported formal evidence scheme version {} in {}",
+            manifest.evidence_scheme_version,
             path.display()
         );
     }
@@ -235,6 +249,10 @@ fn validate_manifest(manifest: &FormalAttestationManifest, path: &Path) -> Resul
     Ok(())
 }
 
+fn legacy_evidence_scheme_version() -> u32 {
+    1
+}
+
 fn validate_digest(field: &str, language: &str, digest: &str, path: &Path) -> Result<()> {
     if digest.len() != 64
         || !digest
@@ -251,14 +269,30 @@ fn validate_digest(field: &str, language: &str, digest: &str, path: &Path) -> Re
 
 #[cfg(test)]
 mod tests {
-    use super::FormalAttestationManifest;
+    use super::{load, load_for_status, FormalAttestationManifest};
 
     #[test]
     fn empty_node_entries_are_not_attestations() {
         let manifest: FormalAttestationManifest =
             serde_json::from_str(r#"{"version":1,"nodes":{"node":{}}}"#).unwrap();
 
+        assert_eq!(manifest.evidence_scheme_version, 1);
         assert!(!manifest.has_attestations());
         assert!(!manifest.has_attestation_for("node"));
+    }
+
+    #[test]
+    fn unsupported_evidence_schemes_are_strict_or_fail_closed() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join(".mdc")).unwrap();
+        std::fs::write(
+            root.join(".mdc/formal-attestations.json"),
+            b"{\"version\":1,\"evidence_scheme_version\":2,\"nodes\":{}}\n",
+        )
+        .unwrap();
+
+        assert!(load(&root).is_err());
+        assert!(!load_for_status(&root).unwrap().manifest.has_attestations());
     }
 }
