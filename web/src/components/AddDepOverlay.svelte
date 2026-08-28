@@ -2,15 +2,14 @@
   import { onDestroy } from "svelte";
   import { Link2, Plus, X } from "@lucide/svelte";
   import { api, isAbortError } from "../lib/api";
-  import { errMsg } from "../lib/format";
+  import { errMsg, shortFnode } from "../lib/format";
   import type { DependencyCandidatesEmpty, NodeDetail, NodeInfo } from "../lib/types";
-  import { shortFnode } from "../lib/format";
   import { modal } from "../lib/modal";
   import {
     confirmDiscardDraft,
     removeDraft,
     setDraftDirty,
-    setMutationPending,
+    trackMutation,
   } from "../lib/unsaved";
 
   interface Props {
@@ -33,7 +32,6 @@
   let creatingFile = $state("");
   let createMode = $state(false);
   const draftId = Symbol("add dependency creation draft");
-  const mutationId = Symbol("add dependency mutation");
   let alive = true;
 
   function moveSelection(direction: -1 | 1) {
@@ -124,9 +122,6 @@
 
   let emptyMessage = $derived.by(() => {
     if (candidateEmpty?.kind === "excluded") return excludedMessage(candidateEmpty);
-    if (candidateEmpty?.kind === "result_limit") {
-      return `${candidateEmpty.available} match(es) available, but the result limit is zero`;
-    }
     if (candidateEmpty?.kind === "no_match") return "no results";
     return null;
   });
@@ -140,18 +135,18 @@
     const node = results[selected];
     if (!node || node.broken || saving) return;
     saving = true;
-    setMutationPending(mutationId, true);
+    const clearMutation = trackMutation();
     error = null;
     try {
       const updated = await api.addDep(targetFnode, node.fnode, targetRevision);
-      setMutationPending(mutationId, false);
+      clearMutation();
       if (!alive) return;
       onAdded(updated, { nodes: 0, edges: 1 });
       onClose();
     } catch (e) {
       if (alive) error = errMsg(e);
     } finally {
-      setMutationPending(mutationId, false);
+      clearMutation();
       if (alive) saving = false;
     }
   }
@@ -164,7 +159,7 @@
   async function createAndAdd() {
     if (saving || !canCreate) return;
     saving = true;
-    setMutationPending(mutationId, true);
+    const clearMutation = trackMutation();
     error = null;
     try {
       const params: { title: string; parent_fnode: string; file?: string } = {
@@ -173,7 +168,7 @@
       };
       if (creatingFile.trim().length > 0) params.file = creatingFile.trim();
       const updated = await api.newNode(params, targetRevision);
-      setMutationPending(mutationId, false);
+      clearMutation();
       if (!alive) return;
       removeDraft(draftId);
       onAdded(updated, { nodes: 1, edges: 1 });
@@ -181,7 +176,7 @@
     } catch (e) {
       if (alive) error = errMsg(e);
     } finally {
-      setMutationPending(mutationId, false);
+      clearMutation();
       if (alive) saving = false;
     }
   }
@@ -227,13 +222,13 @@
 <svelte:window onkeydown={onKey} />
 
 <dialog
-    class="dialog modal-dialog"
+    class="dialog modal-dialog modal-wide"
     aria-label="add dependency"
     use:modal
     oncancel={onCancel}
     onclick={(event) => { if (event.target === event.currentTarget) close(); }}
   >
-    <div class="search-field">
+    <div class="search-field modal-search-field">
       <Link2 size={18} strokeWidth={1.8} />
       <input
         bind:this={inputEl}
@@ -245,7 +240,7 @@
       {#if loading}<span class="loading-label">Searching</span>{/if}
       <button class="close-btn" onclick={close} title="Close" aria-label="Close add dependency"><X size={17} strokeWidth={1.8} /></button>
     </div>
-    <ul class="results">
+    <ul class="results modal-list modal-results">
       {#if createMode}
         <li class="create-form">
           <div class="create-title"><Plus size={15} strokeWidth={2} />Create new: {query}</div>
@@ -268,7 +263,7 @@
         {#each results as r, i (r.fnode)}
           <li>
             <button
-              class="row"
+              class="row modal-row modal-result-row"
               class:selected={i === selected}
               onclick={() => { selected = i; void submit(); }}
               disabled={r.broken || saving}
@@ -283,7 +278,7 @@
           {#if canCreate}
             <li>
               <button
-                class="row create"
+                class="row modal-row modal-result-row create"
                 onclick={() => startCreate()}
                 disabled={saving}
               >
@@ -291,122 +286,20 @@
               </button>
             </li>
           {:else if emptyMessage}
-            <li class="empty">{emptyMessage}</li>
+            <li class="empty modal-empty">{emptyMessage}</li>
           {/if}
         {/each}
       {/if}
     </ul>
     {#if error}
-      <div class="error-bar">{error}</div>
+      <div class="error-bar modal-error">{error}</div>
     {/if}
-    <div class="hint"><span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span><span><kbd>Enter</kbd> Add</span><span><kbd>Esc</kbd> Cancel</span></div>
+    <div class="hint modal-search-hint"><span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span><span><kbd>Enter</kbd> Add</span><span><kbd>Esc</kbd> Cancel</span></div>
   </dialog>
 
 <style>
-  .dialog {
-    width: min(860px, 92vw);
-  }
   .search-field {
-    display: flex;
-    align-items: center;
-    gap: 0.7rem;
-    min-height: 60px;
-    padding: 0 0.85rem 0 1rem;
     color: var(--mdc-accent-down);
-    background: var(--mdc-panel-raised);
-    border-bottom: 1px solid var(--mdc-border);
-  }
-  input {
-    min-width: 0;
-    flex: 1;
-    border: none;
-    padding: 0;
-    font-size: 0.98rem;
-    background: transparent;
-    color: var(--mdc-fg);
-  }
-  input::placeholder {
-    color: var(--mdc-muted);
-  }
-  .loading-label {
-    color: var(--mdc-muted);
-    font-family: var(--mdc-mono);
-    font-size: 0.62rem;
-  }
-  .close-btn {
-    display: grid;
-    place-items: center;
-    width: 31px;
-    height: 31px;
-    padding: 0;
-    color: var(--mdc-muted);
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: var(--mdc-radius-sm);
-    cursor: pointer;
-  }
-  .close-btn:hover {
-    color: var(--mdc-fg);
-    background: var(--mdc-card-hover);
-    border-color: var(--mdc-border);
-  }
-  .results {
-    list-style: none;
-    margin: 0;
-    padding: 0.45rem;
-    min-height: 70px;
-    max-height: 54vh;
-    overflow-y: auto;
-  }
-  .row {
-    width: 100%;
-    text-align: left;
-    display: grid;
-    grid-template-columns: 3.5rem 6rem minmax(15rem, 1.5fr) minmax(8rem, 1fr);
-    gap: 0.75rem;
-    align-items: center;
-    min-height: 42px;
-    padding: 0.45rem 0.65rem;
-    background: transparent;
-    border: 1px solid transparent;
-    color: var(--mdc-fg);
-    cursor: pointer;
-    border-radius: 7px;
-    font-family: inherit;
-  }
-  .row.selected {
-    background: var(--mdc-card-selected);
-    border-color: var(--mdc-border);
-  }
-  .row:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .depth {
-    color: var(--mdc-muted);
-    font-size: 0.66rem;
-    font-variant-numeric: tabular-nums;
-  }
-  .fnode {
-    color: var(--mdc-accent);
-    font-family: var(--mdc-mono);
-    font-size: 0.68rem;
-  }
-  .title {
-    color: var(--mdc-fg-soft);
-    font-size: 0.8rem;
-    font-weight: 560;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .path {
-    color: var(--mdc-muted);
-    font-size: 0.66rem;
-    font-family: var(--mdc-mono);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
   .row.create .create-label {
     display: flex;
@@ -459,44 +352,8 @@
   .create-confirm:disabled {
     opacity: 0.5;
   }
-  .empty {
-    text-align: center;
-    color: var(--mdc-muted);
-    padding: 1.5rem;
-    font-size: 0.76rem;
-  }
   .error-bar {
     padding: 0.5rem 0.7rem;
-    background: rgba(255, 125, 143, 0.1);
-    color: var(--mdc-error);
-    font-family: var(--mdc-mono);
-    font-size: 0.7rem;
     border-top: 1px solid var(--mdc-border);
-  }
-  .hint {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    padding: 0.55rem 0.8rem;
-    font-size: 0.64rem;
-    color: var(--mdc-muted);
-    border-top: 1px solid var(--mdc-border);
-    background: color-mix(in srgb, var(--mdc-bg) 48%, transparent);
-  }
-  .hint span {
-    display: flex;
-    align-items: center;
-    gap: 0.28rem;
-  }
-  kbd {
-    min-width: 20px;
-    padding: 0.13rem 0.28rem;
-    color: var(--mdc-dim);
-    background: var(--mdc-card);
-    border: 1px solid var(--mdc-border);
-    border-radius: 4px;
-    font-family: var(--mdc-mono);
-    font-size: 0.58rem;
-    text-align: center;
   }
 </style>

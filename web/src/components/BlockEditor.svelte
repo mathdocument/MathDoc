@@ -30,7 +30,7 @@
   import { shikiHighlight } from "../lib/cm-shiki";
   import { getHighlighter, srctypeToLang } from "../lib/shiki";
   import type { Theme } from "../lib/theme";
-  import { removeDraft, setDraftDirty, setMutationPending } from "../lib/unsaved";
+  import { removeDraft, setDraftDirty, trackMutation } from "../lib/unsaved";
 
   interface Props {
     fnode: string;
@@ -61,10 +61,6 @@
   let previewRequest = 0;
   let alive = false;
   const draftId = Symbol("block draft");
-  let identityVersion = 0;
-  let prevFnode: string | null = null;
-  let prevSrctype: string | null = null;
-  let prevContent: string | null = null;
   let pendingSaveDoc: Text | null = null;
   const syntaxCompartment = new Compartment();
   let syntaxExtension: Extension = [];
@@ -206,11 +202,6 @@
 
   onMount(() => {
     alive = true;
-    // Effects may run before or after onMount. Seed the identity before the
-    // synchronous view creation so initial mount never replaces its own doc.
-    prevFnode = fnode;
-    prevSrctype = block.srctype;
-    prevContent = block.content;
     const initialState = EditorState.create({
       doc: block.content,
       extensions: buildEditorExtensions(),
@@ -236,17 +227,14 @@
     const targetFnode = fnode;
     const targetSrctype = block.srctype;
     const targetRevision = revision;
-    const requestIdentity = identityVersion;
-    const mutationId = Symbol("block save");
     saving = true;
-    setMutationPending(mutationId, true);
+    const clearMutation = trackMutation();
     error = null;
     const contentDoc = editorView.state.doc;
     const content = contentDoc.toString();
     pendingSaveDoc = contentDoc;
     setDirty(true);
-    const isCurrent = () => alive && requestIdentity === identityVersion &&
-      fnode === targetFnode && block.srctype === targetSrctype;
+    const isCurrent = () => alive;
 
     try {
       const node = await api.putBlock(targetFnode, targetSrctype, content, targetRevision);
@@ -271,7 +259,7 @@
     } catch (e) {
       if (isCurrent()) error = errMsg(e);
     } finally {
-      setMutationPending(mutationId, false);
+      clearMutation();
       if (isCurrent()) {
         pendingSaveDoc = null;
         if (editorView) setDirty(lastSavedDoc === null || !editorView.state.doc.eq(lastSavedDoc));
@@ -286,23 +274,20 @@
     const targetFnode = fnode;
     const targetSrctype = block.srctype;
     const targetRevision = revision;
-    const requestIdentity = identityVersion;
-    const mutationId = Symbol("block delete");
     error = null;
     deleting = true;
-    setMutationPending(mutationId, true);
-    const isCurrent = () => alive && requestIdentity === identityVersion &&
-      fnode === targetFnode && block.srctype === targetSrctype;
+    const clearMutation = trackMutation();
+    const isCurrent = () => alive;
     try {
       const node = await api.deleteBlock(targetFnode, targetSrctype, targetRevision);
       if (!isCurrent()) return;
       setDirty(false);
-      setMutationPending(mutationId, false);
+      clearMutation();
       onDeleted?.(node, targetSrctype);
     } catch (e) {
       if (isCurrent()) error = errMsg(e);
     } finally {
-      setMutationPending(mutationId, false);
+      clearMutation();
       if (isCurrent()) deleting = false;
     }
   }
@@ -323,15 +308,14 @@
     previewError = null;
     if (LatexPreviewComponent) return;
     const request = ++previewRequest;
-    const requestIdentity = identityVersion;
     latexPreviewPromise ??= import("./LatexPreview.svelte").then((module) => module.default);
     try {
       const component = await latexPreviewPromise;
-      if (!alive || request !== previewRequest || requestIdentity !== identityVersion) return;
+      if (!alive || request !== previewRequest) return;
       LatexPreviewComponent = component;
     } catch (loadError) {
       latexPreviewPromise = null;
-      if (!alive || request !== previewRequest || requestIdentity !== identityVersion) return;
+      if (!alive || request !== previewRequest) return;
       previewing = false;
       previewError = `preview failed: ${errMsg(loadError)}`;
     }
@@ -347,38 +331,15 @@
     editorView = null;
   });
 
-  // Update content when fnode, srctype, or content changes (e.g. external
-  // edit picked up by the refresh button).
+  // Update content changed by a save response or an external refresh.
   $effect(() => {
-    const nextFnode = fnode;
-    const nextSrctype = block.srctype;
     const nextContent = block.content;
-    if (nextFnode === prevFnode && nextSrctype === prevSrctype && nextContent === prevContent) return;
-    const identityChanged = prevFnode !== null &&
-      (nextFnode !== prevFnode || nextSrctype !== prevSrctype);
-    prevFnode = nextFnode;
-    prevSrctype = nextSrctype;
-    prevContent = nextContent;
-    if (identityChanged) {
-      identityVersion++;
-      previewRequest++;
-      pendingSaveDoc = null;
-      saving = false;
-      deleting = false;
-      previewing = false;
-      previewError = null;
-    }
+    const nextSavedDoc = Text.of(nextContent.split("\n"));
+    if (lastSavedDoc?.eq(nextSavedDoc)) return;
     error = null;
-    lastSavedDoc = Text.of(nextContent.split("\n"));
+    lastSavedDoc = nextSavedDoc;
     if (editorView) {
-      if (identityChanged) {
-        // A keyed block component may be reused for the same srctype on a new
-        // node. Reset state so undo history cannot cross that node boundary.
-        editorView.setState(EditorState.create({
-          doc: nextContent,
-          extensions: buildEditorExtensions(),
-        }));
-      } else if (!dirty && !editorView.state.doc.eq(lastSavedDoc)) {
+      if (!dirty && !editorView.state.doc.eq(lastSavedDoc)) {
         editorView.dispatch({
           changes: { from: 0, to: editorView.state.doc.length, insert: nextContent },
         });

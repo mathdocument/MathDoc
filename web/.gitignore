@@ -1,9 +1,4 @@
 node_modules/
-dist/*
-!dist/index.html
-!dist/assets/
-!dist/assets/*.js
-!dist/assets/*.css
 .vite/
 *.log
 .DS_Store

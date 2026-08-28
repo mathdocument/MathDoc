@@ -161,7 +161,7 @@
     if (showLoading) graphLoading = true;
     try {
       loadError = null;
-      const data = await api.full(false, controller.signal);
+      const data = await api.full(controller.signal);
       if (request !== graphRequest || !active) return false;
       installGraph(data);
       return true;

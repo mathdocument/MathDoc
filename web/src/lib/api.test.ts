@@ -1,12 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "./api";
 
-function jsonResponse(revision: string): Response {
-  return new Response(JSON.stringify({ revision }), {
-    status: 200,
-    headers: { "content-type": "application/json" },
-  });
-}
+const jsonResponse = (revision: string) => Response.json({ revision });
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -59,9 +54,7 @@ describe("node mutations", () => {
   });
 
   it("sends preconditions for relationship mutations", async () => {
-    const fetchMock = vi.fn().mockImplementation(() =>
-      Promise.resolve(jsonResponse("revision-2"))
-    );
+    const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(jsonResponse("revision-2")));
     vi.stubGlobal("fetch", fetchMock);
 
     await api.addDep("parent", "child", "revision-1");

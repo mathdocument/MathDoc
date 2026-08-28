@@ -4,7 +4,7 @@
   import { api } from "../lib/api";
   import { errMsg } from "../lib/format";
   import type { NodeDetail } from "../lib/types";
-  import { setMutationPending } from "../lib/unsaved";
+  import { trackMutation } from "../lib/unsaved";
 
   interface Props {
     fnode: string;
@@ -19,7 +19,6 @@
   let open = $state(false);
   let adding: string | null = $state(null);
   let error: string | null = $state(null);
-  const mutationId = Symbol("add block mutation");
   let alive = true;
   let rootEl = $state<HTMLDivElement | null>(null);
   let menuEl = $state<HTMLUListElement | null>(null);
@@ -65,18 +64,18 @@
     const targetFnode = fnode;
     const targetRevision = revision;
     adding = srctype;
-    setMutationPending(mutationId, true);
+    const clearMutation = trackMutation();
     error = null;
     try {
       const node = await api.putBlock(targetFnode, srctype, "", targetRevision);
-      setMutationPending(mutationId, false);
+      clearMutation();
       if (!alive || fnode !== targetFnode) return;
       open = false;
       onAdded?.(node);
     } catch (e) {
       if (alive && fnode === targetFnode) error = errMsg(e);
     } finally {
-      setMutationPending(mutationId, false);
+      clearMutation();
       if (alive && fnode === targetFnode) adding = null;
     }
   }

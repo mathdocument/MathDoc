@@ -88,6 +88,8 @@
 
 * {
   box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: var(--mdc-border-strong) transparent;
 }
 
 html,
@@ -154,9 +156,251 @@ dialog.modal-dialog::backdrop {
   animation: mdc-fade-in 150ms ease;
 }
 
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--mdc-border-strong) transparent;
+dialog.modal-dialog.modal-wide {
+  width: min(860px, 92vw);
+}
+
+dialog.modal-dialog .modal-search-field {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  min-height: 60px;
+  padding: 0 0.85rem 0 1rem;
+  background: var(--mdc-panel-raised);
+  border-bottom: 1px solid var(--mdc-border);
+}
+
+dialog.modal-dialog .modal-search-field input {
+  min-width: 0;
+  flex: 1;
+  border: none;
+  padding: 0;
+  font-size: 0.98rem;
+  background: transparent;
+  color: var(--mdc-fg);
+}
+
+dialog.modal-dialog .modal-search-field input::placeholder {
+  color: var(--mdc-muted);
+}
+
+dialog.modal-dialog .loading-label {
+  color: var(--mdc-muted);
+  font-family: var(--mdc-mono);
+  font-size: 0.62rem;
+}
+
+dialog.modal-dialog .close-btn {
+  display: grid;
+  place-items: center;
+  width: 31px;
+  height: 31px;
+  padding: 0;
+  color: var(--mdc-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--mdc-radius-sm);
+  cursor: pointer;
+}
+
+dialog.modal-dialog .close-btn:hover {
+  color: var(--mdc-fg);
+  background: var(--mdc-card-hover);
+  border-color: var(--mdc-border);
+}
+
+dialog.modal-dialog .dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0 0.85rem 0 1rem;
+  background: var(--mdc-panel-raised);
+  border-bottom: 1px solid var(--mdc-border);
+}
+
+dialog.modal-dialog .head-icon {
+  display: grid;
+  place-items: center;
+  width: 31px;
+  height: 31px;
+  border-radius: 8px;
+}
+
+dialog.modal-dialog .dialog-head > span:nth-child(2) {
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+}
+
+dialog.modal-dialog .dialog-head small {
+  color: var(--mdc-muted);
+  font-family: var(--mdc-mono);
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+dialog.modal-dialog h2 {
+  margin: 0;
+  color: var(--mdc-fg);
+  font-size: 0.9rem;
+  font-weight: 630;
+}
+
+dialog.modal-dialog .modal-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.45rem;
+  max-height: 54vh;
+  overflow-y: auto;
+}
+
+dialog.modal-dialog .modal-results {
+  min-height: 70px;
+}
+
+dialog.modal-dialog .modal-row {
+  width: 100%;
+  text-align: left;
+  display: grid;
+  gap: 0.75rem;
+  align-items: center;
+  min-height: 42px;
+  padding: 0.45rem 0.65rem;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--mdc-fg);
+  cursor: pointer;
+  border-radius: 7px;
+  font-family: inherit;
+}
+
+dialog.modal-dialog .modal-result-row {
+  grid-template-columns: 3.5rem 6rem minmax(15rem, 1.5fr) minmax(8rem, 1fr);
+}
+
+dialog.modal-dialog .modal-result-row.selected {
+  background: var(--mdc-card-selected);
+  border-color: var(--mdc-border);
+}
+
+dialog.modal-dialog .modal-result-row:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+dialog.modal-dialog .modal-row .depth {
+  color: var(--mdc-muted);
+  font-size: 0.66rem;
+  font-variant-numeric: tabular-nums;
+}
+
+dialog.modal-dialog .modal-row .fnode {
+  color: var(--mdc-accent);
+  font-family: var(--mdc-mono);
+  font-size: 0.68rem;
+}
+
+dialog.modal-dialog .modal-row .title {
+  color: var(--mdc-fg-soft);
+  font-size: 0.8rem;
+  font-weight: 560;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+dialog.modal-dialog .modal-row .path {
+  color: var(--mdc-muted);
+  font-size: 0.66rem;
+  font-family: var(--mdc-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+dialog.modal-dialog .modal-empty {
+  text-align: center;
+  color: var(--mdc-muted);
+  padding: 1.5rem;
+  font-size: 0.76rem;
+}
+
+dialog.modal-dialog .modal-error {
+  background: rgba(255, 125, 143, 0.1);
+  color: var(--mdc-error);
+  font-family: var(--mdc-mono);
+  font-size: 0.7rem;
+}
+
+dialog.modal-dialog .hint {
+  display: flex;
+  align-items: center;
+  color: var(--mdc-muted);
+}
+
+dialog.modal-dialog .hint kbd {
+  color: var(--mdc-dim);
+  background: var(--mdc-card);
+  border: 1px solid var(--mdc-border);
+  border-radius: 4px;
+  font-family: var(--mdc-mono);
+}
+
+dialog.modal-dialog .modal-search-hint {
+  gap: 1rem;
+  padding: 0.55rem 0.8rem;
+  font-size: 0.64rem;
+  border-top: 1px solid var(--mdc-border);
+  background: color-mix(in srgb, var(--mdc-bg) 48%, transparent);
+}
+
+dialog.modal-dialog .hint span {
+  display: flex;
+  align-items: center;
+  gap: 0.28rem;
+}
+
+dialog.modal-dialog .modal-search-hint kbd {
+  min-width: 20px;
+  padding: 0.13rem 0.28rem;
+  font-size: 0.58rem;
+  text-align: center;
+}
+
+dialog.modal-dialog .dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.65rem 0.8rem;
+  border-top: 1px solid var(--mdc-border);
+  background: color-mix(in srgb, var(--mdc-bg) 48%, transparent);
+}
+
+dialog.modal-dialog .actions {
+  display: flex;
+  gap: 0.45rem;
+}
+
+dialog.modal-dialog .actions button {
+  min-height: 32px;
+  padding: 0 0.72rem;
+  border-radius: var(--mdc-radius-sm);
+  font-size: 0.68rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+dialog.modal-dialog .actions button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+dialog.modal-dialog .secondary {
+  color: var(--mdc-fg-soft);
+  background: transparent;
+  border: 1px solid var(--mdc-border);
 }
 
 *::-webkit-scrollbar {

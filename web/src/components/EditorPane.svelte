@@ -4,13 +4,13 @@
   import type { FormalCodeStatus, NodeDetail } from "../lib/types";
   import type { LoadState } from "../lib/state.svelte";
   import type { Theme } from "../lib/theme";
-  import { shortFnode, errMsg } from "../lib/format";
+  import { errMsg, shortFnode } from "../lib/format";
   import AddBlockControl from "./AddBlockControl.svelte";
   import { api } from "../lib/api";
   import {
     removeDraft,
     setDraftDirty,
-    setMutationPending,
+    trackMutation,
   } from "../lib/unsaved";
 
   interface Props {
@@ -44,17 +44,7 @@
     verified: "Verified",
   };
 
-  function applySavedBlock(updated: NodeDetail) {
-    if (load.kind !== "ready" || load.node.fnode !== updated.fnode) return;
-    onRefresh?.(updated);
-  }
-
-  function applyDeletedBlock(updated: NodeDetail) {
-    if (load.kind !== "ready" || load.node.fnode !== updated.fnode) return;
-    onRefresh?.(updated);
-  }
-
-  function applyAddedBlock(updated: NodeDetail) {
+  function applyBlockUpdate(updated: NodeDetail) {
     if (load.kind !== "ready" || load.node.fnode !== updated.fnode) return;
     onRefresh?.(updated);
   }
@@ -144,11 +134,10 @@
     }
     const targetFnode = load.node.fnode;
     const request = ++titleRequest;
-    const mutationId = Symbol("title save");
     const isCurrent = () => request === titleRequest && load.kind === "ready" &&
       load.node.fnode === targetFnode;
     titleSaving = true;
-    setMutationPending(mutationId, true);
+    const clearMutation = trackMutation();
     titleError = null;
     try {
       const updated = await api.putTitle(targetFnode, newTitle, load.node.revision);
@@ -158,7 +147,7 @@
     } catch (e) {
       if (isCurrent()) titleError = errMsg(e);
     } finally {
-      setMutationPending(mutationId, false);
+      clearMutation();
       if (isCurrent()) titleSaving = false;
     }
   }
@@ -263,8 +252,8 @@
             {block}
             {theme}
             {active}
-            onDeleted={applyDeletedBlock}
-            onSaved={applySavedBlock}
+            onDeleted={applyBlockUpdate}
+            onSaved={applyBlockUpdate}
             onReady={() => reportBlockReady(block.srctype)}
           />
         {/each}
@@ -273,7 +262,7 @@
         fnode={node.fnode}
         revision={node.revision}
         existingSrctypes={node.blocks.map((b) => b.srctype)}
-        onAdded={applyAddedBlock}
+        onAdded={applyBlockUpdate}
       />
     </div>
   {/if}

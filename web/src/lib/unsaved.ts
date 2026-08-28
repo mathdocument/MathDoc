@@ -16,7 +16,7 @@ export function removeDraft(id: symbol): void {
   if (dirtyDrafts.delete(id)) draftRevision++;
 }
 
-export function setMutationPending(id: symbol, pending: boolean): void {
+function setMutationPending(id: symbol, pending: boolean): void {
   if (pending) {
     if (!pendingMutations.has(id)) {
       pendingMutations.add(id);
@@ -30,6 +30,12 @@ export function setMutationPending(id: symbol, pending: boolean): void {
       for (const resolve of waiters) resolve();
     }
   }
+}
+
+export function trackMutation(): () => void {
+  const id = Symbol("pending mutation");
+  setMutationPending(id, true);
+  return () => setMutationPending(id, false);
 }
 
 export function waitForPendingMutations(): Promise<void> {

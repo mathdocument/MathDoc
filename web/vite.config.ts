@@ -5,6 +5,10 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 // During development we proxy /api → that backend; the dev port is set via
 // the MDC_API_PROXY env var (defaults to 127.0.0.1:0 fallback handled below).
 const apiTarget = process.env.MDC_API_PROXY ?? "http://127.0.0.1:7599";
+const sveltePlugins = svelte();
+
+// svelte-check 4.6 expects the config-only plugin name introduced after plugin-svelte 5.
+sveltePlugins.push({ name: "vite-plugin-svelte:config", api: sveltePlugins[0]!.api });
 
 export default defineConfig({
   plugins: [
@@ -19,7 +23,7 @@ export default defineConfig({
         );
       },
     },
-    svelte(),
+    ...sveltePlugins,
   ],
   server: {
     proxy: {

@@ -9,7 +9,7 @@
     confirmDiscardDrafts,
     removeDraft,
     setDraftDirty,
-    setMutationPending,
+    trackMutation,
   } from "../lib/unsaved";
 
   interface Props {
@@ -28,7 +28,6 @@
   let fileInputEl = $state<HTMLInputElement | null>(null);
   let alive = true;
   const draftId = Symbol("new node draft");
-  const mutationId = Symbol("new node mutation");
 
   onDestroy(() => {
     alive = false;
@@ -90,13 +89,13 @@
     }
     if (!confirmDiscardDrafts(draftId)) return;
     saving = true;
-    setMutationPending(mutationId, true);
+    const clearMutation = trackMutation();
     error = null;
     try {
       const params: { title: string; file?: string } = { title: title.trim() };
       if (file.trim().length > 0) params.file = file.trim();
       const node = await api.newNode(params);
-      setMutationPending(mutationId, false);
+      clearMutation();
       if (!alive) return;
       removeDraft(draftId);
       onCreated(node.fnode, true);
@@ -104,7 +103,7 @@
     } catch (e) {
       if (alive) error = errMsg(e);
     } finally {
-      setMutationPending(mutationId, false);
+      clearMutation();
       if (alive) saving = false;
     }
   }
@@ -148,7 +147,7 @@
         />
       </label>
       {#if error}
-        <div class="error-bar">{error}</div>
+        <div class="error-bar modal-error">{error}</div>
       {/if}
     </div>
     <footer class="dialog-footer">
@@ -171,63 +170,17 @@
     margin-top: 14vh;
   }
   .dialog-head {
-    display: flex;
-    align-items: center;
-    gap: 0.7rem;
     min-height: 64px;
-    padding: 0 0.85rem 0 1rem;
-    background: var(--mdc-panel-raised);
-    border-bottom: 1px solid var(--mdc-border);
   }
   .head-icon {
-    display: grid;
-    place-items: center;
-    width: 31px;
-    height: 31px;
     color: var(--mdc-accent);
     background: rgba(124, 156, 255, 0.1);
-    border-radius: 8px;
-  }
-  .dialog-head > span:nth-child(2) {
-    display: flex;
-    flex-direction: column;
-    gap: 0.12rem;
-  }
-  .dialog-head small {
-    color: var(--mdc-muted);
-    font-family: var(--mdc-mono);
-    font-size: 0.58rem;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-  h2 {
-    margin: 0;
-    color: var(--mdc-fg);
-    font-size: 0.9rem;
-    font-weight: 630;
   }
   .step {
     margin-left: auto;
     color: var(--mdc-muted);
     font-family: var(--mdc-mono);
     font-size: 0.62rem;
-  }
-  .close-btn {
-    display: grid;
-    place-items: center;
-    width: 31px;
-    height: 31px;
-    padding: 0;
-    color: var(--mdc-muted);
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: var(--mdc-radius-sm);
-    cursor: pointer;
-  }
-  .close-btn:hover {
-    color: var(--mdc-fg);
-    background: var(--mdc-card-hover);
-    border-color: var(--mdc-border);
   }
   .form-body {
     padding: 1rem;
@@ -274,62 +227,24 @@
   }
   .error-bar {
     padding: 0.5rem 0.6rem;
-    background: rgba(255, 125, 143, 0.1);
-    color: var(--mdc-error);
-    font-family: var(--mdc-mono);
-    font-size: 0.7rem;
     border-radius: var(--mdc-radius-sm);
   }
   .dialog-footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
     min-height: 60px;
-    padding: 0.65rem 0.8rem;
-    border-top: 1px solid var(--mdc-border);
-    background: color-mix(in srgb, var(--mdc-bg) 48%, transparent);
   }
   .hint {
-    display: flex;
-    align-items: center;
     gap: 0.3rem;
     font-size: 0.62rem;
-    color: var(--mdc-muted);
   }
   kbd {
     padding: 0.13rem 0.3rem;
-    color: var(--mdc-dim);
-    background: var(--mdc-card);
-    border: 1px solid var(--mdc-border);
-    border-radius: 4px;
-    font-family: var(--mdc-mono);
     font-size: 0.57rem;
-  }
-  .actions {
-    display: flex;
-    gap: 0.45rem;
   }
   .actions button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 0.35rem;
-    min-height: 32px;
-    padding: 0 0.72rem;
-    border-radius: var(--mdc-radius-sm);
-    font-size: 0.68rem;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .actions button:disabled {
-    opacity: 0.35;
-    cursor: default;
-  }
-  .secondary {
-    color: var(--mdc-fg-soft);
-    background: transparent;
-    border: 1px solid var(--mdc-border);
   }
   .primary {
     color: var(--mdc-on-accent);

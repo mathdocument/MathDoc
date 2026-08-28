@@ -34,7 +34,6 @@ interface NavigateOptions {
   historyIndex?: number;
   historyEntries?: string[];
   browserHistory?: BrowserHistoryMode;
-  forceDiscovery?: boolean;
 }
 
 export class NodeSession {
@@ -98,7 +97,7 @@ export class NodeSession {
 
     const confirmedDraftRevision = unsavedDraftRevision();
     try {
-      const view = await api.nodeView(fnode, opts.forceDiscovery);
+      const view = await api.nodeView(fnode);
       let committed = false;
       const apply = () => {
         if (request !== this.navigationRequest || committed) return;
@@ -171,7 +170,6 @@ export class NodeSession {
 }
 
 export const nodeSession = new NodeSession();
-export const appState = nodeSession;
 
 /** True if the current browser supports the View Transitions API. */
 function supportsViewTransitions(): boolean {
@@ -230,10 +228,6 @@ export async function withViewTransition(
   }
 }
 
-export function cancelNavigation(): void {
-  nodeSession.cancel();
-}
-
 export function initialHistoryOptions(fnode: string): {
   pushHistory: boolean;
   historyIndex?: number;
@@ -262,9 +256,9 @@ export function commitFocusedHistory(
   } = {},
 ): void {
   const push = opts.pushHistory ?? true;
-  const history = focusedHistoryState(appState.history, appState.historyIdx, fnode, opts);
-  appState.history = history.entries;
-  appState.historyIdx = history.index;
+  const history = focusedHistoryState(nodeSession.history, nodeSession.historyIdx, fnode, opts);
+  nodeSession.history = history.entries;
+  nodeSession.historyIdx = history.index;
 
   const mode = opts.browserHistory ?? (push ? "push" : "none");
   if (mode === "none") return;
@@ -273,8 +267,8 @@ export function commitFocusedHistory(
   const state: BrowserHistoryEntry = {
     mdcHistory: 1,
     fnode,
-    index: appState.historyIdx,
-    entries: [...appState.history],
+    index: nodeSession.historyIdx,
+    entries: [...nodeSession.history],
   };
   if (mode === "push") {
     window.history.pushState(state, "", url);
@@ -291,8 +285,8 @@ export function commitClearedHistory(
     browserHistory?: BrowserHistoryMode;
   } = {},
 ): void {
-  const backingEntries = opts.historyEntries ?? appState.history;
-  const backingIndex = opts.historyIndex ?? appState.historyIdx;
+  const backingEntries = opts.historyEntries ?? nodeSession.history;
+  const backingIndex = opts.historyIndex ?? nodeSession.historyIdx;
   const backingFnode = backingEntries[backingIndex];
   const url = new URL(window.location.href);
   url.hash = "";
@@ -303,46 +297,21 @@ export function commitClearedHistory(
   }
 
   const push = opts.pushHistory ?? true;
-  const history = focusedHistoryState(appState.history, appState.historyIdx, backingFnode, opts);
-  appState.history = history.entries;
-  appState.historyIdx = history.index;
+  const history = focusedHistoryState(nodeSession.history, nodeSession.historyIdx, backingFnode, opts);
+  nodeSession.history = history.entries;
+  nodeSession.historyIdx = history.index;
 
   const mode = opts.browserHistory ?? (push ? "push" : "none");
   if (mode === "none") return;
   const state: BrowserHistoryEntry = {
     mdcHistory: 1,
     fnode: null,
-    index: appState.historyIdx,
-    entries: [...appState.history],
+    index: nodeSession.historyIdx,
+    entries: [...nodeSession.history],
   };
   if (mode === "push") {
     window.history.pushState(state, "", url);
   } else {
     window.history.replaceState(state, "", url);
   }
-}
-
-/** Navigate to a node by fnode. Updates the center, both columns, and history. */
-export async function navigate(
-  fnode: string,
-  opts: NavigateOptions = {},
-): Promise<boolean> {
-  return nodeSession.select(fnode, opts);
-}
-
-export function clearSelection(opts: NavigateOptions = {}): Promise<boolean> {
-  return nodeSession.clearSelection(opts);
-}
-
-/** Refresh only the focused node detail after a write (no view transition). */
-export function refreshFocused(node: NodeDetail) {
-  nodeSession.acceptNode(node);
-}
-
-export function canGoBack(): boolean {
-  return appState.historyIdx > 0;
-}
-
-export function canGoForward(): boolean {
-  return appState.historyIdx < appState.history.length - 1;
 }

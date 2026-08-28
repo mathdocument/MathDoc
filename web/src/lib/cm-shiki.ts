@@ -12,7 +12,7 @@
 import { ViewPlugin, type DecorationSet, Decoration, EditorView, type ViewUpdate } from "@codemirror/view";
 import { StateEffect } from "@codemirror/state";
 import type { Extension, Range, Text } from "@codemirror/state";
-import type { HighlighterCore } from "shiki/core";
+import type { HighlighterCore } from "@shikijs/core";
 import type { GrammarState } from "@shikijs/types";
 
 /** Trigger a re-decorate pass without touching the document. */

@@ -14,14 +14,7 @@
     Unlink2,
   } from "@lucide/svelte";
   import {
-    navigate,
-    appState,
     nodeSession,
-    canGoBack,
-    canGoForward,
-    cancelNavigation,
-    clearSelection,
-    refreshFocused,
     browserHistoryEntry,
     browserHistoryTarget,
     commitClearedHistory,
@@ -54,7 +47,6 @@
 
   let overlay = $state<Overlay>({ kind: "none" });
   let theme = $state<Theme>(currentTheme());
-  let initialLoad = $state(true);
   let startupRequest = 0;
   let initialNavigationRetry: { fnode: string; clearedEntry: BrowserHistoryEntry | null } | null = null;
   let initialError = $state<string | null>(null);
@@ -130,7 +122,7 @@
     fnode: string,
     clearedEntry: BrowserHistoryEntry | null = null,
   ): Promise<boolean> {
-    const committed = await navigate(fnode, initialHistoryOptions(fnode));
+    const committed = await nodeSession.select(fnode, initialHistoryOptions(fnode));
     if (committed && clearedEntry) {
       commitClearedHistory({
         pushHistory: false,
@@ -199,7 +191,7 @@
     const onPopState = async (event: PopStateEvent) => {
       const request = ++popstateRequest;
       cancelStartup();
-      cancelNavigation();
+      nodeSession.cancel();
       refreshRequest++;
       if (restoringHistory) {
         restoringHistory = false;
@@ -217,7 +209,7 @@
         if (request !== popstateRequest) return;
         const activeEntry = browserHistoryEntry(window.history.state);
         if (!activeEntry || activeEntry.index !== entry.index || activeEntry.fnode !== entry.fnode) return;
-        const previousIndex = appState.historyIdx;
+        const previousIndex = nodeSession.historyIdx;
         const target = browserHistoryTarget(entry);
         const committed = view === "force"
           ? await onForceSelect(entry.fnode, {
@@ -226,7 +218,7 @@
               historyEntries: entry.entries,
               browserHistory: "replace",
             })
-          : await navigate(target, {
+          : await nodeSession.select(target, {
               pushHistory: false,
               historyIndex: entry.index,
               historyEntries: entry.entries,
@@ -247,7 +239,7 @@
         }
         const currentEntry = browserHistoryEntry(window.history.state);
         if (!currentEntry || currentEntry.index !== entry.index ||
-          currentEntry.fnode !== entry.fnode || appState.historyIdx !== previousIndex) return;
+          currentEntry.fnode !== entry.fnode || nodeSession.historyIdx !== previousIndex) return;
         const delta = previousIndex - entry.index;
         if (delta !== 0) {
           restoringHistory = true;
@@ -271,11 +263,9 @@
     };
   });
 
-  // Pick a default starting node on first mount: deepest root, else first.
-  $effect(() => {
-    if (!initialLoad) return;
-    initialLoad = false;
-    (async () => {
+  // Pick a default starting node on mount: deepest root, else first.
+  onMount(() => {
+    void (async () => {
       const request = ++startupRequest;
       const isCurrent = () => request === startupRequest;
       try {
@@ -326,25 +316,11 @@
   });
 
   $effect(() => {
-    if (appState.load.kind === "ready") {
+    if (nodeSession.load.kind === "ready") {
       initialError = null;
       initialNavigationRetry = null;
     }
   });
-
-  async function refreshCurrent(
-    skipUnsavedGuard = false,
-    forceDiscovery = true,
-  ): Promise<boolean> {
-    if (appState.load.kind !== "ready") return true;
-    const fnode = appState.load.node.fnode;
-    return navigate(fnode, {
-      pushHistory: false,
-      skipTransition: true,
-      skipUnsavedGuard,
-      forceDiscovery,
-    });
-  }
 
   async function refreshView() {
     if (refreshing) return;
@@ -358,7 +334,15 @@
       const checked = await refreshGraphCheck(true);
       if (request !== refreshRequest) return;
       const selectionWasCleared = nodeSession.selectionCleared;
-      const refreshed = await refreshCurrent(true, !checked);
+      const current = nodeSession.node;
+      const refreshed = !current || await nodeSession.select(
+        current.fnode,
+        {
+          pushHistory: false,
+          skipTransition: true,
+          skipUnsavedGuard: true,
+        },
+      );
       if (selectionWasCleared && view === "force") nodeSession.selectionCleared = true;
       if (request !== refreshRequest) return;
       if (refreshed || checked) graphRevision++;
@@ -370,14 +354,14 @@
 
   function refreshNode(node: NodeDetail, graphChanged = false) {
     if (graphChanged) graphRevision++;
-    refreshFocused(node);
+    nodeSession.acceptNode(node);
   }
 
   function afterDepMutation(updated: NodeDetail, delta: { nodes: number; edges: number }) {
     refreshError = null;
     graphRevision++;
     applyGraphStatsDelta(delta.nodes, delta.edges);
-    refreshFocused(updated);
+    nodeSession.acceptNode(updated);
     void nodeSession.syncView(updated.fnode).catch((error) => {
       refreshError = error instanceof Error ? error.message : String(error);
     });
@@ -390,7 +374,7 @@
     applyGraphStatsDelta(1, 0);
     if (historyNavigating) return;
     if (view === "force") void onForceSelect(fnode, { skipUnsavedGuard });
-    else void navigate(fnode, { skipUnsavedGuard });
+    else void nodeSession.select(fnode, { skipUnsavedGuard });
   }
 
   // The fnode that toolbar actions operate on, regardless of view.
@@ -432,14 +416,14 @@
     } = {},
   ): Promise<boolean> {
     cancelStartup();
-    return fnode ? navigate(fnode, opts) : clearSelection(opts);
+    return fnode ? nodeSession.select(fnode, opts) : nodeSession.clearSelection(opts);
   }
 
   async function toggleGraphView() {
     if (viewSwitching || refreshing || historyNavigating || !confirmDiscardDrafts()) return;
     cancelStartup();
     viewSwitching = true;
-    cancelNavigation();
+    nodeSession.cancel();
     let resolveViewSwitch: () => void;
     const switchDone = new Promise<void>((resolve) => {
       resolveViewSwitch = resolve;
@@ -502,14 +486,14 @@
       <button
         class="tool icon-only"
         onclick={() => window.history.back()}
-        disabled={!canGoBack()}
+        disabled={nodeSession.historyIdx <= 0}
         title="Back"
         aria-label="Back"
       ><ArrowLeft size={16} strokeWidth={1.8} /></button>
       <button
         class="tool icon-only"
         onclick={() => window.history.forward()}
-        disabled={!canGoForward()}
+        disabled={nodeSession.historyIdx >= nodeSession.history.length - 1}
         title="Forward"
         aria-label="Forward"
       ><ArrowRight size={16} strokeWidth={1.8} /></button>
@@ -597,12 +581,12 @@
       <span class="status"><span class="status-dot"></span>{statusText}</span>
     {/if}
   </header>
-  {#if appState.navigationError || refreshError}
+  {#if nodeSession.navigationError || refreshError}
     <div class="app-error" role="alert">
-      <span>{appState.navigationError ?? refreshError}</span>
+      <span>{nodeSession.navigationError ?? refreshError}</span>
       <button onclick={() => {
-        if (appState.failedNavigationFnode) {
-          const target = appState.failedNavigationFnode;
+        if (nodeSession.failedNavigationFnode) {
+          const target = nodeSession.failedNavigationFnode;
           const initialRetry = initialNavigationRetry?.fnode === target
             ? initialNavigationRetry
             : null;
@@ -616,10 +600,10 @@
           } else if (view === "force") {
             void onForceSelect(target);
           } else {
-            const retryingCurrent = appState.load.kind === "ready" &&
-              appState.load.node.fnode === target;
+            const retryingCurrent = nodeSession.load.kind === "ready" &&
+              nodeSession.load.node.fnode === target;
             cancelStartup();
-            void navigate(target, { pushHistory: !retryingCurrent });
+            void nodeSession.select(target, { pushHistory: !retryingCurrent });
           }
         } else {
           void refreshView();
@@ -672,16 +656,16 @@
     {:else}
       <NodeColumn
         title="Referrers"
-        items={appState.referrers.items}
-        selected={appState.referrers.selected}
+        items={nodeSession.referrers.items}
+        selected={nodeSession.referrers.selected}
         accent="up"
-        lastVisitedFnode={appState.lastVisitedFnode}
-        onSelect={(fnode) => { cancelStartup(); return navigate(fnode, { direction: "up" }); }}
-        onHover={(i) => (appState.referrersSelected = i)}
+        lastVisitedFnode={nodeSession.lastVisitedFnode}
+        onSelect={(fnode) => { cancelStartup(); return nodeSession.select(fnode, { direction: "up" }); }}
+        onHover={(i) => (nodeSession.referrersSelected = i)}
       />
-      {#key appState.editorRevision}
+      {#key nodeSession.editorRevision}
         <EditorPane
-          load={appState.load}
+          load={nodeSession.load}
           {theme}
           active={view === "columns"}
           onRefresh={refreshNode}
@@ -690,12 +674,12 @@
       {/key}
       <NodeColumn
         title="Dependencies"
-        items={appState.children.items}
-        selected={appState.children.selected}
+        items={nodeSession.children.items}
+        selected={nodeSession.children.selected}
         accent="down"
-        lastVisitedFnode={appState.lastVisitedFnode}
-        onSelect={(fnode) => { cancelStartup(); return navigate(fnode, { direction: "down" }); }}
-        onHover={(i) => (appState.childrenSelected = i)}
+        lastVisitedFnode={nodeSession.lastVisitedFnode}
+        onSelect={(fnode) => { cancelStartup(); return nodeSession.select(fnode, { direction: "down" }); }}
+        onHover={(i) => (nodeSession.childrenSelected = i)}
       />
     {/if}
   </main>
@@ -713,7 +697,7 @@
         void onForceSelect(fnode);
       } else {
         cancelStartup();
-        void navigate(fnode, { direction: "neutral" });
+        void nodeSession.select(fnode, { direction: "neutral" });
       }
     }}
     onClose={() => (overlay = { kind: "none" })}
@@ -738,6 +722,7 @@
       disabled={historyNavigating}
       targetFnode={overlay.target}
       targetRevision={activeRevision!}
+      children={nodeSession.children.items}
       onRemoved={afterDepMutation}
       onClose={() => (overlay = { kind: "none" })}
     />

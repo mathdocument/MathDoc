@@ -92,20 +92,13 @@ export const api = {
   roots: () => req<GraphRootItem[]>("/api/graph/roots"),
   graphCheck: () => req<GraphCheckReport>("/api/graph/check"),
   refreshWorkspace: () => req<GraphCheckReport>("/api/workspace/refresh", { method: "POST" }),
-  full: (fresh = false, signal?: AbortSignal) =>
-    req<GraphFull>(`/api/graph/full${fresh ? "?fresh=true" : ""}`, { signal }),
+  full: (signal?: AbortSignal) => req<GraphFull>("/api/graph/full", { signal }),
   search: (q: string, n = 200, signal?: AbortSignal) =>
     req<NodeInfo[]>(`/api/search?q=${encodeURIComponent(q)}&n=${n}`, { signal }),
   resolve: (ref: string) =>
     req<ResolveResponse>(`/api/resolve?ref=${encodeURIComponent(ref)}`),
-  node: (fnode: string, fresh = false) =>
-    req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}${fresh ? "?fresh=true" : ""}`),
-  nodeView: (fnode: string, fresh = false) =>
-    req<NodeView>(
-      `/api/node/${encodeURIComponent(fnode)}/view${fresh ? "?fresh=true" : ""}`,
-    ),
-  children: (fnode: string) =>
-    req<NodeInfo[]>(`/api/node/${encodeURIComponent(fnode)}/children`),
+  nodeView: (fnode: string) =>
+    req<NodeView>(`/api/node/${encodeURIComponent(fnode)}/view`),
   dependencyCandidates: (fnode: string, q: string, n = 50, signal?: AbortSignal) =>
     req<DependencyCandidates>(
       `/api/node/${encodeURIComponent(fnode)}/dep/candidates?q=${encodeURIComponent(q)}&n=${n}`,

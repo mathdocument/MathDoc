@@ -4,7 +4,7 @@
 // (~1 MB, inlined as base64) stay out of the initial bundle. The chunk is
 // fetched the first time a source block mounts, not on page load.
 
-import type { HighlighterCore } from "shiki/core";
+import type { HighlighterCore } from "@shikijs/core";
 
 const LANGUAGE_LOADERS = {
   markdown: () => import("@shikijs/langs/markdown").then((module) => module.default),
@@ -38,9 +38,9 @@ function getHighlighterCore(): Promise<HighlighterCore> {
         tokyoNight,
         githubLight,
       ] = await Promise.all([
-        import("shiki/core"),
-        import("shiki/engine/oniguruma"),
-        import("shiki/wasm"),
+        import("@shikijs/core"),
+        import("@shikijs/engine-oniguruma"),
+        import("@shikijs/engine-oniguruma/wasm-inlined"),
         import("@shikijs/themes/tokyo-night"),
         import("@shikijs/themes/github-light"),
       ]);
