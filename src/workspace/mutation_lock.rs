@@ -14,41 +14,40 @@ struct LockFileGeneration {
     ctime_nsec: i64,
 }
 
-/// Workspace-wide interprocess lock for graph and node mutations.
-pub(crate) struct WorkspaceMutationLock {
+struct HeldWorkspaceLock {
     file: File,
     root: PathBuf,
     control_identity: (u64, u64),
     lock_path: PathBuf,
     lock_generation: LockFileGeneration,
+    kind: &'static str,
+}
+
+/// Workspace-wide interprocess lock for graph and node mutations.
+pub(crate) struct WorkspaceMutationLock {
+    held: HeldWorkspaceLock,
 }
 
 /// Interprocess lock for source mirror reconciliation and compiler workspaces.
 pub(crate) struct WorkspaceWorkLock {
-    file: File,
-    root: PathBuf,
-    control_identity: (u64, u64),
-    lock_path: PathBuf,
-    lock_generation: LockFileGeneration,
+    held: HeldWorkspaceLock,
 }
 
-impl WorkspaceMutationLock {
-    pub(crate) fn acquire(root: &Path) -> Result<Self> {
-        Self::acquire_inner(root, None)
-    }
-
-    pub(crate) fn acquire_with_timeout(root: &Path, timeout: std::time::Duration) -> Result<Self> {
-        Self::acquire_inner(root, Some(std::time::Instant::now() + timeout))
-    }
-
-    fn acquire_inner(root: &Path, deadline: Option<std::time::Instant>) -> Result<Self> {
+impl HeldWorkspaceLock {
+    fn acquire(
+        root: &Path,
+        kind: &'static str,
+        hook: super::safe_file::TestHookPoint,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<Self> {
         use std::os::fd::AsRawFd;
         use std::os::unix::fs::OpenOptionsExt;
 
         let root = super::validate_mdcroot(root)?;
         let control_path = root.join(".mdc");
         let control_identity = directory_identity(&control_path)?;
-        let path = control_path.join("mutation.lock");
+        let path = control_path.join(format!("{kind}.lock"));
+        let name = format!("workspace {kind} lock");
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -56,14 +55,11 @@ impl WorkspaceMutationLock {
             .mode(0o600)
             .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
             .open(&path)
-            .with_context(|| format!("opening workspace mutation lock {}", path.display()))?;
-        let lock_generation = opened_lock_generation(&file, &path, "workspace mutation lock")?;
+            .with_context(|| format!("opening {name} {}", path.display()))?;
+        let lock_generation = opened_lock_generation(&file, &path, &name)?;
         loop {
             if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
-                bail!(
-                    "timed out waiting for workspace mutation lock {}",
-                    path.display()
-                );
+                bail!("timed out waiting for {name} {}", path.display());
             }
             // SAFETY: `file` owns a live descriptor for the duration of the lock.
             let operation = libc::LOCK_EX | if deadline.is_some() { libc::LOCK_NB } else { 0 };
@@ -79,63 +75,85 @@ impl WorkspaceMutationLock {
                 .is_some_and(|code| code == libc::EAGAIN || code == libc::EWOULDBLOCK)
             {
                 if deadline.is_none() {
-                    return Err(error).with_context(|| {
-                        format!("locking workspace mutation lock {}", path.display())
-                    });
+                    return Err(error)
+                        .with_context(|| format!("locking {name} {}", path.display()));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             } else {
-                return Err(error).with_context(|| {
-                    format!("locking workspace mutation lock {}", path.display())
-                });
+                return Err(error).with_context(|| format!("locking {name} {}", path.display()));
             }
         }
-        super::safe_file::run_test_hook(super::safe_file::TestHookPoint::MutationLockAfterFlock);
-        require_current_lock_file(
-            &file,
-            &path,
-            lock_generation,
-            "workspace mutation lock",
-            "while acquiring it",
-        )?;
-        if directory_identity(&control_path)? != control_identity {
-            return Err(super::WorkspaceGenerationError::new(format!(
-                "workspace control directory changed while acquiring its mutation lock: {}",
-                control_path.display()
-            ))
-            .into());
-        }
-        Ok(Self {
+        let held = Self {
             file,
             root,
             control_identity,
             lock_path: path,
             lock_generation,
-        })
+            kind,
+        };
+        super::safe_file::run_test_hook(hook);
+        held.require_current(true)?;
+        Ok(held)
     }
 
-    pub(crate) fn root(&self) -> Result<&Path> {
+    fn require_current(&self, acquiring: bool) -> Result<()> {
+        let name = format!("workspace {} lock", self.kind);
         require_current_lock_file(
             &self.file,
             &self.lock_path,
             self.lock_generation,
-            "workspace mutation lock",
-            "while it was held",
+            &name,
+            if acquiring {
+                "while acquiring it"
+            } else {
+                "while it was held"
+            },
         )?;
         let control_path = self.root.join(".mdc");
         if directory_identity(&control_path)? != self.control_identity {
+            let action = if acquiring {
+                format!("while acquiring its {} lock", self.kind)
+            } else {
+                format!("while its {} lock was held", self.kind)
+            };
             return Err(super::WorkspaceGenerationError::new(format!(
-                "workspace control directory changed while its mutation lock was held: {}",
+                "workspace control directory changed {action}: {}",
                 control_path.display()
             ))
             .into());
         }
-        Ok(&self.root)
+        Ok(())
+    }
+}
+
+impl WorkspaceMutationLock {
+    pub(crate) fn acquire(root: &Path) -> Result<Self> {
+        Self::acquire_inner(root, None)
+    }
+
+    pub(crate) fn acquire_with_timeout(root: &Path, timeout: std::time::Duration) -> Result<Self> {
+        Self::acquire_inner(root, Some(std::time::Instant::now() + timeout))
+    }
+
+    fn acquire_inner(root: &Path, deadline: Option<std::time::Instant>) -> Result<Self> {
+        Ok(Self {
+            held: HeldWorkspaceLock::acquire(
+                root,
+                "mutation",
+                super::safe_file::TestHookPoint::MutationLockAfterFlock,
+                deadline,
+            )?,
+        })
+    }
+
+    pub(crate) fn root(&self) -> Result<&Path> {
+        self.held.require_current(false)?;
+        Ok(&self.held.root)
     }
 
     pub(crate) fn control_identity(&self) -> Result<(u64, u64)> {
         self.root()?;
-        Ok(self.control_identity)
+        Ok(self.held.control_identity)
     }
 
     pub(crate) fn validate_identity(
@@ -151,7 +169,7 @@ impl WorkspaceMutationLock {
                 expected_root.display()
             );
         }
-        if self.control_identity != expected_control_identity {
+        if self.held.control_identity != expected_control_identity {
             bail!(
                 "workspace mutation lock control directory does not match the cache for {}",
                 expected_root.display()
@@ -163,66 +181,25 @@ impl WorkspaceMutationLock {
 
 impl WorkspaceWorkLock {
     pub(crate) fn acquire(root: &Path) -> Result<Self> {
-        use std::os::fd::AsRawFd;
-        use std::os::unix::fs::OpenOptionsExt;
-
-        let root = super::validate_mdcroot(root)?;
-        let control_path = root.join(".mdc");
-        let control_identity = directory_identity(&control_path)?;
-        let path = control_path.join("work.lock");
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .mode(0o600)
-            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
-            .open(&path)
-            .with_context(|| format!("opening workspace work lock {}", path.display()))?;
-        let lock_generation = opened_lock_generation(&file, &path, "workspace work lock")?;
-        loop {
-            // SAFETY: `file` owns a live descriptor for the duration of the lock.
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
-                break;
-            }
-            let error = std::io::Error::last_os_error();
-            if error.kind() != std::io::ErrorKind::Interrupted {
-                return Err(error)
-                    .with_context(|| format!("locking workspace work lock {}", path.display()));
-            }
-        }
-        super::safe_file::run_test_hook(super::safe_file::TestHookPoint::WorkLockAfterFlock);
-        require_current_lock_file(
-            &file,
-            &path,
-            lock_generation,
-            "workspace work lock",
-            "while acquiring it",
-        )?;
-        if directory_identity(&control_path)? != control_identity {
-            return Err(super::WorkspaceGenerationError::new(format!(
-                "workspace control directory changed while acquiring its work lock: {}",
-                control_path.display()
-            ))
-            .into());
-        }
         Ok(Self {
-            file,
-            root,
-            control_identity,
-            lock_path: path,
-            lock_generation,
+            held: HeldWorkspaceLock::acquire(
+                root,
+                "work",
+                super::safe_file::TestHookPoint::WorkLockAfterFlock,
+                None,
+            )?,
         })
     }
 
     pub(crate) fn acquire_mutation_lock(&self) -> Result<WorkspaceMutationLock> {
-        let mutation_lock = WorkspaceMutationLock::acquire(&self.root)?;
+        let mutation_lock = WorkspaceMutationLock::acquire(&self.held.root)?;
         self.require_current()?;
         Ok(mutation_lock)
     }
 
     pub(crate) fn root(&self) -> Result<&Path> {
         self.require_current()?;
-        Ok(&self.root)
+        Ok(&self.held.root)
     }
 
     pub(crate) fn validate_root(&self, expected_root: &Path) -> Result<()> {
@@ -239,22 +216,7 @@ impl WorkspaceWorkLock {
     }
 
     pub(crate) fn require_current(&self) -> Result<()> {
-        require_current_lock_file(
-            &self.file,
-            &self.lock_path,
-            self.lock_generation,
-            "workspace work lock",
-            "while it was held",
-        )?;
-        let control_path = self.root.join(".mdc");
-        if directory_identity(&control_path)? != self.control_identity {
-            return Err(super::WorkspaceGenerationError::new(format!(
-                "workspace control directory changed while its work lock was held: {}",
-                control_path.display()
-            ))
-            .into());
-        }
-        Ok(())
+        self.held.require_current(false)
     }
 
     pub(crate) fn validate_identity(
@@ -263,14 +225,14 @@ impl WorkspaceWorkLock {
         expected_control_identity: (u64, u64),
     ) -> Result<()> {
         self.require_current()?;
-        if self.root != expected_root {
+        if self.held.root != expected_root {
             bail!(
                 "workspace work lock root {} does not match cache root {}",
-                self.root.display(),
+                self.held.root.display(),
                 expected_root.display()
             );
         }
-        if self.control_identity != expected_control_identity {
+        if self.held.control_identity != expected_control_identity {
             bail!(
                 "workspace work lock control directory does not match the cache for {}",
                 expected_root.display()
@@ -364,15 +326,7 @@ fn directory_identity(path: &Path) -> Result<(u64, u64)> {
     Ok((metadata.dev(), metadata.ino()))
 }
 
-impl Drop for WorkspaceMutationLock {
-    fn drop(&mut self) {
-        use std::os::fd::AsRawFd;
-        // SAFETY: `self.file` remains open until after Drop returns.
-        let _ = unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
-    }
-}
-
-impl Drop for WorkspaceWorkLock {
+impl Drop for HeldWorkspaceLock {
     fn drop(&mut self) {
         use std::os::fd::AsRawFd;
         // SAFETY: `self.file` remains open until after Drop returns.

@@ -5,7 +5,6 @@ mod python;
 mod rocq;
 #[cfg(test)]
 mod tests;
-mod text;
 
 use anyhow::{bail, Context, Result};
 use process::{
@@ -99,7 +98,7 @@ pub(crate) fn compile_with_receipt(
         return (CompilerRes::err(format!("{error:#}")), None);
     }
     let result = match crate::config::canonical_srctype(srctype) {
-        "text" => (text::compile(req), None),
+        "text" => (CompilerRes::ok(""), None),
         "python" => (python::compile(req), None),
         "latex" => (latex::compile(req), None),
         "lean" => lean::compile(req),
