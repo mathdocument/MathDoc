@@ -104,12 +104,12 @@
       : `Graph check: ${graphIssueCount} issue${graphIssueCount === 1 ? "" : "s"}`;
   });
 
-  async function refreshGraphCheck(): Promise<boolean> {
+  async function refreshGraphCheck(refreshWorkspace = false): Promise<boolean> {
     const request = ++graphCheckRequest;
     graphCheckLoading = true;
     graphCheckError = null;
     try {
-      const report = await api.graphCheck();
+      const report = await (refreshWorkspace ? api.refreshWorkspace() : api.graphCheck());
       if (request !== graphCheckRequest) return false;
       graphCheck = report;
       graphCheckStale = false;
@@ -370,7 +370,7 @@
     try {
       if (!await settlePendingMutations()) return;
       if (request !== refreshRequest) return;
-      const checked = await refreshGraphCheck();
+      const checked = await refreshGraphCheck(true);
       if (request !== refreshRequest) return;
       const refreshed = view === "force"
         ? await refreshForceNodeRaw(true, !checked)

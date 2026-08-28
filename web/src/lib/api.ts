@@ -62,6 +62,7 @@ function mutateNode(
 export const api = {
   roots: () => req<GraphRootItem[]>("/api/graph/roots"),
   graphCheck: () => req<GraphCheckReport>("/api/graph/check"),
+  refreshWorkspace: () => req<GraphCheckReport>("/api/workspace/refresh", { method: "POST" }),
   full: (fresh = false, signal?: AbortSignal) =>
     req<GraphFull>(`/api/graph/full${fresh ? "?fresh=true" : ""}`, { signal }),
   search: (q: string, n = 200, signal?: AbortSignal) =>

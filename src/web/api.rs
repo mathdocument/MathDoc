@@ -468,9 +468,19 @@ pub(super) async fn graph_check(
     State(state): State<AppState>,
 ) -> ApiResult<Json<GraphCheckReport>> {
     spawn_blocking_api(move || {
-        let report = with_cache(&state, |c| {
-            c.refresh_all()?;
-            c.graph_check_report()
+        let report = with_cache(&state, IndCache::graph_check_report)?;
+        Ok(Json(report))
+    })
+    .await
+}
+
+pub(super) async fn workspace_refresh(
+    State(state): State<AppState>,
+) -> ApiResult<Json<GraphCheckReport>> {
+    spawn_blocking_api(move || {
+        let report = with_cache(&state, |cache| {
+            cache.refresh_all()?;
+            cache.graph_check_report()
         })?;
         Ok(Json(report))
     })

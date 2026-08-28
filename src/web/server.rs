@@ -95,6 +95,7 @@ pub fn router(state: AppState) -> Router {
         .route("/graph/roots", get(api::graph_roots))
         .route("/graph/check", get(api::graph_check))
         .route("/graph/full", get(api::graph_full))
+        .route("/workspace/refresh", post(api::workspace_refresh))
         .route("/search", get(api::search))
         .route("/resolve", get(api::resolve_ref))
         .route("/node/:fnode", get(api::node_detail))

@@ -682,6 +682,25 @@ async fn graph_check_reports_clean() {
 }
 
 #[tokio::test]
+async fn graph_check_reports_the_cache_until_explicit_workspace_refresh() {
+    let dir = TempDir::new().unwrap();
+    let (root, app) = build_app(&dir);
+    let external = make_node(&root, "External Node");
+    write_node(&external);
+
+    let (status, report) = get_json(&app, "/api/graph/check").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(report["nodes"], 2);
+
+    let (status, report) = send_empty(&app, "POST", "/api/workspace/refresh").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(report["nodes"], 3);
+
+    let (_, report) = get_json(&app, "/api/graph/check").await;
+    assert_eq!(report["nodes"], 3);
+}
+
+#[tokio::test]
 async fn node_detail_returns_blocks_and_depens() {
     let dir = TempDir::new().unwrap();
     let (root, app) = build_app(&dir);
