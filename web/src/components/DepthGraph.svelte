@@ -48,25 +48,27 @@
   let viewY = 0;
   let viewK = 1;
 
+  // Canvas cannot read CSS custom properties, so these mirror the accent tokens
+  // in app.css. Keep them in step when the palette changes.
   const DARK_PALETTE = {
-    node: "#7c9cff",
-    root: "#e8b86d",
-    leaf: "#63d8b2",
-    outgoing: "99, 216, 178",
-    incoming: "182, 156, 255",
-    outline: "#e7edf6",
-    shortLabel: "135, 147, 165",
-    label: "192, 202, 216",
+    node: "#7c8cff",
+    root: "#f0b661",
+    leaf: "#4fd6ae",
+    outgoing: "79, 214, 174",
+    incoming: "180, 140, 255",
+    outline: "#eef1f7",
+    shortLabel: "121, 130, 143",
+    label: "198, 205, 218",
   };
   const LIGHT_PALETTE = {
-    node: "#315fda",
-    root: "#a56800",
-    leaf: "#087f66",
-    outgoing: "8, 127, 102",
-    incoming: "116, 83, 216",
-    outline: "#172233",
-    shortLabel: "54, 70, 92",
-    label: "54, 70, 92",
+    node: "#4d5bd9",
+    root: "#96601a",
+    leaf: "#0a7d64",
+    outgoing: "10, 125, 100",
+    incoming: "116, 64, 208",
+    outline: "#0f1420",
+    shortLabel: "90, 100, 116",
+    label: "51, 60, 77",
   };
   const MAX_NODE_RADIUS = 24;
   const SPATIAL_CELL_SIZE = 64;
@@ -904,7 +906,7 @@
     background-image:
       linear-gradient(var(--mdc-grid) 1px, transparent 1px),
       linear-gradient(90deg, var(--mdc-grid) 1px, transparent 1px);
-    background-size: 28px 28px;
+    background-size: 32px 32px;
     overflow: hidden;
   }
   canvas {
@@ -934,9 +936,10 @@
     justify-content: center;
     gap: 0.55rem;
     color: var(--mdc-dim);
-    background: color-mix(in srgb, var(--mdc-bg) 72%, transparent);
+    background: color-mix(in srgb, var(--mdc-bg) 68%, transparent);
+    backdrop-filter: blur(2px);
     font-family: var(--mdc-mono);
-    font-size: 0.68rem;
+    font-size: var(--mdc-text-xs);
     pointer-events: none;
   }
   .spinner {
@@ -952,67 +955,91 @@
   }
   .error {
     position: absolute;
-    top: 0.85rem;
-    left: 0.85rem;
+    top: 0.75rem;
+    left: 0.75rem;
+    display: flex;
+    align-items: center;
     color: var(--mdc-error);
     font-family: var(--mdc-mono);
-    font-size: 0.72rem;
-    background: color-mix(in srgb, var(--mdc-panel) 94%, transparent);
-    padding: 0.55rem 0.75rem;
+    font-size: var(--mdc-text-xs);
+    background: var(--mdc-panel);
+    padding: 0.5rem 0.7rem;
     border-radius: var(--mdc-radius-sm);
-    border: 1px solid var(--mdc-error);
+    border: 1px solid color-mix(in srgb, var(--mdc-error) 45%, transparent);
+    box-shadow: var(--mdc-shadow-md);
     z-index: 5;
   }
   .error button {
     margin-left: 0.65rem;
+    min-height: 24px;
+    padding: 0 0.5rem;
     color: inherit;
-    background: transparent;
-    border: 1px solid currentColor;
-    border-radius: 4px;
+    background: color-mix(in srgb, var(--mdc-error) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--mdc-error) 40%, transparent);
+    border-radius: 6px;
     cursor: pointer;
   }
+  /* Floating canvas controls: translucent, blurred, no hard outline. */
   .ctrl-btn {
     position: absolute;
-    bottom: 0.85rem;
+    bottom: 0.75rem;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 0.4rem;
-    min-height: 32px;
-    background: color-mix(in srgb, var(--mdc-panel-raised) 94%, transparent);
+    min-height: 30px;
+    background: color-mix(in srgb, var(--mdc-panel-raised) 80%, transparent);
+    backdrop-filter: blur(10px) saturate(160%);
     color: var(--mdc-fg-soft);
     border: 1px solid var(--mdc-border);
-    border-radius: 7px;
-    padding: 0 0.65rem;
-    font-size: 0.68rem;
+    border-radius: var(--mdc-radius-sm);
+    padding: 0 0.6rem;
+    font-size: var(--mdc-text-xs);
     font-weight: 600;
     cursor: pointer;
     font-family: inherit;
+    box-shadow: var(--mdc-shadow-md);
+    transition: background var(--mdc-dur-fast) var(--mdc-ease),
+      color var(--mdc-dur-fast) var(--mdc-ease),
+      border-color var(--mdc-dur-fast) var(--mdc-ease);
     z-index: 5;
   }
   .ctrl-btn:hover {
     background: var(--mdc-card-hover);
-    border-color: var(--mdc-accent);
+    border-color: var(--mdc-border-strong);
     color: var(--mdc-fg);
   }
   .reset-btn {
-    right: 0.85rem;
+    right: 0.75rem;
   }
+  /* Zoom pair shares one pill so it reads as a single control. */
   .zoom-cluster {
     position: absolute;
-    bottom: 0.85rem;
-    left: 0.85rem;
+    bottom: 0.75rem;
+    left: 0.75rem;
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: 2px;
+    padding: 2px;
+    background: color-mix(in srgb, var(--mdc-panel-raised) 80%, transparent);
+    backdrop-filter: blur(10px) saturate(160%);
+    border: 1px solid var(--mdc-border);
+    border-radius: 10px;
+    box-shadow: var(--mdc-shadow-md);
     z-index: 5;
   }
   .zoom-btn {
     position: static;
-    width: 32px;
+    width: 28px;
+    min-height: 26px;
     padding: 0;
-    font-size: 1rem;
-    font-weight: 700;
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    box-shadow: none;
+    backdrop-filter: none;
+    font-size: 0.95rem;
+    font-weight: 600;
     line-height: 1;
   }
 </style>

@@ -502,111 +502,100 @@
   aria-busy={viewSwitching || refreshing || historyNavigating}
 >
   <header class="toolbar">
-    <div class="identity" aria-label="MathDoc">
-      <img class="brand-mark" src="/mdc-logo.svg" alt="" />
-      <span class="brand-copy">
-        <strong>MathDoc</strong>
-      </span>
+    <!-- Zone 1: identity and navigation history. -->
+    <div class="bar-zone bar-start">
+      <div class="identity" aria-label="MathDoc">
+        <img class="brand-mark" src="/mdc-logo.svg" alt="" />
+        <span class="brand-copy">
+          <strong>MathDoc</strong>
+        </span>
+      </div>
+      <div class="history-tools" aria-label="navigation history">
+        <button
+          class="tool icon-only"
+          onclick={() => window.history.back()}
+          disabled={nodeSession.historyIdx <= 0}
+          title="Back"
+          aria-label="Back"
+        ><ArrowLeft size={16} strokeWidth={1.8} /></button>
+        <button
+          class="tool icon-only"
+          onclick={() => window.history.forward()}
+          disabled={nodeSession.historyIdx >= nodeSession.history.length - 1}
+          title="Forward"
+          aria-label="Forward"
+        ><ArrowRight size={16} strokeWidth={1.8} /></button>
+      </div>
     </div>
-    <span class="toolbar-divider"></span>
-    <div class="history-tools" aria-label="navigation history">
-      <button
-        class="tool icon-only"
-        onclick={() => window.history.back()}
-        disabled={nodeSession.historyIdx <= 0}
-        title="Back"
-        aria-label="Back"
-      ><ArrowLeft size={16} strokeWidth={1.8} /></button>
-      <button
-        class="tool icon-only"
-        onclick={() => window.history.forward()}
-        disabled={nodeSession.historyIdx >= nodeSession.history.length - 1}
-        title="Forward"
-        aria-label="Forward"
-      ><ArrowRight size={16} strokeWidth={1.8} /></button>
+
+    <!-- Zone 2: the command affordance, styled as a field rather than a button. -->
+    <div class="bar-zone bar-center">
+      <button class="search-tool" onclick={() => (overlay = { kind: "search" })} title="Search nodes (/)">
+        <Search size={15} strokeWidth={1.9} />
+        <span class="search-label">Search nodes</span>
+        <kbd class="tool-kbd">/</kbd>
+      </button>
     </div>
-    <button class="tool search-tool" onclick={() => (overlay = { kind: "search" })} title="Search nodes (/)">
-      <Search size={15} strokeWidth={1.9} />
-      <span>Search</span>
-      <kbd class="tool-kbd">/</kbd>
-    </button>
-    <span class="toolbar-divider compact"></span>
-    <div class="node-tools" aria-label="node actions">
+
+    <!-- Zone 3: actions, ordered secondary → primary, then view and app controls. -->
+    <div class="bar-zone bar-end">
+      <div class="tool-cluster" aria-label="dependency actions">
+        <button
+          class="tool icon-only"
+          onclick={() => { if (activeFnode) overlay = { kind: "add-dep", target: activeFnode }; }}
+          disabled={!activeReady}
+          title="Add dependency"
+          aria-label="Add dependency"
+        ><Link2 size={15} strokeWidth={1.8} /></button>
+        <button
+          class="tool icon-only"
+          onclick={() => { if (activeFnode) overlay = { kind: "rm-dep", target: activeFnode }; }}
+          disabled={!activeReady || activeDepens.length === 0}
+          title="Remove dependency"
+          aria-label="Remove dependency"
+        ><Unlink2 size={15} strokeWidth={1.8} /></button>
+      </div>
       <button
-        class="tool"
-        onclick={() => { if (activeFnode) overlay = { kind: "add-dep", target: activeFnode }; }}
-        disabled={!activeReady}
-        title="Add dependency"
-      ><Link2 size={15} strokeWidth={1.8} /><span>Add dependency</span></button>
-      <button
-        class="tool"
-        onclick={() => { if (activeFnode) overlay = { kind: "rm-dep", target: activeFnode }; }}
-        disabled={!activeReady || activeDepens.length === 0}
-        title="Remove dependency"
-      ><Unlink2 size={15} strokeWidth={1.8} /><span>Remove dependency</span></button>
-      <button
-        class="tool"
+        class="tool primary"
         onclick={() => { overlay = { kind: "new-node" }; }}
         title="Create node"
-      ><Plus size={15} strokeWidth={2} /><span>New node</span></button>
-    </div>
-    <span class="toolbar-divider compact"></span>
-    <div class="view-switch" aria-label="workspace view">
+      ><Plus size={15} strokeWidth={2.1} /><span>New node</span></button>
+      <span class="toolbar-divider"></span>
+      <div class="view-switch" aria-label="workspace view">
+        <button
+          class:active={view === "columns"}
+          aria-pressed={view === "columns"}
+          disabled={viewSwitching}
+          onclick={() => { if (view !== "columns") void toggleGraphView(); }}
+          title="Knowledge view"
+        ><Columns3 size={15} strokeWidth={1.8} /><span>Knowledge</span></button>
+        <button
+          class:active={view === "force"}
+          aria-pressed={view === "force"}
+          disabled={viewSwitching}
+          onclick={() => { if (view !== "force") void toggleGraphView(); }}
+          title="Graph view"
+        ><Network size={15} strokeWidth={1.8} /><span>Graph</span></button>
+      </div>
+      <span class="toolbar-divider"></span>
       <button
-        class:active={view === "columns"}
-        aria-pressed={view === "columns"}
-        disabled={viewSwitching}
-        onclick={() => { if (view !== "columns") void toggleGraphView(); }}
-        title="Knowledge view"
-      ><Columns3 size={15} strokeWidth={1.8} /><span>Knowledge</span></button>
+        class="tool icon-only"
+        onclick={toggleTheme}
+        title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+        aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+      >
+        {#if theme === "dark"}<Sun size={16} strokeWidth={1.8} />
+        {:else}<Moon size={16} strokeWidth={1.8} />{/if}
+      </button>
       <button
-        class:active={view === "force"}
-        aria-pressed={view === "force"}
-        disabled={viewSwitching}
-        onclick={() => { if (view !== "force") void toggleGraphView(); }}
-        title="Graph view"
-      ><Network size={15} strokeWidth={1.8} /><span>Graph</span></button>
+        class="tool icon-only"
+        class:spinning={refreshing}
+        onclick={refreshView}
+        disabled={refreshing}
+        title="Refresh external file changes"
+        aria-label="Refresh external file changes"
+      ><RefreshCw size={16} strokeWidth={1.8} /></button>
     </div>
-    <button
-      class="tool icon-only"
-      onclick={toggleTheme}
-      title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-      aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-    >
-      {#if theme === "dark"}<Sun size={16} strokeWidth={1.8} />
-      {:else}<Moon size={16} strokeWidth={1.8} />{/if}
-    </button>
-    <button
-      class="tool icon-only"
-      class:spinning={refreshing}
-      onclick={refreshView}
-      disabled={refreshing}
-      title="Refresh external file changes"
-      aria-label="Refresh external file changes"
-    ><RefreshCw size={16} strokeWidth={1.8} /></button>
-    <span
-      class="graph-stats"
-      class:checking={graphCheckLoading}
-      class:stale={graphCheckStale}
-      class:issues={graphIssueCount > 0}
-      class:error={graphCheckError !== null}
-      title={graphCheckTitle}
-      aria-live="polite"
-    >
-      <span class="graph-stats-dot"></span>
-      {#if graphCheck}
-        {graphCheck.nodes.toLocaleString()} nodes&nbsp;&nbsp;{graphCheck.edges.toLocaleString()} edges
-      {:else if graphCheckLoading}
-        Checking graph…
-      {:else}
-        Graph check unavailable
-      {/if}
-    </span>
-    <span class="spacer"></span>
-    {#if statusText}
-      <span class="toolbar-divider compact"></span>
-      <span class="status"><span class="status-dot"></span>{statusText}</span>
-    {/if}
   </header>
   {#if nodeSession.navigationError || refreshError}
     <div class="app-error" role="alert">
@@ -711,6 +700,37 @@
     {/if}
   </main>
   {/if}
+
+  <!-- Ambient state lives here instead of competing with actions in the header. -->
+  <footer class="statusbar">
+    {#if statusText}
+      <span class="status"><span class="status-dot"></span>{statusText}</span>
+    {/if}
+    <span class="spacer"></span>
+    <span
+      class="graph-stats"
+      class:checking={graphCheckLoading}
+      class:stale={graphCheckStale}
+      class:issues={graphIssueCount > 0}
+      class:error={graphCheckError !== null}
+      title={graphCheckTitle}
+      aria-live="polite"
+    >
+      <span class="graph-stats-dot"></span>
+      {#if graphCheck}
+        {graphCheck.nodes.toLocaleString()} nodes · {graphCheck.edges.toLocaleString()} edges
+      {:else if graphCheckLoading}
+        Checking graph…
+      {:else}
+        Graph check unavailable
+      {/if}
+    </span>
+    <span class="statusbar-divider"></span>
+    <span class="key-hints" aria-hidden="true">
+      <span><kbd>/</kbd>search</span>
+      <span><kbd>g</kbd>graph</span>
+    </span>
+  </footer>
 </div>
 
 <div class="overlay-layer" inert={historyNavigating}>
@@ -773,27 +793,44 @@
     height: 100%;
     position: relative;
   }
+  /* Three-zone header: identity, command field, actions. The centre zone is
+     free to grow so the search field stays optically centred. */
   .toolbar {
     display: flex;
     align-items: center;
-    gap: 0.45rem;
-    min-height: 58px;
-    padding: 0 0.85rem;
+    gap: 0.75rem;
+    min-height: var(--mdc-toolbar-h);
+    padding: 0 0.75rem;
     border-bottom: 1px solid var(--mdc-border);
-    background: color-mix(in srgb, var(--mdc-panel) 94%, transparent);
-    box-shadow: 0 1px 0 color-mix(in srgb, var(--mdc-fg) 4%, transparent);
+    background: color-mix(in srgb, var(--mdc-panel) 82%, transparent);
+    backdrop-filter: blur(12px) saturate(160%);
     flex-shrink: 0;
+    z-index: 4;
+  }
+  .bar-zone {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+  .bar-start,
+  .bar-end {
+    flex: 0 0 auto;
+  }
+  .bar-center {
+    flex: 1 1 auto;
+    justify-content: center;
   }
   .identity {
     display: flex;
     align-items: center;
-    gap: 0.55rem;
-    min-width: 124px;
+    gap: 0.5rem;
+    margin-right: 0.15rem;
   }
   .brand-mark {
     display: block;
-    width: 2.1rem;
-    height: 2.1rem;
+    width: 1.65rem;
+    height: 1.65rem;
     flex: 0 0 auto;
   }
   .brand-copy {
@@ -802,70 +839,119 @@
   }
   .brand-copy strong {
     color: var(--mdc-fg);
-    font-size: 0.95rem;
-    font-weight: 720;
-    letter-spacing: -0.025em;
+    font-size: var(--mdc-text-md);
+    font-weight: 680;
+    letter-spacing: -0.03em;
   }
   .toolbar-divider {
     width: 1px;
-    height: 26px;
-    margin: 0 0.25rem;
+    height: 20px;
+    margin: 0 0.15rem;
+    flex: 0 0 auto;
     background: var(--mdc-border);
   }
-  .toolbar-divider.compact {
-    margin-inline: 0.1rem;
-  }
-  .history-tools,
-  .node-tools {
+  .history-tools {
     display: flex;
     align-items: center;
-    gap: 0.35rem;
+    gap: 0.15rem;
   }
   .tool {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 0.42rem;
+    gap: 0.4rem;
     min-height: 32px;
-    padding: 0 0.65rem;
-    color: var(--mdc-fg-soft);
+    padding: 0 0.7rem;
+    color: var(--mdc-dim);
     background: transparent;
     border: 1px solid transparent;
     border-radius: var(--mdc-radius-sm);
-    font-size: 0.76rem;
+    font-size: var(--mdc-text-sm);
     font-weight: 550;
     cursor: pointer;
-    transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+    transition: color var(--mdc-dur-fast) var(--mdc-ease),
+      background var(--mdc-dur-fast) var(--mdc-ease),
+      box-shadow var(--mdc-dur-fast) var(--mdc-ease);
   }
   .tool:hover:not(:disabled) {
     background: var(--mdc-card-hover);
-    border-color: var(--mdc-border);
     color: var(--mdc-fg);
   }
   .tool:disabled {
-    opacity: 0.32;
+    opacity: 0.3;
     cursor: not-allowed;
   }
   .tool.icon-only {
     width: 32px;
     padding: 0;
   }
+  /* The single accent action in the shell. */
+  .tool.primary {
+    color: var(--mdc-on-accent);
+    background: var(--mdc-accent);
+    font-weight: 620;
+    box-shadow: var(--mdc-shadow-sm);
+  }
+  .tool.primary:hover:not(:disabled) {
+    background: var(--mdc-accent-strong);
+    color: var(--mdc-on-accent);
+    box-shadow: var(--mdc-shadow-md);
+  }
+  /* Related icon actions share one recessed well instead of floating apart. */
+  .tool-cluster {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    background: color-mix(in srgb, var(--mdc-bg) 55%, transparent);
+    border: 1px solid var(--mdc-border);
+    border-radius: 10px;
+  }
+  .tool-cluster .tool.icon-only {
+    min-height: 26px;
+    width: 28px;
+    border-radius: 6px;
+  }
+  /* Reads as an input, behaves as a command trigger. */
   .search-tool {
-    padding-inline: 0.72rem 0.85rem;
-    color: var(--mdc-fg);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: min(360px, 100%);
+    min-height: 32px;
+    padding: 0 0.4rem 0 0.65rem;
+    color: var(--mdc-muted);
+    background: color-mix(in srgb, var(--mdc-bg) 58%, transparent);
+    border: 1px solid var(--mdc-border);
+    border-radius: var(--mdc-radius-sm);
+    font-size: var(--mdc-text-sm);
+    font-weight: 450;
+    cursor: pointer;
+    transition: border-color var(--mdc-dur-fast) var(--mdc-ease),
+      background var(--mdc-dur-fast) var(--mdc-ease),
+      color var(--mdc-dur-fast) var(--mdc-ease);
+  }
+  .search-tool:hover {
+    color: var(--mdc-fg-soft);
     background: var(--mdc-card);
-    border-color: var(--mdc-border);
+    border-color: var(--mdc-border-strong);
+  }
+  .search-label {
+    flex: 1;
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .tool-kbd {
-    min-width: 17px;
-    padding: 0.1rem 0.28rem;
+    min-width: 18px;
+    padding: 0.1rem 0.3rem;
     color: var(--mdc-muted);
-    background: var(--mdc-bg);
-    border: 1px solid var(--mdc-border);
-    border-radius: 4px;
+    background: color-mix(in srgb, var(--mdc-fg) 6%, transparent);
+    border-radius: 5px;
     font-family: var(--mdc-mono);
-    font-size: 0.6rem;
-    line-height: 1.1;
+    font-size: 0.62rem;
+    line-height: 1.2;
     text-align: center;
   }
   .tool.spinning :global(svg) {
@@ -877,26 +963,29 @@
   .view-switch {
     display: flex;
     align-items: center;
-    padding: 3px;
-    background: var(--mdc-bg);
+    gap: 2px;
+    padding: 2px;
+    background: color-mix(in srgb, var(--mdc-bg) 55%, transparent);
     border: 1px solid var(--mdc-border);
-    border-radius: 8px;
+    border-radius: 10px;
   }
   .view-switch button {
     display: inline-flex;
     align-items: center;
-    gap: 0.38rem;
-    min-height: 27px;
-    padding: 0 0.62rem;
+    gap: 0.35rem;
+    min-height: 26px;
+    padding: 0 0.6rem;
     color: var(--mdc-muted);
     background: transparent;
     border: 0;
-    border-radius: 5px;
-    font-size: 0.72rem;
+    border-radius: 6px;
+    font-size: var(--mdc-text-xs);
     font-weight: 600;
     cursor: pointer;
+    transition: color var(--mdc-dur-fast) var(--mdc-ease),
+      background var(--mdc-dur-fast) var(--mdc-ease);
   }
-  .view-switch button:hover {
+  .view-switch button:hover:not(.active) {
     color: var(--mdc-fg-soft);
   }
   .view-switch button:disabled {
@@ -904,21 +993,41 @@
   }
   .view-switch button.active {
     color: var(--mdc-fg);
-    background: var(--mdc-card-selected);
-    box-shadow: 0 1px 4px color-mix(in srgb, var(--mdc-fg) 18%, transparent);
+    background: var(--mdc-panel-raised);
+    box-shadow: var(--mdc-shadow-sm);
   }
   .spacer {
     flex: 1;
   }
+
+  /* Slim ambient state strip along the bottom of the shell. */
+  .statusbar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-shrink: 0;
+    min-height: var(--mdc-statusbar-h);
+    padding: 0 0.75rem;
+    border-top: 1px solid var(--mdc-border);
+    background: color-mix(in srgb, var(--mdc-panel) 74%, transparent);
+    color: var(--mdc-muted);
+    font-size: var(--mdc-text-2xs);
+    z-index: 4;
+  }
+  .statusbar-divider {
+    width: 1px;
+    height: 12px;
+    flex: 0 0 auto;
+    background: var(--mdc-border);
+  }
   .graph-stats {
     display: inline-flex;
     align-items: center;
-    gap: 0.42rem;
-    min-height: 28px;
-    padding: 0 0.55rem;
+    gap: 0.4rem;
     color: var(--mdc-muted);
     font-family: var(--mdc-mono);
-    font-size: 0.66rem;
+    font-size: var(--mdc-text-2xs);
+    font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
   .graph-stats-dot {
@@ -927,20 +1036,20 @@
     flex: 0 0 auto;
     border-radius: 50%;
     background: var(--mdc-accent-down);
-    box-shadow: 0 0 0 3px rgba(99, 216, 178, 0.09);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--mdc-accent-down) 16%, transparent);
   }
   .graph-stats.checking .graph-stats-dot { animation: mdc-pulse 1s ease-in-out infinite; }
   .graph-stats.issues .graph-stats-dot {
     background: var(--mdc-warning);
-    box-shadow: 0 0 0 3px rgba(232, 184, 109, 0.1);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--mdc-warning) 16%, transparent);
   }
   .graph-stats.stale .graph-stats-dot {
     background: var(--mdc-muted);
-    box-shadow: 0 0 0 3px rgba(135, 147, 165, 0.09);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--mdc-muted) 16%, transparent);
   }
   .graph-stats.error .graph-stats-dot {
     background: var(--mdc-error);
-    box-shadow: 0 0 0 3px rgba(255, 125, 143, 0.1);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--mdc-error) 16%, transparent);
   }
   @keyframes mdc-pulse {
     50% { opacity: 0.35; }
@@ -948,11 +1057,12 @@
   .status {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    max-width: 250px;
+    gap: 0.45rem;
+    min-width: 0;
+    max-width: 46ch;
     font-family: var(--mdc-mono);
-    font-size: 0.68rem;
-    color: var(--mdc-muted);
+    font-size: var(--mdc-text-2xs);
+    color: var(--mdc-dim);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -963,35 +1073,55 @@
     flex: 0 0 auto;
     border-radius: 50%;
     background: var(--mdc-accent-down);
-    box-shadow: 0 0 0 3px rgba(99, 216, 178, 0.09);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--mdc-accent-down) 16%, transparent);
+  }
+  .key-hints {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex: 0 0 auto;
+    color: var(--mdc-muted);
+  }
+  .key-hints span {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.32rem;
+  }
+  .key-hints kbd {
+    min-width: 15px;
+    padding: 0.05rem 0.25rem;
+    color: var(--mdc-dim);
+    background: color-mix(in srgb, var(--mdc-fg) 7%, transparent);
+    border-radius: 4px;
+    font-family: var(--mdc-mono);
+    font-size: 0.6rem;
+    text-align: center;
   }
   .app-error {
     display: flex;
+    align-items: center;
     justify-content: center;
     gap: 0.7rem;
-    padding: 0.45rem 0.7rem;
-    background: var(--mdc-panel);
+    padding: 0.5rem 0.75rem;
+    background: color-mix(in srgb, var(--mdc-error) 12%, var(--mdc-panel));
     color: var(--mdc-error);
     font-family: var(--mdc-mono);
-    font-size: 0.72rem;
-    border-bottom: 1px solid color-mix(in srgb, var(--mdc-error) 28%, transparent);
+    font-size: var(--mdc-text-xs);
+    border-bottom: 1px solid color-mix(in srgb, var(--mdc-error) 30%, transparent);
   }
   .app-error button {
+    min-height: 24px;
+    padding: 0 0.55rem;
     color: inherit;
-    background: transparent;
-    border: 1px solid currentColor;
-    border-radius: var(--mdc-radius-sm);
+    background: color-mix(in srgb, var(--mdc-error) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--mdc-error) 40%, transparent);
+    border-radius: 6px;
     cursor: pointer;
   }
-  .layout {
-    flex: 1;
-    display: flex;
-    flex-direction: row;
-    gap: 0.75rem;
-    padding: 0.75rem;
-    overflow: hidden;
-    min-height: 0;
+  .app-error button:hover {
+    background: color-mix(in srgb, var(--mdc-error) 22%, transparent);
   }
+  .layout,
   .force-layout {
     flex: 1;
     display: flex;
@@ -1004,7 +1134,7 @@
   .force-layout.hidden,
   .layout.hidden {
     position: absolute;
-    inset: 58px 0 0;
+    inset: var(--mdc-toolbar-h) 0 var(--mdc-statusbar-h);
     opacity: 0;
     pointer-events: none;
   }
@@ -1012,67 +1142,95 @@
     flex: 1 1 auto;
     min-width: 0;
     border: 1px solid var(--mdc-border);
-    border-radius: var(--mdc-radius-md);
+    border-radius: var(--mdc-radius-lg);
     overflow: hidden;
     position: relative;
-    box-shadow: 0 10px 35px color-mix(in srgb, var(--mdc-fg) 12%, transparent);
+    background: var(--mdc-panel);
+    box-shadow: var(--mdc-shadow-lg);
   }
   .force-editor-wrap {
-    flex: 0 0 calc((100% - 0.75rem) / 3);
-    width: calc((100% - 0.75rem) / 3);
+    flex: 0 0 clamp(340px, 34%, 560px);
+    width: clamp(340px, 34%, 560px);
     min-width: 0;
     display: flex;
     flex-direction: column;
     overflow: hidden;
   }
   .full-error {
+    flex: 1;
+    display: grid;
+    place-items: center;
     color: var(--mdc-error);
     padding: 2rem;
     font-family: var(--mdc-mono);
+    font-size: var(--mdc-text-sm);
   }
 
+  /* Shed the widest elements first: search label, then the view-switch labels,
+     then the wordmark. Icons and the primary action survive longest. */
   @media (max-width: 1180px) {
-    .identity {
-      min-width: auto;
+    .search-tool {
+      width: 240px;
     }
-    .node-tools .tool span,
-    .search-tool .tool-kbd {
+    .key-hints {
       display: none;
     }
-    .node-tools .tool {
+  }
+
+  @media (max-width: 1000px) {
+    .brand-copy {
+      display: none;
+    }
+    .view-switch button span {
+      display: none;
+    }
+    .view-switch button {
+      width: 30px;
+      padding: 0;
+      justify-content: center;
+    }
+    .search-label,
+    .tool-kbd {
+      display: none;
+    }
+    .search-tool {
+      width: 32px;
+      padding: 0;
+      justify-content: center;
+    }
+  }
+
+  @media (max-width: 820px) {
+    .tool.primary span {
+      display: none;
+    }
+    .tool.primary {
       width: 32px;
       padding: 0;
     }
     .status {
-      max-width: 140px;
-    }
-    .graph-stats {
-      padding-inline: 0.2rem;
-    }
-  }
-
-  @media (max-width: 940px) {
-    .brand-copy,
-    .graph-stats,
-    .status,
-    .toolbar-divider.compact {
-      display: none;
-    }
-    .identity {
-      min-width: 32px;
+      max-width: 24ch;
     }
   }
 
   @media (max-width: 700px) {
     .toolbar {
+      gap: 0.5rem;
       overflow-x: auto;
       overflow-y: hidden;
-      scrollbar-width: thin;
+      scrollbar-width: none;
+    }
+    .toolbar::-webkit-scrollbar {
+      display: none;
     }
     .toolbar > * {
       flex-shrink: 0;
     }
-    .layout {
+    .bar-center {
+      flex: 0 0 auto;
+    }
+    .layout,
+    .force-layout {
       padding: 0.5rem;
     }
     .layout > :global(.column) {
@@ -1091,6 +1249,9 @@
       min-width: 0;
       min-height: 0;
     }
+    .statusbar {
+      gap: 0.5rem;
+    }
   }
 
   /* View Transitions: the new snapshot fades over the stable old snapshot.
@@ -1101,7 +1262,7 @@
   :global(html[data-vt-scope="force-editor"] .force-editor-wrap) {
     view-transition-name: force-editor;
     background: var(--mdc-bg);
-    border-radius: var(--mdc-radius-md);
+    border-radius: var(--mdc-radius-lg);
   }
   :global(::view-transition-group(force-editor)) {
     animation: none;

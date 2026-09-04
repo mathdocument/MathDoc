@@ -117,30 +117,30 @@
     position: relative;
     display: inline-block;
   }
+  /* Solid but quiet: an "add" affordance, not a dashed placeholder. */
   .add-btn {
     display: inline-flex;
     align-items: center;
     gap: 0.42rem;
     min-height: 34px;
-    background: color-mix(in srgb, var(--mdc-card) 60%, transparent);
+    background: var(--mdc-card);
     color: var(--mdc-dim);
-    border: 1px dashed var(--mdc-border-strong);
-    border-radius: 8px;
-    padding: 0 0.75rem;
-    font-size: 0.72rem;
-    font-weight: 600;
+    border: 1px solid var(--mdc-border);
+    border-radius: var(--mdc-radius-sm);
+    padding: 0 0.8rem;
+    font-size: var(--mdc-text-sm);
+    font-weight: 580;
     cursor: pointer;
     font-family: inherit;
+    transition: background var(--mdc-dur-fast) var(--mdc-ease),
+      color var(--mdc-dur-fast) var(--mdc-ease),
+      border-color var(--mdc-dur-fast) var(--mdc-ease);
   }
-  .add-btn:not(:disabled):hover {
-    background: var(--mdc-card-hover);
-    border-color: var(--mdc-accent);
-    color: var(--mdc-accent);
-  }
+  .add-btn:not(:disabled):hover,
   .add-btn.open {
     background: var(--mdc-card-hover);
-    border-color: var(--mdc-accent);
-    color: var(--mdc-accent);
+    border-color: var(--mdc-border-strong);
+    color: var(--mdc-fg);
   }
   .add-btn:disabled {
     opacity: 0.4;
@@ -149,34 +149,38 @@
   .menu {
     list-style: none;
     margin: 0.4rem 0 0;
-    padding: 0.35rem;
+    padding: 0.25rem;
     position: absolute;
     z-index: 10;
     background: var(--mdc-panel-raised);
-    border: 1px solid var(--mdc-border-strong);
-    border-radius: 9px;
+    border: 1px solid var(--mdc-border);
+    border-radius: var(--mdc-radius-md);
     box-shadow: var(--mdc-shadow-panel);
-    min-width: 8rem;
+    min-width: 9rem;
     transform-origin: top left;
-    animation: mdc-pop-in 150ms cubic-bezier(0.2, 0.8, 0.3, 1);
+    animation: mdc-pop-in 160ms var(--mdc-ease);
   }
   .item {
     display: flex;
     align-items: center;
-    gap: 0.45rem;
+    gap: 0.5rem;
     width: 100%;
     text-align: left;
     background: transparent;
-    color: var(--mdc-fg);
+    color: var(--mdc-fg-soft);
     border: none;
-    padding: 0.45rem 0.55rem;
+    min-height: 30px;
+    padding: 0 0.55rem;
     font-family: var(--mdc-mono);
-    font-size: 0.75rem;
+    font-size: var(--mdc-text-xs);
     cursor: pointer;
-    border-radius: var(--mdc-radius-sm);
+    border-radius: 7px;
+    transition: background var(--mdc-dur-fast) var(--mdc-ease),
+      color var(--mdc-dur-fast) var(--mdc-ease);
   }
   .item:hover:not(:disabled) {
     background: var(--mdc-card-hover);
+    color: var(--mdc-fg);
   }
   .item:disabled {
     opacity: 0.6;
@@ -187,11 +191,12 @@
   }
   .error-bar {
     margin-top: 0.4rem;
-    padding: 0.4rem 0.6rem;
-    background: rgba(255, 125, 143, 0.1);
+    padding: 0.45rem 0.65rem;
+    background: color-mix(in srgb, var(--mdc-error) 10%, transparent);
     color: var(--mdc-error);
     font-family: var(--mdc-mono);
-    font-size: 0.7rem;
+    font-size: var(--mdc-text-xs);
+    border: 1px solid color-mix(in srgb, var(--mdc-error) 25%, transparent);
     border-radius: var(--mdc-radius-sm);
   }
 </style>

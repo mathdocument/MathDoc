@@ -170,7 +170,6 @@
   {:else}
     {@const node = load.node}
     <header class="head">
-      <div class="eyebrow">Current node</div>
       <div class="title-row">
         {#if editingTitle}
           <input
@@ -198,17 +197,18 @@
           </h1>
         {/if}
       </div>
-      <div class="meta">
-        <code class="meta-item fnode" title={node.fnode}><Hash size={12} strokeWidth={1.8} />{shortFnode(node.fnode)}</code>
-        <span class="meta-item path"><FileText size={12} strokeWidth={1.8} />{node.rel_path}</span>
+      <!-- One metadata line: identity, location, depth, verification. Separated
+           by rhythm and colour rather than by an outline around each value. -->
+      <div class="meta" aria-label="node metadata">
+        <code class="meta-item fnode" title={node.fnode}><Hash size={12} strokeWidth={2} />{shortFnode(node.fnode)}</code>
+        <span class="meta-item path" title={node.rel_path}><FileText size={12} strokeWidth={1.8} />{node.rel_path}</span>
         <span class="meta-item depth"><Layers3 size={12} strokeWidth={1.8} />Depth {node.depth}</span>
-        {#if node.broken}<span class="meta-item broken"><X size={12} strokeWidth={2} />Broken</span>{/if}
-      </div>
-      <div class="formalization" aria-label="formal verification status">
-        <span class="formalization-label">Formal</span>
+        {#if node.broken}<span class="meta-item broken"><X size={12} strokeWidth={2.2} />Broken</span>{/if}
+        <span class="meta-sep" aria-hidden="true"></span>
         <span
           class="formal-status"
           data-status={node.formalization.lean}
+          title={`Lean: ${formalStatusLabels[node.formalization.lean]}`}
           aria-label={`Lean: ${formalStatusLabels[node.formalization.lean]}`}
         >
           <span class="status-light" aria-hidden="true"></span>
@@ -218,6 +218,7 @@
         <span
           class="formal-status"
           data-status={node.formalization.rocq}
+          title={`Rocq: ${formalStatusLabels[node.formalization.rocq]}`}
           aria-label={`Rocq: ${formalStatusLabels[node.formalization.rocq]}`}
         >
           <span class="status-light" aria-hidden="true"></span>
@@ -272,55 +273,51 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    background: color-mix(in srgb, var(--mdc-panel) 88%, transparent);
+    background: var(--mdc-panel);
     border: 1px solid var(--mdc-border);
-    border-radius: var(--mdc-radius-md);
-    box-shadow: 0 10px 35px color-mix(in srgb, var(--mdc-fg) 12%, transparent);
+    border-radius: var(--mdc-radius-lg);
+    box-shadow: var(--mdc-shadow-lg);
   }
+  /* The focused surface earns a hairline of accent along its top edge; that is
+     the whole "you are here" signal, no eyebrow label needed. */
   .center::before {
     content: "";
     position: absolute;
     inset: 0 0 auto;
     height: 2px;
-    background: linear-gradient(90deg, var(--mdc-accent) 0%, color-mix(in srgb, var(--mdc-accent) 12%, transparent) 46%, transparent 78%);
-    border-radius: var(--mdc-radius-md) var(--mdc-radius-md) 0 0;
-    opacity: 0.9;
+    background: linear-gradient(
+      90deg,
+      var(--mdc-accent) 0%,
+      color-mix(in srgb, var(--mdc-accent) 30%, transparent) 34%,
+      transparent 70%
+    );
     pointer-events: none;
+    z-index: 1;
   }
   .head {
-    padding: 1.05rem 1.25rem 0.95rem;
+    flex-shrink: 0;
+    padding: 1.25rem 1.25rem 1rem;
     border-bottom: 1px solid var(--mdc-border);
-    background: linear-gradient(180deg, color-mix(in srgb, var(--mdc-panel-raised) 82%, transparent), color-mix(in srgb, var(--mdc-panel) 35%, transparent));
-  }
-  .eyebrow {
-    margin-bottom: 0.38rem;
-    color: var(--mdc-muted);
-    font-family: var(--mdc-mono);
-    font-size: 0.6rem;
-    font-weight: 600;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
   }
   .title-row {
     display: flex;
     align-items: center;
-    min-height: 31px;
-    gap: 0.35rem;
+    min-height: 34px;
+    gap: 0.4rem;
   }
   .title {
-    margin: 0;
     color: var(--mdc-fg);
-    font-size: 1.28rem;
-    font-weight: 640;
-    letter-spacing: -0.025em;
-    line-height: 1.25;
+    font-size: var(--mdc-text-xl);
+    font-weight: 660;
+    letter-spacing: -0.03em;
+    line-height: 1.2;
     word-break: break-word;
     cursor: text;
     display: inline-block;
     border-radius: var(--mdc-radius-sm);
-    padding: 0.15rem 0.3rem;
-    margin: -0.15rem -0.3rem;
-    transition: background 120ms ease;
+    padding: 0.15rem 0.35rem;
+    margin: -0.15rem -0.35rem;
+    transition: background var(--mdc-dur-fast) var(--mdc-ease);
   }
   .title:hover {
     background: var(--mdc-card-hover);
@@ -336,29 +333,36 @@
     cursor: text;
   }
   .title-input {
-    font-size: 1.18rem;
+    font-size: 1.2rem;
     font-weight: 620;
     font-family: inherit;
-    color: var(--mdc-code-fg);
-    background: var(--mdc-code-bg);
+    letter-spacing: -0.025em;
+    color: var(--mdc-fg);
+    background: var(--mdc-bg);
     border: 1px solid var(--mdc-accent);
     border-radius: var(--mdc-radius-sm);
-    padding: 0.35rem 0.5rem;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--mdc-ring) 35%, transparent);
+    padding: 0.3rem 0.55rem;
     width: min(70%, 680px);
+  }
+  .title-input:focus-visible {
+    outline: none;
   }
   .title-save,
   .title-cancel {
     display: inline-grid;
     place-items: center;
-    width: 29px;
-    height: 29px;
+    width: 30px;
+    height: 30px;
     padding: 0;
     background: var(--mdc-card);
     border: 1px solid var(--mdc-border);
-    color: var(--mdc-fg);
+    color: var(--mdc-fg-soft);
     border-radius: var(--mdc-radius-sm);
     cursor: pointer;
-    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+    transition: background var(--mdc-dur-fast) var(--mdc-ease),
+      color var(--mdc-dur-fast) var(--mdc-ease),
+      border-color var(--mdc-dur-fast) var(--mdc-ease);
   }
   .title-save:hover {
     background: var(--mdc-accent-down);
@@ -372,69 +376,53 @@
   }
   .title-error {
     color: var(--mdc-error);
-    font-size: 0.72rem;
+    font-size: var(--mdc-text-xs);
     margin-left: 0.5rem;
   }
   .meta {
-    margin-top: 0.58rem;
+    margin-top: 0.65rem;
     display: flex;
-    gap: 0.42rem;
+    gap: 0.85rem;
     align-items: center;
-    font-size: 0.68rem;
+    font-size: var(--mdc-text-xs);
     color: var(--mdc-muted);
     flex-wrap: wrap;
   }
   .meta-item {
     display: inline-flex;
     align-items: center;
-    gap: 0.28rem;
-    min-height: 22px;
-    padding: 0 0.45rem;
-    background: color-mix(in srgb, var(--mdc-bg) 55%, transparent);
-    border: 1px solid var(--mdc-border);
-    border-radius: 999px;
+    gap: 0.3rem;
+    min-width: 0;
+  }
+  .meta-sep {
+    width: 1px;
+    height: 11px;
+    background: var(--mdc-border-strong);
   }
   .fnode {
     font-family: var(--mdc-mono);
-    color: var(--mdc-accent-strong);
+    color: var(--mdc-accent);
+    font-size: var(--mdc-text-xs);
   }
   .path {
     font-family: var(--mdc-mono);
+    max-width: 34ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .depth {
     font-variant-numeric: tabular-nums;
   }
   .broken {
     color: var(--mdc-error);
-    font-weight: 600;
+    font-weight: 620;
   }
-  .formalization {
-    margin-top: 0.5rem;
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.4rem;
-    color: var(--mdc-muted);
-    font-family: var(--mdc-mono);
-    font-size: 0.64rem;
-  }
-  .formalization-label {
-    margin-right: 0.08rem;
-    color: var(--mdc-dim);
-    font-size: 0.58rem;
-    font-weight: 650;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
+  /* Verification reads as a status light plus a language, no surrounding pill. */
   .formal-status {
     display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
-    min-height: 22px;
-    padding: 0 0.48rem;
-    background: color-mix(in srgb, var(--mdc-bg) 42%, transparent);
-    border: 1px solid var(--mdc-border);
-    border-radius: 999px;
+    gap: 0.34rem;
   }
   .status-light {
     width: 7px;
@@ -443,20 +431,20 @@
     border-radius: 50%;
   }
   .formal-status[data-status="no_code"] .status-light {
-    background: var(--mdc-error);
-    box-shadow: 0 0 0 2px rgba(255, 125, 143, 0.12);
+    background: var(--mdc-muted);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--mdc-muted) 18%, transparent);
   }
   .formal-status[data-status="unverified"] .status-light {
     background: var(--mdc-warning);
-    box-shadow: 0 0 0 2px rgba(232, 184, 109, 0.12);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--mdc-warning) 20%, transparent);
   }
   .formal-status[data-status="verified"] .status-light {
     background: var(--mdc-accent-down);
-    box-shadow: 0 0 0 2px rgba(99, 216, 178, 0.12);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--mdc-accent-down) 22%, transparent);
   }
   .formal-language {
     color: var(--mdc-fg-soft);
-    font-weight: 650;
+    font-weight: 600;
   }
   .status-text {
     color: var(--mdc-muted);
@@ -464,15 +452,19 @@
   .blocks {
     flex: 1;
     overflow-y: auto;
-    padding: 1rem 1.15rem 1.5rem;
+    padding: 1rem 1.25rem 1.5rem;
     display: flex;
     flex-direction: column;
-    gap: 0.9rem;
+    gap: 0.75rem;
   }
   .placeholder {
+    flex: 1;
+    display: grid;
+    place-items: center;
     color: var(--mdc-muted);
     padding: 2rem;
     text-align: center;
+    font-size: var(--mdc-text-sm);
   }
   .placeholder.error {
     color: var(--mdc-error);
@@ -481,19 +473,22 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.35rem;
-    padding: 2.4rem 1rem;
+    gap: 0.4rem;
+    padding: 3rem 1rem;
     color: var(--mdc-muted);
     text-align: center;
   }
   .empty-state strong {
-    color: var(--mdc-fg-soft);
-    font-size: 0.86rem;
-    font-weight: 600;
+    color: var(--mdc-fg);
+    font-size: var(--mdc-text-md);
+    font-weight: 620;
+    letter-spacing: var(--mdc-tracking-tight);
   }
   .empty-state p {
     margin: 0;
-    font-size: 0.72rem;
+    max-width: 34ch;
+    font-size: var(--mdc-text-sm);
+    line-height: 1.55;
   }
   .editor-loading,
   .editor-load-error {
@@ -502,25 +497,41 @@
     place-items: center;
     color: var(--mdc-muted);
     font-family: var(--mdc-mono);
-    font-size: 0.72rem;
+    font-size: var(--mdc-text-xs);
   }
-  .editor-load-error { color: var(--mdc-error); }
+  .editor-load-error {
+    gap: 0.6rem;
+    color: var(--mdc-error);
+  }
   .editor-load-error button {
+    min-height: 26px;
+    padding: 0 0.6rem;
     color: inherit;
-    background: transparent;
-    border: 1px solid currentColor;
-    border-radius: var(--mdc-radius-sm);
+    background: color-mix(in srgb, var(--mdc-error) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--mdc-error) 40%, transparent);
+    border-radius: 6px;
     cursor: pointer;
   }
   .empty-icon {
     display: grid;
     place-items: center;
-    width: 44px;
-    height: 44px;
-    margin-bottom: 0.3rem;
+    width: 46px;
+    height: 46px;
+    margin-bottom: 0.5rem;
     color: var(--mdc-dim);
     background: var(--mdc-card);
-    border: 1px solid var(--mdc-border);
-    border-radius: 12px;
+    border-radius: var(--mdc-radius-md);
+  }
+
+  @media (max-width: 900px) {
+    .head {
+      padding: 1rem 1rem 0.75rem;
+    }
+    .blocks {
+      padding: 0.75rem 0.75rem 1.25rem;
+    }
+    .path {
+      max-width: 20ch;
+    }
   }
 </style>

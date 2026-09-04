@@ -1,88 +1,161 @@
+/* ---------------------------------------------------------------------------
+   MathDoc design tokens.
+
+   Surfaces are a deliberate elevation ramp (bg → panel → panel-raised → card)
+   so containers read by contrast and shadow rather than by an outline on every
+   box. Hairline borders exist only where two surfaces of similar value meet.
+   --------------------------------------------------------------------------- */
+
 :root {
-  --mdc-bg: #090d14;
-  --mdc-panel: #0f151f;
-  --mdc-panel-raised: #141c28;
-  --mdc-card: #151e2b;
-  --mdc-card-hover: #1a2534;
-  --mdc-card-selected: #202d40;
-  --mdc-border: #222d3c;
-  --mdc-border-strong: #354258;
-  --mdc-fg: #e7edf6;
-  --mdc-fg-soft: #c0cad8;
-  --mdc-dim: #8793a5;
-  --mdc-muted: #8997aa;
-  --mdc-accent: #7c9cff;
-  --mdc-accent-strong: #9ab0ff;
-  --mdc-accent-up: #b69cff;
-  --mdc-accent-down: #63d8b2;
-  --mdc-warning: #e8b86d;
-  --mdc-error: #ff7d8f;
-  --mdc-on-accent: #0b1020;
-  --mdc-on-success: #07110e;
-  --mdc-on-error: #19090c;
-  --mdc-code-bg: #0b1018;
-  --mdc-code-fg: #dbe5f3;
-  --mdc-code-dim: #8793a5;
-  --mdc-code-error: #ff7d8f;
-  --mdc-block-text: #7c9cff;
-  --mdc-block-latex: #b69cff;
-  --mdc-block-python: #e8b86d;
-  --mdc-block-lean: #ff9e64;
-  --mdc-block-rocq: #63d8b2;
-  --mdc-backdrop: rgba(3, 6, 10, 0.7);
-  --mdc-body-glow: rgba(82, 112, 178, 0.12);
-  --mdc-grid: rgba(124, 156, 255, 0.025);
-  --mdc-selection: rgba(124, 156, 255, 0.28);
-  --mdc-editor-selection: rgba(122, 162, 247, 0.25);
-  --mdc-editor-active: rgba(122, 162, 247, 0.06);
+  /* Surface ramp */
+  --mdc-bg: #08090d;
+  --mdc-panel: #0e1116;
+  --mdc-panel-raised: #14171f;
+  --mdc-card: #191d26;
+  --mdc-card-hover: #212632;
+  --mdc-card-selected: #282f3f;
+  --mdc-border: #1d212b;
+  --mdc-border-strong: #333b4b;
+
+  /* Text ramp */
+  --mdc-fg: #eef1f7;
+  --mdc-fg-soft: #c6cdda;
+  --mdc-dim: #8a93a3;
+  --mdc-muted: #79828f;
+
+  /* Accents */
+  --mdc-accent: #7c8cff;
+  --mdc-accent-strong: #9dabff;
+  --mdc-accent-up: #b48cff;
+  --mdc-accent-down: #4fd6ae;
+  --mdc-warning: #f0b661;
+  --mdc-error: #ff6f85;
+  --mdc-on-accent: #080b18;
+  --mdc-on-success: #05100d;
+  --mdc-on-error: #180509;
+
+  /* Code surfaces */
+  --mdc-code-bg: #0a0d13;
+  --mdc-code-fg: #dde4f0;
+  --mdc-code-dim: #767f8d;
+  --mdc-code-error: #ff6f85;
+
+  /* Per-srctype hues */
+  --mdc-block-text: #7c8cff;
+  --mdc-block-latex: #b48cff;
+  --mdc-block-python: #f0b661;
+  --mdc-block-lean: #ff9d63;
+  --mdc-block-rocq: #4fd6ae;
+
+  /* Effects */
+  --mdc-backdrop: rgba(4, 6, 10, 0.66);
+  --mdc-body-glow: rgba(94, 112, 200, 0.13);
+  --mdc-grid: rgba(124, 140, 255, 0.03);
+  --mdc-selection: rgba(124, 140, 255, 0.3);
+  --mdc-editor-selection: rgba(124, 140, 255, 0.26);
+  --mdc-editor-active: rgba(124, 140, 255, 0.055);
+  --mdc-ring: rgba(124, 140, 255, 0.55);
+
+  --mdc-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.32);
+  --mdc-shadow-md:
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 6px 16px -6px rgba(0, 0, 0, 0.5);
+  --mdc-shadow-lg:
+    0 1px 2px rgba(0, 0, 0, 0.28),
+    0 12px 32px -12px rgba(0, 0, 0, 0.62);
+  --mdc-shadow-panel:
+    0 1px 2px rgba(0, 0, 0, 0.26),
+    0 20px 48px -20px rgba(0, 0, 0, 0.7);
+
+  color-scheme: dark;
+
+  /* ----- Theme-independent tokens ----- */
+
   --mdc-font: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --mdc-mono: "SFMono-Regular", "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
-  --mdc-radius-sm: 6px;
-  --mdc-radius-md: 10px;
-  --mdc-radius-lg: 14px;
-  --mdc-shadow-panel: 0 18px 50px rgba(0, 0, 0, 0.35);
-  color-scheme: dark;
+
+  /* Type scale */
+  --mdc-text-2xs: 0.6875rem;  /* 11px — micro labels, counts */
+  --mdc-text-xs: 0.75rem;     /* 12px — meta, paths, fnodes */
+  --mdc-text-sm: 0.8125rem;   /* 13px — secondary UI text */
+  --mdc-text-md: 0.875rem;    /* 14px — body, controls */
+  --mdc-text-xl: 1.375rem;    /* 22px — node title */
+
+  --mdc-tracking-label: 0.055em;
+  --mdc-tracking-tight: -0.018em;
+
+  /* Radii */
+  --mdc-radius-sm: 8px;
+  --mdc-radius-md: 12px;
+  --mdc-radius-lg: 16px;
+  --mdc-radius-pill: 999px;
+
+  /* Motion */
+  --mdc-ease: cubic-bezier(0.2, 0.8, 0.3, 1);
+  --mdc-dur-fast: 110ms;
+
+  /* Chrome metrics shared by the shell */
+  --mdc-toolbar-h: 52px;
+  --mdc-statusbar-h: 26px;
+
   font-synthesis: none;
 }
 
 :root[data-theme="light"] {
-  --mdc-bg: #edf2f8;
+  --mdc-bg: #f6f7f9;
   --mdc-panel: #ffffff;
-  --mdc-panel-raised: #f7f9fc;
-  --mdc-card: #f1f5fa;
-  --mdc-card-hover: #e7edf5;
-  --mdc-card-selected: #dce7f8;
-  --mdc-border: #d3dce8;
-  --mdc-border-strong: #aebdd0;
-  --mdc-fg: #172233;
-  --mdc-fg-soft: #36465c;
-  --mdc-dim: #536277;
-  --mdc-muted: #57667b;
-  --mdc-accent: #315fda;
-  --mdc-accent-strong: #244bb8;
-  --mdc-accent-up: #7453d8;
-  --mdc-accent-down: #087f66;
-  --mdc-warning: #9a6300;
-  --mdc-error: #c43c50;
+  --mdc-panel-raised: #fbfcfe;
+  --mdc-card: #f3f5f8;
+  --mdc-card-hover: #eaeef4;
+  --mdc-card-selected: #e2e9f8;
+  --mdc-border: #e4e7ee;
+  --mdc-border-strong: #c2c9d6;
+
+  --mdc-fg: #0f1420;
+  --mdc-fg-soft: #333c4d;
+  --mdc-dim: #5a6474;
+  --mdc-muted: #69727f;
+
+  --mdc-accent: #4d5bd9;
+  --mdc-accent-strong: #3b47b8;
+  --mdc-accent-up: #7440d0;
+  --mdc-accent-down: #0a7d64;
+  --mdc-warning: #96601a;
+  --mdc-error: #c8384d;
   --mdc-on-accent: #ffffff;
   --mdc-on-success: #ffffff;
   --mdc-on-error: #ffffff;
+
   --mdc-code-bg: #ffffff;
-  --mdc-code-fg: #24292e;
-  --mdc-code-dim: #57606a;
-  --mdc-code-error: #cf222e;
-  --mdc-block-text: #2853c4;
-  --mdc-block-latex: #6040c0;
-  --mdc-block-python: #805000;
-  --mdc-block-lean: #984900;
-  --mdc-block-rocq: #066b56;
-  --mdc-backdrop: rgba(20, 31, 48, 0.38);
-  --mdc-body-glow: rgba(49, 95, 218, 0.1);
-  --mdc-grid: rgba(49, 95, 218, 0.055);
-  --mdc-selection: rgba(49, 95, 218, 0.2);
-  --mdc-editor-selection: rgba(3, 102, 214, 0.18);
-  --mdc-editor-active: #f6f8fa;
-  --mdc-shadow-panel: 0 18px 50px rgba(35, 52, 76, 0.18);
+  --mdc-code-fg: #1f2430;
+  --mdc-code-dim: #6b7482;
+  --mdc-code-error: #cb2431;
+
+  --mdc-block-text: #3b47b8;
+  --mdc-block-latex: #6a3fc0;
+  --mdc-block-python: #7c4e00;
+  --mdc-block-lean: #91430a;
+  --mdc-block-rocq: #06705a;
+
+  --mdc-backdrop: rgba(18, 26, 40, 0.32);
+  --mdc-body-glow: rgba(77, 91, 217, 0.08);
+  --mdc-grid: rgba(77, 91, 217, 0.05);
+  --mdc-selection: rgba(77, 91, 217, 0.2);
+  --mdc-editor-selection: rgba(77, 91, 217, 0.17);
+  --mdc-editor-active: #f4f6fa;
+  --mdc-ring: rgba(77, 91, 217, 0.5);
+
+  --mdc-shadow-sm: 0 1px 2px rgba(19, 30, 51, 0.07);
+  --mdc-shadow-md:
+    0 1px 2px rgba(19, 30, 51, 0.06),
+    0 6px 16px -8px rgba(19, 30, 51, 0.16);
+  --mdc-shadow-lg:
+    0 1px 2px rgba(19, 30, 51, 0.06),
+    0 12px 32px -14px rgba(19, 30, 51, 0.2);
+  --mdc-shadow-panel:
+    0 1px 2px rgba(19, 30, 51, 0.05),
+    0 20px 48px -24px rgba(19, 30, 51, 0.24);
+
   color-scheme: light;
 }
 
@@ -103,12 +176,15 @@ body,
 body {
   overflow: hidden;
   background:
-    radial-gradient(circle at 45% -20%, var(--mdc-body-glow), transparent 38%),
+    radial-gradient(1200px 520px at 50% -260px, var(--mdc-body-glow), transparent 70%),
     var(--mdc-bg);
   color: var(--mdc-fg);
   font-family: var(--mdc-font);
-  font-size: 14px;
+  font-size: var(--mdc-text-md);
+  line-height: 1.5;
+  font-feature-settings: "cv11", "ss01";
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 button,
@@ -127,46 +203,50 @@ input:focus-visible,
   background: var(--mdc-selection);
 }
 
-/* Shared entrance animations for overlay dialogs (used by modal components). */
+/* ---------------------------------------------------------------------------
+   Overlay dialogs. Shared chrome for the search, dependency, and new-node
+   modals so they all read as the same surface family as the app shell.
+   --------------------------------------------------------------------------- */
+
 @keyframes mdc-fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
 }
 
 @keyframes mdc-pop-in {
-  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
   to { opacity: 1; transform: none; }
 }
 
 dialog.modal-dialog {
-  margin: 10vh auto auto;
+  margin: 12vh auto auto;
   padding: 0;
   color: inherit;
-  background: color-mix(in srgb, var(--mdc-panel) 98%, transparent);
-  border: 1px solid var(--mdc-border-strong);
+  background: var(--mdc-panel);
+  border: 1px solid var(--mdc-border);
   border-radius: var(--mdc-radius-lg);
   overflow: hidden;
   box-shadow: var(--mdc-shadow-panel);
-  animation: mdc-pop-in 180ms cubic-bezier(0.2, 0.8, 0.3, 1);
+  animation: mdc-pop-in 200ms var(--mdc-ease);
 }
 
 dialog.modal-dialog::backdrop {
   background: var(--mdc-backdrop);
-  backdrop-filter: blur(6px);
-  animation: mdc-fade-in 150ms ease;
+  backdrop-filter: blur(8px) saturate(120%);
+  animation: mdc-fade-in 160ms ease;
 }
 
 dialog.modal-dialog.modal-wide {
-  width: min(860px, 92vw);
+  width: min(880px, 92vw);
 }
 
 dialog.modal-dialog .modal-search-field {
   display: flex;
   align-items: center;
-  gap: 0.7rem;
-  min-height: 60px;
-  padding: 0 0.85rem 0 1rem;
-  background: var(--mdc-panel-raised);
+  gap: 0.75rem;
+  min-height: 58px;
+  padding: 0 0.75rem 0 1rem;
+  background: var(--mdc-panel);
   border-bottom: 1px solid var(--mdc-border);
 }
 
@@ -175,9 +255,14 @@ dialog.modal-dialog .modal-search-field input {
   flex: 1;
   border: none;
   padding: 0;
-  font-size: 0.98rem;
+  font-size: 1rem;
+  letter-spacing: var(--mdc-tracking-tight);
   background: transparent;
   color: var(--mdc-fg);
+}
+
+dialog.modal-dialog .modal-search-field input:focus-visible {
+  outline: none;
 }
 
 dialog.modal-dialog .modal-search-field input::placeholder {
@@ -187,76 +272,80 @@ dialog.modal-dialog .modal-search-field input::placeholder {
 dialog.modal-dialog .loading-label {
   color: var(--mdc-muted);
   font-family: var(--mdc-mono);
-  font-size: 0.62rem;
+  font-size: var(--mdc-text-2xs);
 }
 
 dialog.modal-dialog .close-btn {
   display: grid;
   place-items: center;
-  width: 31px;
-  height: 31px;
+  width: 30px;
+  height: 30px;
   padding: 0;
   color: var(--mdc-muted);
   background: transparent;
   border: 1px solid transparent;
   border-radius: var(--mdc-radius-sm);
   cursor: pointer;
+  transition: color var(--mdc-dur-fast) var(--mdc-ease),
+    background var(--mdc-dur-fast) var(--mdc-ease);
 }
 
 dialog.modal-dialog .close-btn:hover {
   color: var(--mdc-fg);
   background: var(--mdc-card-hover);
-  border-color: var(--mdc-border);
 }
 
 dialog.modal-dialog .dialog-head {
   display: flex;
   align-items: center;
-  gap: 0.7rem;
-  padding: 0 0.85rem 0 1rem;
-  background: var(--mdc-panel-raised);
+  gap: 0.75rem;
+  min-height: 58px;
+  padding: 0 0.75rem 0 1rem;
+  background: var(--mdc-panel);
   border-bottom: 1px solid var(--mdc-border);
 }
 
 dialog.modal-dialog .head-icon {
   display: grid;
   place-items: center;
-  width: 31px;
-  height: 31px;
-  border-radius: 8px;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  border-radius: var(--mdc-radius-sm);
 }
 
 dialog.modal-dialog .dialog-head > span:nth-child(2) {
   display: flex;
   flex-direction: column;
-  gap: 0.12rem;
+  gap: 0.1rem;
 }
 
 dialog.modal-dialog .dialog-head small {
   color: var(--mdc-muted);
-  font-family: var(--mdc-mono);
-  font-size: 0.58rem;
-  letter-spacing: 0.08em;
+  font-size: var(--mdc-text-2xs);
+  font-weight: 600;
+  letter-spacing: var(--mdc-tracking-label);
   text-transform: uppercase;
 }
 
 dialog.modal-dialog h2 {
   margin: 0;
   color: var(--mdc-fg);
-  font-size: 0.9rem;
-  font-weight: 630;
+  font-size: var(--mdc-text-md);
+  font-weight: 650;
+  letter-spacing: var(--mdc-tracking-tight);
 }
 
 dialog.modal-dialog .modal-list {
   list-style: none;
   margin: 0;
-  padding: 0.45rem;
+  padding: 0.5rem;
   max-height: 54vh;
   overflow-y: auto;
 }
 
 dialog.modal-dialog .modal-results {
-  min-height: 70px;
+  min-height: 72px;
 }
 
 dialog.modal-dialog .modal-row {
@@ -265,14 +354,15 @@ dialog.modal-dialog .modal-row {
   display: grid;
   gap: 0.75rem;
   align-items: center;
-  min-height: 42px;
-  padding: 0.45rem 0.65rem;
+  min-height: 44px;
+  padding: 0.5rem 0.75rem;
   background: transparent;
   border: 1px solid transparent;
   color: var(--mdc-fg);
   cursor: pointer;
-  border-radius: 7px;
+  border-radius: var(--mdc-radius-sm);
   font-family: inherit;
+  transition: background var(--mdc-dur-fast) var(--mdc-ease);
 }
 
 dialog.modal-dialog .modal-result-row {
@@ -281,30 +371,30 @@ dialog.modal-dialog .modal-result-row {
 
 dialog.modal-dialog .modal-result-row.selected {
   background: var(--mdc-card-selected);
-  border-color: var(--mdc-border);
+  border-color: transparent;
 }
 
 dialog.modal-dialog .modal-result-row:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
 dialog.modal-dialog .modal-row .depth {
   color: var(--mdc-muted);
-  font-size: 0.66rem;
+  font-size: var(--mdc-text-2xs);
   font-variant-numeric: tabular-nums;
 }
 
 dialog.modal-dialog .modal-row .fnode {
   color: var(--mdc-accent);
   font-family: var(--mdc-mono);
-  font-size: 0.68rem;
+  font-size: var(--mdc-text-xs);
 }
 
 dialog.modal-dialog .modal-row .title {
-  color: var(--mdc-fg-soft);
-  font-size: 0.8rem;
-  font-weight: 560;
+  color: var(--mdc-fg);
+  font-size: var(--mdc-text-sm);
+  font-weight: 550;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -312,7 +402,7 @@ dialog.modal-dialog .modal-row .title {
 
 dialog.modal-dialog .modal-row .path {
   color: var(--mdc-muted);
-  font-size: 0.66rem;
+  font-size: var(--mdc-text-2xs);
   font-family: var(--mdc-mono);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -323,14 +413,14 @@ dialog.modal-dialog .modal-empty {
   text-align: center;
   color: var(--mdc-muted);
   padding: 1.5rem;
-  font-size: 0.76rem;
+  font-size: var(--mdc-text-sm);
 }
 
 dialog.modal-dialog .modal-error {
-  background: rgba(255, 125, 143, 0.1);
+  background: color-mix(in srgb, var(--mdc-error) 10%, transparent);
   color: var(--mdc-error);
   font-family: var(--mdc-mono);
-  font-size: 0.7rem;
+  font-size: var(--mdc-text-xs);
 }
 
 dialog.modal-dialog .hint {
@@ -343,28 +433,28 @@ dialog.modal-dialog .hint kbd {
   color: var(--mdc-dim);
   background: var(--mdc-card);
   border: 1px solid var(--mdc-border);
-  border-radius: 4px;
+  border-radius: 5px;
   font-family: var(--mdc-mono);
 }
 
 dialog.modal-dialog .modal-search-hint {
   gap: 1rem;
-  padding: 0.55rem 0.8rem;
-  font-size: 0.64rem;
+  padding: 0.5rem 0.75rem;
+  font-size: var(--mdc-text-2xs);
   border-top: 1px solid var(--mdc-border);
-  background: color-mix(in srgb, var(--mdc-bg) 48%, transparent);
+  background: var(--mdc-panel-raised);
 }
 
 dialog.modal-dialog .hint span {
   display: flex;
   align-items: center;
-  gap: 0.28rem;
+  gap: 0.3rem;
 }
 
 dialog.modal-dialog .modal-search-hint kbd {
   min-width: 20px;
-  padding: 0.13rem 0.28rem;
-  font-size: 0.58rem;
+  padding: 0.12rem 0.3rem;
+  font-size: 0.62rem;
   text-align: center;
 }
 
@@ -373,27 +463,29 @@ dialog.modal-dialog .dialog-footer {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  padding: 0.65rem 0.8rem;
+  padding: 0.75rem;
   border-top: 1px solid var(--mdc-border);
-  background: color-mix(in srgb, var(--mdc-bg) 48%, transparent);
+  background: var(--mdc-panel-raised);
 }
 
 dialog.modal-dialog .actions {
   display: flex;
-  gap: 0.45rem;
+  gap: 0.5rem;
 }
 
 dialog.modal-dialog .actions button {
-  min-height: 32px;
-  padding: 0 0.72rem;
+  min-height: 34px;
+  padding: 0 0.75rem;
   border-radius: var(--mdc-radius-sm);
-  font-size: 0.68rem;
+  font-size: var(--mdc-text-sm);
   font-weight: 600;
   cursor: pointer;
+  transition: background var(--mdc-dur-fast) var(--mdc-ease),
+    border-color var(--mdc-dur-fast) var(--mdc-ease);
 }
 
 dialog.modal-dialog .actions button:disabled {
-  opacity: 0.35;
+  opacity: 0.4;
   cursor: default;
 }
 
@@ -403,15 +495,25 @@ dialog.modal-dialog .secondary {
   border: 1px solid var(--mdc-border);
 }
 
+dialog.modal-dialog .secondary:hover:not(:disabled) {
+  background: var(--mdc-card-hover);
+  border-color: var(--mdc-border-strong);
+}
+
 *::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
 
 *::-webkit-scrollbar-thumb {
   background: var(--mdc-border-strong);
-  border: 2px solid transparent;
-  border-radius: 999px;
+  border: 3px solid transparent;
+  border-radius: var(--mdc-radius-pill);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--mdc-dim);
   background-clip: padding-box;
 }
 

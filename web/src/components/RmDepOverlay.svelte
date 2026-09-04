@@ -141,15 +141,9 @@
   </dialog>
 
 <style>
-  .dialog {
-    border-color: var(--mdc-dim);
-  }
-  .dialog-head {
-    min-height: 62px;
-  }
   .head-icon {
     color: var(--mdc-error);
-    background: rgba(255, 125, 143, 0.1);
+    background: color-mix(in srgb, var(--mdc-error) 12%, transparent);
   }
   .close-btn {
     margin-left: auto;
@@ -159,12 +153,10 @@
   }
   .row.cursor {
     background: var(--mdc-card-hover);
-    border-color: var(--mdc-border);
   }
   .row.checked {
     color: var(--mdc-fg);
-    background: rgba(255, 125, 143, 0.07);
-    border-color: rgba(255, 125, 143, 0.18);
+    background: color-mix(in srgb, var(--mdc-error) 9%, transparent);
   }
   .row:disabled {
     opacity: 0.6;
@@ -173,13 +165,15 @@
   .check {
     display: grid;
     place-items: center;
-    width: 16px;
-    height: 16px;
-    color: var(--mdc-error);
-    border: 1px solid var(--mdc-border-strong);
-    border-radius: 4px;
+    width: 17px;
+    height: 17px;
+    color: transparent;
+    border: 1.5px solid var(--mdc-border-strong);
+    border-radius: 5px;
     font-weight: 700;
-    font-size: 0.65rem;
+    font-size: 0.66rem;
+    transition: background var(--mdc-dur-fast) var(--mdc-ease),
+      border-color var(--mdc-dur-fast) var(--mdc-ease);
   }
   .row.checked .check {
     color: var(--mdc-on-error);
@@ -187,23 +181,26 @@
     border-color: var(--mdc-error);
   }
   .error-bar {
-    padding: 0.5rem 0.7rem;
-    border-top: 1px solid rgba(255, 125, 143, 0.2);
+    padding: 0.55rem 0.75rem;
+    border-top: 1px solid color-mix(in srgb, var(--mdc-error) 22%, transparent);
   }
   .dialog-footer {
-    min-height: 58px;
+    min-height: 56px;
   }
   .hint {
-    gap: 0.8rem;
-    font-size: 0.62rem;
+    gap: 1rem;
+    font-size: var(--mdc-text-2xs);
   }
   kbd {
-    padding: 0.13rem 0.3rem;
-    font-size: 0.57rem;
+    padding: 0.12rem 0.3rem;
+    font-size: 0.6rem;
   }
   .danger {
     color: var(--mdc-on-error);
     background: var(--mdc-error);
     border: 1px solid var(--mdc-error);
+  }
+  .danger:hover:not(:disabled) {
+    filter: brightness(1.08);
   }
 </style>

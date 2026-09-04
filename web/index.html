@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#090d14" />
+    <meta name="theme-color" content="#08090d" />
     <script>
       let storedTheme = null;
       try { storedTheme = localStorage.getItem("mdc-theme"); } catch {}
@@ -12,7 +12,7 @@
         : matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
       document.documentElement.dataset.theme = initialTheme;
       document.querySelector('meta[name="theme-color"]').content =
-        initialTheme === "light" ? "#edf2f8" : "#090d14";
+        initialTheme === "light" ? "#f6f7f9" : "#08090d";
     </script>
     <meta
       name="description"

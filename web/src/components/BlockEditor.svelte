@@ -350,9 +350,8 @@
 <article class="block" data-srctype={block.srctype}>
   <header class="block-head">
     <span class="srctype">{block.srctype}</span>
-    <span class="block-kind">Source block</span>
     <span class="spacer"></span>
-    {#if dirty}<span class="dirty" title="Unsaved changes"><span></span>Unsaved</span>{/if}
+    {#if dirty}<span class="dirty" title="Unsaved changes"><span class="dirty-dot"></span><span class="btn-label">Unsaved</span></span>{/if}
     {#if saving}<span class="saving">saving…</span>{/if}
     {#if deleting}<span class="saving">deleting…</span>{/if}
     {#if error || previewError}<span class="error" title={error ?? previewError ?? "error"}><AlertTriangle size={14} strokeWidth={1.9} /></span>{/if}
@@ -366,14 +365,14 @@
         aria-pressed={previewing}
         title={previewing ? "Return to LaTeX editor" : "Render LaTeX preview"}
       >
-        {#if previewing}<Code2 size={14} strokeWidth={1.8} /><span>Edit</span>
-        {:else}<Eye size={14} strokeWidth={1.8} /><span>Preview</span>{/if}
+        {#if previewing}<Code2 size={14} strokeWidth={1.8} /><span class="btn-label">Edit</span>
+        {:else}<Eye size={14} strokeWidth={1.8} /><span class="btn-label">Preview</span>{/if}
       </button>
     {/if}
     <button class="icon-btn expand" onclick={toggleExpand} title={expanded ? "Collapse" : "Expand"} aria-label={expanded ? "Collapse block" : "Expand block"}>
       {#if expanded}<ChevronDown size={15} strokeWidth={1.9} />{:else}<ChevronRight size={15} strokeWidth={1.9} />{/if}
     </button>
-    <button class="save" onclick={save} disabled={!dirty || saving || deleting} title="Save (Ctrl/⌘+S)"><SaveIcon size={13} strokeWidth={1.9} />Save</button>
+    <button class="save" onclick={save} disabled={!dirty || saving || deleting} title="Save (Ctrl/⌘+S)"><SaveIcon size={13} strokeWidth={1.9} /><span class="btn-label">Save</span></button>
     <button class="delete" onclick={onDelete} disabled={saving || deleting} title="Delete block" aria-label="Delete block"><Trash2 size={14} strokeWidth={1.8} /></button>
   </header>
   <div
@@ -405,8 +404,14 @@
     flex-direction: column;
     flex-shrink: 0;
     background: var(--mdc-code-bg);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+    box-shadow: var(--mdc-shadow-sm);
+    transition: border-color var(--mdc-dur-fast) var(--mdc-ease),
+      box-shadow var(--mdc-dur-fast) var(--mdc-ease);
     container-type: inline-size;
+  }
+  .block:focus-within {
+    border-color: color-mix(in srgb, var(--block-accent) 40%, var(--mdc-border));
+    box-shadow: var(--mdc-shadow-md);
   }
   /* Per-srctype accent so block kinds are scannable at a glance. */
   .block[data-srctype="text"] { --block-accent: var(--mdc-block-text); }
@@ -414,13 +419,15 @@
   .block[data-srctype="python"] { --block-accent: var(--mdc-block-python); }
   .block[data-srctype="lean"] { --block-accent: var(--mdc-block-lean); }
   .block[data-srctype="rocq"] { --block-accent: var(--mdc-block-rocq); }
+  /* Left rail carries the block kind; it is the only always-on decoration. */
   .block::before {
     content: "";
     position: absolute;
     inset: 0 auto 0 0;
-    width: 3px;
+    width: 2px;
+    z-index: 4;
     background: var(--block-accent);
-    opacity: 0.85;
+    opacity: 0.9;
   }
   .block-head {
     position: sticky;
@@ -428,101 +435,100 @@
     z-index: 3;
     display: flex;
     align-items: center;
-    gap: 0.48rem;
-    min-height: 42px;
-    padding: 0.4rem 0.55rem 0.4rem 0.68rem;
-    background: linear-gradient(180deg, var(--mdc-panel-raised), color-mix(in srgb, var(--mdc-panel-raised) 82%, var(--mdc-bg)));
-    font-size: 0.72rem;
+    gap: 0.3rem;
+    min-height: 38px;
+    padding: 0.3rem 0.4rem 0.3rem 0.6rem;
+    background: var(--mdc-panel-raised);
+    font-size: var(--mdc-text-xs);
     color: var(--mdc-muted);
     border-bottom: 1px solid var(--mdc-border);
-    box-shadow: 0 4px 12px color-mix(in srgb, var(--mdc-code-bg) 70%, transparent);
   }
+  /* Type is stated once, as a coloured word rather than a bordered chip. */
   .srctype {
-    min-width: 52px;
-    padding: 0.22rem 0.45rem;
+    margin-right: 0.15rem;
     color: var(--block-accent);
-    background: color-mix(in srgb, var(--block-accent) 12%, transparent);
-    border: 1px solid color-mix(in srgb, var(--block-accent) 26%, transparent);
-    border-radius: 5px;
     font-family: var(--mdc-mono);
-    font-size: 0.65rem;
+    font-size: var(--mdc-text-2xs);
     font-weight: 650;
-    text-align: center;
+    letter-spacing: var(--mdc-tracking-label);
     text-transform: uppercase;
-  }
-  .block-kind {
-    color: var(--mdc-muted);
-    font-size: 0.68rem;
   }
   .spacer { flex: 1; }
   .dirty {
     display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
-    color: var(--mdc-accent-down);
-    font-size: 0.64rem;
+    gap: 0.32rem;
+    margin-right: 0.15rem;
+    color: var(--mdc-warning);
+    font-size: var(--mdc-text-2xs);
+    font-weight: 550;
   }
-  .dirty span {
+  .dirty-dot {
     width: 5px;
     height: 5px;
+    flex: 0 0 auto;
     border-radius: 50%;
     background: currentColor;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--mdc-warning) 20%, transparent);
   }
-  .saving { color: var(--mdc-muted); font-family: var(--mdc-mono); font-size: 0.64rem; }
+  .saving { color: var(--mdc-muted); font-family: var(--mdc-mono); font-size: var(--mdc-text-2xs); }
   .error { display: inline-flex; color: var(--mdc-error); cursor: help; }
   .save, .delete, .icon-btn, .preview-toggle {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 0.32rem;
-    min-height: 27px;
+    gap: 0.3rem;
+    min-height: 26px;
     background: transparent;
-    color: var(--mdc-fg-soft);
+    color: var(--mdc-dim);
     border: 1px solid transparent;
-    border-radius: var(--mdc-radius-sm);
-    padding: 0 0.5rem;
-    font-size: 0.66rem;
+    border-radius: 7px;
+    padding: 0 0.45rem;
+    font-size: var(--mdc-text-2xs);
+    font-weight: 550;
     cursor: pointer;
     font-family: inherit;
-    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    transition: background var(--mdc-dur-fast) var(--mdc-ease),
+      color var(--mdc-dur-fast) var(--mdc-ease);
   }
   .icon-btn,
   .delete {
-    width: 27px;
+    width: 26px;
     padding: 0;
   }
   .preview-toggle.active,
   .preview-toggle:hover:not(:disabled) {
     color: var(--mdc-accent-up);
-    background: color-mix(in srgb, var(--mdc-accent-up) 12%, transparent);
-    border-color: color-mix(in srgb, var(--mdc-accent-up) 28%, transparent);
+    background: color-mix(in srgb, var(--mdc-accent-up) 14%, transparent);
   }
   .preview-toggle:disabled {
     opacity: 0.35;
     cursor: default;
   }
-  .save:disabled { opacity: 0.32; cursor: default; }
+  .save:disabled { opacity: 0.3; cursor: default; }
+  /* Save only draws attention once there is something to save. */
   .save:not(:disabled) {
-    color: var(--block-accent);
-    background: color-mix(in srgb, var(--block-accent) 10%, transparent);
-    border-color: color-mix(in srgb, var(--block-accent) 30%, transparent);
+    color: var(--mdc-on-accent);
+    background: var(--block-accent);
+    font-weight: 620;
   }
   .save:not(:disabled):hover {
-    background: color-mix(in srgb, var(--block-accent) 18%, transparent);
-    color: var(--block-accent);
-    border-color: color-mix(in srgb, var(--block-accent) 45%, transparent);
+    filter: brightness(1.08);
   }
   .delete:hover {
-    background: rgba(255, 125, 143, 0.12); color: var(--mdc-error); border-color: rgba(255, 125, 143, 0.2);
+    background: color-mix(in srgb, var(--mdc-error) 14%, transparent);
+    color: var(--mdc-error);
   }
-  .expand:hover { background: var(--mdc-card-hover); border-color: var(--mdc-border); }
+  .expand:hover { background: var(--mdc-card-hover); color: var(--mdc-fg); }
   .editor-host { background: var(--mdc-code-bg); }
   .editor-host.expanded { height: auto; }
   .editor-host.expanded :global(.cm-editor) { height: auto; }
   .editor-host.expanded :global(.cm-scroller) { overflow: hidden; }
   .editor-host.collapsed { display: none; }
   .editor-host :global(.cm-editor) {
-    font-family: var(--mdc-mono); font-size: 0.8rem;
+    font-family: var(--mdc-mono);
+    font-size: var(--mdc-text-sm);
+    line-height: 1.65;
   }
   .editor-host :global(.cm-editor .cm-scroller) { font-family: var(--mdc-mono); }
   .preview-loading {
@@ -532,42 +538,34 @@
     color: var(--mdc-code-dim);
     background: var(--mdc-code-bg);
     font-family: var(--mdc-mono);
-    font-size: 0.72rem;
+    font-size: var(--mdc-text-xs);
   }
   .preview-hidden { display: none; }
   .error-bar {
-    padding: 0.4rem 0.6rem;
-    background: rgba(255, 125, 143, 0.1);
+    padding: 0.45rem 0.65rem;
+    background: color-mix(in srgb, var(--mdc-error) 10%, transparent);
     color: var(--mdc-code-error);
     font-family: var(--mdc-mono);
-    font-size: 0.7rem;
-    border-top: 1px solid var(--mdc-border);
+    font-size: var(--mdc-text-xs);
+    border-top: 1px solid color-mix(in srgb, var(--mdc-error) 25%, transparent);
   }
 
+  /* Narrow blocks (the graph view's side pane, or a phone) shed text labels and
+     keep only glyphs. Labels are removed from layout rather than made
+     transparent, so the remaining icon stays centred instead of being clipped. */
   @container (max-width: 420px) {
-    .block-kind {
+    .btn-label {
       display: none;
     }
-    .dirty {
-      gap: 0;
-      width: 9px;
-      overflow: hidden;
-      color: transparent;
-    }
-    .dirty span {
-      flex: 0 0 auto;
-      color: var(--mdc-accent-down);
-    }
+    .dirty,
+    .preview-toggle,
     .save {
-      width: 27px;
-      padding: 0;
-      overflow: hidden;
-      color: transparent;
       gap: 0;
     }
-    .save :global(svg) {
-      flex: 0 0 auto;
-      color: var(--mdc-fg-soft);
+    .preview-toggle,
+    .save {
+      width: 26px;
+      padding: 0;
     }
   }
 </style>

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#090d14" />
+    <meta name="theme-color" content="#08090d" />
     <script>
       let storedTheme = null;
       try { storedTheme = localStorage.getItem("mdc-theme"); } catch {}
@@ -12,7 +12,7 @@
         : matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
       document.documentElement.dataset.theme = initialTheme;
       document.querySelector('meta[name="theme-color"]').content =
-        initialTheme === "light" ? "#edf2f8" : "#090d14";
+        initialTheme === "light" ? "#f6f7f9" : "#08090d";
     </script>
     <meta
       name="description"
@@ -20,8 +20,8 @@
     />
     <title>MathDoc</title>
     <link rel="icon" type="image/svg+xml" href="/mdc-logo.svg" />
-    <script type="module" crossorigin src="/assets/index-DaI_vRt6.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-sbuvW_GD.css">
+    <script type="module" crossorigin src="/assets/index-CyP3gCHK.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-D3eQvHiq.css">
   </head>
   <body>
     <div id="app"></div>
