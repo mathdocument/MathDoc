@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { NodeDetail } from "./types";
+import type { NodeDetail, NodeInfo } from "./types";
 import { api } from "./api";
 import { NodeSession } from "./state.svelte";
+import { removeDraft, setDraftDirty } from "./unsaved";
 
 function node(revision: string): NodeDetail {
   return {
@@ -42,5 +43,46 @@ describe("NodeSession", () => {
 
     await expect(session.syncView()).rejects.toThrow("changed externally");
     expect(session.snapshot).toBe(original);
+  });
+
+  it("updates relation columns while preserving an active draft generation", async () => {
+    const session = new NodeSession();
+    const original = node("r1");
+    session.snapshot = { node: original, referrers: [], children: [] };
+    const relation: NodeInfo = {
+      fnode: "relation",
+      title: "Relation",
+      rel_path: "relation.mdoc",
+      broken: false,
+      depth: 2,
+    };
+    let resolveView!: (view: { node: NodeDetail; referrers: NodeInfo[]; children: NodeInfo[] }) => void;
+    vi.spyOn(api, "nodeView").mockReturnValue(new Promise((resolve) => {
+      resolveView = resolve;
+    }));
+
+    const syncing = session.syncView();
+    const draft = Symbol("draft");
+    setDraftDirty(draft, true);
+    resolveView({ node: node("r1"), referrers: [relation], children: [relation] });
+
+    await expect(syncing).resolves.toBe(true);
+    expect(session.node).toBe(original);
+    expect(session.referrers.items).toEqual([relation]);
+    expect(session.children.items).toEqual([relation]);
+    removeDraft(draft);
+  });
+
+  it("drops a stale snapshot when an explicit refresh fails", async () => {
+    const session = new NodeSession();
+    session.snapshot = { node: node("r1"), referrers: [], children: [] };
+    vi.spyOn(api, "nodeView").mockRejectedValue(new Error("node not found"));
+
+    await expect(session.select("node", {
+      skipTransition: true,
+      skipUnsavedGuard: true,
+      clearOnError: true,
+    })).resolves.toBe(false);
+    expect(session.node).toBeNull();
   });
 });

@@ -338,7 +338,21 @@
           pushHistory: false,
           skipTransition: true,
           skipUnsavedGuard: true,
+          clearOnError: true,
         });
+        if (!refreshed && !nodeSession.node) {
+          const defaultFnode = await findDefaultFnode();
+          if (request !== refreshRequest) return;
+          if (defaultFnode) {
+            refreshed = await nodeSession.select(defaultFnode, {
+              skipTransition: true,
+              skipUnsavedGuard: true,
+              browserHistory: "replace",
+            });
+          } else {
+            initialError = "workspace has no valid nodes — create one with New node";
+          }
+        }
       } else {
         const defaultFnode = await findDefaultFnode();
         if (request !== refreshRequest) return;

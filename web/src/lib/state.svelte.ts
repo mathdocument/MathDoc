@@ -34,6 +34,7 @@ interface NavigateOptions {
   historyIndex?: number;
   historyEntries?: string[];
   browserHistory?: BrowserHistoryMode;
+  clearOnError?: boolean;
 }
 
 export class NodeSession {
@@ -123,6 +124,7 @@ export class NodeSession {
         unsavedDraftRevision() !== confirmedDraftRevision) return false;
       this.navigationError = error instanceof Error ? error.message : String(error);
       this.failedNavigationFnode = fnode;
+      if (opts.clearOnError) this.snapshot = null;
       if (!this.snapshot) this.loadError = this.navigationError;
       return false;
     }
@@ -153,15 +155,15 @@ export class NodeSession {
     if (!fnode || this.node?.fnode !== fnode) return false;
     const request = ++this.syncRequest;
     const revision = this.node.revision;
-    const draftRevision = unsavedDraftRevision();
     try {
       const view = await api.nodeView(fnode);
-      if (request !== this.syncRequest || this.node?.fnode !== fnode ||
-        this.node.revision !== revision || unsavedDraftRevision() !== draftRevision) return false;
+      const node = this.node;
+      if (request !== this.syncRequest || node?.fnode !== fnode ||
+        node.revision !== revision) return false;
       if (view.node.revision !== revision) {
         throw new Error(`${fnode} changed externally; refresh before continuing`);
       }
-      this.snapshot = view;
+      this.snapshot = { node, referrers: view.referrers, children: view.children };
       this.referrersSelected = -1;
       this.childrenSelected = -1;
       return true;
