@@ -76,14 +76,6 @@ impl SourceBaseline {
         builtin_srctypes().any(|srctype| !self.is_unknown(srctype))
     }
 
-    pub(super) fn matches_state(&self, srctype: &str, content: &[u8], present: bool) -> bool {
-        debug_assert!(!self.is_unknown(srctype));
-        match self.blocks.get(srctype) {
-            Some(baseline) => present && baseline.matches(content),
-            None => !present,
-        }
-    }
-
     pub(super) fn matches_raw(&self, srctype: &str, content: Option<&[u8]>) -> bool {
         debug_assert!(!self.is_unknown(srctype));
         match (self.blocks.get(srctype), content) {
@@ -270,7 +262,12 @@ fn validate_legacy_dense_manifest(manifest: &LegacyDenseManifest, path: &Path) -
     for source in manifest.sources.values() {
         for (srctype, baseline) in &source.blocks {
             validate_srctype(srctype, path)?;
-            validate_digest(srctype, &baseline.digest, path)?;
+            if decode_digest(&baseline.digest).is_none() {
+                bail!(
+                    "invalid digest for source type {srctype:?} in source block manifest {}",
+                    path.display()
+                );
+            }
         }
     }
     Ok(())
@@ -280,20 +277,6 @@ fn validate_srctype(srctype: &str, path: &Path) -> Result<()> {
     if !builtin_srctypes().any(|known| known == srctype) {
         bail!(
             "invalid source type {srctype:?} in source block manifest {}",
-            path.display()
-        );
-    }
-    Ok(())
-}
-
-fn validate_digest(srctype: &str, digest: &str, path: &Path) -> Result<()> {
-    if digest.len() != 64
-        || !digest
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        bail!(
-            "invalid digest for source type {srctype:?} in source block manifest {}",
             path.display()
         );
     }

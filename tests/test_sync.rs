@@ -277,6 +277,14 @@ fn sync_writes_compact_v4_manifest_with_only_present_digests() {
     assert!(!blocks.contains_key("rocq"));
 
     let connection = rusqlite::Connection::open(root.join(".mdc/index.db")).unwrap();
+    let counters: (i64, i64) = connection
+        .query_row(
+            "SELECT valid_mdocs, source_files FROM mdoc_workdraft_state WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(counters, (0, 0));
     let (rows, absent): (u32, u32) = connection
         .query_row(
             "SELECT COUNT(*), COALESCE(SUM(present = 0), 0)
@@ -286,6 +294,12 @@ fn sync_writes_compact_v4_manifest_with_only_present_digests() {
         )
         .unwrap();
     assert_eq!((rows, absent), (3, 0));
+    drop(connection);
+
+    let output = run_mdc(root, &["sync"]);
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout)
+        .contains("2\x1b[0m source files from 1 valid mdocs"));
 }
 
 #[test]

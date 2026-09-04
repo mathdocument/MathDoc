@@ -120,8 +120,6 @@ pub(crate) struct MutationSession<'store, 'lock> {
 }
 
 pub(crate) struct WorkdraftObservationCache {
-    pub(crate) valid_mdocs: usize,
-    pub(crate) source_files: usize,
     files: HashMap<
         String,
         [Option<crate::workspace::FileStatSnapshot>; crate::config::BUILTIN_SRCTYPE_COUNT + 1],
@@ -241,16 +239,12 @@ impl WorkspaceStore {
         manifest_digest: &[u8; 32],
     ) -> Result<Option<WorkdraftObservationCache>> {
         self.require_current_database()?;
-        let (stored_digest, valid_mdocs, source_files): (Vec<u8>, i64, i64) = self.conn.query_row(
-            "SELECT manifest_digest, valid_mdocs, source_files
-                 FROM mdoc_workdraft_state WHERE id = 1",
+        let stored_digest: Vec<u8> = self.conn.query_row(
+            "SELECT manifest_digest FROM mdoc_workdraft_state WHERE id = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| row.get(0),
         )?;
         if stored_digest.as_slice() != manifest_digest {
-            return Ok(None);
-        }
-        if valid_mdocs < 0 || source_files < 0 {
             return Ok(None);
         }
         let mut stmt = self.conn.prepare(
@@ -294,11 +288,7 @@ impl WorkspaceStore {
             }
         }
         self.require_current_database()?;
-        Ok(Some(WorkdraftObservationCache {
-            valid_mdocs: valid_mdocs as usize,
-            source_files: source_files as usize,
-            files,
-        }))
+        Ok(Some(WorkdraftObservationCache { files }))
     }
 
     pub(crate) fn index_is_dirty(&self) -> Result<bool> {
@@ -331,40 +321,22 @@ impl WorkspaceStore {
     pub(crate) fn store_workdraft_observations(
         &mut self,
         manifest_digest: &[u8; 32],
-        valid_mdocs: usize,
-        source_files: usize,
         observations: Vec<WorkdraftObservation>,
     ) -> Result<()> {
-        self.write_workdraft_observations(
-            manifest_digest,
-            valid_mdocs,
-            source_files,
-            observations,
-            true,
-        )
+        self.write_workdraft_observations(manifest_digest, observations, true)
     }
 
     pub(crate) fn update_workdraft_observations(
         &mut self,
         manifest_digest: &[u8; 32],
-        valid_mdocs: usize,
-        source_files: usize,
         observations: Vec<WorkdraftObservation>,
     ) -> Result<()> {
-        self.write_workdraft_observations(
-            manifest_digest,
-            valid_mdocs,
-            source_files,
-            observations,
-            false,
-        )
+        self.write_workdraft_observations(manifest_digest, observations, false)
     }
 
     fn write_workdraft_observations(
         &mut self,
         manifest_digest: &[u8; 32],
-        valid_mdocs: usize,
-        source_files: usize,
         observations: Vec<WorkdraftObservation>,
         replace_all: bool,
     ) -> Result<()> {
@@ -419,13 +391,9 @@ impl WorkspaceStore {
         }
         tx.execute(
             "UPDATE mdoc_workdraft_state
-             SET manifest_digest = ?, valid_mdocs = ?, source_files = ?
+             SET manifest_digest = ?
              WHERE id = 1",
-            rusqlite::params![
-                manifest_digest.as_slice(),
-                i64::try_from(valid_mdocs).unwrap_or(i64::MAX),
-                i64::try_from(source_files).unwrap_or(i64::MAX),
-            ],
+            [manifest_digest.as_slice()],
         )?;
         tx.commit()?;
         self.require_current_database()?;

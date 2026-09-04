@@ -68,7 +68,6 @@ struct ScannedNode {
     title: String,
     title_lc: String,
     dependencies: Vec<String>,
-    structurally_valid: bool,
 }
 
 struct IndexIssue {
@@ -165,7 +164,6 @@ fn scan_mdoc(root: &Path, path: &Path, content: &[u8], metadata: &Metadata) -> R
                 title_lc: head.title.to_lowercase(),
                 title: head.title,
                 dependencies: head.depens,
-                structurally_valid: true,
             }),
             invalid: None,
         }),
@@ -177,7 +175,6 @@ fn scan_mdoc(root: &Path, path: &Path, content: &[u8], metadata: &Metadata) -> R
                 title_lc: title.to_lowercase(),
                 title: title.to_string(),
                 dependencies: Vec::new(),
-                structurally_valid: false,
             });
             Ok(ScannedMdoc {
                 invalid: Some(IndexIssue {
@@ -392,12 +389,8 @@ fn replace_index_rows(
 
     let edges: Vec<(&str, &str, &str, i64)> = files
         .iter()
-        .filter_map(|file| {
-            file.node
-                .as_ref()
-                .filter(|node| node.structurally_valid)
-                .map(|node| (file, node))
-        })
+        .filter(|file| file.invalid.is_none())
+        .filter_map(|file| file.node.as_ref().map(|node| (file, node)))
         .flat_map(|(file, node)| {
             node.dependencies
                 .iter()

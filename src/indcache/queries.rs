@@ -607,12 +607,8 @@ fn node_lookup_for_fnodes(
                    AND mdoc_issues.kind IN ('invalid', 'duplicate')
                )"
         );
-        let params: Vec<&dyn rusqlite::types::ToSql> = chunk
-            .iter()
-            .map(|f| f as &dyn rusqlite::types::ToSql)
-            .collect();
         let mut stmt = conn.prepare(&sql)?;
-        for row in stmt.query_map(params.as_slice(), |r| {
+        for row in stmt.query_map(rusqlite::params_from_iter(chunk.iter().copied()), |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -657,12 +653,8 @@ fn issue_lookup_for_fnodes(
                ORDER BY CASE WHEN kind IN ('invalid', 'duplicate') THEN 0 ELSE 1 END,
                         path, ref_fnode, error"
         );
-        let params: Vec<&dyn rusqlite::types::ToSql> = chunk
-            .iter()
-            .map(|f| f as &dyn rusqlite::types::ToSql)
-            .collect();
         let mut stmt = conn.prepare(&sql)?;
-        for row in stmt.query_map(params.as_slice(), |r| {
+        for row in stmt.query_map(rusqlite::params_from_iter(chunk.iter().copied()), |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -716,12 +708,8 @@ fn edge_lookup_for_sources<'a>(
              WHERE src_fnode IN ({placeholders})
             "
         );
-        let params: Vec<&dyn rusqlite::types::ToSql> = chunk
-            .iter()
-            .map(|f| f as &dyn rusqlite::types::ToSql)
-            .collect();
         let mut stmt = conn.prepare(&sql)?;
-        for row in stmt.query_map(params.as_slice(), |r| {
+        for row in stmt.query_map(rusqlite::params_from_iter(chunk.iter().copied()), |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -800,12 +788,8 @@ fn topo_depth_lookup_for_fnodes(
     for chunk in fnodes.chunks(CHUNK_SIZE) {
         let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!("SELECT fnode, topo_depth FROM mdocs WHERE fnode IN ({placeholders})");
-        let params: Vec<&dyn rusqlite::types::ToSql> = chunk
-            .iter()
-            .map(|fnode| fnode as &dyn rusqlite::types::ToSql)
-            .collect();
         let mut stmt = conn.prepare(&sql)?;
-        for row in stmt.query_map(params.as_slice(), |row| {
+        for row in stmt.query_map(rusqlite::params_from_iter(chunk.iter().copied()), |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
         })? {
             let (fnode, depth) = row?;
@@ -829,12 +813,8 @@ pub(super) fn lookup_by_fnode(
     for chunk in fnodes.chunks(CHUNK_SIZE) {
         let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!("SELECT fnode, title, path FROM mdocs WHERE fnode IN ({placeholders})");
-        let params: Vec<&dyn rusqlite::types::ToSql> = chunk
-            .iter()
-            .map(|f| f as &dyn rusqlite::types::ToSql)
-            .collect();
         let mut stmt = conn.prepare(&sql)?;
-        for row in stmt.query_map(params.as_slice(), |r| {
+        for row in stmt.query_map(rusqlite::params_from_iter(chunk.iter().copied()), |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,

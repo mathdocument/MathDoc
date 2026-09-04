@@ -157,7 +157,7 @@ fn reconcile<'a>(
     mdoc_present: bool,
     raw_content: Option<&'a [u8]>,
 ) -> Reconciliation<'a> {
-    let mdoc_changed = !baseline.matches_state(srctype, mdoc_content, mdoc_present);
+    let mdoc_changed = !baseline.matches_raw(srctype, mdoc_present.then_some(mdoc_content));
     let raw_changed = !baseline.matches_raw(srctype, raw_content);
     match (mdoc_changed, raw_changed) {
         (false, false) => Reconciliation::Unchanged,
@@ -220,12 +220,16 @@ fn sync_with_cache(
     } else {
         None
     };
-    if let Some((cached, changed)) = &observation_changes {
+    if let Some((_, changed)) = &observation_changes {
         if changed.is_empty() {
             require_fast_path_current(mutation_lock, &mdcroot, &manifest_path, &manifest_snapshot)?;
             return Ok(SyncReport {
-                valid_mdocs: cached.valid_mdocs,
-                source_files: cached.source_files,
+                valid_mdocs: new_manifest.sources.len(),
+                source_files: new_manifest
+                    .sources
+                    .values()
+                    .map(|source| source.blocks.len())
+                    .sum(),
                 updated: 0,
                 removed: 0,
                 dirty: Vec::new(),
@@ -270,12 +274,16 @@ fn sync_with_cache(
     let mut warnings = Vec::new();
     let mut desired_outputs = HashMap::new();
     let mut expected_source_contents = HashMap::new();
-    let mut valid_mdocs = observation_changes
+    let mut valid_mdocs = incremental_changed
         .as_ref()
-        .map_or(0, |(cached, _)| cached.valid_mdocs);
-    let mut exported_source_files = observation_changes
-        .as_ref()
-        .map_or(0, |(cached, _)| cached.source_files);
+        .map_or(0, |_| new_manifest.sources.len());
+    let mut exported_source_files = incremental_changed.as_ref().map_or(0, |_| {
+        new_manifest
+            .sources
+            .values()
+            .map(|source| source.blocks.len())
+            .sum()
+    });
     let mut had_invalid_mdoc = false;
     let mut write_snapshots = FileSnapshotBatch::new(&mdcroot)?;
     let mut source_files = source_files.into_iter();
@@ -578,8 +586,6 @@ fn sync_with_cache(
                 &new_manifest,
                 changed_sources,
                 &expected_source_contents,
-                valid_mdocs,
-                exported_source_files,
             )?;
         } else if source_write_count == 0 && removed == 0 && renamed == 0 {
             store_observation_cache(
@@ -588,8 +594,6 @@ fn sync_with_cache(
                 &new_manifest,
                 &observation_sources,
                 &inputs,
-                valid_mdocs,
-                exported_source_files,
             )?;
         }
     }
@@ -957,7 +961,7 @@ fn back_with_cache(
                 node_changed = true;
                 updated_blocks += 1;
             }
-            if !source_baseline.matches_state(srctype, content, present) {
+            if !source_baseline.matches_raw(srctype, present.then_some(content)) {
                 source_baseline.update(srctype, content, present);
             }
             if present && raw_content != Some(content) {
@@ -1028,11 +1032,6 @@ fn back_with_cache(
         apply()?;
     }
     if conflicts.is_empty() && warnings.is_empty() {
-        let source_file_count = manifest
-            .sources
-            .values()
-            .map(|source| source.blocks.len())
-            .sum();
         if let Some(changed_sources) = &changed_sources {
             update_observation_cache(
                 cache.as_deref_mut(),
@@ -1040,19 +1039,9 @@ fn back_with_cache(
                 &manifest,
                 changed_sources,
                 &expected_source_contents,
-                manifest.sources.len(),
-                source_file_count,
             )?;
         } else if write_count == 0 {
-            store_observation_cache(
-                cache,
-                &mdcroot,
-                &manifest,
-                &source_files,
-                &inputs,
-                manifest.sources.len(),
-                source_file_count,
-            )?;
+            store_observation_cache(cache, &mdcroot, &manifest, &source_files, &inputs)?;
         }
     }
     Ok(BackReport {
@@ -1086,9 +1075,7 @@ fn check_observation_cache(
         .values()
         .map(|source| source.blocks.len())
         .sum::<usize>();
-    if cached.valid_mdocs != manifest.sources.len()
-        || cached.source_files != source_file_count
-        || cached.file_count() != manifest.sources.len() + source_file_count
+    if cached.file_count() != manifest.sources.len() + source_file_count
         || specs.iter().any(|spec| {
             cached.stat(spec.source_id, spec.srctype).is_some() != spec.expected_present
         })
@@ -1131,8 +1118,6 @@ fn store_observation_cache(
     manifest: &SourceBlockManifest,
     source_files: &[PathBuf],
     inputs: &[(PathBuf, Option<ReadFileSnapshot>)],
-    valid_mdocs: usize,
-    source_file_count: usize,
 ) -> Result<()> {
     let Some(cache) = cache else {
         return Ok(());
@@ -1175,7 +1160,7 @@ fn store_observation_cache(
         .flatten()
         .collect();
     let digest = serialized_manifest_digest(manifest)?;
-    cache.store_workdraft_observations(&digest, valid_mdocs, source_file_count, observations)
+    cache.store_workdraft_observations(&digest, observations)
 }
 
 fn update_observation_cache(
@@ -1184,8 +1169,6 @@ fn update_observation_cache(
     manifest: &SourceBlockManifest,
     changed_sources: &BTreeSet<String>,
     expected_source_contents: &HashMap<String, Vec<u8>>,
-    valid_mdocs: usize,
-    source_file_count: usize,
 ) -> Result<()> {
     let Some(cache) = cache else {
         return Ok(());
@@ -1260,7 +1243,7 @@ fn update_observation_cache(
         })
         .collect();
     let digest = serialized_manifest_digest(manifest)?;
-    cache.update_workdraft_observations(&digest, valid_mdocs, source_file_count, observations)
+    cache.update_workdraft_observations(&digest, observations)
 }
 
 fn serialized_manifest_digest(manifest: &SourceBlockManifest) -> Result<[u8; 32]> {
