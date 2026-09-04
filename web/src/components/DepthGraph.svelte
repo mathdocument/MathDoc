@@ -19,7 +19,7 @@
   interface SimNode {
     id: string;
     title: string;
-    labelLines: string[];
+    labelLines: string[] | null;
     depth: number;
     inDegree: number;
     outDegree: number;
@@ -87,9 +87,9 @@
   let selectedIncomingPath = new Path2D();
   let graphBounds = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
 
-  function nodeRadius(n: SimNode): number {
+  function nodeRadius(n: SimNode, selection: string | null): number {
     const r = n.baseRadius;
-    if (selectedFnode && n.id === selectedFnode) return r + 3;
+    if (selection && n.id === selection) return r + 3;
     if (hoveredNode && n.id === hoveredNode.id) return r + 2;
     return r;
   }
@@ -131,7 +131,7 @@
     nodes = data.nodes.map((node: NodeInfo) => ({
       id: node.fnode,
       title: node.title,
-      labelLines: wrapLabel(node.title, 16),
+      labelLines: null,
       depth: node.depth,
       inDegree: 0,
       outDegree: 0,
@@ -395,7 +395,7 @@
     for (let index = firstNode; index < nodesByX.length; index++) {
       const n = nodesByX[index]!;
       if (n.x > maxX + nodeMargin) break;
-      const r = nodeRadius(n);
+      const r = nodeRadius(n, graphSelection);
       if (n.x + r < minX || n.x - r > maxX || n.y + r < minY || n.y - r > maxY) continue;
       visibleNodes.push(n);
     }
@@ -405,7 +405,7 @@
     const leafPath = new Path2D();
     const nodePath = new Path2D();
     for (const n of visibleNodes) {
-      const r = nodeRadius(n);
+      const r = nodeRadius(n, graphSelection);
       const path = n.isRoot ? rootPath : n.isLeaf ? leafPath : nodePath;
       path.moveTo(n.x + r, n.y);
       path.arc(n.x, n.y, r, 0, 2 * Math.PI);
@@ -420,14 +420,14 @@
     const selectedNode = graphSelection ? nodesById.get(graphSelection) ?? null : null;
     if (selectedNode) {
       ctx.beginPath();
-      ctx.arc(selectedNode.x, selectedNode.y, nodeRadius(selectedNode), 0, 2 * Math.PI);
+      ctx.arc(selectedNode.x, selectedNode.y, nodeRadius(selectedNode, graphSelection), 0, 2 * Math.PI);
       ctx.strokeStyle = palette.outline;
       ctx.lineWidth = 2.5 / viewK;
       ctx.stroke();
     }
     if (hoveredNode && hoveredNode.id !== graphSelection) {
       ctx.beginPath();
-      ctx.arc(hoveredNode.x, hoveredNode.y, nodeRadius(hoveredNode), 0, 2 * Math.PI);
+      ctx.arc(hoveredNode.x, hoveredNode.y, nodeRadius(hoveredNode, graphSelection), 0, 2 * Math.PI);
       ctx.strokeStyle = palette.outline;
       ctx.lineWidth = 1.5 / viewK;
       ctx.stroke();
@@ -455,7 +455,7 @@
       ctx.textAlign = "right";
       ctx.textBaseline = "middle";
       for (const n of labelNodes) {
-        const r = nodeRadius(n);
+        const r = nodeRadius(n, graphSelection);
         ctx.fillText(shortFnode(n.id), n.x - r - 5 / viewK, n.y);
       }
     }
@@ -466,13 +466,14 @@
     for (const n of labelNodes) {
       const isSelected = selectedFnode === n.id;
       const isHovered = hoveredNode?.id === n.id;
-      const r = nodeRadius(n);
+      const r = nodeRadius(n, graphSelection);
       ctx.fillStyle = isSelected || isHovered
         ? palette.outline
         : `rgba(${palette.label}, 0.82)`;
       const labelY = n.y + r + 5 / viewK;
-      for (let line = 0; line < n.labelLines.length; line++) {
-        ctx.fillText(n.labelLines[line]!, n.x, labelY + line * 13 / viewK);
+      const labelLines = n.labelLines ??= wrapLabel(n.title, 16);
+      for (let line = 0; line < labelLines.length; line++) {
+        ctx.fillText(labelLines[line]!, n.x, labelY + line * 13 / viewK);
       }
     }
   }
@@ -546,6 +547,7 @@
 
   function findNodeAt(canvasX: number, canvasY: number): SimNode | null {
     const { x: wx, y: wy } = screenToWorld(canvasX, canvasY);
+    const selection = selectedFnode;
     let candidates = nodes;
     if (nodes.length > 500 && nodeSpatialIndex.size > 0) {
       candidates = [];
@@ -564,7 +566,7 @@
       if (n.x == null || n.y == null) continue;
       const dx = n.x - wx;
       const dy = n.y - wy;
-      const r = nodeRadius(n) + 4;
+      const r = nodeRadius(n, selection) + 4;
       if (dx * dx + dy * dy <= r * r) return n;
     }
     return null;
