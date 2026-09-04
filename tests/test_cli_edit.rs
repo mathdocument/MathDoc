@@ -1,7 +1,6 @@
 use mathdoc::mdocnode::MdocNode;
 use std::process::Command;
 
-#[cfg(unix)]
 #[test]
 fn edit_propagates_nonzero_editor_status() {
     let dir = tempfile::tempdir().unwrap();

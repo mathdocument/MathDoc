@@ -1,5 +1,4 @@
 use anyhow::Result;
-use std::ffi::OsStr;
 use std::path::Path;
 
 use crate::depgraph::DepGraph;
@@ -11,11 +10,7 @@ use super::{cwd, fmt_item, print_workdraft_issues, require_mdcroot, BLD, CYN, RS
 
 pub(super) fn launch_editor(path: &Path) -> Result<()> {
     let editor = std::env::var_os("EDITOR").unwrap_or_else(|| "vi".into());
-    launch_editor_with(&editor, path)
-}
-
-pub(super) fn launch_editor_with(editor: &OsStr, path: &Path) -> Result<()> {
-    let status = std::process::Command::new(editor).arg(path).status()?;
+    let status = std::process::Command::new(&editor).arg(path).status()?;
     if !status.success() {
         anyhow::bail!("editor exited with {status}");
     }

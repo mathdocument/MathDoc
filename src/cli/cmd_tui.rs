@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::{
+use ratatui::crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
@@ -2056,11 +2056,9 @@ mod tests {
     }
 
     #[test]
-    fn failed_editor_does_not_report_tui_success() {
-        let (_dir, mut app, path) = test_app();
-        let editor = which::which("false").unwrap();
-        let result = super::super::cmd_core::launch_editor_with(editor.as_os_str(), &path);
-        record_edit_result(&mut app, "node.mdoc", result);
+    fn failed_edit_does_not_report_tui_success() {
+        let (_dir, mut app, _) = test_app();
+        record_edit_result(&mut app, "node.mdoc", Err(anyhow::anyhow!("editor exited")));
 
         assert!(app.action_log.is_empty());
         let (message, success, _) = app.notify.as_ref().unwrap();

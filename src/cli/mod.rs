@@ -25,10 +25,6 @@ const GRN: &str = "\x1b[32m";
 const YLW: &str = "\x1b[33m";
 const CYN: &str = "\x1b[36m";
 
-fn eprintln_err(msg: &str) {
-    eprintln!("{RED}error:{RST} {}", escape_terminal(msg));
-}
-
 const TITLE_WIDTH: usize = 40;
 const PATH_WIDTH: usize = 40;
 
@@ -211,7 +207,7 @@ pub fn run() -> i32 {
     match result {
         Ok(code) => code,
         Err(e) => {
-            eprintln_err(&e.to_string());
+            eprintln!("{RED}error:{RST} {}", escape_terminal(&e.to_string()));
             1
         }
     }
