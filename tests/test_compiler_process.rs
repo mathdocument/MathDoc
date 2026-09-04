@@ -1,4 +1,3 @@
-#[cfg(unix)]
 #[test]
 fn ctrl_c_escalates_and_returns_signal_exit_code() {
     use mathdoc::mdocnode::{MdocNode, SrcBlock};
@@ -48,7 +47,6 @@ fn ctrl_c_escalates_and_returns_signal_exit_code() {
     assert!(!survived.exists(), "compiler survived Ctrl-C escalation");
 }
 
-#[cfg(unix)]
 #[test]
 fn work_releases_node_mutation_lock_while_compiler_runs() {
     use mathdoc::mdocnode::{MdocNode, SrcBlock};
@@ -127,7 +125,6 @@ fn work_releases_node_mutation_lock_while_compiler_runs() {
     assert!(root.join("concurrent.mdoc").is_file());
 }
 
-#[cfg(unix)]
 fn python_workspace() -> (tempfile::TempDir, String) {
     use mathdoc::mdocnode::{MdocNode, SrcBlock};
 
@@ -145,7 +142,6 @@ fn python_workspace() -> (tempfile::TempDir, String) {
     (dir, fnode)
 }
 
-#[cfg(unix)]
 #[test]
 fn tool_missing_returns_127_from_cli() {
     use std::process::Command;
@@ -163,7 +159,6 @@ fn tool_missing_returns_127_from_cli() {
     assert_eq!(status.code(), Some(127));
 }
 
-#[cfg(unix)]
 #[test]
 fn compiler_timeout_returns_124_from_cli() {
     use std::os::unix::fs::PermissionsExt;

@@ -114,16 +114,6 @@ struct DrainResult {
     error: Option<String>,
 }
 
-struct PipePoll {
-    fd: libc::c_int,
-}
-
-fn pipe_poll<T: std::os::fd::AsRawFd>(pipe: &T) -> PipePoll {
-    PipePoll {
-        fd: pipe.as_raw_fd(),
-    }
-}
-
 struct PipeDrain {
     stream_name: &'static str,
     receiver: std::sync::mpsc::Receiver<DrainResult>,
@@ -133,10 +123,11 @@ struct PipeDrain {
 }
 
 impl PipeDrain {
-    fn spawn<R>(mut pipe: R, stream_name: &'static str, poll: PipePoll) -> std::io::Result<Self>
+    fn spawn<R>(mut pipe: R, stream_name: &'static str) -> std::io::Result<Self>
     where
-        R: Read + Send + 'static,
+        R: Read + Send + std::os::fd::AsRawFd + 'static,
     {
+        let fd = pipe.as_raw_fd();
         let (sender, receiver) = std::sync::mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
@@ -157,7 +148,7 @@ impl PipeDrain {
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             let mut descriptor = libc::pollfd {
-                                fd: poll.fd,
+                                fd,
                                 events: libc::POLLIN,
                                 revents: 0,
                             };
@@ -572,22 +563,20 @@ where
         // the only read ends; the child can write freely without blocking.
         let stdout_pipe = child.stdout.take().expect("stdout is piped");
         let stderr_pipe = child.stderr.take().expect("stderr is piped");
-        let stdout_poll = pipe_poll(&stdout_pipe);
-        let stderr_poll = pipe_poll(&stderr_pipe);
         if let Err(error) =
             set_pipe_nonblocking(&stdout_pipe).and_then(|_| set_pipe_nonblocking(&stderr_pipe))
         {
             terminate_process(&mut child, false);
             bail!("failed to configure compiler output pipes: {error}");
         }
-        let mut stdout_drain = match PipeDrain::spawn(stdout_pipe, "stdout", stdout_poll) {
+        let mut stdout_drain = match PipeDrain::spawn(stdout_pipe, "stdout") {
             Ok(drain) => drain,
             Err(error) => {
                 terminate_process(&mut child, false);
                 bail!("failed to start stdout drain: {error}");
             }
         };
-        let mut stderr_drain = match PipeDrain::spawn(stderr_pipe, "stderr", stderr_poll) {
+        let mut stderr_drain = match PipeDrain::spawn(stderr_pipe, "stderr") {
             Ok(drain) => drain,
             Err(error) => {
                 terminate_process(&mut child, false);
