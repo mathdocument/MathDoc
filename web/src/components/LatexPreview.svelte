@@ -309,6 +309,10 @@
     margin: 0 0 0.85rem;
     white-space: pre-wrap;
   }
+  .latex-preview > :global(p) {
+    content-visibility: auto;
+    contain-intrinsic-block-size: auto 3lh;
+  }
   .latex-preview :global(h2),
   .latex-preview :global(h3),
   .latex-preview :global(h4),
