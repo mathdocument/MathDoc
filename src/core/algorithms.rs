@@ -117,6 +117,13 @@ pub fn weak_component_sizes(
 /// Compute all strongly connected components using Kosaraju's algorithm.
 /// Returns a list of components; each component is a list of fnodes.
 pub fn strongly_connected_components(dep_graph: &HashMap<String, Vec<String>>) -> Vec<Vec<String>> {
+    strongly_connected_component_refs(dep_graph)
+        .into_iter()
+        .map(|component| component.into_iter().map(str::to_string).collect())
+        .collect()
+}
+
+fn strongly_connected_component_refs(dep_graph: &HashMap<String, Vec<String>>) -> Vec<Vec<&str>> {
     // Step 1: DFS on original graph; collect finish order
     let mut visited: HashSet<&str> = HashSet::new();
     let mut finish_order: Vec<&str> = Vec::new();
@@ -155,20 +162,20 @@ pub fn strongly_connected_components(dep_graph: &HashMap<String, Vec<String>>) -
 
     // Step 3: DFS on transpose in reverse finish order; each tree = one SCC
     let mut visited2: HashSet<&str> = HashSet::new();
-    let mut components: Vec<Vec<String>> = Vec::new();
+    let mut components: Vec<Vec<&str>> = Vec::new();
 
     for &start in finish_order.iter().rev() {
         if visited2.contains(start) {
             continue;
         }
-        let mut component: Vec<String> = Vec::new();
+        let mut component = Vec::new();
         let mut stack: Vec<&str> = vec![start];
         while let Some(node) = stack.pop() {
             if visited2.contains(node) {
                 continue;
             }
             visited2.insert(node);
-            component.push(node.to_string());
+            component.push(node);
             let children = transpose.get(node).map(Vec::as_slice).unwrap_or_default();
             for &child in children.iter().rev() {
                 if !visited2.contains(child) {
@@ -184,7 +191,7 @@ pub fn strongly_connected_components(dep_graph: &HashMap<String, Vec<String>>) -
 
 /// Return one representative cycle from each cyclic strongly connected component.
 pub fn representative_cycles(dep_graph: &HashMap<String, Vec<String>>) -> Vec<Vec<String>> {
-    let mut cycles: Vec<Vec<String>> = strongly_connected_components(dep_graph)
+    let mut cycles: Vec<Vec<String>> = strongly_connected_component_refs(dep_graph)
         .into_iter()
         .filter_map(|component| representative_cycle(dep_graph, &component))
         .collect();
@@ -196,66 +203,69 @@ pub fn representative_cycles(dep_graph: &HashMap<String, Vec<String>>) -> Vec<Ve
 /// Returns the cycle as a list of fnodes (first == last), or None if no cycle.
 fn representative_cycle(
     dep_graph: &HashMap<String, Vec<String>>,
-    component: &[String],
+    component: &[&str],
 ) -> Option<Vec<String>> {
     if component.is_empty() {
         return None;
     }
     if component.len() == 1 {
-        let fnode = &component[0];
+        let fnode = component[0];
         if dep_graph
             .get(fnode)
-            .map(|d| d.contains(fnode))
+            .map(|dependencies| dependencies.iter().any(|dependency| dependency == fnode))
             .unwrap_or(false)
         {
-            return Some(vec![fnode.clone(), fnode.clone()]);
+            return Some(vec![fnode.to_string(), fnode.to_string()]);
         }
         return None;
     }
 
-    let component_set: HashSet<&str> = component.iter().map(String::as_str).collect();
-    let mut visited: HashSet<String> = HashSet::new();
-    let mut path: Vec<String> = Vec::new();
-    let mut path_idx: HashMap<String, usize> = HashMap::new();
+    let component_set: HashSet<&str> = component.iter().copied().collect();
+    let mut visited: HashSet<&str> = HashSet::new();
+    let mut path: Vec<&str> = Vec::new();
+    let mut path_idx: HashMap<&str, usize> = HashMap::new();
 
     // Iterate in sorted order to match Python spec behavior
     let mut sorted_component = component.to_vec();
     sorted_component.sort();
 
-    for start in &sorted_component {
+    for &start in &sorted_component {
         if visited.contains(start) {
             continue;
         }
 
-        let mut dfs_stack: Vec<(String, usize)> = vec![(start.clone(), 0)];
-        visited.insert(start.clone());
-        path_idx.insert(start.clone(), path.len());
-        path.push(start.clone());
+        let mut dfs_stack: Vec<(&str, usize)> = vec![(start, 0)];
+        visited.insert(start);
+        path_idx.insert(start, path.len());
+        path.push(start);
 
         while let Some(frame) = dfs_stack.last_mut() {
-            let fnode = frame.0.clone();
-            let children = dep_graph.get(&fnode).map(Vec::as_slice).unwrap_or_default();
+            let fnode = frame.0;
+            let children = dep_graph.get(fnode).map(Vec::as_slice).unwrap_or_default();
 
             // Find next child within the component
             let mut found = false;
             while frame.1 < children.len() {
-                let child = &children[frame.1];
+                let child = children[frame.1].as_str();
                 frame.1 += 1;
-                if !component_set.contains(child.as_str()) {
+                if !component_set.contains(child) {
                     continue;
                 }
                 if !visited.contains(child) {
-                    visited.insert(child.clone());
-                    path_idx.insert(child.clone(), path.len());
-                    path.push(child.clone());
-                    dfs_stack.push((child.clone(), 0));
+                    visited.insert(child);
+                    path_idx.insert(child, path.len());
+                    path.push(child);
+                    dfs_stack.push((child, 0));
                     found = true;
                     break;
                 } else if path_idx.contains_key(child) {
                     // Back edge within current path: cycle found
                     let start_idx = path_idx[child];
-                    let mut cycle = path[start_idx..].to_vec();
-                    cycle.push(child.clone());
+                    let mut cycle = path[start_idx..]
+                        .iter()
+                        .map(|node| node.to_string())
+                        .collect::<Vec<_>>();
+                    cycle.push(child.to_string());
                     return Some(cycle);
                 }
             }
