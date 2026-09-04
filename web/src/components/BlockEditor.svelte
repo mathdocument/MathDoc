@@ -62,7 +62,6 @@
   let alive = false;
   const draftId = Symbol("block draft");
   const syntaxCompartment = new Compartment();
-  let syntaxExtension: Extension = [];
   let readyReported = false;
   let syntaxRequest = 0;
   let pendingSyntaxTheme: Theme | null = null;
@@ -127,10 +126,6 @@
     ];
   }
 
-  function buildEditorExtensions(): Extension[] {
-    return [...buildBaseExtensions(), syntaxCompartment.of(syntaxExtension)];
-  }
-
   function reportReadyAfterMeasure(view: EditorView) {
     view.requestMeasure({
       read: () => null,
@@ -160,13 +155,14 @@
           return;
         }
         syntaxRetryCount = 0;
-        syntaxExtension = shikiHighlight(hl, lang, SHIKI_THEMES[requestedTheme], (error) => {
-          if (alive) shikiError = error === null ? null : errMsg(error);
+        editorView.dispatch({
+          effects: syntaxCompartment.reconfigure(
+            shikiHighlight(hl, lang, SHIKI_THEMES[requestedTheme], (error) => {
+              if (alive) shikiError = error === null ? null : errMsg(error);
+            }),
+          ),
         });
         appliedSyntaxTheme = requestedTheme;
-        editorView.dispatch({
-          effects: syntaxCompartment.reconfigure(syntaxExtension),
-        });
       })
       .catch((e) => {
         if (!alive || request !== syntaxRequest) return;
@@ -188,7 +184,6 @@
     syntaxRequest++;
     pendingSyntaxTheme = null;
     appliedSyntaxTheme = null;
-    syntaxExtension = [];
     if (syntaxRetryTimer) {
       clearTimeout(syntaxRetryTimer);
       syntaxRetryTimer = null;
@@ -205,7 +200,7 @@
     alive = true;
     const initialState = EditorState.create({
       doc: block.content,
-      extensions: buildEditorExtensions(),
+      extensions: [...buildBaseExtensions(), syntaxCompartment.of([])],
     });
     lastSavedDoc = initialState.doc;
     editorView = new EditorView({

@@ -10,11 +10,11 @@ import {
   browserHistoryTarget,
   focusedHistoryState,
   type BrowserHistoryEntry,
-  type BrowserHistoryMode,
+  type FocusedHistoryOptions,
 } from "./history";
 
 export { browserHistoryEntry, browserHistoryTarget } from "./history";
-export type { BrowserHistoryEntry, BrowserHistoryMode } from "./history";
+export type { BrowserHistoryEntry, BrowserHistoryMode, FocusedHistoryOptions } from "./history";
 
 export type LoadState =
   | { kind: "idle" }
@@ -26,14 +26,9 @@ export interface ColumnState {
   selected: number; // -1 = none
 }
 
-interface NavigateOptions {
-  pushHistory?: boolean;
-  direction?: "up" | "down" | "neutral";
+interface NavigateOptions extends FocusedHistoryOptions {
   skipTransition?: boolean;
   skipUnsavedGuard?: boolean;
-  historyIndex?: number;
-  historyEntries?: string[];
-  browserHistory?: BrowserHistoryMode;
   clearOnError?: boolean;
 }
 
@@ -117,7 +112,7 @@ export class NodeSession {
         committed = true;
       };
       if (opts.skipTransition) apply();
-      else await withViewTransition(opts.direction ?? "neutral", apply);
+      else await withViewTransition(apply);
       return committed;
     } catch (error) {
       if (request !== this.navigationRequest ||
@@ -138,7 +133,7 @@ export class NodeSession {
     if (request !== this.navigationRequest) return false;
     const confirmedDraftRevision = unsavedDraftRevision();
     let committed = false;
-    await withViewTransition("neutral", () => {
+    await withViewTransition(() => {
       if (request !== this.navigationRequest ||
         unsavedDraftRevision() !== confirmedDraftRevision) return;
       this.editorRevision++;
@@ -176,26 +171,19 @@ export class NodeSession {
 
 export const nodeSession = new NodeSession();
 
-/** True if the current browser supports the View Transitions API. */
-function supportsViewTransitions(): boolean {
-  return typeof document !== "undefined" &&
-    typeof (document as Document & { startViewTransition?: unknown }).startViewTransition === "function";
-}
-
 /**
  * Apply a state mutation through the View Transitions API when available,
  * otherwise run it synchronously. The callback must perform all reactive
  * updates that should be part of the transition.
  */
 let viewTransitionToken = 0;
-let activeViewTransition: { skipTransition: () => void } | null = null;
+let activeViewTransition: ViewTransition | null = null;
 
 export async function withViewTransition(
-  direction: "up" | "down" | "neutral",
   mutate: () => void,
   scope?: string,
 ): Promise<void> {
-  if (!supportsViewTransitions()) {
+  if (typeof document === "undefined" || typeof document.startViewTransition !== "function") {
     mutate();
     return;
   }
@@ -210,20 +198,12 @@ export async function withViewTransition(
   const cleanup = () => {
     if (token !== viewTransitionToken) return;
     activeViewTransition = null;
-    delete document.documentElement.dataset.vtDirection;
     delete document.documentElement.dataset.vtScope;
   };
-  document.documentElement.dataset.vtDirection = direction;
   if (scope) document.documentElement.dataset.vtScope = scope;
   else delete document.documentElement.dataset.vtScope;
   try {
-    const vt = (document as Document & {
-      startViewTransition: (cb: () => void) => {
-        finished: Promise<void>;
-        updateCallbackDone: Promise<void>;
-        skipTransition: () => void;
-      };
-    }).startViewTransition(apply);
+    const vt = document.startViewTransition(apply);
     activeViewTransition = vt;
     void vt.finished.then(cleanup).catch(cleanup);
     await vt.updateCallbackDone;
@@ -233,12 +213,7 @@ export async function withViewTransition(
   }
 }
 
-export function initialHistoryOptions(fnode: string): {
-  pushHistory: boolean;
-  historyIndex?: number;
-  historyEntries?: string[];
-  browserHistory: BrowserHistoryMode;
-} {
+export function initialHistoryOptions(fnode: string): FocusedHistoryOptions {
   const entry = browserHistoryEntry(window.history.state);
   if (entry && browserHistoryTarget(entry) === fnode) {
     return {
@@ -253,12 +228,7 @@ export function initialHistoryOptions(fnode: string): {
 
 export function commitFocusedHistory(
   fnode: string,
-  opts: {
-    pushHistory?: boolean;
-    historyIndex?: number;
-    historyEntries?: string[];
-    browserHistory?: BrowserHistoryMode;
-  } = {},
+  opts: FocusedHistoryOptions = {},
 ): void {
   const push = opts.pushHistory ?? true;
   const previousIndex = nodeSession.historyIdx;
@@ -284,12 +254,7 @@ export function commitFocusedHistory(
 }
 
 export function commitClearedHistory(
-  opts: {
-    pushHistory?: boolean;
-    historyIndex?: number;
-    historyEntries?: string[];
-    browserHistory?: BrowserHistoryMode;
-  } = {},
+  opts: FocusedHistoryOptions = {},
 ): void {
   const backingEntries = opts.historyEntries ?? nodeSession.history;
   const backingIndex = opts.historyIndex ?? nodeSession.historyIdx;

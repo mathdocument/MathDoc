@@ -28,7 +28,6 @@
   let error: string | null = $state(null);
   let saving = $state(false);
   let inputEl = $state<HTMLInputElement | null>(null);
-  let searchRequest = 0;
   let creatingFile = $state("");
   let createMode = $state(false);
   const draftId = Symbol("add dependency creation draft");
@@ -44,7 +43,6 @@
 
   onDestroy(() => {
     alive = false;
-    searchRequest++;
     removeDraft(draftId);
   });
 
@@ -57,7 +55,6 @@
 
   $effect(() => {
     const q = query;
-    const request = ++searchRequest;
     if (q.length === 0) {
       results = [];
       candidateEmpty = null;
@@ -75,24 +72,22 @@
     const handle = setTimeout(async () => {
       try {
         const candidates = await api.dependencyCandidates(targetFnode, q, 50, controller.signal);
-        if (request !== searchRequest) return;
+        if (controller.signal.aborted) return;
         candidateEmpty = candidates.empty;
         results = candidates.nodes;
         selected = results.findIndex((item) => !item.broken);
       } catch (e) {
-        if (isAbortError(e)) return;
-        if (request !== searchRequest) return;
+        if (controller.signal.aborted || isAbortError(e)) return;
         results = [];
         candidateEmpty = null;
         error = errMsg(e);
       } finally {
-        if (request === searchRequest) loading = false;
+        if (!controller.signal.aborted) loading = false;
       }
     }, 120);
     return () => {
       clearTimeout(handle);
       controller.abort();
-      if (request === searchRequest) searchRequest++;
     };
   });
 

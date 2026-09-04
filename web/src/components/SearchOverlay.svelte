@@ -18,7 +18,6 @@
   let loading = $state(false);
   let error: string | null = $state(null);
   let inputEl = $state<HTMLInputElement | null>(null);
-  let searchRequest = 0;
 
   function moveSelection(direction: -1 | 1) {
     const index = direction === 1
@@ -29,7 +28,6 @@
 
   $effect(() => {
     const q = query;
-    const request = ++searchRequest;
     if (q.length === 0) {
       results = [];
       selected = 0;
@@ -45,22 +43,20 @@
     const handle = setTimeout(async () => {
       try {
         const fresh = await api.search(q, 50, controller.signal);
-        if (request !== searchRequest) return;
+        if (controller.signal.aborted) return;
         results = fresh;
         selected = fresh.findIndex((item) => !item.broken);
       } catch (e) {
-        if (isAbortError(e)) return;
-        if (request !== searchRequest) return;
+        if (controller.signal.aborted || isAbortError(e)) return;
         results = [];
         error = errMsg(e);
       } finally {
-        if (request === searchRequest) loading = false;
+        if (!controller.signal.aborted) loading = false;
       }
     }, 120);
     return () => {
       clearTimeout(handle);
       controller.abort();
-      if (request === searchRequest) searchRequest++;
     };
   });
 

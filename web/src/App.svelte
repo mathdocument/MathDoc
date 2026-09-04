@@ -20,7 +20,7 @@
     commitClearedHistory,
     initialHistoryOptions,
     type BrowserHistoryEntry,
-    type BrowserHistoryMode,
+    type FocusedHistoryOptions,
   } from "./lib/state.svelte";
   import { api } from "./lib/api";
   import NodeColumn from "./components/NodeColumn.svelte";
@@ -433,13 +433,7 @@
 
   async function onForceSelect(
     fnode: string | null,
-    opts: {
-      skipUnsavedGuard?: boolean;
-      pushHistory?: boolean;
-      historyIndex?: number;
-      historyEntries?: string[];
-      browserHistory?: BrowserHistoryMode;
-    } = {},
+    opts: FocusedHistoryOptions & { skipUnsavedGuard?: boolean } = {},
   ): Promise<boolean> {
     cancelStartup();
     return fnode ? nodeSession.select(fnode, opts) : nodeSession.clearSelection(opts);
@@ -676,7 +670,7 @@
         selected={nodeSession.referrers.selected}
         accent="up"
         lastVisitedFnode={nodeSession.lastVisitedFnode}
-        onSelect={(fnode) => { cancelStartup(); return nodeSession.select(fnode, { direction: "up" }); }}
+        onSelect={(fnode) => { cancelStartup(); return nodeSession.select(fnode); }}
         onHover={(i) => (nodeSession.referrersSelected = i)}
       />
       {#key nodeSession.editorRevision}
@@ -694,7 +688,7 @@
         selected={nodeSession.children.selected}
         accent="down"
         lastVisitedFnode={nodeSession.lastVisitedFnode}
-        onSelect={(fnode) => { cancelStartup(); return nodeSession.select(fnode, { direction: "down" }); }}
+        onSelect={(fnode) => { cancelStartup(); return nodeSession.select(fnode); }}
         onHover={(i) => (nodeSession.childrenSelected = i)}
       />
     {/if}
@@ -744,7 +738,7 @@
         void onForceSelect(fnode);
       } else {
         cancelStartup();
-        void nodeSession.select(fnode, { direction: "neutral" });
+        void nodeSession.select(fnode);
       }
     }}
     onClose={() => (overlay = { kind: "none" })}
@@ -1254,8 +1248,7 @@
     }
   }
 
-  /* View Transitions: the new snapshot fades over the stable old snapshot.
-     Directional slides make up/down navigation feel spatial. */
+  /* View Transitions: the new snapshot fades over the stable old snapshot. */
   :global(html[data-vt-scope="force-editor"]) {
     view-transition-name: none;
   }

@@ -11,6 +11,7 @@ export interface FocusedHistoryOptions {
   pushHistory?: boolean;
   historyIndex?: number;
   historyEntries?: string[];
+  browserHistory?: BrowserHistoryMode;
 }
 
 export function browserHistoryEntry(value: unknown): BrowserHistoryEntry | null {
