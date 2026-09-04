@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "metrics": {
+    "bundle.shellTransferBytes": {
+      "max": 52224,
+      "maxIncreaseRatio": 0.02,
+      "noise": 1024
+    },
+    "bundle.totalTransferBytes": {
+      "max": 819200,
+      "maxIncreaseRatio": 0.02,
+      "noise": 2048
+    },
+    "runtime.editorReadyMs": {
+      "maxIncreaseRatio": 0.15,
+      "noise": 20
+    },
+    "runtime.editorHighlightMs": {
+      "maxIncreaseRatio": 0.2,
+      "noise": 100
+    },
+    "runtime.themeSwitchMs": {
+      "maxIncreaseRatio": 0.2,
+      "noise": 10
+    },
+    "runtime.latexPreviewMs": {
+      "maxIncreaseRatio": 0.2,
+      "noise": 30
+    },
+    "runtime.graphReadyMs": {
+      "maxIncreaseRatio": 0.15,
+      "noise": 50
+    },
+    "runtime.graphZoomFrameP95Ms": {
+      "maxIncreaseRatio": 0.2,
+      "noise": 3
+    }
+  }
+}

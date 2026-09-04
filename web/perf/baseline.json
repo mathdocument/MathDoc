@@ -1,0 +1,194 @@
+{
+  "schema": 1,
+  "generatedAt": "2026-09-04T04:13:33.670Z",
+  "environment": {
+    "os": "darwin arm64 25.6.0",
+    "cpu": "Apple M3 Pro",
+    "node": "v26.8.1",
+    "browser": "151.0.7922.34",
+    "viewport": "1440x900",
+    "samples": 5
+  },
+  "fixtures": {
+    "editorLines": 500,
+    "graphNodes": 10000,
+    "graphEdges": 19993
+  },
+  "metrics": {
+    "bundle.shellTransferBytes": {
+      "value": 50170,
+      "unit": "bytes"
+    },
+    "bundle.totalTransferBytes": {
+      "value": 801636,
+      "unit": "bytes"
+    },
+    "runtime.editorReadyMs": {
+      "value": 157.3,
+      "unit": "ms"
+    },
+    "runtime.editorHighlightMs": {
+      "value": 205.6,
+      "unit": "ms"
+    },
+    "runtime.themeSwitchMs": {
+      "value": 282.2,
+      "unit": "ms"
+    },
+    "runtime.latexPreviewMs": {
+      "value": 439.3,
+      "unit": "ms"
+    },
+    "runtime.graphReadyMs": {
+      "value": 373,
+      "unit": "ms"
+    },
+    "runtime.graphZoomFrameP95Ms": {
+      "value": 15.7,
+      "unit": "ms"
+    }
+  },
+  "rawSamples": {
+    "editor": [
+      {
+        "editorReadyMs": 155.2,
+        "editorHighlightMs": 204.3,
+        "themeSwitchMs": 276.2,
+        "latexPreviewMs": 438.2
+      },
+      {
+        "editorReadyMs": 164,
+        "editorHighlightMs": 216.2,
+        "themeSwitchMs": 298.9,
+        "latexPreviewMs": 447.3
+      },
+      {
+        "editorReadyMs": 147.6,
+        "editorHighlightMs": 197.1,
+        "themeSwitchMs": 280.5,
+        "latexPreviewMs": 439.3
+      },
+      {
+        "editorReadyMs": 157.3,
+        "editorHighlightMs": 205.7,
+        "themeSwitchMs": 283.1,
+        "latexPreviewMs": 444.3
+      },
+      {
+        "editorReadyMs": 157.4,
+        "editorHighlightMs": 205.6,
+        "themeSwitchMs": 282.2,
+        "latexPreviewMs": 438.7
+      }
+    ],
+    "graphReadyMs": [
+      374.1,
+      373,
+      386.4,
+      367.6,
+      366
+    ],
+    "graphZoomFrameMs": [
+      13.7,
+      15.7,
+      13.4,
+      14.3,
+      15.2,
+      15.1,
+      13,
+      13.9,
+      14.2,
+      15.6,
+      13.4,
+      15.4,
+      12.7,
+      15.2,
+      15.5,
+      14.7,
+      14.8,
+      15.9,
+      12.6,
+      15.4,
+      14,
+      15,
+      14.7,
+      15.1,
+      13.4,
+      15.4,
+      15.4,
+      15.4,
+      14.9,
+      15.4,
+      14.5,
+      15.4,
+      12.2,
+      15.3,
+      13,
+      13.5,
+      13.3,
+      13.5,
+      13.4,
+      13.6,
+      16.2,
+      14.5,
+      14.8,
+      14.5,
+      15.5,
+      15.8,
+      13,
+      15.7,
+      15,
+      13.4,
+      13.6,
+      13.6,
+      13.5,
+      15.5,
+      13.1,
+      13.7,
+      13.3,
+      13.5,
+      13.5,
+      14.6,
+      15.3,
+      16.7,
+      13,
+      14.2,
+      13.4,
+      13.3,
+      13.6,
+      14.2,
+      13.6,
+      13.6,
+      13.4,
+      13.7,
+      13.5,
+      14.6,
+      13.3,
+      13.5,
+      15.5,
+      15.5,
+      15.2,
+      15.6,
+      14,
+      14.6,
+      13.7,
+      14.9,
+      13.8,
+      15.5,
+      13.1,
+      13.4,
+      13.9,
+      13.1,
+      13.6,
+      15.3,
+      13.4,
+      14.8,
+      15.3,
+      15.3,
+      13.5,
+      13.4,
+      13.4,
+      13.5
+    ]
+  }
+}

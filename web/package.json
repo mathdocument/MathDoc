@@ -8,7 +8,10 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "perf": "npm run build && node perf/run.mjs",
+    "perf:measure": "npm run build && node perf/run.mjs --output perf/latest.json",
+    "perf:record": "npm run build && node perf/run.mjs --record"
   },
   "dependencies": {
     "@codemirror/commands": "^6.8.1",
@@ -26,6 +29,7 @@
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
     "@tsconfig/svelte": "^5.0.4",
     "@types/katex": "^0.16.8",
+    "playwright": "^1.62.1",
     "svelte": "^5.19.0",
     "svelte-check": "^4.1.4",
     "typescript": "^5.7.3",

@@ -1,0 +1,70 @@
+name: Frontend performance
+
+on:
+  pull_request:
+    paths:
+      - "web/**"
+      - ".github/workflows/frontend-perf.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out current revision
+        uses: actions/checkout@v7
+
+      - name: Check out base revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: perf-base
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            perf-base/web/package-lock.json
+
+      - name: Install benchmark dependencies
+        run: npm ci
+        working-directory: web
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps --no-shell chromium
+        working-directory: web
+
+      - name: Build current frontend
+        run: npm run build
+        working-directory: web
+
+      - name: Build base frontend
+        run: npm ci && npm run build
+        working-directory: perf-base/web
+
+      - name: Measure base revision
+        run: >-
+          node web/perf/run.mjs
+          --root perf-base/web
+          --output $RUNNER_TEMP/frontend-perf-base.json
+
+      - name: Compare current revision
+        run: >-
+          node perf/run.mjs
+          --output $RUNNER_TEMP/frontend-perf-current.json
+          --compare $RUNNER_TEMP/frontend-perf-base.json
+        working-directory: web
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: frontend-performance
+          path: |
+            ${{ runner.temp }}/frontend-perf-base.json
+            ${{ runner.temp }}/frontend-perf-current.json
