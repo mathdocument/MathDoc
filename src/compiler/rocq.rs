@@ -675,7 +675,6 @@ mod tests {
             .exists());
     }
 
-    #[cfg(unix)]
     #[test]
     fn rejects_dangling_coqproject_symlink_without_creating_target() {
         use std::os::unix::fs::symlink;
@@ -696,7 +695,6 @@ mod tests {
             .is_symlink());
     }
 
-    #[cfg(unix)]
     #[test]
     fn rejects_coqproject_symlink_to_existing_file() {
         use std::os::unix::fs::symlink;
@@ -713,7 +711,6 @@ mod tests {
         assert_eq!(std::fs::read_to_string(outside.path()).unwrap(), "outside");
     }
 
-    #[cfg(unix)]
     #[test]
     fn cleanup_rejects_symlinked_build_tree() {
         use std::os::unix::fs::symlink;
@@ -760,7 +757,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn cleanup_unlinks_nested_symlinks_without_following_them() {
         use std::os::unix::fs::symlink;
@@ -787,7 +783,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn cleanup_cannot_follow_replaced_workspace_ancestor() {
         use std::os::unix::fs::symlink;

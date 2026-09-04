@@ -282,7 +282,6 @@ fn validate_workspace_relative_path(relative: &Path, original: &Path) -> Result<
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn indexed_path_keys_reject_lossy_non_utf8_collisions() {
         use std::ffi::OsString;
@@ -303,7 +302,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn resolve_mdoc_path_rejects_a_final_symlink() {
         use std::os::unix::fs::symlink;
@@ -317,7 +315,6 @@ mod tests {
         assert!(resolve_mdoc_path(workspace.path(), &link).is_err());
     }
 
-    #[cfg(unix)]
     #[test]
     fn initialize_cannot_follow_replaced_control_directory() {
         use std::os::unix::fs::symlink;

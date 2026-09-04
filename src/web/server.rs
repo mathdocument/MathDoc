@@ -51,15 +51,12 @@ pub(crate) async fn serve(
                 .await
                 .expect("install ctrl-c handler");
         };
-        #[cfg(unix)]
         let sigterm = async {
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
                 .expect("install SIGTERM handler")
                 .recv()
                 .await;
         };
-        #[cfg(not(unix))]
-        let sigterm = std::future::pending::<()>();
         tokio::select! {
             _ = ctrl_c => {}
             _ = sigterm => {}

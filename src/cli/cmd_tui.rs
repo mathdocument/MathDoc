@@ -180,7 +180,7 @@ fn default_start_fnode(cache: &mut crate::indcache::IndCache) -> Result<String> 
 
 type NodeInfo = crate::core::NodeSummary;
 
-#[derive(Clone, PartialEq)]
+#[derive(PartialEq)]
 enum CandidateChoice {
     Existing(NodeInfo),
     Create(String),
@@ -2055,7 +2055,6 @@ mod tests {
         (dir, app, path)
     }
 
-    #[cfg(unix)]
     #[test]
     fn failed_editor_does_not_report_tui_success() {
         let (_dir, mut app, path) = test_app();
@@ -2069,7 +2068,6 @@ mod tests {
         assert!(message.contains("editor exited"));
     }
 
-    #[cfg(unix)]
     #[test]
     fn cache_refresh_failure_is_shown_as_tui_error() {
         use std::os::unix::fs::symlink;
@@ -2089,7 +2087,6 @@ mod tests {
         assert!(message.contains("edit failed"));
     }
 
-    #[cfg(unix)]
     #[test]
     fn load_view_propagates_cached_path_infrastructure_errors() {
         use std::os::unix::fs::PermissionsExt;

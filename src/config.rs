@@ -5,7 +5,6 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{de::Error as _, Deserialize, Deserializer};
 
-#[derive(Clone, Copy)]
 struct BuiltinSrctype {
     name: &'static str,
     extension: &'static str,

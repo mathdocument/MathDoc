@@ -11,7 +11,7 @@ use super::EVIDENCE_SCHEME_VERSION;
 const MANIFEST_VERSION: u32 = 1;
 const MANIFEST_NAME: &str = "formal-attestations.json";
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FormalAttestation {
     pub(crate) fnode: String,
@@ -27,7 +27,7 @@ pub(crate) struct FormalAttestation {
     pub(crate) external_dependencies: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct NodeAttestations {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -36,7 +36,7 @@ pub(crate) struct NodeAttestations {
     pub(crate) rocq: Option<FormalAttestation>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FormalAttestationManifest {
     version: u32,

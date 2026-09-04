@@ -2548,7 +2548,6 @@ fn rollback_created_directories(
     }
 }
 
-#[cfg(unix)]
 fn path_c_string(path: &Path) -> Result<std::ffi::CString> {
     use std::os::unix::ffi::OsStrExt;
 

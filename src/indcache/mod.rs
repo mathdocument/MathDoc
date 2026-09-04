@@ -1752,7 +1752,6 @@ mod mutation_boundary_tests {
         assert_eq!(MdocNode::load(&path).unwrap().title, "External edit");
     }
 
-    #[cfg(unix)]
     #[test]
     fn replace_rejects_read_only_files() {
         use std::os::unix::fs::PermissionsExt;
@@ -1777,7 +1776,6 @@ mod mutation_boundary_tests {
         assert_eq!(MdocNode::load(&path).unwrap().title, "Original");
     }
 
-    #[cfg(unix)]
     #[test]
     fn replace_preserves_file_permissions() {
         use std::os::unix::fs::PermissionsExt;
@@ -1804,7 +1802,6 @@ mod mutation_boundary_tests {
         assert_eq!(MdocNode::load(&path).unwrap().title, "Changed");
     }
 
-    #[cfg(unix)]
     #[test]
     fn create_rejects_final_symlink_without_touching_target() {
         use std::os::unix::fs::symlink;

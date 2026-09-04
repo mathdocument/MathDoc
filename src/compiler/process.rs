@@ -114,7 +114,6 @@ struct DrainResult {
     error: Option<String>,
 }
 
-#[derive(Clone, Copy)]
 struct PipePoll {
     fd: libc::c_int,
 }
@@ -308,7 +307,6 @@ fn terminate_process(child: &mut std::process::Child, leader_reaped: bool) {
     }
 }
 
-#[cfg(unix)]
 fn set_pipe_nonblocking<T: std::os::fd::AsRawFd>(pipe: &T) -> std::io::Result<()> {
     let fd = pipe.as_raw_fd();
     // SAFETY: fcntl reads and updates flags on a valid child-pipe descriptor.
@@ -319,7 +317,6 @@ fn set_pipe_nonblocking<T: std::os::fd::AsRawFd>(pipe: &T) -> std::io::Result<()
     Ok(())
 }
 
-#[cfg(unix)]
 struct SignalListener {
     previous: libc::sigset_t,
     signal: Arc<std::sync::atomic::AtomicI32>,
@@ -329,7 +326,6 @@ struct SignalListener {
     restored: bool,
 }
 
-#[cfg(unix)]
 impl SignalListener {
     fn new() -> Result<Self> {
         // Block only this thread. Drain threads inherit the mask, while the
@@ -433,14 +429,12 @@ impl SignalListener {
     }
 }
 
-#[cfg(unix)]
 impl Drop for SignalListener {
     fn drop(&mut self) {
         let _ = self.shutdown();
     }
 }
 
-#[cfg(unix)]
 fn interrupt_process(child: &mut std::process::Child, signal: i32, listener: &SignalListener) {
     let process_group = child.id() as libc::pid_t;
     // SAFETY: the child was placed in this process group before exec.
@@ -519,18 +513,15 @@ where
 {
     use std::process::Stdio;
 
-    #[cfg(unix)]
     let mut signal_listener = SignalListener::new()?;
     let result = (|| -> Result<(i32, String, String)> {
         let started = Instant::now();
         let timeout = Duration::from_secs(timeout_sec);
 
-        #[cfg(unix)]
         if let Some(cwd) = cwd {
             cwd.require_current()?;
             crate::workspace::run_test_hook(crate::workspace::TestHookPoint::ProcessAfterCwdOpen);
         }
-        #[cfg(unix)]
         let process_cwd_fd = cwd.map(crate::workspace::DirectoryGeneration::raw_fd);
 
         let mut cmd = std::process::Command::new(program);
@@ -538,7 +529,6 @@ where
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
             let child_signal_mask = signal_listener.child_mask();
@@ -574,8 +564,6 @@ where
                 });
             }
         }
-        #[cfg(not(unix))]
-        let _ = cwd;
         let mut child = cmd
             .spawn()
             .map_err(|e| anyhow::anyhow!("failed to run {tool_name}: {e}"))?;
@@ -586,7 +574,6 @@ where
         let stderr_pipe = child.stderr.take().expect("stderr is piped");
         let stdout_poll = pipe_poll(&stdout_pipe);
         let stderr_poll = pipe_poll(&stderr_pipe);
-        #[cfg(unix)]
         if let Err(error) =
             set_pipe_nonblocking(&stdout_pipe).and_then(|_| set_pipe_nonblocking(&stderr_pipe))
         {
@@ -613,7 +600,6 @@ where
             stdout_drain.poll();
             stderr_drain.poll();
 
-            #[cfg(unix)]
             if let Some(signal) = signal_listener.received() {
                 interrupt_process(&mut child, signal, &signal_listener);
                 wait_for_drains(&mut stdout_drain, &mut stderr_drain);
@@ -631,7 +617,6 @@ where
                     // cleanup latency cannot turn a completed process into a timeout.
                     terminate_process(&mut child, true);
                     wait_for_drains(&mut stdout_drain, &mut stderr_drain);
-                    #[cfg(unix)]
                     if let Some(signal) = signal_listener.received() {
                         return Err(ProcessControlError::Interrupted {
                             tool: tool_name.to_string(),
@@ -680,7 +665,6 @@ where
         Ok((status.code().unwrap_or(-1), stdout, stderr))
     })();
 
-    #[cfg(unix)]
     let result = match (
         result,
         cwd.map(crate::workspace::DirectoryGeneration::require_current),
@@ -694,7 +678,6 @@ where
         (result, _) => result,
     };
 
-    #[cfg(unix)]
     if let Some(signal) = signal_listener.shutdown() {
         let diagnostics = match &result {
             Ok((_, stdout, stderr)) => output_diagnostics(stdout, stderr),
@@ -728,7 +711,6 @@ pub(super) fn process_error_result(error: anyhow::Error, fallback: i32) -> Compi
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn test_large_output_is_bounded_without_blocking() {
         if which::which("yes").is_err() || which::which("head").is_err() {
@@ -758,7 +740,6 @@ mod tests {
         assert!(stderr.len() <= OUTPUT_CAPTURE_LIMIT_BYTES + 256);
     }
 
-    #[cfg(unix)]
     #[test]
     fn test_non_utf8_output_is_preserved_lossily() {
         let (code, stdout, stderr) = run_process(
@@ -777,7 +758,6 @@ mod tests {
         assert!(stderr.contains("error-before:\u{fffd}:error-after"));
     }
 
-    #[cfg(unix)]
     #[test]
     fn test_stale_working_directory_is_rejected_before_execution() {
         let tmp = tempfile::tempdir().unwrap();
@@ -803,7 +783,6 @@ mod tests {
         assert!(!displaced.join("marker").exists());
     }
 
-    #[cfg(unix)]
     #[test]
     fn test_replaced_working_directory_generation_is_rejected() {
         let tmp = tempfile::tempdir().unwrap();
@@ -835,7 +814,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn test_symlinked_working_directory_ancestor_cannot_redirect_execution() {
         use std::os::unix::fs::symlink;
@@ -876,7 +854,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn test_cwd_conflict_does_not_hide_a_process_timeout() {
         if which::which("sleep").is_err() {
@@ -905,7 +882,6 @@ mod tests {
     }
 
     /// Regression: a genuinely slow process must still be killed and reported as timed out.
-    #[cfg(unix)]
     #[test]
     fn test_real_timeout_is_reported() {
         if which::which("sleep").is_err() {
@@ -919,7 +895,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn test_completion_near_timeout_is_not_overwritten() {
         let started = Instant::now();
@@ -939,7 +914,6 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(3));
     }
 
-    #[cfg(unix)]
     #[test]
     fn test_slow_drain_does_not_overwrite_completed_status() {
         let Some(python) = ["python3", "python"]
@@ -975,7 +949,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn test_normal_exit_kills_descendant_holding_output_pipes() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1009,7 +982,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn test_normal_exit_kills_descendant_with_redirected_output() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1032,7 +1004,6 @@ mod tests {
         assert!(!std::path::Path::new(survived_path.as_ref()).exists());
     }
 
-    #[cfg(unix)]
     #[test]
     fn test_escaped_descendant_does_not_hold_drain_threads_forever() {
         if which::which("setsid").is_err() {
@@ -1064,7 +1035,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn test_process_control_errors_have_typed_exit_status() {
         let timeout = anyhow::Error::new(ProcessControlError::Timeout {

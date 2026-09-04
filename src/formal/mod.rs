@@ -7,7 +7,7 @@ pub(crate) mod status;
 pub(crate) const EVIDENCE_SCHEME_VERSION: u32 = 1;
 pub(crate) const ROCQ_CLEAN_MARKER_FILENAME: &str = ".mdc-clean-needed";
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct FormalCompilationReceipt {
     pub(crate) evidence_scheme_version: u32,
     pub(crate) language: String,

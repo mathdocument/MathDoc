@@ -28,7 +28,7 @@ macro_rules! bail {
 // ── DTOs ──────────────────────────────────────────────────────────────────────
 
 /// Full node detail returned by node reads and mutations.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub(super) struct NodeDetail {
     fnode: String,
@@ -45,7 +45,7 @@ pub(super) struct NodeDetail {
 }
 
 /// Focused node data needed by the three-column browser in one response.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub(super) struct NodeView {
     node: NodeDetail,
@@ -78,9 +78,6 @@ pub(super) struct SearchQuery {
     q: String,
     #[cfg_attr(test, ts(optional))]
     n: Option<usize>,
-}
-fn default_n() -> usize {
-    200
 }
 const MAX_SEARCH_RESULTS: usize = 200;
 
@@ -505,7 +502,7 @@ pub(super) async fn search(
     Query(q): Query<SearchQuery>,
 ) -> ApiResult<Json<Vec<NodeSummary>>> {
     spawn_blocking_api(move || {
-        let limit = q.n.unwrap_or_else(default_n).min(MAX_SEARCH_RESULTS);
+        let limit = q.n.unwrap_or(MAX_SEARCH_RESULTS).min(MAX_SEARCH_RESULTS);
         let out = with_cache(&state, |c| {
             c.discover_workspace_changes()?;
             c.search(&q.q, limit)
@@ -643,7 +640,7 @@ pub(super) async fn node_dependency_candidates(
     Query(q): Query<SearchQuery>,
 ) -> ApiResult<Json<DependencyCandidates>> {
     spawn_blocking_api(move || {
-        let limit = q.n.unwrap_or_else(default_n).min(MAX_SEARCH_RESULTS);
+        let limit = q.n.unwrap_or(MAX_SEARCH_RESULTS).min(MAX_SEARCH_RESULTS);
         let mut cache = state
             .cache
             .lock()

@@ -36,7 +36,6 @@ fn write_source(mdcroot: &std::path::Path, srctype: &str, content: &str) {
     std::fs::write(path, content).unwrap();
 }
 
-#[cfg(unix)]
 #[test]
 fn compiler_workspace_rejects_symlinked_language_directory() {
     use std::os::unix::fs::symlink;
@@ -53,7 +52,6 @@ fn compiler_workspace_rejects_symlinked_language_directory() {
     assert!(std::fs::read_dir(outside.path()).unwrap().next().is_none());
 }
 
-#[cfg(unix)]
 #[test]
 fn lib_source_rejects_symlinked_lib_component() {
     use std::os::unix::fs::symlink;
@@ -108,7 +106,6 @@ fn test_python_accepts_non_utf8_workspace_path() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn test_python_uses_deterministic_working_directory() {
     if which::which("python3").is_err() && which::which("python").is_err() {
@@ -136,7 +133,6 @@ fn test_python_uses_deterministic_working_directory() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn test_python_treats_leading_hyphen_source_as_a_file() {
     if which::which("python3").is_err() && which::which("python").is_err() {
@@ -164,7 +160,6 @@ fn test_python_treats_leading_hyphen_source_as_a_file() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn test_python_rejects_a_replaced_working_tree_generation() {
     if which::which("python3").is_err() && which::which("python").is_err() {
@@ -213,7 +208,6 @@ fn test_python_rejects_a_replaced_working_tree_generation() {
     assert_eq!(std::fs::read_to_string(marker).unwrap(), "original");
 }
 
-#[cfg(unix)]
 #[test]
 fn test_python_preserves_nested_script_import_and_main_semantics() {
     if which::which("python3").is_err() && which::which("python").is_err() {
@@ -274,7 +268,6 @@ fn timed_compilers_reject_unresolved_configuration_without_panicking() {
     }
 }
 
-#[cfg(unix)]
 #[test]
 fn test_latex_compiles_hello_world() {
     if which::which("latexmk").is_err() || which::which("xelatex").is_err() {
@@ -295,7 +288,6 @@ fn test_latex_compiles_hello_world() {
     assert!(mdcroot.join(".mdc/latex/Main.tex").is_file());
 }
 
-#[cfg(unix)]
 #[test]
 fn test_latex_rejects_source_changed_during_compilation() {
     if which::which("latexmk").is_err() || which::which("xelatex").is_err() {
@@ -319,7 +311,6 @@ fn test_latex_rejects_source_changed_during_compilation() {
         .contains("LaTeX source changed during compilation"));
 }
 
-#[cfg(unix)]
 #[test]
 fn test_latex_compiles_tex_active_source_path() {
     if which::which("latexmk").is_err() || which::which("xelatex").is_err() {
@@ -338,7 +329,6 @@ fn test_latex_compiles_tex_active_source_path() {
     assert!(result.is_success(), "{}", result.stderr);
 }
 
-#[cfg(unix)]
 #[test]
 fn test_lean_compiles_hello_world() {
     if which::which("lake").is_err() {
@@ -356,7 +346,6 @@ fn test_lean_compiles_hello_world() {
         .is_file());
 }
 
-#[cfg(unix)]
 #[test]
 fn test_lean_builds_imports_from_lib_tree() {
     if which::which("lake").is_err() {
@@ -473,7 +462,6 @@ fn test_lean_builds_imports_from_lib_tree() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn test_lean_driver_compiles_quoted_module_path() {
     if which::which("lake").is_err() {
@@ -503,7 +491,6 @@ fn test_lean_driver_compiles_quoted_module_path() {
         .is_file());
 }
 
-#[cfg(unix)]
 #[test]
 fn test_rocq_compiles_hello_world() {
     if which::which("rocq").is_err() {
@@ -536,7 +523,6 @@ fn test_rocq_compiles_hello_world() {
     assert!(!mdcroot.join(".mdc/rocq/Lib/node.glob").exists());
 }
 
-#[cfg(unix)]
 #[test]
 fn test_rocq_imports_previous_lib_build_artifacts() {
     if which::which("rocq").is_err() {
@@ -590,7 +576,6 @@ fn test_rocq_imports_previous_lib_build_artifacts() {
     assert!(!mdcroot.join(".mdc/rocq/build/Data/B.vo").exists());
 }
 
-#[cfg(unix)]
 #[test]
 fn test_rocq_rejects_load_dependencies() {
     if which::which("rocq").is_err() {

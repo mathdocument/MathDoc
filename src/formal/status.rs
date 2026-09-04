@@ -1470,7 +1470,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn inaccessible_attestation_manifest_downgrades_cached_verification() {
         use std::os::unix::fs::symlink;

@@ -194,7 +194,7 @@ pub(super) fn identity(content: &[u8]) -> MdocIdentity {
     };
     let mut identity = MdocIdentity::default();
 
-    #[derive(Clone, Copy, PartialEq, Eq)]
+    #[derive(PartialEq, Eq)]
     enum Status {
         None,
         Dep,

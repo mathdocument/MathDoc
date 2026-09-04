@@ -12,7 +12,7 @@ pub struct SrcBlock {
     pub metadata: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct MdocHead {
     pub fnode: String,
     pub title: String,
@@ -20,7 +20,7 @@ pub(crate) struct MdocHead {
     pub source_types: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct MdocIdentity {
     pub fnode: Option<String>,
     pub title: Option<String>,
