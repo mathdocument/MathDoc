@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "metrics": {
+    "index.fullRefresh": {
+      "maxIncreaseRatio": 0.1,
+      "noise": 20
+    },
+    "index.discoverNoop": {
+      "maxIncreaseRatio": 0.15,
+      "noise": 3
+    },
+    "query.search200": {
+      "maxIncreaseRatio": 0.15,
+      "noise": 500
+    },
+    "graph.fullRead": {
+      "maxIncreaseRatio": 0.1,
+      "noise": 1
+    },
+    "graph.check": {
+      "maxIncreaseRatio": 0.1,
+      "noise": 2
+    }
+  }
+}

@@ -8,6 +8,10 @@ license = "MIT"
 name = "mdc"
 path = "src/main.rs"
 
+[[bench]]
+name = "backend"
+harness = false
+
 [dependencies]
 rusqlite = { version = "0.40.1", default-features = false, features = ["bundled"] }
 clap = { version = "4", features = ["derive"] }
