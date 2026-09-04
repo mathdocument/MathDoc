@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NodeDetail } from "./types";
+import { api } from "./api";
 import { NodeSession } from "./state.svelte";
 
 function node(revision: string): NodeDetail {
@@ -17,6 +18,8 @@ function node(revision: string): NodeDetail {
 }
 
 describe("NodeSession", () => {
+  afterEach(() => vi.restoreAllMocks());
+
   it("keeps one complete node generation behind both views", () => {
     const session = new NodeSession();
     session.snapshot = { node: node("r1"), referrers: [], children: [] };
@@ -29,5 +32,15 @@ describe("NodeSession", () => {
     expect(session.selectedFnode).toBeNull();
     expect(session.selectedLoad).toEqual({ kind: "idle" });
     expect(session.load).toEqual({ kind: "ready", node: updated });
+  });
+
+  it("rejects an external generation during relation synchronization", async () => {
+    const session = new NodeSession();
+    const original = { node: node("r1"), referrers: [], children: [] };
+    session.snapshot = original;
+    vi.spyOn(api, "nodeView").mockResolvedValue({ node: node("r2"), referrers: [], children: [] });
+
+    await expect(session.syncView()).rejects.toThrow("changed externally");
+    expect(session.snapshot).toBe(original);
   });
 });

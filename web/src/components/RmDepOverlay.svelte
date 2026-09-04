@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, untrack } from "svelte";
+  import { onDestroy } from "svelte";
   import { Unlink2, X } from "@lucide/svelte";
   import { api } from "../lib/api";
   import { errMsg, shortFnode } from "../lib/format";
@@ -17,7 +17,7 @@
   }
   let { disabled, targetFnode, targetRevision, children, onRemoved, onClose }: Props = $props();
 
-  let selected = $state(untrack(() => children.map(() => false)));
+  let selected = $state<string[]>([]);
   let cursor = $state(0);
   let saving = $state(false);
   let error: string | null = $state(null);
@@ -30,6 +30,16 @@
   function close() {
     if (!saving) onClose();
   }
+
+  function toggle(fnode: string) {
+    selected = selected.includes(fnode)
+      ? selected.filter((item) => item !== fnode)
+      : [...selected, fnode];
+  }
+
+  $effect(() => {
+    if (cursor >= children.length) cursor = Math.max(0, children.length - 1);
+  });
 
   function onKey(e: KeyboardEvent) {
     if (disabled) return;
@@ -44,7 +54,8 @@
       cursor = Math.max(cursor - 1, 0);
     } else if (e.key === " " || e.key === "x") {
       e.preventDefault();
-      if (cursor < selected.length) selected[cursor] = !selected[cursor];
+      const child = children[cursor];
+      if (child) toggle(child.fnode);
     } else if (e.key === "Enter") {
       e.preventDefault();
       void submit();
@@ -57,9 +68,7 @@
   }
 
   async function submit() {
-    const toRemove = children
-      .filter((_, i) => selected[i])
-      .map((c) => c.fnode);
+    const toRemove = children.filter((child) => selected.includes(child.fnode)).map((child) => child.fnode);
     if (toRemove.length === 0 || saving) {
       close();
       return;
@@ -105,11 +114,11 @@
             <button
               class="row modal-row"
               class:cursor={i === cursor}
-              class:checked={selected[i]}
-              onclick={() => { cursor = i; selected[i] = !selected[i]; }}
+              class:checked={selected.includes(c.fnode)}
+              onclick={() => { cursor = i; toggle(c.fnode); }}
               disabled={saving}
             >
-              <span class="check">{selected[i] ? "✓" : " "}</span>
+              <span class="check">{selected.includes(c.fnode) ? "✓" : " "}</span>
               <span class="depth">[{c.depth}]</span>
               <span class="fnode">{shortFnode(c.fnode)}</span>
               <span class="title">{c.title}</span>
@@ -126,7 +135,7 @@
       <div class="hint"><span><kbd>Space</kbd> Toggle</span><span><kbd>Enter</kbd> Remove</span><span><kbd>Esc</kbd> Cancel</span></div>
       <div class="actions">
         <button class="secondary" onclick={close} disabled={saving}>Cancel</button>
-        <button class="danger" onclick={() => void submit()} disabled={saving || selected.every((value) => !value)}>Remove selected</button>
+        <button class="danger" onclick={() => void submit()} disabled={saving || !children.some((child) => selected.includes(child.fnode))}>Remove selected</button>
       </div>
     </footer>
   </dialog>

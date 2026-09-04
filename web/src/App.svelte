@@ -456,6 +456,7 @@
         });
         columnsMounted = true;
         await tick();
+        if (initialError) markColumnsEditorReady();
         await editorReady;
         view = "columns";
         await tick();

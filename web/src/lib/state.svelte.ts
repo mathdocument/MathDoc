@@ -158,6 +158,9 @@ export class NodeSession {
       const view = await api.nodeView(fnode);
       if (request !== this.syncRequest || this.node?.fnode !== fnode ||
         this.node.revision !== revision || unsavedDraftRevision() !== draftRevision) return false;
+      if (view.node.revision !== revision) {
+        throw new Error(`${fnode} changed externally; refresh before continuing`);
+      }
       this.snapshot = view;
       this.referrersSelected = -1;
       this.childrenSelected = -1;
@@ -256,11 +259,12 @@ export function commitFocusedHistory(
   } = {},
 ): void {
   const push = opts.pushHistory ?? true;
+  const previousIndex = nodeSession.historyIdx;
   const history = focusedHistoryState(nodeSession.history, nodeSession.historyIdx, fnode, opts);
   nodeSession.history = history.entries;
   nodeSession.historyIdx = history.index;
 
-  const mode = opts.browserHistory ?? (push ? "push" : "none");
+  const mode = opts.browserHistory ?? (push ? previousIndex < 0 ? "replace" : "push" : "none");
   if (mode === "none") return;
   const url = new URL(window.location.href);
   url.hash = new URLSearchParams({ ref: fnode }).toString();
