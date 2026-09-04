@@ -117,10 +117,10 @@ reconciliation.
 `NodeSummary`. Dependency candidate search reuses its patterns, ranking, and projection
 before applying dependency-specific filters. Terms of at least three characters use the
 FTS5 trigram index as a candidate prefilter, followed by the original literal matching
-and ranking predicates. The index omits position and column-size detail; queries combine
-their distinct trigrams and do not rely on FTS phrase semantics. Terms of one or two
-characters use the linear fallback; longer terms use trigram candidates without a
-persisted selectivity vocabulary. Explicit integer document IDs
+and ranking predicates. The index omits position and column-size detail; queries use all
+distinct trigrams for short terms and the first, middle, and last trigrams for longer
+terms without relying on FTS phrase semantics. Terms of one or two characters use the
+linear fallback. Explicit integer document IDs
 keep external-content FTS references stable across `VACUUM`. `all_node_summaries()` is
 the unbounded non-search query used by the full graph API.
 
@@ -145,8 +145,9 @@ workspace scan on every cache open.
 ## Strong refresh
 
 `refresh_all()` descriptor-relatively rereads and reparses every discovered document.
-Every call replaces the base node, edge, symbol, and issue rows, rebuilds in-degree, and
-recomputes all topological depths. There is no digest or document-count shortcut.
+Every call rebuilds edge, symbol, issue, in-degree, and topological-depth data. Base node
+rows are upserted only when their identity or title changed, preserving stable row IDs and
+FTS entries for unchanged nodes. There is no digest or document-count shortcut.
 
 Focused and reachable refreshes retain strong byte reads. A path whose parsed identity,
 title, ordered dependencies, parse error, file state, and blocking status are unchanged
