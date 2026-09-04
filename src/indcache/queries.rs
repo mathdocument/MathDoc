@@ -919,8 +919,13 @@ fn fts5_query(query_lc: &str) -> Option<String> {
             seen.insert(trigram.clone()).then_some(trigram)
         })
         .collect();
-    let expression = terms
-        .iter()
+    let selected = if terms.len() > 3 {
+        vec![&terms[0], &terms[terms.len() / 2], &terms[terms.len() - 1]]
+    } else {
+        terms.iter().collect()
+    };
+    let expression = selected
+        .into_iter()
         .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
         .collect::<Vec<_>>()
         .join(" AND ");
@@ -1273,5 +1278,9 @@ mod tests {
         assert_eq!(fts5_query("ab"), None);
         assert_eq!(fts5_query("a\"b"), Some("\"a\"\"b\"".to_string()));
         assert_eq!(fts5_query("ababa"), Some("\"aba\" AND \"bab\"".to_string()));
+        assert_eq!(
+            fts5_query("abcdefgh"),
+            Some("\"abc\" AND \"def\" AND \"fgh\"".to_string())
+        );
     }
 }
