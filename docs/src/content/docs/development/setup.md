@@ -72,13 +72,11 @@ Package and install the declaration-only extension locally:
 
 ```bash
 cd editors/vscode
-npx @vscode/vsce package
-code --install-extension mdc-mdoc-0.1.1.vsix --force
+npx @vscode/vsce package --out ../../target/mdc-mdoc.vsix
+code --install-extension ../../target/mdc-mdoc.vsix --force
 ```
 
-The archive name is derived from the version in `package.json`. The release workflow
-compares the packaged manifest, license, language configuration, and grammar byte for
-byte with these source files.
+The archive is generated on demand in the ignored `target/` directory and is not committed.
 
 ## Release check
 
@@ -86,9 +84,8 @@ On pushes and pull requests, `.github/workflows/release-check.yml` performs:
 
 1. Reproducible frontend dependency installation, type checking, tests, and build.
 2. Verification that `web/dist/` matches committed frontend source.
-3. Verification of the checked-in VS Code extension package.
-4. Documentation dependency installation, Astro checking, and static build.
-5. One Rust CI command: `cargo +stable test --locked`.
+3. Documentation dependency installation, Astro checking, and static build.
+4. One Rust CI command: `cargo +stable test --locked`.
 
 Documentation deployment is separate: pushes to `main` that touch `docs/` run the
 official Astro GitHub Pages action.

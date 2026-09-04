@@ -47,11 +47,14 @@ that target.
 
 ## VS Code support
 
-The repository includes a packaged extension for VS Code 1.85 or newer. It provides
-syntax highlighting, folding, and embedded-language mapping in `.mdoc` files:
+The repository includes extension source for VS Code 1.85 or newer. With Node.js and
+npm installed, package it on demand to install syntax highlighting, folding, and
+embedded-language mapping in `.mdoc` files:
 
 ```bash
-code --install-extension editors/vscode/mdc-mdoc-0.1.1.vsix --force
+cd editors/vscode
+npx @vscode/vsce package --out ../../target/mdc-mdoc.vsix
+code --install-extension ../../target/mdc-mdoc.vsix --force
 ```
 
 The extension is declaration-only and does not install `mdc` or any compiler.

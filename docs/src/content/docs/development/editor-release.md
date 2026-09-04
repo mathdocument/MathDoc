@@ -12,10 +12,8 @@ mappings for source blocks.
 Embedded highlighting recognizes source-type names case-insensitively and permits
 metadata after the type, matching the `.mdoc` parser.
 
-Use the canonical package and local-install commands in
-[Development Setup](../setup/#vs-code-extension-commands). Keep the checked-in VSIX at
-the filename derived from `package.json`; release checking compares its manifest,
-license, language configuration, and grammar byte for byte with source.
+Package and install the extension on demand with the canonical commands in
+[Development Setup](../setup/#vs-code-extension-commands).
 
 Publish through an authenticated publisher session:
 
@@ -56,4 +54,4 @@ commands in [Development Setup](../setup/#documentation-commands).
 
 The Rust package version is declared in `Cargo.toml`; the VS Code extension has its own
 version in `editors/vscode/package.json`. Bump only the artifact whose public behavior
-is being released, and commit the corresponding lockfile or packaged output changes.
+is being released, and commit any corresponding lockfile changes.
