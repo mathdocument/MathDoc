@@ -43,6 +43,9 @@ pub(super) fn compile(req: &CompilerReq) -> (CompilerRes, Option<FormalCompilati
     if let Err(error) = ensure_build_parent(&workspace, &output) {
         return without_receipt(CompilerRes::err(error.to_string()));
     }
+    if let Err(error) = validate_build_output(&workspace, &output) {
+        return without_receipt(CompilerRes::err(error.to_string()));
+    }
     let source_path = workspace.root().join(&source);
     let source_snapshot = match workspace.snapshot(&source_path) {
         Ok(snapshot) => snapshot,
@@ -103,7 +106,6 @@ pub(super) fn compile(req: &CompilerReq) -> (CompilerRes, Option<FormalCompilati
             }
             let formal_receipt = if rtcode == 0 {
                 match collect_formal_receipt(
-                    req,
                     &workspace,
                     &rocq,
                     &library_roots,
@@ -141,7 +143,6 @@ fn without_receipt(result: CompilerRes) -> (CompilerRes, Option<FormalCompilatio
 
 #[allow(clippy::too_many_arguments)]
 fn collect_formal_receipt(
-    req: &CompilerReq,
     workspace: &CompilerWorkspace,
     rocq: &Path,
     library_roots: &RocqLibraryRoots,
@@ -171,11 +172,9 @@ fn collect_formal_receipt(
         language: "rocq".to_string(),
         target_module,
         source_sha256,
-        artifact_sha256: crate::formal::status::file_digest(
-            &req.mdcroot,
-            &workspace.root().join(output),
-        )
-        .context("hashing selected Rocq artifact")?,
+        artifact_sha256: workspace
+            .file_digest(&workspace.root().join(output))
+            .context("hashing selected Rocq artifact")?,
         environment_sha256: environment.digest().to_string(),
         compiler_path: compiler_identity.path().to_string(),
         compiler_sha256: compiler_identity.digest().to_string(),
@@ -329,7 +328,7 @@ fn rocq_dependency_evidence(
         guarded_digest(&prelude, &mut guards)?,
     );
     for token in parse_dependency_output(&stdout)? {
-        let path = PathBuf::from(token.trim_end_matches('\\'));
+        let path = PathBuf::from(token);
         let path = if path.is_absolute() {
             path
         } else {
@@ -381,25 +380,65 @@ fn rocq_dependency_evidence(
     })
 }
 
-fn parse_dependency_output(stdout: &str) -> anyhow::Result<Vec<&str>> {
-    let (targets, dependencies) = stdout
-        .split_once(':')
+fn parse_dependency_output(stdout: &str) -> anyhow::Result<Vec<String>> {
+    let separator = unescaped_colon(stdout)
         .ok_or_else(|| anyhow::anyhow!("Rocq dependency output has no target separator"))?;
-    if !targets.split_whitespace().any(|target| {
-        Path::new(target.trim_end_matches('\\'))
+    let (targets, dependencies) = stdout.split_at(separator);
+    let dependencies = &dependencies[1..];
+    if unescaped_colon(dependencies).is_some() {
+        anyhow::bail!("Rocq dependency output contains multiple target rules");
+    }
+    if !makefile_tokens(targets)?.iter().any(|target| {
+        Path::new(target)
             .extension()
             .and_then(|extension| extension.to_str())
             == Some("vo")
     }) {
         anyhow::bail!("Rocq dependency output has no .vo target");
     }
-    if dependencies.contains(':') {
-        anyhow::bail!("Rocq dependency output contains multiple target rules");
+    makefile_tokens(dependencies)
+}
+
+fn unescaped_colon(value: &str) -> Option<usize> {
+    let mut escaped = false;
+    for (index, character) in value.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if character == ':' {
+            return Some(index);
+        }
     }
-    Ok(dependencies
-        .split_whitespace()
-        .filter(|token| !token.bytes().all(|byte| byte == b'\\'))
-        .collect())
+    None
+}
+
+fn makefile_tokens(value: &str) -> anyhow::Result<Vec<String>> {
+    let mut tokens = Vec::new();
+    let mut token = String::new();
+    let mut characters = value.chars().peekable();
+    while let Some(character) = characters.next() {
+        match character {
+            '\\' => match characters.next() {
+                Some('\n') => {}
+                Some('\r') if characters.peek() == Some(&'\n') => {
+                    characters.next();
+                }
+                Some(escaped) => token.push(escaped),
+                None => anyhow::bail!("Rocq dependency output ends with an incomplete escape"),
+            },
+            whitespace if whitespace.is_whitespace() => {
+                if !token.is_empty() {
+                    tokens.push(std::mem::take(&mut token));
+                }
+            }
+            character => token.push(character),
+        }
+    }
+    if !token.is_empty() {
+        tokens.push(token);
+    }
+    Ok(tokens)
 }
 
 fn guarded_digest(
@@ -493,6 +532,11 @@ fn ensure_build_parent(workspace: &CompilerWorkspace, output: &Path) -> anyhow::
     Ok(())
 }
 
+fn validate_build_output(workspace: &CompilerWorkspace, output: &Path) -> anyhow::Result<()> {
+    workspace.snapshot(&workspace.root().join(output))?;
+    Ok(())
+}
+
 fn source_tree_digest(root: &Path, extension: &str) -> anyhow::Result<Vec<u8>> {
     let mut files = Vec::new();
     if !root.is_dir() {
@@ -560,6 +604,33 @@ mod tests {
                 .unwrap(),
             ["Lib/Target.v", "build/Dependency.vo"]
         );
+        assert_eq!(
+            parse_dependency_output("Lib/Target.vo: Lib/Target.v /Rocq\\ Platform/Init/Logic.vo\n")
+                .unwrap(),
+            ["Lib/Target.v", "/Rocq Platform/Init/Logic.vo"]
+        );
+    }
+
+    #[test]
+    fn rejects_linked_build_outputs_before_compilation() {
+        use std::os::unix::fs::symlink;
+
+        for hard_link in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let outside = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(outside.path(), "outside").unwrap();
+            let workspace = test_workspace(&directory);
+            let output = Path::new("build/Target.vo");
+            std::fs::create_dir_all(workspace.root().join("build")).unwrap();
+            if hard_link {
+                std::fs::hard_link(outside.path(), workspace.root().join(output)).unwrap();
+            } else {
+                symlink(outside.path(), workspace.root().join(output)).unwrap();
+            }
+
+            assert!(validate_build_output(&workspace, output).is_err());
+            assert_eq!(std::fs::read_to_string(outside.path()).unwrap(), "outside");
+        }
     }
 
     #[test]

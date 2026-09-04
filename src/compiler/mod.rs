@@ -180,6 +180,21 @@ impl CompilerWorkspace {
         Ok(unchanged)
     }
 
+    fn file_digest(&self, path: &Path) -> Result<String> {
+        let snapshot = self.snapshot(path)?;
+        let content = snapshot.content().ok_or_else(|| {
+            anyhow::anyhow!("formal compiler output is missing: {}", path.display())
+        })?;
+        let digest = crate::formal::status::content_digest(content);
+        if !self.snapshot_unchanged(&snapshot, path)? {
+            bail!(
+                "formal compiler output changed while reading: {}",
+                path.display()
+            );
+        }
+        Ok(digest)
+    }
+
     fn ensure_directory_tree(&self, directory: &Path) -> Result<bool> {
         self.require_workspace_path(directory)?;
         self.root_generation.require_current()?;

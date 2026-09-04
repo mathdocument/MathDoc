@@ -96,7 +96,6 @@ pub(super) fn compile(req: &CompilerReq) -> (CompilerRes, Option<FormalCompilati
             let (out, err) = classify_build_output(&stdout, &stderr, rtcode == 0);
             let formal_receipt = if rtcode == 0 {
                 match collect_formal_receipt(
-                    req,
                     &workspace,
                     &lake,
                     &relative,
@@ -138,7 +137,6 @@ fn without_receipt(result: CompilerRes) -> (CompilerRes, Option<FormalCompilatio
 
 #[allow(clippy::too_many_arguments)]
 fn collect_formal_receipt(
-    req: &CompilerReq,
     workspace: &CompilerWorkspace,
     lake: &Path,
     relative: &Path,
@@ -173,7 +171,8 @@ fn collect_formal_receipt(
         language: "lean".to_string(),
         target_module,
         source_sha256,
-        artifact_sha256: crate::formal::status::file_digest(&req.mdcroot, &artifact)
+        artifact_sha256: workspace
+            .file_digest(&artifact)
             .context("hashing selected Lean artifact")?,
         environment_sha256: environment.digest().to_string(),
         compiler_path: compiler_identity.path().to_string(),

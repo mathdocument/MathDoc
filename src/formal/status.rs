@@ -1121,6 +1121,7 @@ pub(crate) fn content_digest(content: &[u8]) -> String {
     digest(content)
 }
 
+#[cfg(test)]
 pub(crate) fn file_digest(root: &Path, path: &Path) -> Result<String> {
     let content = stable_content(root, path)?
         .ok_or_else(|| anyhow::anyhow!("formal compiler output is missing: {}", path.display()))?;
