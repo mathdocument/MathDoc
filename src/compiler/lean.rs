@@ -56,7 +56,7 @@ pub(super) fn compile(req: &CompilerReq) -> (CompilerRes, Option<FormalCompilati
             "Lean source disappeared before compilation",
         ));
     };
-    let source_sha256 = crate::formal::status::content_digest(source_content);
+    let source_sha256 = crate::formal::status::digest(source_content);
     let environment = match crate::formal::status::capture_environment(workspace.mdcroot(), "lean")
     {
         Ok(Some(evidence)) => evidence,
@@ -359,7 +359,7 @@ fn guarded_digest(
     let Some(content) = snapshot.content() else {
         return Ok(None);
     };
-    let digest = crate::formal::status::content_digest(content);
+    let digest = crate::formal::status::digest(content);
     if !snapshot.file_generation_unchanged(path)? {
         bail!(
             "Lean dependency artifact changed while reading: {}",

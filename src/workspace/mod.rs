@@ -44,15 +44,12 @@ pub fn initialize(root: &Path) -> Result<bool> {
 
 /// Walk up from `start` looking for a `.mdc/` directory. Returns the workspace root if found.
 pub fn find_mdcroot(start: &Path) -> Option<PathBuf> {
-    let mut current = start.canonicalize().ok()?;
-    loop {
-        if is_regular_directory(&current.join(".mdc")) {
-            return Some(current);
-        }
-        if !current.pop() {
-            return None;
-        }
-    }
+    start
+        .canonicalize()
+        .ok()?
+        .ancestors()
+        .find(|path| is_regular_directory(&path.join(".mdc")))
+        .map(Path::to_path_buf)
 }
 
 /// Canonicalize a workspace root and require its `.mdc` control path to be a
@@ -85,16 +82,10 @@ pub fn find_nested_mdcroot(root: &Path, path: &Path) -> Option<PathBuf> {
     if !path.starts_with(root) {
         return None;
     }
-    let mut current = path;
-    loop {
-        if current == root {
-            return None;
-        }
-        if is_regular_directory(&current.join(".mdc")) {
-            return Some(current.to_path_buf());
-        }
-        current = current.parent()?;
-    }
+    path.ancestors()
+        .take_while(|current| *current != root)
+        .find(|current| is_regular_directory(&current.join(".mdc")))
+        .map(Path::to_path_buf)
 }
 
 /// Iterate all `.mdoc` files under `root`, skipping `.mdc/` directories and nested workspaces.
@@ -192,28 +183,21 @@ pub(crate) fn resolve_mdoc_path(root: &Path, file_path: &Path) -> Result<PathBuf
             }
         }
     }
-    let resolved =
-        match candidate.canonicalize() {
-            Ok(path) => path,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let mut existing = candidate.as_path();
-                let mut suffix = Vec::new();
-                while !existing.exists() {
-                    suffix.push(existing.file_name().ok_or_else(|| {
-                        anyhow::anyhow!("invalid mdoc path {}", file_path.display())
-                    })?);
-                    existing = existing.parent().ok_or_else(|| {
-                        anyhow::anyhow!("invalid mdoc path {}", file_path.display())
-                    })?;
-                }
-                let mut resolved = existing.canonicalize()?;
-                for component in suffix.into_iter().rev() {
-                    resolved.push(component);
-                }
-                resolved
-            }
-            Err(error) => return Err(error.into()),
-        };
+    let resolved = match candidate.canonicalize() {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let existing = candidate
+                .ancestors()
+                .find(|path| path.exists())
+                .ok_or_else(|| anyhow::anyhow!("invalid mdoc path {}", file_path.display()))?;
+            existing.canonicalize()?.join(
+                candidate
+                    .strip_prefix(existing)
+                    .expect("ancestor must be a path prefix"),
+            )
+        }
+        Err(error) => return Err(error.into()),
+    };
     if !resolved.starts_with(&root) {
         bail!("mdoc path is outside workspace: {}", file_path.display());
     }
@@ -313,6 +297,17 @@ mod tests {
         symlink(&target, &link).unwrap();
 
         assert!(resolve_mdoc_path(workspace.path(), &link).is_err());
+    }
+
+    #[test]
+    fn resolve_mdoc_path_preserves_a_missing_suffix() {
+        let workspace = tempfile::tempdir().unwrap();
+        let relative = Path::new("missing/nested/node.mdoc");
+
+        assert_eq!(
+            resolve_mdoc_path(workspace.path(), relative).unwrap(),
+            workspace.path().canonicalize().unwrap().join(relative)
+        );
     }
 
     #[test]

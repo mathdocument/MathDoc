@@ -185,7 +185,7 @@ impl CompilerWorkspace {
         let content = snapshot.content().ok_or_else(|| {
             anyhow::anyhow!("formal compiler output is missing: {}", path.display())
         })?;
-        let digest = crate::formal::status::content_digest(content);
+        let digest = crate::formal::status::digest(content);
         if !self.snapshot_unchanged(&snapshot, path)? {
             bail!(
                 "formal compiler output changed while reading: {}",

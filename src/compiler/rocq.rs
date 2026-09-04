@@ -56,7 +56,7 @@ pub(super) fn compile(req: &CompilerReq) -> (CompilerRes, Option<FormalCompilati
             "Rocq source disappeared before compilation",
         ));
     };
-    let source_sha256 = crate::formal::status::content_digest(source_content);
+    let source_sha256 = crate::formal::status::digest(source_content);
     let compiler_identity = match crate::formal::status::capture_compiler_identity(&rocq) {
         Ok(identity) => identity,
         Err(error) => return without_receipt(CompilerRes::err(error.to_string())),
@@ -449,7 +449,7 @@ fn guarded_digest(
     let content = snapshot.content().ok_or_else(|| {
         anyhow::anyhow!("Rocq dependency artifact is missing: {}", path.display())
     })?;
-    let digest = crate::formal::status::content_digest(content);
+    let digest = crate::formal::status::digest(content);
     if !snapshot.file_generation_unchanged(path)? {
         anyhow::bail!(
             "Rocq dependency artifact changed while reading: {}",

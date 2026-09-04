@@ -1099,26 +1099,30 @@ fn join_formal_workers<T>(
 
 fn source_path(root: &Path, relative: &Path, language: &str) -> Result<PathBuf> {
     match language {
-        "lean" => Ok(lean_source_path(root, relative)),
-        "rocq" => Ok(rocq_source_path(root, relative)),
+        "lean" => Ok(root
+            .join(".mdc/lean/Lib")
+            .join(relative.with_extension("lean"))),
+        "rocq" => Ok(root
+            .join(".mdc/rocq/Lib")
+            .join(relative.with_extension("v"))),
         _ => bail!("unsupported formal language: {language}"),
     }
 }
 
 fn artifact_path(root: &Path, relative: &Path, language: &str) -> Result<PathBuf> {
     match language {
-        "lean" => Ok(lean_artifact_path(root, relative)),
-        "rocq" => Ok(rocq_artifact_path(root, relative)),
+        "lean" => Ok(root
+            .join(".mdc/lean/.lake/build/lib/lean/Lib")
+            .join(relative.with_extension("olean"))),
+        "rocq" => Ok(root
+            .join(".mdc/rocq/build")
+            .join(relative.with_extension("vo"))),
         _ => bail!("unsupported formal language: {language}"),
     }
 }
 
-fn digest(content: &[u8]) -> String {
+pub(crate) fn digest(content: &[u8]) -> String {
     format!("{:x}", Sha256::digest(content))
-}
-
-pub(crate) fn content_digest(content: &[u8]) -> String {
-    digest(content)
 }
 
 #[cfg(test)]
@@ -1139,34 +1143,6 @@ fn status_value(status: FormalCodeStatus) -> i64 {
         FormalCodeStatus::Unverified => 1,
         FormalCodeStatus::Verified => 2,
     }
-}
-
-pub(crate) fn lean_source_path(root: &Path, relative: &Path) -> PathBuf {
-    root.join(".mdc")
-        .join("lean")
-        .join("Lib")
-        .join(relative.with_extension("lean"))
-}
-
-pub(crate) fn lean_artifact_path(root: &Path, relative: &Path) -> PathBuf {
-    root.join(".mdc")
-        .join("lean")
-        .join(".lake/build/lib/lean/Lib")
-        .join(relative.with_extension("olean"))
-}
-
-pub(crate) fn rocq_source_path(root: &Path, relative: &Path) -> PathBuf {
-    root.join(".mdc")
-        .join("rocq")
-        .join("Lib")
-        .join(relative.with_extension("v"))
-}
-
-pub(crate) fn rocq_artifact_path(root: &Path, relative: &Path) -> PathBuf {
-    root.join(".mdc")
-        .join("rocq")
-        .join("build")
-        .join(relative.with_extension("vo"))
 }
 
 #[cfg(test)]
@@ -1198,9 +1174,12 @@ mod tests {
             metadata: HashMap::new(),
         });
         write(&node.path, &node.render().unwrap());
-        write(&lean_source_path(root, Path::new(relative)), content);
         write(
-            &lean_artifact_path(root, Path::new(relative)),
+            &source_path(root, Path::new(relative), "lean").unwrap(),
+            content,
+        );
+        write(
+            &artifact_path(root, Path::new(relative), "lean").unwrap(),
             &format!("artifact for {relative}"),
         );
         node
@@ -1227,7 +1206,11 @@ mod tests {
             let dependency_relative = dependency_path.strip_prefix(cache.root()).unwrap();
             direct_dependencies.insert(
                 module_key(dependency_relative).unwrap(),
-                file_digest(root, &lean_artifact_path(root, dependency_relative)).unwrap(),
+                file_digest(
+                    root,
+                    &artifact_path(root, dependency_relative, "lean").unwrap(),
+                )
+                .unwrap(),
             );
         }
         let compiler = std::env::current_exe().unwrap();
@@ -1236,8 +1219,10 @@ mod tests {
             evidence_scheme_version: EVIDENCE_SCHEME_VERSION,
             language: "lean".to_string(),
             target_module: module_key(relative).unwrap(),
-            source_sha256: file_digest(root, &lean_source_path(root, relative)).unwrap(),
-            artifact_sha256: file_digest(root, &lean_artifact_path(root, relative)).unwrap(),
+            source_sha256: file_digest(root, &source_path(root, relative, "lean").unwrap())
+                .unwrap(),
+            artifact_sha256: file_digest(root, &artifact_path(root, relative, "lean").unwrap())
+                .unwrap(),
             environment_sha256: environment_digest(root, "lean").unwrap().unwrap(),
             compiler_path,
             compiler_sha256,
@@ -1276,19 +1261,19 @@ mod tests {
         let root = Path::new("/workspace");
         let source = Path::new("nested/node.mdoc");
         assert_eq!(
-            lean_source_path(root, source),
+            source_path(root, source, "lean").unwrap(),
             Path::new("/workspace/.mdc/lean/Lib/nested/node.lean")
         );
         assert_eq!(
-            lean_artifact_path(root, source),
+            artifact_path(root, source, "lean").unwrap(),
             Path::new("/workspace/.mdc/lean/.lake/build/lib/lean/Lib/nested/node.olean")
         );
         assert_eq!(
-            rocq_source_path(root, source),
+            source_path(root, source, "rocq").unwrap(),
             Path::new("/workspace/.mdc/rocq/Lib/nested/node.v")
         );
         assert_eq!(
-            rocq_artifact_path(root, source),
+            artifact_path(root, source, "rocq").unwrap(),
             Path::new("/workspace/.mdc/rocq/build/nested/node.vo")
         );
     }
@@ -1312,7 +1297,7 @@ mod tests {
             FormalCodeStatus::Verified
         );
 
-        let artifact = lean_artifact_path(root, Path::new("leaf.mdoc"));
+        let artifact = artifact_path(root, Path::new("leaf.mdoc"), "lean").unwrap();
         write(&artifact, "replaced artifact");
         cache.upsert_path(&node.path).unwrap();
         assert_eq!(
@@ -1514,7 +1499,7 @@ mod tests {
                 .unwrap()
                 .to_string_lossy()
                 .into_owned(),
-            content_digest(b"external generation one"),
+            digest(b"external generation one"),
         );
         assert!(publish_receipt(&mut cache, root, &node.fnode, receipt).is_empty());
         assert_eq!(
@@ -1537,7 +1522,7 @@ mod tests {
                 .unwrap()
                 .to_string_lossy()
                 .into_owned(),
-            content_digest(b"external generation two"),
+            digest(b"external generation two"),
         );
         assert!(publish_receipt(&mut cache, root, &node.fnode, receipt).is_empty());
         write(&compiler, "compiler generation two");
@@ -1555,7 +1540,7 @@ mod tests {
         std::fs::create_dir(root.join(".mdc")).unwrap();
         lean_environment(root);
         let node = lean_node(root, "leaf.mdoc", "Leaf", &[], "def leaf : Nat := 1\n");
-        let artifact = lean_artifact_path(root, Path::new("leaf.mdoc"));
+        let artifact = artifact_path(root, Path::new("leaf.mdoc"), "lean").unwrap();
         let mut cache = IndCache::open(root.to_path_buf()).unwrap();
         let receipt = lean_receipt(&mut cache, root, &node.fnode);
         let changed_artifact = artifact.clone();
@@ -1665,7 +1650,7 @@ mod tests {
         std::fs::create_dir(root.join(".mdc")).unwrap();
         lean_environment(root);
         let node = lean_node(root, "leaf.mdoc", "Leaf", &[], "def leaf : Nat := 1\n");
-        let artifact = lean_artifact_path(root, Path::new("leaf.mdoc"));
+        let artifact = artifact_path(root, Path::new("leaf.mdoc"), "lean").unwrap();
         let mut cache = IndCache::open(root.to_path_buf()).unwrap();
         let receipt = lean_receipt(&mut cache, root, &node.fnode);
         let work_lock = crate::workspace::WorkspaceWorkLock::acquire(root).unwrap();
@@ -1706,7 +1691,7 @@ mod tests {
         std::fs::create_dir(root.join(".mdc")).unwrap();
         lean_environment(root);
         let node = lean_node(root, "leaf.mdoc", "Leaf", &[], "def leaf : Nat := 1\n");
-        let artifact = lean_artifact_path(root, Path::new("leaf.mdoc"));
+        let artifact = artifact_path(root, Path::new("leaf.mdoc"), "lean").unwrap();
         let mut cache = IndCache::open(root.to_path_buf()).unwrap();
         assert!(publish(&mut cache, root, &node.fnode).is_empty());
         let changed_artifact = artifact.clone();
@@ -1848,7 +1833,7 @@ mod tests {
         edited.blocks[0].content = "def value : Nat := 2\n".to_string();
         write(&edited.path, &edited.render().unwrap());
         write(
-            &lean_source_path(root, Path::new("dep.mdoc")),
+            &source_path(root, Path::new("dep.mdoc"), "lean").unwrap(),
             "def value : Nat := 2\n",
         );
         cache.upsert_path(&edited.path).unwrap();
@@ -1861,7 +1846,7 @@ mod tests {
         }
 
         write(
-            &lean_artifact_path(root, Path::new("dep.mdoc")),
+            &artifact_path(root, Path::new("dep.mdoc"), "lean").unwrap(),
             "new dependency artifact",
         );
         assert!(publish(&mut cache, root, &dependency.fnode).is_empty());
@@ -1900,7 +1885,7 @@ mod tests {
         let plain = MdocNode::new_at_path(&root.join("plain.mdoc"), "Plain");
         write(&plain.path, &plain.render().unwrap());
         write(
-            &lean_artifact_path(root, Path::new("plain.mdoc")),
+            &artifact_path(root, Path::new("plain.mdoc"), "lean").unwrap(),
             "untrusted plain artifact",
         );
         let missing_formal = lean_node(
@@ -1917,7 +1902,11 @@ mod tests {
         let mut receipt = lean_receipt(&mut cache, root, &parent.fnode);
         receipt.direct_dependencies.insert(
             module_key(Path::new("extra.mdoc")).unwrap(),
-            file_digest(root, &lean_artifact_path(root, Path::new("extra.mdoc"))).unwrap(),
+            file_digest(
+                root,
+                &artifact_path(root, Path::new("extra.mdoc"), "lean").unwrap(),
+            )
+            .unwrap(),
         );
         let work_lock = crate::workspace::WorkspaceWorkLock::acquire(root).unwrap();
         let lock = work_lock.acquire_mutation_lock().unwrap();
