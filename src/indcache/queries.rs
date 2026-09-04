@@ -225,7 +225,7 @@ pub(super) fn direct_dependency_summaries(
         bail!("no mdoc matched reference: {root_fnode}");
     }
 
-    let mut seen = HashSet::from([root_fnode.to_string()]);
+    let mut seen = HashSet::new();
     let dependencies = edge_lookup_for_sources(conn, &[root_fnode])?
         .remove(root_fnode)
         .unwrap_or_default()

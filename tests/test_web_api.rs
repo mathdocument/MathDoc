@@ -789,6 +789,32 @@ async fn node_view_returns_detail_referrers_and_children_together() {
 }
 
 #[tokio::test]
+async fn node_view_includes_a_self_dependency_so_it_can_be_removed() {
+    let dir = TempDir::new().unwrap();
+    let root = init_workspace(&dir);
+    let mut node = make_node(&root, "Legacy Self Loop");
+    let fnode = node.fnode.clone();
+    node.depens.push(fnode.clone());
+    write_node(&node);
+    let mut cache = IndCache::open(root).unwrap();
+    cache.discover_workspace_changes().unwrap();
+    let app = web::server::router(web::AppState::new(cache));
+
+    let (_, view) = get_json(&app, &format!("/api/node/{fnode}/view")).await;
+    assert_eq!(view["children"][0]["fnode"], fnode);
+
+    let (status, updated) = send_json(
+        &app,
+        "POST",
+        &format!("/api/node/{fnode}/dep/rm"),
+        serde_json::json!({ "dep_fnodes": [fnode] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated["depens"], serde_json::json!([]));
+}
+
+#[tokio::test]
 async fn node_view_refreshes_same_fnode_file_generation() {
     let dir = TempDir::new().unwrap();
     let (root, app) = build_app(&dir);
@@ -1005,6 +1031,36 @@ async fn put_block_creates_and_updates_block() {
         .find(|b| b["srctype"] == "text")
         .unwrap();
     assert_eq!(text_block["content"], "updated\n");
+}
+
+#[tokio::test]
+async fn put_block_accepts_content_above_axums_default_body_limit() {
+    let dir = TempDir::new().unwrap();
+    let (_root, app) = build_app(&dir);
+    let (_, roots) = get_json(&app, "/api/graph/roots").await;
+    let fnode = roots
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["title"] == "Main Theorem")
+        .unwrap()["fnode"]
+        .as_str()
+        .unwrap();
+    let content = format!("{}\n", "x".repeat(2 * 1024 * 1024));
+
+    let (status, updated) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/node/{fnode}/block/text"),
+        serde_json::json!({ "content": content }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        updated["blocks"][1]["content"].as_str().unwrap().len(),
+        content.len()
+    );
 }
 
 #[tokio::test]

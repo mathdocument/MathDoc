@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use anyhow::{bail, Context, Result};
-use axum::extract::Request;
+use axum::extract::{DefaultBodyLimit, Request};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -13,6 +13,8 @@ use crate::indcache::WorkspaceStore;
 use super::api;
 use super::assets;
 use super::AppState;
+
+const MAX_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 /// Start the `mdc serve` HTTP server.
 ///
@@ -101,6 +103,7 @@ pub fn router(state: AppState) -> Router {
         .fallback(get(|uri: axum::http::Uri| async move {
             assets::serve_asset(uri)
         }))
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(middleware::from_fn(require_local_host))
         .layer(middleware::from_fn(disable_html_caching))
 }
