@@ -138,18 +138,29 @@
       );
       if (statementStart) {
         closeParagraph();
+        const environment = statementStart[1]!;
         const section = document.createElement("section");
-        section.className = `latex-statement ${statementStart[1] === "proof" ? "proof" : ""}`;
+        section.className = `latex-statement ${environment === "proof" ? "proof" : ""}`;
         const label = document.createElement("div");
         label.className = "latex-statement-label";
-        label.textContent = statementNames[statementStart[1]!]! +
+        label.textContent = statementNames[environment]! +
           (statementStart[2] ? ` (${unwrapTitle(statementStart[2])})` : "");
         const body = document.createElement("div");
         body.className = "latex-statement-body";
         section.append(label, body);
         current().append(section);
         stack.push(body);
-        if (statementStart[3]) appendText(statementStart[3]);
+        const tail = statementStart[3]!;
+        const endMarker = `\\end{${environment}}`;
+        const endIndex = tail.indexOf(endMarker);
+        const statementBody = endIndex < 0 ? tail : tail.slice(0, endIndex).trimEnd();
+        if (statementBody) appendText(statementBody);
+        if (endIndex >= 0) {
+          closeParagraph();
+          stack.pop();
+          const trailing = tail.slice(endIndex + endMarker.length).trimStart();
+          if (trailing) appendText(trailing);
+        }
         continue;
       }
 
@@ -311,7 +322,7 @@
   }
   .latex-preview > :global(p) {
     content-visibility: auto;
-    contain-intrinsic-block-size: auto 3lh;
+    contain-intrinsic-block-size: auto 1lh;
   }
   .latex-preview :global(h2),
   .latex-preview :global(h3),

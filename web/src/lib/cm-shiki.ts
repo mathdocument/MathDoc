@@ -119,7 +119,7 @@ export function shikiHighlight(
           for (let lineCount = 0; lineCount < HIGHLIGHT_CHUNK_LINES && to < limit; lineCount++) {
             const line = doc.lineAt(to);
             const lineEnd = Math.min(limit, line.to < limit ? line.to + 1 : line.to);
-            if (line.to - line.from > HIGHLIGHT_CHUNK_LENGTH) {
+            if (line.to - line.from >= HIGHLIGHT_CHUNK_LENGTH) {
               if (to === from) {
                 to = lineEnd;
                 skipChunk = true;
@@ -130,7 +130,7 @@ export function shikiHighlight(
             to = lineEnd;
           }
           if (skipChunk) {
-            if (to < limit) this.scheduleChunk(view, doc, to, grammarState, run, limit);
+            if (to < limit) this.scheduleChunk(view, doc, to, undefined, run, limit);
             else if (!this.errorReported) onError?.(null);
             return;
           }

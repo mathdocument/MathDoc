@@ -182,7 +182,7 @@
   }
 
   function onKey(e: KeyboardEvent) {
-    if (disabled) return;
+    if (disabled || saving || e.isComposing) return;
     if ((e.key === "Enter" || e.key === " ") &&
       e.target instanceof Element && e.target.closest(".close-btn")) return;
     switch (e.key) {
@@ -236,6 +236,7 @@
         placeholder="Search for a dependency…"
         autocomplete="off"
         spellcheck="false"
+        disabled={saving}
       />
       {#if loading}<span class="loading-label">Searching</span>{/if}
       <button class="close-btn" onclick={close} title="Close" aria-label="Close add dependency"><X size={17} strokeWidth={1.8} /></button>
@@ -250,6 +251,7 @@
             placeholder="file path (optional, e.g. notes/lemma)"
             autocomplete="off"
             spellcheck="false"
+            disabled={saving}
           />
           <button
             class="create-confirm"

@@ -199,6 +199,17 @@ async function runEditorSample(context, url) {
     await page.locator(".latex-preview .katex").first().waitFor({ state: "visible" });
     await nextPaint(page);
     const latexPreviewMs = await page.evaluate(() => performance.now() - window.__mdcPerfAction);
+    const proofText = await page.locator(".latex-statement.proof .latex-statement-body").innerText();
+    if (proofText.trim() !== "Inline proof.") throw new Error("inline proof environment did not close");
+    await page.setViewportSize({ width: 375, height: 667 });
+    const mobileLayout = await page.evaluate(() => ({
+      editorWidth: document.querySelector(".layout > .center")?.getBoundingClientRect().width ?? 0,
+      sidebarsVisible: [...document.querySelectorAll(".layout > .column")]
+        .some((element) => getComputedStyle(element).display !== "none"),
+    }));
+    if (mobileLayout.editorWidth < 300 || mobileLayout.sidebarsVisible) {
+      throw new Error("mobile editor layout is obstructed by relation columns");
+    }
     if (errors.length > 0) throw new Error(errors.join("\n"));
     return { editorReadyMs, editorHighlightMs, themeSwitchMs, latexPreviewMs };
   } finally {

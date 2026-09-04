@@ -34,6 +34,7 @@
   let canvasEl = $state<HTMLCanvasElement | null>(null);
   let containerEl = $state<HTMLDivElement | null>(null);
   let nodes: SimNode[] = [];
+  let nodeCount = $state(0);
   let rafId = 0;
   let running = true;
   let loadError: string | null = $state(null);
@@ -142,6 +143,7 @@
       x: 0,
       y: 0,
     }));
+    nodeCount = nodes.length;
     nodesById = new Map(nodes.map((node) => [node.id, node]));
     computeMetadata(nodes, data.edges);
     applyStaticGraphLayout();
@@ -876,8 +878,14 @@
       <button onclick={() => void ensureGraphLoaded()}>retry</button>
     </div>
   {/if}
+  <p class="graph-summary" role="status">
+    Knowledge graph with {nodeCount} nodes.{selectedFnode
+      ? ` Selected node: ${selectedFnode}.`
+      : ""} Use Search to select a node.
+  </p>
   <canvas
     bind:this={canvasEl}
+    aria-hidden="true"
     onpointerdown={onPointerDown}
     onpointermove={onPointerMove}
     onpointerup={onPointerUp}
@@ -913,6 +921,17 @@
     height: 100%;
     cursor: grab;
     touch-action: none;
+  }
+  .graph-summary {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
   .graph-loading {
     position: absolute;

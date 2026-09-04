@@ -175,9 +175,11 @@
         {#if editingTitle}
           <input
             class="title-input"
+            aria-label="Node title"
             bind:this={titleInputEl}
             bind:value={titleDraft}
             onkeydown={(e) => {
+              if (e.isComposing) return;
               if (e.key === "Enter") { e.preventDefault(); void saveTitle(); }
               else if (e.key === "Escape") { e.preventDefault(); cancelEditTitle(); }
             }}
@@ -191,15 +193,9 @@
           </button>
           {#if titleError}<span class="title-error">{titleError}</span>{/if}
         {:else}
-          <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events, a11y_no_noninteractive_element_to_interactive_role -->
-          <h1
-            class="title"
-            tabindex="0"
-            role="button"
-            onclick={startEditTitle}
-            onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); startEditTitle(); } }}
-            title="Click to rename"
-          >{node.title}</h1>
+          <h1 class="title">
+            <button onclick={startEditTitle} title="Click to rename">{node.title}</button>
+          </h1>
         {/if}
       </div>
       <div class="meta">
@@ -328,6 +324,16 @@
   }
   .title:hover {
     background: var(--mdc-card-hover);
+  }
+  .title button {
+    padding: 0;
+    color: inherit;
+    background: none;
+    border: 0;
+    font: inherit;
+    letter-spacing: inherit;
+    text-align: left;
+    cursor: text;
   }
   .title-input {
     font-size: 1.18rem;

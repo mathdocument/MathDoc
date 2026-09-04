@@ -384,6 +384,7 @@
     class="editor-host"
     class:expanded
     class:collapsed={!expanded || previewing}
+    inert={deleting}
     bind:this={host}
   >
   </div>

@@ -6,7 +6,9 @@ const rootFnode = "perf-root";
 
 const latexSource = Array.from(
   { length: EDITOR_LINE_COUNT },
-  (_, index) => `\\paragraph{Case ${index + 1}.} If $x_{${index + 1}} \\in \\mathbb{R}$, then $x_{${index + 1}}^2 \\ge 0$.`,
+  (_, index) => index === 0
+    ? "\\begin{proof}Inline proof.\\end{proof} Outside proof."
+    : `\\paragraph{Case ${index + 1}.} If $x_{${index + 1}} \\in \\mathbb{R}$, then $x_{${index + 1}}^2 \\ge 0$.`,
 ).join("\n");
 
 function summary(index = 0) {

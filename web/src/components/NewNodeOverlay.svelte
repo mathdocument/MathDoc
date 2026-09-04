@@ -60,7 +60,7 @@
   }
 
   function onKey(e: KeyboardEvent) {
-    if (disabled) return;
+    if (disabled || saving || e.isComposing) return;
     if ((e.key === "Enter" || e.key === " ") &&
       e.target instanceof Element && e.target.closest(".close-btn, .actions")) return;
     if (e.key === "Enter") {
@@ -132,7 +132,7 @@
           bind:value={title}
           placeholder="New Lemma"
           autocomplete="off"
-          disabled={step !== "title"}
+          disabled={saving || step !== "title"}
         />
       </label>
       <label class="field" class:active={step === "file"}>
@@ -143,7 +143,7 @@
           placeholder="Default: <fnode>.mdoc at workspace root"
           autocomplete="off"
           spellcheck="false"
-          disabled={step !== "file"}
+          disabled={saving || step !== "file"}
         />
       </label>
       {#if error}

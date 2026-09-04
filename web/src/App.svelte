@@ -118,6 +118,14 @@
     applyTheme(nextTheme, false);
   }));
 
+  async function findDefaultFnode(): Promise<string | null> {
+    const roots = (await api.roots()).filter((node) => !node.broken);
+    if (roots.length > 0) {
+      return roots.sort((a, b) => b.topo_depth - a.topo_depth)[0]!.fnode;
+    }
+    return (await api.full()).nodes[0]?.fnode ?? null;
+  }
+
   async function navigateInitial(
     fnode: string,
     clearedEntry: BrowserHistoryEntry | null = null,
@@ -286,26 +294,15 @@
           }
           return;
         }
-        const roots = (await api.roots()).filter((node) => !node.broken);
+        const defaultFnode = await findDefaultFnode();
         if (!isCurrent()) return;
-        if (roots.length === 0) {
-          const graph = await api.full();
-          if (!isCurrent()) return;
-          const fallback = graph.nodes[0];
-          if (!fallback) {
-            initialError = "workspace has no valid nodes — create one with New node";
-            return;
-          }
-          const committed = await navigateInitial(fallback.fnode);
-          if (isCurrent() && !committed) {
-            initialNavigationRetry = { fnode: fallback.fnode, clearedEntry: null };
-          }
+        if (!defaultFnode) {
+          initialError = "workspace has no valid nodes — create one with New node";
           return;
         }
-        const deepest = [...roots].sort((a, b) => b.topo_depth - a.topo_depth)[0]!;
-        const committed = await navigateInitial(deepest.fnode);
+        const committed = await navigateInitial(defaultFnode);
         if (isCurrent() && !committed) {
-          initialNavigationRetry = { fnode: deepest.fnode, clearedEntry: null };
+          initialNavigationRetry = { fnode: defaultFnode, clearedEntry: null };
         }
       } catch (e) {
         if (isCurrent()) initialError = e instanceof Error ? e.message : String(e);
@@ -335,18 +332,33 @@
       if (request !== refreshRequest) return;
       const selectionWasCleared = nodeSession.selectionCleared;
       const current = nodeSession.node;
-      const refreshed = !current || await nodeSession.select(
-        current.fnode,
-        {
+      let refreshed = false;
+      if (current) {
+        refreshed = await nodeSession.select(current.fnode, {
           pushHistory: false,
           skipTransition: true,
           skipUnsavedGuard: true,
-        },
-      );
+        });
+      } else {
+        const defaultFnode = await findDefaultFnode();
+        if (request !== refreshRequest) return;
+        if (defaultFnode) {
+          refreshed = await nodeSession.select(defaultFnode, {
+            skipTransition: true,
+            skipUnsavedGuard: true,
+          });
+        } else {
+          initialError = "workspace has no valid nodes — create one with New node";
+        }
+      }
       if (selectionWasCleared && view === "force") nodeSession.selectionCleared = true;
       if (request !== refreshRequest) return;
       if (refreshed || checked) graphRevision++;
       if (!refreshed) refreshError = "refresh request failed";
+    } catch (error) {
+      if (request === refreshRequest) {
+        refreshError = error instanceof Error ? error.message : String(error);
+      }
     } finally {
       refreshing = false;
     }
@@ -1038,6 +1050,20 @@
   }
 
   @media (max-width: 700px) {
+    .toolbar {
+      overflow-x: auto;
+      overflow-y: hidden;
+      scrollbar-width: thin;
+    }
+    .toolbar > * {
+      flex-shrink: 0;
+    }
+    .layout {
+      padding: 0.5rem;
+    }
+    .layout > :global(.column) {
+      display: none;
+    }
     .force-layout {
       flex-direction: column;
     }
