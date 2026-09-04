@@ -21,7 +21,7 @@
     },
     "runtime.themeSwitchMs": {
       "maxIncreaseRatio": 0.2,
-      "noise": 10
+      "noise": 100
     },
     "runtime.latexPreviewMs": {
       "maxIncreaseRatio": 0.2,

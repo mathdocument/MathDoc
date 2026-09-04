@@ -33,10 +33,4 @@ export default defineConfig({
       },
     },
   },
-  build: {
-    // The oniguruma WASM is inlined as base64 (~620 kB) but only ever loads
-    // on demand (dynamic import in src/lib/shiki.ts), so it is not worth
-    // flagging as a size regression.
-    chunkSizeWarningLimit: 700,
-  },
 });

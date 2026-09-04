@@ -16,36 +16,26 @@ export function removeDraft(id: symbol): void {
   if (dirtyDrafts.delete(id)) draftRevision++;
 }
 
-function setMutationPending(id: symbol, pending: boolean): void {
-  if (pending) {
-    if (!pendingMutations.has(id)) {
-      pendingMutations.add(id);
-      draftRevision++;
-    }
-  } else if (pendingMutations.delete(id)) {
+export function trackMutation(): () => void {
+  const id = Symbol("pending mutation");
+  pendingMutations.add(id);
+  draftRevision++;
+  return () => {
+    if (!pendingMutations.delete(id)) return;
     draftRevision++;
     if (pendingMutations.size === 0) {
       const waiters = pendingWaiters;
       pendingWaiters = [];
       for (const resolve of waiters) resolve();
     }
-  }
-}
-
-export function trackMutation(): () => void {
-  const id = Symbol("pending mutation");
-  setMutationPending(id, true);
-  return () => setMutationPending(id, false);
-}
-
-export function waitForPendingMutations(): Promise<void> {
-  if (pendingMutations.size === 0) return Promise.resolve();
-  return new Promise((resolve) => pendingWaiters.push(resolve));
+  };
 }
 
 export async function settlePendingMutations(): Promise<boolean> {
   const revisionBeforeWait = draftRevision;
-  await waitForPendingMutations();
+  if (pendingMutations.size > 0) {
+    await new Promise<void>((resolve) => pendingWaiters.push(resolve));
+  }
   if (draftRevision !== revisionBeforeWait && hasUnsavedDrafts()) {
     return confirmDiscardDrafts();
   }

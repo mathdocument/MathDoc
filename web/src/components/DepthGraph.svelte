@@ -253,22 +253,12 @@
     }
   }
 
-  // Render-on-demand flag. Set by requestRender(), consumed by the RAF loop.
-  let needsRender = false;
   function requestRender() {
-    needsRender = true;
-    startRaf();
-  }
-
-  function startRaf() {
     if (rafId || !running || !active) return;
     rafId = requestAnimationFrame(() => {
       rafId = 0;
       if (!running || !active) return;
-      if (needsRender) {
-        render();
-        needsRender = false;
-      }
+      render();
     });
   }
 
@@ -565,7 +555,6 @@
     // Search in reverse draw order so visually topmost nodes are hit first.
     for (let i = candidates.length - 1; i >= 0; i--) {
       const n = candidates[i]!;
-      if (n.x == null || n.y == null) continue;
       const dx = n.x - wx;
       const dy = n.y - wy;
       const r = nodeRadius(n, selection) + 4;
@@ -574,39 +563,45 @@
     return null;
   }
 
-  type MouseMode = "idle" | "pan";
-  let mouseMode: MouseMode = "idle";
-  let pressedNode: SimNode | null = null;
-  let panStart: { x: number; y: number; viewX: number; viewY: number } | null = null;
-  let mouseMoved = false;
-  let activePointerId: number | null = null;
+  let panStart: {
+    pointerId: number;
+    x: number;
+    y: number;
+    viewX: number;
+    viewY: number;
+    pressedNode: SimNode | null;
+    moved: boolean;
+  } | null = null;
 
   function onPointerDown(e: PointerEvent) {
     const canvas = canvasEl;
-    if (!canvas || e.button !== 0 || !e.isPrimary || activePointerId !== null) return;
-    activePointerId = e.pointerId;
+    if (!canvas || e.button !== 0 || !e.isPrimary || panStart) return;
     canvas.setPointerCapture(e.pointerId);
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    mouseMoved = false;
-
-    pressedNode = findNodeAt(x, y);
-    mouseMode = "pan";
-    panStart = { x, y, viewX, viewY };
+    panStart = {
+      pointerId: e.pointerId,
+      x,
+      y,
+      viewX,
+      viewY,
+      pressedNode: findNodeAt(x, y),
+      moved: false,
+    };
   }
 
   function onPointerMove(e: PointerEvent) {
     const canvas = canvasEl;
     if (!canvas) return;
-    if (mouseMode !== "idle" && e.pointerId !== activePointerId) return;
+    if (panStart && e.pointerId !== panStart.pointerId) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    if (mouseMode === "pan" && panStart) {
-      if (!mouseMoved) mouseMoved = Math.hypot(x - panStart.x, y - panStart.y) > 3;
-      if (mouseMoved) {
+    if (panStart) {
+      if (!panStart.moved) panStart.moved = Math.hypot(x - panStart.x, y - panStart.y) > 3;
+      if (panStart.moved) {
         viewX = panStart.viewX + (x - panStart.x);
         viewY = panStart.viewY + (y - panStart.y);
         canvas.style.cursor = "grabbing";
@@ -627,43 +622,40 @@
     const rect = canvas.getBoundingClientRect();
     const x = e ? e.clientX - rect.left : 0;
     const y = e ? e.clientY - rect.top : 0;
+    const start = panStart;
 
-    if (!cancelled && mouseMode === "pan" && !mouseMoved) {
-      if (pressedNode) {
-        onSelect(pressedNode.id === selectedFnode ? null : pressedNode.id);
+    if (!cancelled && start && !start.moved) {
+      if (start.pressedNode) {
+        onSelect(start.pressedNode.id === selectedFnode ? null : start.pressedNode.id);
       } else if (selectedFnode) {
         onSelect(null);
       }
     }
-    mouseMode = "idle";
     panStart = null;
-    pressedNode = null;
-    mouseMoved = false;
     const node = e && !cancelled ? findNodeAt(x, y) : null;
     const hoverChanged = (node?.id ?? null) !== (hoveredNode?.id ?? null);
     hoveredNode = node;
     canvas.style.cursor = node ? "pointer" : "grab";
     if (hoverChanged) requestRender();
-    if (activePointerId !== null && canvas.hasPointerCapture(activePointerId)) {
-      canvas.releasePointerCapture(activePointerId);
+    if (start && canvas.hasPointerCapture(start.pointerId)) {
+      canvas.releasePointerCapture(start.pointerId);
     }
-    activePointerId = null;
   }
 
   function onPointerUp(e: PointerEvent) {
-    if (e.pointerId === activePointerId) finishPointer(e, false);
+    if (e.pointerId === panStart?.pointerId) finishPointer(e, false);
   }
 
   function onPointerCancel(e: PointerEvent) {
-    if (e.pointerId === activePointerId) finishPointer(e, true);
+    if (e.pointerId === panStart?.pointerId) finishPointer(e, true);
   }
 
   function onLostPointerCapture(e: PointerEvent) {
-    if (e.pointerId === activePointerId && mouseMode !== "idle") finishPointer(null, true);
+    if (e.pointerId === panStart?.pointerId) finishPointer(null, true);
   }
 
   function onPointerLeave() {
-    if (mouseMode !== "idle" || !hoveredNode) return;
+    if (panStart || !hoveredNode) return;
     hoveredNode = null;
     if (canvasEl) canvasEl.style.cursor = "grab";
     requestRender();

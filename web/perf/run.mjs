@@ -257,6 +257,13 @@ async function runGraphSample(context, url) {
       }
       return frameTimes;
     });
+    const canvasBounds = await page.locator(".force-layout:not(.hidden) canvas").boundingBox();
+    if (!canvasBounds) throw new Error("graph canvas is not measurable");
+    await page.mouse.move(canvasBounds.x + canvasBounds.width / 2, canvasBounds.y + canvasBounds.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(canvasBounds.x + canvasBounds.width / 2 + 30, canvasBounds.y + canvasBounds.height / 2 + 20);
+    await page.mouse.up();
+    await nextPaint(page);
     if (errors.length > 0) throw new Error(errors.join("\n"));
     return { graphReadyMs, zoomFrames };
   } finally {

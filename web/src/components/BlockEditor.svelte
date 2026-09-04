@@ -61,7 +61,6 @@
   let previewRequest = 0;
   let alive = false;
   const draftId = Symbol("block draft");
-  let pendingSaveDoc: Text | null = null;
   const syntaxCompartment = new Compartment();
   let syntaxExtension: Extension = [];
   let readyReported = false;
@@ -122,7 +121,7 @@
       }),
       EditorView.updateListener.of((u) => {
         if (u.docChanged) {
-          setDirty(pendingSaveDoc !== null || lastSavedDoc === null || !u.state.doc.eq(lastSavedDoc));
+          setDirty(lastSavedDoc === null || !u.state.doc.eq(lastSavedDoc));
         }
       }),
     ];
@@ -233,8 +232,6 @@
     error = null;
     const contentDoc = editorView.state.doc;
     const content = contentDoc.toString();
-    pendingSaveDoc = contentDoc;
-    setDirty(true);
     const isCurrent = () => alive;
 
     try {
@@ -262,7 +259,6 @@
     } finally {
       clearMutation();
       if (isCurrent()) {
-        pendingSaveDoc = null;
         if (editorView) setDirty(lastSavedDoc === null || !editorView.state.doc.eq(lastSavedDoc));
         saving = false;
       }
