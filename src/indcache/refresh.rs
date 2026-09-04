@@ -334,14 +334,34 @@ fn replace_index_rows(
     conn.execute_batch(
         "DELETE FROM mdoc_edges;
          DELETE FROM mdoc_symbols;
-         DELETE FROM mdoc_issues;
-         DELETE FROM mdocs;",
+         DELETE FROM mdoc_issues;",
     )?;
 
     let nodes: Vec<(&ScannedMdoc, &ScannedNode)> = files
         .iter()
         .filter_map(|file| file.node.as_ref().map(|node| (file, node)))
         .collect();
+    let desired_paths = nodes
+        .iter()
+        .map(|(file, _)| file.path.as_str())
+        .collect::<HashSet<_>>();
+    let stale_paths = {
+        let mut stmt = conn.prepare("SELECT path FROM mdocs")?;
+        let paths = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .filter(|path| !desired_paths.contains(path.as_str()))
+            .collect::<Vec<_>>();
+        paths
+    };
+    for chunk in stale_paths.chunks(CHUNK_SIZE) {
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        conn.execute(
+            &format!("DELETE FROM mdocs WHERE path IN ({placeholders})"),
+            rusqlite::params_from_iter(chunk),
+        )?;
+    }
     for chunk in nodes.chunks(BULK_ROWS) {
         let placeholders = chunk
             .iter()
@@ -356,7 +376,16 @@ fn replace_index_rows(
             params.push(&node.title_lc);
         }
         conn.execute(
-            &format!("INSERT INTO mdocs (path, fnode, title, title_lc) VALUES {placeholders}"),
+            &format!(
+                "INSERT INTO mdocs (path, fnode, title, title_lc) VALUES {placeholders}
+                 ON CONFLICT(path) DO UPDATE SET
+                   fnode = excluded.fnode,
+                   title = excluded.title,
+                   title_lc = excluded.title_lc
+                 WHERE mdocs.fnode != excluded.fnode
+                    OR mdocs.title != excluded.title
+                    OR mdocs.title_lc != excluded.title_lc"
+            ),
             params.as_slice(),
         )?;
     }
