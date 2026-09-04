@@ -27,12 +27,10 @@ which = "6"
 sha2 = "0.10"
 dialoguer = { version = "0.12.0", default-features = false }
 ratatui = "0.29"
-crossterm = "0.28"
 # Web frontend (mdc serve)
 axum = { version = "0.7", default-features = false, features = ["http1", "json", "tokio", "query"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
-rust-embed = "8"
-mime_guess = "2"
+rust-embed = { version = "8", features = ["mime-guess"] }
 tempfile = "3"
 
 [dev-dependencies]

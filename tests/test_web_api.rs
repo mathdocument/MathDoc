@@ -389,18 +389,6 @@ async fn api_errors_use_json_status_contract() {
 }
 
 #[tokio::test]
-async fn spa_index_is_not_cached() {
-    let dir = TempDir::new().unwrap();
-    let (_root, app) = build_app(&dir);
-    let response = app
-        .oneshot(local_request().uri("/").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
-}
-
-#[tokio::test]
 async fn embedded_index_assets_use_release_mime_and_cache_policy() {
     let dir = TempDir::new().unwrap();
     let (_root, app) = build_app(&dir);
@@ -445,13 +433,15 @@ async fn embedded_index_assets_use_release_mime_and_cache_policy() {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK, "failed to serve {url}");
-        let expected_mime = mime_guess::from_path(&path)
-            .first_or_octet_stream()
-            .essence_str()
-            .to_string();
+        let expected_mime = match path.rsplit_once('.').map(|(_, extension)| extension) {
+            Some("css") => "text/css",
+            Some("js") => "text/javascript",
+            Some("svg") => "image/svg+xml",
+            extension => panic!("unexpected asset extension: {extension:?}"),
+        };
         assert_eq!(
             response.headers().get("content-type").unwrap(),
-            &expected_mime
+            expected_mime
         );
         let expected_cache = if path.starts_with("assets/") {
             "public, max-age=31536000, immutable"

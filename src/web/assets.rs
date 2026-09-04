@@ -39,16 +39,8 @@ pub(super) fn serve_asset(uri: Uri) -> Response {
 }
 
 fn asset_response(path: &str, file: rust_embed::EmbeddedFile) -> Response {
-    let mime = mime_guess::from_path(path)
-        .first_or_octet_stream()
-        .essence_str()
-        .to_string();
-    let mut resp = (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, HeaderValue::from_str(&mime).unwrap())],
-        file.data,
-    )
-        .into_response();
+    let mime = HeaderValue::from_str(file.metadata.mimetype()).unwrap();
+    let mut resp = (StatusCode::OK, [(header::CONTENT_TYPE, mime)], file.data).into_response();
     if path == "index.html" {
         resp.headers_mut()
             .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));

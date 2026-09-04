@@ -102,23 +102,6 @@ pub fn router(state: AppState) -> Router {
         }))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(middleware::from_fn(require_local_host))
-        .layer(middleware::from_fn(disable_html_caching))
-}
-
-async fn disable_html_caching(request: Request, next: Next) -> Response {
-    let mut response = next.run(request).await;
-    let is_html = response
-        .headers()
-        .get(axum::http::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.starts_with("text/html"));
-    if is_html {
-        response.headers_mut().insert(
-            axum::http::header::CACHE_CONTROL,
-            axum::http::HeaderValue::from_static("no-store"),
-        );
-    }
-    response
 }
 
 async fn require_local_host(request: Request, next: Next) -> Response {

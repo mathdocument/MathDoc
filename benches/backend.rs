@@ -381,10 +381,10 @@ fn compare(baseline: &Report, current: &Report, budgets: &Budgets) -> Result<()>
     if baseline.environment != current.environment {
         failures.push("benchmark environments differ".to_string());
     }
-    if !same_metric_names(&baseline.metrics, &current.metrics) {
+    if !baseline.metrics.keys().eq(current.metrics.keys()) {
         failures.push("baseline and current metric names differ".to_string());
     }
-    if !same_metric_names(&current.metrics, &budgets.metrics) {
+    if !current.metrics.keys().eq(budgets.metrics.keys()) {
         failures.push("report and budget metric names differ".to_string());
     }
 
@@ -431,14 +431,6 @@ fn compare(baseline: &Report, current: &Report, budgets: &Budgets) -> Result<()>
     } else {
         bail!("performance regression:\n{}", failures.join("\n"))
     }
-}
-
-fn same_metric_names<T, U>(left: &BTreeMap<String, T>, right: &BTreeMap<String, U>) -> bool {
-    left.len() == right.len()
-        && left
-            .keys()
-            .zip(right.keys())
-            .all(|(left, right)| left == right)
 }
 
 fn print_metrics(report: &Report) {
