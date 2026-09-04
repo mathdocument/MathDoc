@@ -20,7 +20,7 @@
     "@codemirror/view": "^6.36.4",
     "@lucide/svelte": "^1.27.0",
     "@shikijs/core": "^4.2.0",
-    "@shikijs/engine-oniguruma": "^4.2.0",
+    "@shikijs/engine-javascript": "^4.2.0",
     "@shikijs/langs": "^4.2.0",
     "@shikijs/themes": "^4.2.0",
     "katex": "^0.18.4"

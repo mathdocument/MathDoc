@@ -1,8 +1,7 @@
 // Shiki highlighter singleton with grammars loaded on demand.
 //
-// All modules are imported dynamically so Shiki + the oniguruma WASM
-// (~1 MB, inlined as base64) stay out of the initial bundle. The chunk is
-// fetched the first time a source block mounts, not on page load.
+// All modules are imported dynamically so Shiki stays out of the initial
+// bundle. The chunks are fetched the first time a source block mounts.
 
 import type { HighlighterCore } from "@shikijs/core";
 
@@ -33,21 +32,19 @@ function getHighlighterCore(): Promise<HighlighterCore> {
     highlighterPromise = (async () => {
       const [
         { createHighlighterCore },
-        { createOnigurumaEngine },
-        getWasm,
+        { createJavaScriptRegexEngine },
         tokyoNight,
         githubLight,
       ] = await Promise.all([
         import("@shikijs/core"),
-        import("@shikijs/engine-oniguruma"),
-        import("@shikijs/engine-oniguruma/wasm-inlined"),
+        import("@shikijs/engine-javascript"),
         import("@shikijs/themes/tokyo-night"),
         import("@shikijs/themes/github-light"),
       ]);
       return createHighlighterCore({
         langs: [],
         themes: [tokyoNight.default, githubLight.default],
-        engine: createOnigurumaEngine(getWasm.default),
+        engine: createJavaScriptRegexEngine(),
       });
     })().catch((error) => {
       // Allow a retry on the next call instead of caching a rejection forever.
@@ -59,11 +56,11 @@ function getHighlighterCore(): Promise<HighlighterCore> {
 }
 
 export async function getHighlighter(lang: MdcLanguage): Promise<HighlighterCore> {
-  const highlighter = await getHighlighterCore();
+  const core = getHighlighterCore();
   let languagePromise = languagePromises.get(lang);
   if (!languagePromise) {
-    languagePromise = LANGUAGE_LOADERS[lang]()
-      .then((language) => highlighter.loadLanguage(language))
+    languagePromise = Promise.all([core, LANGUAGE_LOADERS[lang]()])
+      .then(([highlighter, language]) => highlighter.loadLanguage(language))
       .catch((error) => {
         languagePromises.delete(lang);
         throw error;
@@ -71,7 +68,7 @@ export async function getHighlighter(lang: MdcLanguage): Promise<HighlighterCore
     languagePromises.set(lang, languagePromise);
   }
   await languagePromise;
-  return highlighter;
+  return core;
 }
 
 export function srctypeToLang(srctype: string): MdcLanguage {

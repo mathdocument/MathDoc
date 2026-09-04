@@ -7,7 +7,7 @@
       "noise": 1024
     },
     "bundle.totalTransferBytes": {
-      "max": 819200,
+      "max": 614400,
       "maxIncreaseRatio": 0.02,
       "noise": 2048
     },

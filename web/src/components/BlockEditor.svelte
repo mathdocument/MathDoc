@@ -139,12 +139,14 @@
         if (!alive || editorView !== view || readyReported) return;
         readyReported = true;
         onReady?.();
+        // Let the editor paint before grammar compilation occupies the main thread.
+        requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(ensureSyntaxHighlighting, 50)));
       },
     });
   }
 
   function ensureSyntaxHighlighting() {
-    if (!editorView || !active || !expanded || previewing ||
+    if (!editorView || !readyReported || !active || !expanded || previewing ||
       appliedSyntaxTheme === theme || pendingSyntaxTheme === theme) return;
     const requestedTheme = theme;
     const request = ++syntaxRequest;
@@ -212,7 +214,6 @@
       parent: host!,
     });
     reportReadyAfterMeasure(editorView);
-    if (active) ensureSyntaxHighlighting();
   });
 
   $effect(() => {
