@@ -1,0 +1,101 @@
+name: Backend performance
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "benches/**"
+      - "perf/**"
+      - "src/config.rs"
+      - "src/core/**"
+      - "src/formal/**"
+      - "src/indcache/**"
+      - "src/mdocnode/**"
+      - "src/profile.rs"
+      - "src/workspace/**"
+      - ".github/workflows/backend-perf.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out current revision
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: perf-head
+
+      - name: Check out base revision
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.event.pull_request.base.repo.full_name }}
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: perf-base
+
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal --no-self-update
+
+      - name: Detect base benchmark
+        id: base
+        run: |
+          if test -f perf-base/benches/backend.rs; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build base benchmark
+        if: steps.base.outputs.available == 'true'
+        working-directory: perf-base
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-base
+        run: cargo +stable bench --locked --bench backend --no-run
+
+      - name: Build current benchmark
+        working-directory: perf-head
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-head
+        run: cargo +stable bench --locked --bench backend --no-run
+
+      - name: Measure base revision
+        if: steps.base.outputs.available == 'true'
+        working-directory: perf-base
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-base
+        run: >-
+          cargo +stable bench --locked --bench backend --
+          --output "$RUNNER_TEMP/backend-perf-base.json"
+
+      - name: Compare current revision
+        if: steps.base.outputs.available == 'true'
+        working-directory: perf-head
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-head
+        run: >-
+          cargo +stable bench --locked --bench backend --
+          --output "$RUNNER_TEMP/backend-perf-current.json"
+          --compare "$RUNNER_TEMP/backend-perf-base.json"
+
+      - name: Measure initial current baseline
+        if: steps.base.outputs.available != 'true'
+        working-directory: perf-head
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-head
+        run: >-
+          cargo +stable bench --locked --bench backend --
+          --output "$RUNNER_TEMP/backend-perf-current.json"
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: backend-performance
+          path: |
+            ${{ runner.temp }}/backend-perf-base.json
+            ${{ runner.temp }}/backend-perf-current.json
