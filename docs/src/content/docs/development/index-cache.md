@@ -49,6 +49,7 @@ search, covering adjacency indexes, and direct graph algorithms.
 ## Internal boundaries
 
 - `schema.rs` owns table DDL, indexes, views, and `PRAGMA user_version` handling.
+- `formal.rs` adapts index locations to formal evidence evaluation and persists statuses.
 - `queries.rs` contains pure database reads, including direct weak-component and cycle
   calculation, with no materialization or invalidation.
 - `derived.rs` owns complete topological-depth recomputation and targeted in-degree
@@ -73,6 +74,20 @@ Reference resolution and pure queries do not delete cached rows when path valida
 fails; they ignore invalid candidates. Discovery, full or targeted refresh, explicit
 path upsert, and `reconcile_fnode_paths()` own stale-row deletion and derived-state
 updates. Read-facing graph queries calculate non-persisted derived results directly.
+
+## Compound reads
+
+`WorkspaceStore::read_snapshot()` runs related pure queries in one SQLite read transaction,
+so node/edge or node/status/relation projections cannot mix commits from independent CLI
+connections. Discovery and focused upserts happen before entering the transaction.
+Nested snapshots and writes inside the callback are unsupported. Graph-root and graph-check
+reports also own a read snapshot. Database and control-directory generation guards remain
+active around reads and commits; a read transaction does not snapshot external files.
+
+Web requests that were already queued when a discovery started can reuse that scan.
+A request starting afterward performs discovery again. There is no TTL that delays
+sequential requests from seeing external changes. `--prof` includes `web::cache_wait`
+scopes, and the workflow benchmark measures mixed read/write API latency.
 
 ## Database objects
 
@@ -184,7 +199,7 @@ cache, dirty flag, or graph epoch.
 | Command | Discovery | Content refresh |
 | --- | --- | --- |
 | `init` | None | None |
-| `new` | None | Full refresh, then store-owned create/upsert under lock |
+| `new` | None | Application batch create: full refresh, then store-owned write/upsert under lock |
 | `edit` | Workspace discovery | Source path upsert after successful editor exit |
 | `sync` | None | Full refresh before all-source reconciliation |
 | `search` | Workspace discovery | Reparse new or metadata-changed paths only |

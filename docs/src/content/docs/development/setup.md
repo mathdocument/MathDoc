@@ -33,7 +33,21 @@ npm run build
 
 Release builds embed the committed `web/dist/` output. Any frontend source change must
 include a fresh production build. The build intentionally bundles only the five
-supported source languages and one syntax theme.
+supported source languages and the configured light/dark syntax themes.
+
+To test the browser against the real backend, build the frontend and Rust binary first:
+
+```bash
+npm --prefix web run build
+cargo build --locked
+cd web
+npx playwright install --no-shell chromium
+npm run test:e2e
+```
+
+`MDC_BIN` can select another prebuilt binary. Tests own temporary workspaces and never
+connect to an existing user workspace. Linux CI installs Chromium system dependencies
+with Playwright's `--with-deps` option.
 
 For live frontend development, run the Rust API and Vite in separate terminals:
 
@@ -85,7 +99,8 @@ On pushes and pull requests, `.github/workflows/release-check.yml` performs:
 1. Reproducible frontend dependency installation, type checking, tests, and build.
 2. Verification that `web/dist/` matches committed frontend source.
 3. Documentation dependency installation, Astro checking, and static build.
-4. One Rust CI command: `cargo +stable test --locked`.
+4. Rust tests on both Ubuntu and macOS: `cargo +stable test --locked`.
+5. Real-backend browser integration tests on Ubuntu.
 
 Documentation deployment is separate: pushes to `main` that touch `docs/` run the
 official Astro GitHub Pages action.

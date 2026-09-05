@@ -25,3 +25,21 @@ vary across machines, so pull requests measure base and head revisions on the sa
 GitHub runner and enforce the tolerances in `budgets.json`. Changes to the fixture,
 budgets, or committed baseline should be reviewed with the performance change that
 requires them. Lower values are better for every metric.
+
+## Application workflow benchmark
+
+```sh
+cargo bench --locked --bench workflows -- --output perf/workflows-latest.json
+```
+
+This separate benchmark uses 1,000 initial nodes and 25 mutations, comparing sequential
+and batched creation and dependency edits. It also measures 16 concurrent graph/search
+requests alongside a title write through the real Axum router, including response body
+serialization and cache contention. It excludes TCP/browser costs. Reports contain three
+raw samples, medians, and the median of per-run request p95 values, all in milliseconds.
+Each scenario validates its resulting graph or response before accepting the measurement.
+
+Use `--compare <report.json>` only on the same machine. The workflow comparison allows
+20% relative growth or 30 ms absolute noise, whichever is greater. CI compares base and
+head when both contain the benchmark; its first introduction records a report without a
+comparison. Existing backend query budgets and baselines remain independent.

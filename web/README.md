@@ -29,3 +29,10 @@ cargo build --release                    # embeds web/dist into the binary
 them and rejects drift.
 
 The release binary has zero runtime dependency on Node.js.
+
+## Browser integration tests
+
+From the repository root, run `npm --prefix web run build` and `cargo build --locked`.
+Then run `npx playwright install --no-shell chromium` and `npm run test:e2e` from `web/`.
+The tests start the real local backend in disposable workspaces. `MDC_BIN` optionally
+selects another prebuilt binary.

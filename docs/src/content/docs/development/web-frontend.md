@@ -17,16 +17,21 @@ a Svelte 5 single-page application embedded in the Rust binary.
 - `src/web/assets.rs` always embeds and serves `web/dist` with `rust-embed`, with an
   extensionless SPA fallback and `404` for missing file-like paths. Rust has no second
   development asset-serving path.
-- `web/src/lib/state.svelte.ts` owns the canonical node session using Svelte runes.
+- `web/src/lib/state.svelte.ts` owns node state and per-instance navigation history.
+  `browser-history.ts` adapts history writes to the browser and can be replaced in tests.
+- `web/src/lib/workspace.svelte.ts` owns graph refresh ordering, local count updates,
+  loading/error state, and cancellation of obsolete results.
 - `web/src/components/BlockEditor.svelte` wraps one CodeMirror 6 editor per source
   block.
 
 `node_view` performs discovery and reference resolution while holding one cache lock,
 strongly upserts the focused path, then returns focused node detail, direct referrers,
 and direct dependencies as `NodeView.children`. The frontend uses this combined request
-for three-column navigation.
+for three-column navigation. Indexed fields in that response share one database read
+snapshot, as do nodes and edges in `graph/full`. Focused source-file generation checks
+remain separate from the SQLite snapshot.
 
-Title and block writes share one local resolve, snapshot, fnode recheck, mutation,
+Title and block changes use application content operations and share one local resolve, snapshot, fnode recheck, mutation,
 replacement, reindex, and detail-response transaction helper. Dependency writes remain
 owned by `DepGraph`. JSON extraction and simple title/source-type validation happen
 before the mutation mutex is acquired.
@@ -54,8 +59,8 @@ Linked node creation also requires `If-Match`, matched against the parent; stand
 creation does not.
 
 Graph roots, full graph, search, resolve, node view, and dependency-candidate reads run
-workspace discovery on every request. There is no discovery gate or query parameter for
-requesting a fresher read. Discovery remains metadata-based rather than a strong full
+workspace discovery, sharing a scan only with requests already queued when it started.
+Later requests scan again; there is no TTL or query parameter for requesting a fresher read. Discovery remains metadata-based rather than a strong full
 refresh; node view additionally performs a strong focused-path upsert.
 `GET /api/graph/check` reports current indexed state without discovery or `refresh_all()`.
 `POST /api/workspace/refresh` runs `WorkspaceStore::refresh_all()` and then returns the
@@ -185,6 +190,20 @@ and reject symlink traversal. The router accepts only loopback binding, validate
 as a numeric loopback, `localhost`, or a hostname ending in `.localhost`
 case-insensitively, and adds no CORS permission. These controls reduce cross-origin and
 DNS-rebinding exposure; they are not authentication against local HTTP clients.
+
+## Client state and integration tests
+
+`NodeSession` commits history on its own instance through an injected browser adapter;
+creating another session does not update the exported default session. `WorkspaceSession`
+rejects obsolete refresh results and marks graph diagnostics stale after local mutations.
+The API client throws `ApiError` with the HTTP status and parsed response body;
+`isConflict` identifies `409` and `412` while existing message rendering remains unchanged.
+
+`npm run test:e2e` launches Chromium against a real `mdc serve` process and fresh temporary
+workspaces. It covers stale saves after external edits, navigation while a real save is
+pending, browser back/forward, and simultaneous CLI/browser dependency mutations. Backend
+responses are not mocked; one test delays delivery to make the pending-save race deterministic.
+Each fixture runs `graph check` and cleans up its browser context, server, and workspace.
 
 ## Frontend build
 

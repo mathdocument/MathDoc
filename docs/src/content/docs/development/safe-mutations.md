@@ -19,6 +19,14 @@ On index failure it attempts file rollback and path-index repair. Either recover
 fail, and those failures remain part of the returned error. `MdocNode::render()` only
 validates and serializes bytes; production filesystem creation stays store-owned.
 
+The application batch APIs prevalidate and render all output documents before writes.
+A single `MutationSession` persists its dirty marker, applies guarded replacements, and
+calls one batched index upsert. On failure, every completed replacement is offered rollback
+in reverse order; the enclosing session repairs the index from current files. A conflicting
+external edit is preserved even when that prevents complete rollback. If files and index
+commit successfully but the final mutation-lock check fails, the committed files remain in
+place and the dirty marker is available for recovery on the next open.
+
 ## Descriptor-relative replacement
 
 Safe writes bind the validated parent-directory inode, create temporary files relative

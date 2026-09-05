@@ -24,8 +24,8 @@ or unique fnode prefixes.
 | `src/mdocnode/` | `.mdoc` parser, serializer, and `MdocNode` model |
 | `src/indcache/` | SQLite-backed `WorkspaceStore`, schema and query code, and recoverable `MutationSession` (`IndCache` remains a compatibility alias) |
 | `src/depgraph/` | One-root dependency mutation session (`DepGraph`) |
-| `src/metric/` | Read-only metric registry, context, and formulas |
-| `src/formal/` | Formal receipt and evidence-version contract, attestation persistence, and status validation |
+| `src/application/` | Shared compilation, mirror reconciliation, and batched node use cases |
+| `src/formal/` | Receipts, evidence collection, attestation files, and database-independent verification rules |
 | `src/compiler/` | Built-in compiler dispatch, language implementations, compiler workspaces, and subprocess control |
 | `src/cli/` | Clap definitions, dispatch, command handlers, and terminal output |
 | `src/web/` | Axum JSON API, loopback server, and the single embedded SPA asset path |
@@ -82,16 +82,40 @@ Important entry points include:
 Direct file edits can still create cycles. `mdc graph check` remains authoritative for
 state introduced outside the mutation API.
 
+## Application use cases
+
+`application::work` owns compilation and mirror import/export workflows, including
+lock acquisition, reconciliation, evidence revocation/publication, and exit aggregation.
+CLI handlers render progress events and structured reports. Compiler progress callbacks
+may borrow application state for the lifetime of a compiler request.
+
+`application::nodes::{create_nodes, edit_nodes}` provides public batch APIs. A batch
+shares one mutation lock, strong refresh, and final index upsert. Changes are applied in
+request order to staged documents; repeated edits of one node share its original snapshot.
+Dependency additions resolve references and check reachability against both indexed and
+staged edges, including strongly loaded target content. Removals accept exact fnodes so
+missing targets can be removed. Revision preconditions are checked before any file write.
+Content-only changes share their implementation with Web title/block handlers.
+
+The store's `MutationSession` remains the persistence and recovery owner. Successful
+batches recompute graph-derived rows once after file writes. Failures attempt reverse
+rollback and rebuild the index from surviving files. Batches are not crash-atomic.
+
+## Formal evaluation boundaries
+
+`indcache/formal.rs` owns formal-status SQL and adapts valid indexed locations into
+`formal/status.rs`. Collection retains guarded source snapshots, evaluation resolves
+module evidence, and the adapter writes resulting statuses before validating the guards
+again. Database failures propagate; unusable evidence downgrades verified status.
+`formal/rules.rs` contains pure dependency-token propagation, with no filesystem or
+SQLite dependency. Compiler-facing evidence APIs remain in `formal/status.rs`.
+
 ## Metrics
 
-Metrics are read-only consumers of `WorkspaceStore`, not part of `DepGraph`.
-`src/metric/mod.rs` defines `MetricContext`, `NodeMetric`, and the compile-time
-`NodeMetricKind` registry. Concrete formulas stay together in `function.rs` rather than
-using one module per metric.
-
-Adding a metric requires a formula in `function.rs`, implementation and enum mapping in
-`mod.rs`, and a typed Clap variant plus dispatch arm in `src/cli/`.
-`WorkspaceStore::node_degrees()` is the shared data boundary for IOR.
+IOR is currently one read-only CLI formula in `src/cli/cmd_metric.rs`:
+`ln(1 + in_degree) - ln(1 + out_degree)`. It consumes
+`WorkspaceStore::node_degrees()` after a strong refresh. There is no metric module or
+registry; introduce one when additional independently reusable metrics require it.
 
 ## Reference resolution
 
