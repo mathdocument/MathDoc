@@ -31,6 +31,10 @@ for three-column navigation. Indexed fields in that response share one database 
 snapshot, as do nodes and edges in `graph/full`. Focused source-file generation checks
 remain separate from the SQLite snapshot.
 
+Full graph reads copy nodes and edges from that snapshot, then release the cache
+lock before filtering nodes and encoding edge indexes. Response assembly can run
+alongside the next request without mixing database generations.
+
 Title and block changes use application content operations and share one local resolve, snapshot, fnode recheck, mutation,
 replacement, reindex, and detail-response transaction helper. Dependency writes remain
 owned by `DepGraph`. JSON extraction and simple title/source-type validation happen

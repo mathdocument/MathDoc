@@ -484,32 +484,27 @@ pub(super) async fn graph_full(State(state): State<AppState>) -> ApiResult<Json<
     let requested_at = std::time::Instant::now();
     spawn_blocking_api(move || {
         let _profile = crate::profile::scope("web::api::graph_full");
-        let (nodes, edges) = with_read_cache(&state, requested_at, |c| {
-            Ok(c.read_snapshot(|c| {
-                let nodes: Vec<NodeSummary> = c
-                    .all_node_summaries()?
-                    .into_iter()
-                    .filter(|item| !item.broken)
-                    .collect();
-                let edges_raw = c.all_valid_edges()?;
-                // Encode only edges whose endpoints remain in the filtered node array.
-                let node_indexes: std::collections::HashMap<&str, usize> = nodes
-                    .iter()
-                    .enumerate()
-                    .map(|(index, node)| (node.fnode.as_str(), index))
-                    .collect();
-                let edges: Vec<[usize; 2]> = edges_raw
-                    .into_iter()
-                    .filter_map(|(source, target)| {
-                        Some([
-                            *node_indexes.get(source.as_str())?,
-                            *node_indexes.get(target.as_str())?,
-                        ])
-                    })
-                    .collect();
-                Ok::<_, anyhow::Error>((nodes, edges))
-            })?)
+        let (nodes, edges_raw) = with_read_cache(&state, requested_at, |c| {
+            Ok(c.read_snapshot(|c| Ok((c.all_node_summaries()?, c.all_valid_edges()?)))?)
         })?;
+        // The owned rows share one database snapshot. Response assembly does
+        // not need the cache lock and can overlap the next request's SQL work.
+        let nodes: Vec<NodeSummary> = nodes.into_iter().filter(|item| !item.broken).collect();
+        let node_indexes: std::collections::HashMap<&str, usize> = nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| (node.fnode.as_str(), index))
+            .collect();
+        // Encode only edges whose endpoints remain in the filtered node array.
+        let edges = edges_raw
+            .into_iter()
+            .filter_map(|(source, target)| {
+                Some([
+                    *node_indexes.get(source.as_str())?,
+                    *node_indexes.get(target.as_str())?,
+                ])
+            })
+            .collect();
         Ok(Json(GraphFull { nodes, edges }))
     })
     .await
