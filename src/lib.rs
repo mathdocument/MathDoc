@@ -2,6 +2,8 @@
 compile_error!("mathdoc currently supports Unix platforms only");
 
 #[cfg(unix)]
+pub(crate) mod application;
+#[cfg(unix)]
 mod cli;
 #[cfg(unix)]
 pub use cli::run;

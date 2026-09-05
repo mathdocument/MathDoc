@@ -12,7 +12,7 @@ fn compile_receipt(
     compile_with_receipt(&work_lock, srctype, req)
 }
 
-fn make_req(mdcroot: &std::path::Path, srctype: &str) -> CompilerReq {
+fn make_req(mdcroot: &std::path::Path, srctype: &str) -> CompilerReq<'static> {
     CompilerReq {
         mdcroot: mdcroot.to_path_buf(),
         source: test_source_path(mdcroot, srctype),

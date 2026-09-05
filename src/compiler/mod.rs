@@ -19,17 +19,17 @@ pub(crate) const ROCQ_CLEAN_MARKER_CONTENT: &[u8] = b"Lib tree changed\n";
 
 // ── Compiler contract ─────────────────────────────────────────────────────────
 
-pub(crate) type ProgressCallback = Box<dyn Fn(&str)>;
+pub(crate) type ProgressCallback<'a> = Box<dyn Fn(&str) + 'a>;
 
-pub(crate) struct CompilerReq {
+pub(crate) struct CompilerReq<'a> {
     pub(crate) mdcroot: PathBuf,
     pub(crate) source: PathBuf,
     /// Validated compiler settings with built-in defaults already applied.
     pub(crate) config: crate::config::SrcConfig,
-    pub(crate) progress: Option<ProgressCallback>,
+    pub(crate) progress: Option<ProgressCallback<'a>>,
 }
 
-impl CompilerReq {
+impl CompilerReq<'_> {
     fn timeout_sec(&self) -> Result<u64> {
         self.config
             .timeout_sec()

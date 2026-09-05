@@ -72,14 +72,7 @@ pub(super) fn cmd_new(title: String, file: String) -> Result<i32> {
 
 pub(super) fn cmd_sync() -> Result<i32> {
     let _profile = crate::profile::scope("cli::cmd_sync");
-    let mdcroot = require_mdcroot()?;
-    let work_lock = crate::workspace::WorkspaceWorkLock::acquire(&mdcroot)?;
-    let mutation_lock = work_lock.acquire_mutation_lock()?;
-    let mut cache = IndCache::open_refreshed_under_mutation_lock(&mutation_lock)?;
-    let total = cache.count()?;
-    let draft = crate::workdraft::sync_cached(&work_lock, &mutation_lock, &mut cache)?;
-    cache.refresh_formal_statuses()?;
-    work_lock.require_current()?;
+    let (total, draft) = crate::application::work::export_mirrors(require_mdcroot()?)?;
     println!("synced  {BLD}{total}{RST} mdocs");
     println!(
         "exported {BLD}{}{RST} source files from {} valid mdocs ({} updated, {} removed)",
