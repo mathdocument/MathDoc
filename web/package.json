@@ -11,7 +11,8 @@
     "test": "vitest run",
     "perf": "npm run build && node perf/run.mjs",
     "perf:measure": "npm run build && node perf/run.mjs --output perf/latest.json",
-    "perf:record": "npm run build && node perf/run.mjs --record"
+    "perf:record": "npm run build && node perf/run.mjs --record",
+    "test:e2e": "node --test e2e/run.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.8.1",

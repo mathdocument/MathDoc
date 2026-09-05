@@ -7,6 +7,9 @@ on:
       - "Cargo.lock"
       - "benches/**"
       - "perf/**"
+      - "src/application/**"
+      - "src/depgraph/**"
+      - "src/web/**"
       - "src/config.rs"
       - "src/core/**"
       - "src/formal/**"
@@ -91,6 +94,20 @@ jobs:
           cargo +stable bench --locked --bench backend --
           --output "$RUNNER_TEMP/backend-perf-current.json"
 
+      - name: Measure and compare application workflows
+        working-directory: perf-head
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-head
+        run: |
+          if test -f ../perf-base/benches/workflows.rs; then
+            cd ../perf-base
+            CARGO_TARGET_DIR="${{ runner.temp }}/backend-target-base" cargo +stable bench --locked --bench workflows -- --output "$RUNNER_TEMP/workflows-base.json"
+            cd ../perf-head
+            cargo +stable bench --locked --bench workflows -- --output "$RUNNER_TEMP/workflows-current.json" --compare "$RUNNER_TEMP/workflows-base.json"
+          else
+            cargo +stable bench --locked --bench workflows -- --output "$RUNNER_TEMP/workflows-current.json"
+          fi
+
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v6
@@ -99,3 +116,5 @@ jobs:
           path: |
             ${{ runner.temp }}/backend-perf-base.json
             ${{ runner.temp }}/backend-perf-current.json
+            ${{ runner.temp }}/workflows-base.json
+            ${{ runner.temp }}/workflows-current.json

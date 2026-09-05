@@ -59,3 +59,20 @@ jobs:
 
       - name: Test Rust
         run: cargo +stable test --locked
+
+      - name: Install browser for integration tests
+        run: npx playwright install --with-deps --no-shell chromium
+        working-directory: web
+
+      - name: Test browser with real backend
+        run: npm run test:e2e
+        working-directory: web
+
+  macos-rust:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal --no-self-update
+      - name: Test macOS filesystem and process implementations
+        run: cargo +stable test --locked
