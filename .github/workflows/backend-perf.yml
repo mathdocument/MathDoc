@@ -60,11 +60,28 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-base
         run: cargo +stable bench --locked --bench backend --no-run
 
+      - name: Prepare shared API benchmark in base checkout
+        if: steps.base.outputs.available == 'true'
+        run: python3 perf-head/perf/prepare-api-base.py perf-base
+
+      - name: Build base API benchmark
+        if: steps.base.outputs.available == 'true'
+        working-directory: perf-base
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-base
+        run: cargo +stable bench --locked --bench api --no-run
+
       - name: Build current benchmark
         working-directory: perf-head
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-head
         run: cargo +stable bench --locked --bench backend --no-run
+
+      - name: Build current API benchmark
+        working-directory: perf-head
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-head
+        run: cargo +stable bench --locked --bench api --no-run
 
       - name: Measure base revision
         if: steps.base.outputs.available == 'true'
@@ -108,6 +125,34 @@ jobs:
             cargo +stable bench --locked --bench workflows -- --output "$RUNNER_TEMP/workflows-current.json"
           fi
 
+      - name: Measure base API latency
+        if: steps.base.outputs.available == 'true'
+        working-directory: perf-base
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-base
+        run: >-
+          cargo +stable bench --locked --bench api --
+          --output "$RUNNER_TEMP/api-perf-base.json"
+
+      - name: Compare current API latency
+        if: steps.base.outputs.available == 'true'
+        working-directory: perf-head
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-head
+        run: >-
+          cargo +stable bench --locked --bench api --
+          --output "$RUNNER_TEMP/api-perf-current.json"
+          --compare "$RUNNER_TEMP/api-perf-base.json"
+
+      - name: Measure initial current API latency
+        if: steps.base.outputs.available != 'true'
+        working-directory: perf-head
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-head
+        run: >-
+          cargo +stable bench --locked --bench api --
+          --output "$RUNNER_TEMP/api-perf-current.json"
+
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v6
@@ -118,3 +163,5 @@ jobs:
             ${{ runner.temp }}/backend-perf-current.json
             ${{ runner.temp }}/workflows-base.json
             ${{ runner.temp }}/workflows-current.json
+            ${{ runner.temp }}/api-perf-base.json
+            ${{ runner.temp }}/api-perf-current.json

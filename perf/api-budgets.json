@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "metrics": {
+    "api.readBurstP95": { "maxIncreaseRatio": 0.2, "noise": 5 },
+    "api.mixedBurstP95": { "maxIncreaseRatio": 0.2, "noise": 15 },
+    "api.largeGraphBurstP95": { "maxIncreaseRatio": 0.15, "noise": 20 }
+  }
+}

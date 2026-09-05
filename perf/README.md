@@ -43,3 +43,32 @@ Use `--compare <report.json>` only on the same machine. The workflow comparison 
 20% relative growth or 30 ms absolute noise, whichever is greater. CI compares base and
 head when both contain the benchmark; its first introduction records a report without a
 comparison. Existing backend query budgets and baselines remain independent.
+
+## Concurrent API benchmark
+
+```sh
+cargo bench --locked --bench api -- --output perf/api-latest.json
+cargo bench --locked --bench api -- --output perf/api-latest.json --compare /path/to/base.json
+```
+
+This benchmark catches lock contention that single-operation benchmarks and mocked
+frontend requests cannot observe. It synchronizes each request burst with a barrier:
+
+- 1,000 independent nodes: eight searches and eight full graph reads.
+- The same readers plus one revision-checked title write.
+- 10,000 nodes / 19,993 edges: sixteen full graph reads.
+
+Requests run through the real Axum router and include response serialization, body
+consumption, and JSON decoding, without TCP or browser costs. Fixture construction,
+route warm-up, and graph/write correctness checks are outside timed work. The report
+retains five samples per scenario (`MDC_PERF_SAMPLES` overrides this, minimum three).
+Each sample is the burst's nearest-rank p95, equal to its slowest request with these
+16/17-request bursts. Reported metrics are medians of those samples, not long-running
+production p95 estimates.
+
+`api-budgets.json` enforces relative growth or absolute noise, whichever is greater.
+Comparison rejects changed environments, fixtures, schemas, or metric sets. CI runs
+the current API harness on both base and head, including on first introduction, so
+a newly added scenario can expose a regression in the same pull request. Production
+source in the base checkout is untouched. Raw reports are uploaded with other backend
+performance results.

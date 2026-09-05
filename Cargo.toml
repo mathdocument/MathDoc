@@ -16,6 +16,10 @@ harness = false
 name = "workflows"
 harness = false
 
+[[bench]]
+name = "api"
+harness = false
+
 [dependencies]
 rusqlite = { version = "0.40.1", default-features = false, features = ["bundled"] }
 clap = { version = "4", features = ["derive"] }
