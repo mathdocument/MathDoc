@@ -2,7 +2,7 @@
 compile_error!("mathdoc currently supports Unix platforms only");
 
 #[cfg(unix)]
-pub(crate) mod application;
+pub mod application;
 #[cfg(unix)]
 mod cli;
 #[cfg(unix)]

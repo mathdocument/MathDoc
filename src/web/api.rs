@@ -691,7 +691,13 @@ pub(super) async fn node_put_block(
         let srctype = validate_srctype(&srctype)?;
         let BlockBody { content } = body;
         mutate_node(&state, deadline, &fnode, &expected_revision, move |node| {
-            node.upsert_source_block(srctype, content)?;
+            crate::application::nodes::apply_content_change(
+                node,
+                &crate::application::nodes::NodeChange::UpsertBlock {
+                    srctype: srctype.to_string(),
+                    content,
+                },
+            )?;
             Ok(())
         })
     })
@@ -713,9 +719,11 @@ pub(super) async fn node_delete_block(
             return Err(ApiError::bad_request("DELETE request body must be empty"));
         }
         mutate_node(&state, deadline, &fnode, &expected_revision, move |node| {
-            if !node.remove_source_block(srctype) {
-                bail!("no '@src: {srctype}' block on this node");
-            }
+            crate::application::nodes::apply_content_change(
+                node,
+                &crate::application::nodes::NodeChange::RemoveBlock(srctype.to_string()),
+            )
+            .map_err(|error| ApiError::validation(error.to_string()))?;
             Ok(())
         })
     })
@@ -738,7 +746,10 @@ pub(super) async fn node_put_title(
         }
         let title = title.to_string();
         mutate_node(&state, deadline, &fnode, &expected_revision, move |node| {
-            node.set_title(title);
+            crate::application::nodes::apply_content_change(
+                node,
+                &crate::application::nodes::NodeChange::SetTitle(title),
+            )?;
             Ok(())
         })
     })

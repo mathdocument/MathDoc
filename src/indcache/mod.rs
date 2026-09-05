@@ -605,6 +605,17 @@ impl WorkspaceStore {
         })
     }
 
+    pub(crate) fn persist_node_batch(
+        &mut self,
+        lock: &crate::workspace::WorkspaceMutationLock,
+        nodes: &[(MdocNode, crate::workspace::FileSnapshot)],
+    ) -> Result<()> {
+        if nodes.is_empty() {
+            return Ok(());
+        }
+        self.mutate(lock, |mutation| mutation.persist_nodes(nodes))
+    }
+
     fn validate_node_path(&self, node: &MdocNode) -> Result<PathBuf> {
         crate::workspace::resolve_mdoc_path(&self.root, &node.path)
     }
@@ -1322,6 +1333,82 @@ impl MutationSession<'_, '_> {
         self.store
             .write_and_index_node(self.lock, &path, payload.as_bytes(), snapshot)?;
         Ok(())
+    }
+
+    fn persist_nodes(
+        &mut self,
+        nodes: &[(MdocNode, crate::workspace::FileSnapshot)],
+    ) -> Result<()> {
+        let mut unique = HashSet::new();
+        let prepared = nodes
+            .iter()
+            .map(|(node, snapshot)| {
+                let path = self.store.validate_node_path(node)?;
+                if !unique.insert(path.clone()) {
+                    bail!("duplicate batch target: {}", path.display());
+                }
+                Ok((path, node.render()?, snapshot))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for (path, _, snapshot) in &prepared {
+            self.store.validate_mutation_lock(self.lock)?;
+            if matches!(snapshot, crate::workspace::FileSnapshot::Missing) {
+                if let Some(parent) = path.parent() {
+                    crate::workspace::ensure_regular_directory_tree(self.store.root(), parent)?;
+                }
+            }
+        }
+        self.mark_dirty()?;
+        let mut applied = Vec::new();
+        let mut preserve_committed = false;
+        let result = (|| -> Result<()> {
+            for (path, content, snapshot) in &prepared {
+                self.store.validate_mutation_lock(self.lock)?;
+                applied.push(snapshot.replace_beneath(
+                    self.store.root(),
+                    path,
+                    content.as_bytes(),
+                )?);
+            }
+            for write in &applied {
+                write.require_current()?;
+            }
+            self.store.validate_mutation_lock(self.lock)?;
+            let paths = prepared
+                .iter()
+                .map(|(path, _, _)| path.clone())
+                .collect::<Vec<_>>();
+            self.store.upsert_paths(&paths)?;
+            crate::workspace::run_test_hook(crate::workspace::TestHookPoint::IndexAfterNodeUpsert);
+            if let Err(error) = self.store.validate_mutation_lock(self.lock) {
+                // Files and index committed together: preserve their agreement if
+                // only the final cooperative lock generation became uncertain.
+                preserve_committed = true;
+                return Err(error);
+            }
+            for write in &applied {
+                write.require_current()?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) if preserve_committed => Err(error),
+            Err(mut error) => {
+                for write in applied.into_iter().rev() {
+                    error = crate::workspace::PersistenceRecoveryError::from_attempts(
+                        error,
+                        write.rollback(),
+                        Ok(()),
+                        "restore batch file",
+                        "repair batch index",
+                    );
+                }
+                // The enclosing MutationSession abort repairs the index once,
+                // even if an external edit prevented an individual rollback.
+                Err(error)
+            }
+        }
     }
 
     fn commit(&mut self) -> Result<()> {

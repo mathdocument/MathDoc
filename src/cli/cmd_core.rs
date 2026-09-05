@@ -1,7 +1,6 @@
 use anyhow::Result;
 use std::path::Path;
 
-use crate::depgraph::DepGraph;
 use crate::indcache::IndCache;
 
 use super::{cwd, fmt_item, print_workdraft_issues, require_mdcroot, BLD, CYN, RST};
@@ -59,11 +58,23 @@ pub(super) fn cmd_init() -> Result<i32> {
 pub(super) fn cmd_new(title: String, file: String) -> Result<i32> {
     let mdcroot = require_mdcroot()?;
     let mut cache = IndCache::open(mdcroot)?;
-    let graph = DepGraph::create_root(&mut cache, &file, &title, None)?;
-    let item = graph.root_item()?;
+    let nodes = crate::application::nodes::create_nodes(
+        &mut cache,
+        &[crate::application::nodes::NewNode {
+            file,
+            title,
+            fnode: None,
+        }],
+    )?;
+    let node = &nodes[0];
     println!(
         "created  {}",
-        fmt_item(&item.fnode, &item.title, &item.rel_path, false)
+        fmt_item(
+            &node.fnode,
+            &node.title,
+            &crate::workspace::to_rel_path(cache.root(), &node.path),
+            false
+        )
     );
     Ok(0)
 }

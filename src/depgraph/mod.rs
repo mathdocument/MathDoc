@@ -595,7 +595,7 @@ fn dedupe_keep_order(items: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn prepare_new_node(
+pub(crate) fn prepare_new_node(
     root: &Path,
     file_path: &str,
     title: &str,
