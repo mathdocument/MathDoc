@@ -72,3 +72,7 @@ the current API harness on both base and head, including on first introduction, 
 a newly added scenario can expose a regression in the same pull request. Production
 source in the base checkout is untouched. Raw reports are uploaded with other backend
 performance results.
+
+The [2026-09-05 architecture follow-up](reports/2026-09-05-architecture/README.md)
+records the original, regressed, and fixed implementations, raw samples, validation,
+and the limits of the local comparison.

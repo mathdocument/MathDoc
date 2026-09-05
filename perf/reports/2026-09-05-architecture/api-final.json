@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "environment": {
+    "arch": "aarch64",
+    "cpu": "Apple M3 Pro",
+    "os": "macos",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "workers": "12"
+  },
+  "fixtures": {
+    "edges": 0,
+    "largeEdges": 19993,
+    "largeNodes": 10000,
+    "nodes": 1000,
+    "readers": 16,
+    "samples": 5,
+    "searchResults": 200
+  },
+  "metricsMs": {
+    "api.largeGraphBurstP95": 220.73854200000002,
+    "api.mixedBurstP95": 30.369,
+    "api.readBurstP95": 11.019625
+  },
+  "samplesMs": {
+    "api.largeGraphBurstP95": [
+      214.70012499999999,
+      226.462083,
+      220.73854200000002,
+      221.61195899999998,
+      216.59625
+    ],
+    "api.mixedBurstP95": [
+      30.369,
+      42.301083000000006,
+      29.477832999999997,
+      27.877792,
+      35.10075
+    ],
+    "api.readBurstP95": [
+      11.104375,
+      10.740708,
+      12.270708,
+      10.586208999999998,
+      11.019625
+    ]
+  }
+}

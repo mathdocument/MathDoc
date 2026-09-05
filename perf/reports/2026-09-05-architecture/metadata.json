@@ -1,0 +1,25 @@
+{
+  "measuredOn": "2026-09-05",
+  "revisions": {
+    "beforeArchitecture": "569436836ff20bfba8f4f3e3597bf4b2ca559e96",
+    "regressed": "d2df3825e69103886d822aad039d55be710ee19b",
+    "lockFixed": "fe75634632d3d72bdbd5a0e00df792db959f641e",
+    "finalImplementation": "b9bf14c26eab18ed39eac6c56473247cd34d6367",
+    "apiHarness": "6c4c4bb95ea096526b582f9422fb8f9942ecbeec"
+  },
+  "apiHarnessSha256": "46dfb333018bf9a9333ef6b77254133eb5b8a78ccad9cefb83c356a72550e618",
+  "apiRunOrder": [
+    "api-lock-fixed.json",
+    "api-regressed.json",
+    "api-final.json",
+    "api-before-architecture.json"
+  ],
+  "method": "Sequential local measurements, optimized Rust binaries and committed production web assets; warm caches; five samples per scenario.",
+  "notes": [
+    "API harness copied unchanged into isolated source snapshots; only benchmark registration and budget files added to old snapshots.",
+    "api-regressed.json was measured with --compare api-lock-fixed.json and correctly exited 1 for small read and mixed bursts.",
+    "frontend-final.json measures the existing d2df382 frontend assets; this follow-up changes only backend production code.",
+    "backend-before.json is the earlier same-machine measurement of the exact 5694368 revision.",
+    "These local reports are evidence, not portable absolute CI thresholds."
+  ]
+}

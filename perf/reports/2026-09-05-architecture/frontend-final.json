@@ -1,0 +1,194 @@
+{
+  "schema": 1,
+  "generatedAt": "2026-09-05T07:49:23.786Z",
+  "environment": {
+    "os": "darwin arm64 25.6.0",
+    "cpu": "Apple M3 Pro",
+    "node": "v26.8.1",
+    "browser": "151.0.7922.34",
+    "viewport": "1440x900",
+    "samples": 5
+  },
+  "fixtures": {
+    "editorLines": 500,
+    "graphNodes": 10000,
+    "graphEdges": 19993
+  },
+  "metrics": {
+    "bundle.shellTransferBytes": {
+      "value": 51444,
+      "unit": "bytes"
+    },
+    "bundle.totalTransferBytes": {
+      "value": 591008,
+      "unit": "bytes"
+    },
+    "runtime.editorReadyMs": {
+      "value": 139,
+      "unit": "ms"
+    },
+    "runtime.editorHighlightMs": {
+      "value": 224.3,
+      "unit": "ms"
+    },
+    "runtime.themeSwitchMs": {
+      "value": 285.8,
+      "unit": "ms"
+    },
+    "runtime.latexPreviewMs": {
+      "value": 160.5,
+      "unit": "ms"
+    },
+    "runtime.graphReadyMs": {
+      "value": 370.6,
+      "unit": "ms"
+    },
+    "runtime.graphZoomFrameP95Ms": {
+      "value": 10.6,
+      "unit": "ms"
+    }
+  },
+  "rawSamples": {
+    "editor": [
+      {
+        "editorReadyMs": 135.2,
+        "editorHighlightMs": 220.1,
+        "themeSwitchMs": 303.9,
+        "latexPreviewMs": 160.5
+      },
+      {
+        "editorReadyMs": 149.6,
+        "editorHighlightMs": 234.4,
+        "themeSwitchMs": 284.6,
+        "latexPreviewMs": 165.6
+      },
+      {
+        "editorReadyMs": 138.2,
+        "editorHighlightMs": 223.5,
+        "themeSwitchMs": 266,
+        "latexPreviewMs": 164
+      },
+      {
+        "editorReadyMs": 139,
+        "editorHighlightMs": 224.3,
+        "themeSwitchMs": 293,
+        "latexPreviewMs": 153.8
+      },
+      {
+        "editorReadyMs": 140.8,
+        "editorHighlightMs": 233,
+        "themeSwitchMs": 285.8,
+        "latexPreviewMs": 155.7
+      }
+    ],
+    "graphReadyMs": [
+      371.6,
+      372.6,
+      358.1,
+      370.6,
+      357
+    ],
+    "graphZoomFrameMs": [
+      10.1,
+      9.9,
+      10.7,
+      10.7,
+      10,
+      10.1,
+      9.7,
+      9.9,
+      9.6,
+      10.2,
+      9.6,
+      9.5,
+      10.1,
+      10.1,
+      9.5,
+      10.4,
+      9.9,
+      10,
+      9.7,
+      10.6,
+      9.9,
+      9.8,
+      9.5,
+      10.4,
+      9.6,
+      10,
+      9.5,
+      9.8,
+      9.5,
+      9.5,
+      9.5,
+      9.6,
+      9.5,
+      9.6,
+      9.8,
+      10.5,
+      9.7,
+      9.9,
+      9.6,
+      10.7,
+      10.1,
+      9.9,
+      9.7,
+      10,
+      9.7,
+      9.8,
+      10.5,
+      10.6,
+      10.3,
+      9.8,
+      9.7,
+      9.6,
+      9.7,
+      9.8,
+      10.7,
+      9.7,
+      9.6,
+      9.8,
+      9.6,
+      10,
+      10.1,
+      10.8,
+      10.5,
+      9.6,
+      9.6,
+      9.5,
+      9.6,
+      9.5,
+      9.6,
+      10.5,
+      10.6,
+      9.5,
+      9.5,
+      9.6,
+      10.6,
+      10.5,
+      9.5,
+      9.5,
+      10.5,
+      10.5,
+      10.1,
+      9.9,
+      9.6,
+      9.4,
+      9.5,
+      9.6,
+      9.6,
+      10.4,
+      9.8,
+      9.6,
+      9.5,
+      9.6,
+      9.6,
+      9.5,
+      9.4,
+      9.6,
+      9.5,
+      9.5,
+      9.5,
+      9.5
+    ]
+  }
+}
