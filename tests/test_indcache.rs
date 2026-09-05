@@ -2352,3 +2352,41 @@ fn test_dependency_reports_basic() {
         ["leaf-node"]
     );
 }
+
+#[test]
+fn read_snapshot_keeps_one_generation_across_another_store_commit() {
+    let dir = tempfile::TempDir::new().unwrap();
+    setup(dir.path());
+    let path = dir.path().join("snapshot.mdoc");
+    fs::write(&path, "@fnode: snapshot\n@title: Before\n").unwrap();
+    let reader = IndCache::open(dir.path().to_path_buf()).unwrap();
+    let mut writer = IndCache::open(dir.path().to_path_buf()).unwrap();
+
+    reader
+        .read_snapshot(|snapshot| {
+            assert_eq!(snapshot.node_summary("snapshot")?.title, "Before");
+            fs::write(&path, "@fnode: snapshot\n@title: After\n")?;
+            writer.upsert_path(&path)?;
+            assert_eq!(snapshot.node_summary("snapshot")?.title, "Before");
+            assert_eq!(snapshot.search("After", 10)?.len(), 0);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(reader.node_summary("snapshot").unwrap().title, "After");
+}
+
+#[test]
+fn failed_read_snapshot_releases_the_transaction() {
+    let dir = tempfile::TempDir::new().unwrap();
+    setup(dir.path());
+    let mut store = IndCache::open(dir.path().to_path_buf()).unwrap();
+    let result: anyhow::Result<()> = store.read_snapshot(|snapshot| {
+        assert_eq!(snapshot.count()?, 0);
+        anyhow::bail!("cancel read")
+    });
+    assert!(result.unwrap_err().to_string().contains("cancel read"));
+    let path = dir.path().join("after.mdoc");
+    fs::write(&path, "@fnode: after\n@title: After\n").unwrap();
+    store.upsert_path(&path).unwrap();
+    assert_eq!(store.read_snapshot(|snapshot| snapshot.count()).unwrap(), 1);
+}

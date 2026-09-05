@@ -702,6 +702,19 @@ impl WorkspaceStore {
         self.validate_formal_status_commit(formal_validation)
     }
 
+    /// Run related read queries against one SQLite snapshot, including when other
+    /// MathDoc processes commit through WAL. Refresh before entering this scope.
+    /// Nested snapshots and writes inside the callback are unsupported.
+    pub fn read_snapshot<T>(&self, read: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
+        self.require_current_database()?;
+        let transaction = self.conn.unchecked_transaction()?;
+        let value = read(self)?;
+        self.require_current_database()?;
+        transaction.commit()?;
+        self.require_current_database()?;
+        Ok(value)
+    }
+
     // ── Read queries ─────────────────────────────────────────────────────────
 
     pub fn count(&self) -> Result<u32> {
@@ -1056,12 +1069,12 @@ impl WorkspaceStore {
     // ── Graph-wide reads ─────────────────────────────────────────────────────
 
     pub fn global_root_items(&mut self) -> Result<Vec<GraphRootItem>> {
-        self.with_current_database(queries::global_root_items)
+        self.read_snapshot(|store| store.with_current_database(queries::global_root_items))
     }
 
     pub fn graph_check_report(&mut self) -> Result<GraphCheckReport> {
         let _profile = crate::profile::scope("IndCache::graph_check_report");
-        self.with_current_database(queries::graph_check_report)
+        self.read_snapshot(|store| store.with_current_database(queries::graph_check_report))
     }
 
     // ── Reference resolution ─────────────────────────────────────────────────

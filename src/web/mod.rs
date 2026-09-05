@@ -15,6 +15,7 @@ use crate::indcache::WorkspaceStore;
 pub struct AppState {
     cache: Arc<std::sync::Mutex<WorkspaceStore>>,
     mutation_lock: Arc<std::sync::Mutex<()>>,
+    discovery_started: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 impl AppState {
@@ -22,6 +23,7 @@ impl AppState {
         AppState {
             cache: Arc::new(std::sync::Mutex::new(cache)),
             mutation_lock: Arc::new(std::sync::Mutex::new(())),
+            discovery_started: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }

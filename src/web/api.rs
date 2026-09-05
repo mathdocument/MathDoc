@@ -363,11 +363,35 @@ fn with_cache<R>(
     state: &AppState,
     f: impl FnOnce(&mut WorkspaceStore) -> anyhow::Result<R>,
 ) -> ApiResult<R> {
-    let mut cache = state
-        .cache
-        .lock()
-        .map_err(|_| anyhow::anyhow!("cache mutex poisoned"))?;
+    let waiting = crate::profile::scope("web::cache_wait");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut cache = lock_until(&state.cache, deadline, "cache")?;
+    drop(waiting);
     Ok(f(&mut cache)?)
+}
+
+/// Requests already queued when a discovery starts can share that scan. A
+/// later request always discovers again; this is not a time-based stale cache.
+fn with_read_cache<R>(
+    state: &AppState,
+    requested_at: std::time::Instant,
+    read: impl FnOnce(&mut WorkspaceStore) -> ApiResult<R>,
+) -> ApiResult<R> {
+    let waiting = crate::profile::scope("web::cache_wait");
+    let deadline = requested_at + std::time::Duration::from_secs(5);
+    let mut cache = lock_until(&state.cache, deadline, "cache")?;
+    drop(waiting);
+    let mut started = state
+        .discovery_started
+        .lock()
+        .map_err(|_| anyhow::anyhow!("discovery mutex poisoned"))?;
+    if !started.is_some_and(|scan| scan >= requested_at) {
+        let scan = std::time::Instant::now();
+        cache.discover_workspace_changes()?;
+        *started = Some(scan);
+    }
+    drop(started);
+    read(&mut cache)
 }
 
 fn lock_until<'a, T>(
@@ -429,12 +453,10 @@ fn resolve_with_cache(
 pub(super) async fn graph_roots(
     State(state): State<AppState>,
 ) -> ApiResult<Json<Vec<GraphRootItem>>> {
+    let requested_at = std::time::Instant::now();
     spawn_blocking_api(move || {
         let _profile = crate::profile::scope("web::api::graph_roots");
-        let roots = with_cache(&state, |c| {
-            c.discover_workspace_changes()?;
-            c.global_root_items()
-        })?;
+        let roots = with_read_cache(&state, requested_at, |c| Ok(c.global_root_items()?))?;
         Ok(Json(roots))
     })
     .await
@@ -465,32 +487,34 @@ pub(super) async fn workspace_refresh(
 
 /// Full workspace graph for the force-directed view: all valid nodes + edges.
 pub(super) async fn graph_full(State(state): State<AppState>) -> ApiResult<Json<GraphFull>> {
+    let requested_at = std::time::Instant::now();
     spawn_blocking_api(move || {
         let _profile = crate::profile::scope("web::api::graph_full");
-        let (nodes, edges) = with_cache(&state, |c| {
-            c.discover_workspace_changes()?;
-            let nodes: Vec<NodeSummary> = c
-                .all_node_summaries()?
-                .into_iter()
-                .filter(|item| !item.broken)
-                .collect();
-            let edges_raw = c.all_valid_edges()?;
-            // Encode only edges whose endpoints remain in the filtered node array.
-            let node_indexes: std::collections::HashMap<&str, usize> = nodes
-                .iter()
-                .enumerate()
-                .map(|(index, node)| (node.fnode.as_str(), index))
-                .collect();
-            let edges: Vec<[usize; 2]> = edges_raw
-                .into_iter()
-                .filter_map(|(source, target)| {
-                    Some([
-                        *node_indexes.get(source.as_str())?,
-                        *node_indexes.get(target.as_str())?,
-                    ])
-                })
-                .collect();
-            Ok::<_, anyhow::Error>((nodes, edges))
+        let (nodes, edges) = with_read_cache(&state, requested_at, |c| {
+            Ok(c.read_snapshot(|c| {
+                let nodes: Vec<NodeSummary> = c
+                    .all_node_summaries()?
+                    .into_iter()
+                    .filter(|item| !item.broken)
+                    .collect();
+                let edges_raw = c.all_valid_edges()?;
+                // Encode only edges whose endpoints remain in the filtered node array.
+                let node_indexes: std::collections::HashMap<&str, usize> = nodes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, node)| (node.fnode.as_str(), index))
+                    .collect();
+                let edges: Vec<[usize; 2]> = edges_raw
+                    .into_iter()
+                    .filter_map(|(source, target)| {
+                        Some([
+                            *node_indexes.get(source.as_str())?,
+                            *node_indexes.get(target.as_str())?,
+                        ])
+                    })
+                    .collect();
+                Ok::<_, anyhow::Error>((nodes, edges))
+            })?)
         })?;
         Ok(Json(GraphFull { nodes, edges }))
     })
@@ -501,12 +525,10 @@ pub(super) async fn search(
     State(state): State<AppState>,
     Query(q): Query<SearchQuery>,
 ) -> ApiResult<Json<Vec<NodeSummary>>> {
+    let requested_at = std::time::Instant::now();
     spawn_blocking_api(move || {
         let limit = q.n.unwrap_or(MAX_SEARCH_RESULTS).min(MAX_SEARCH_RESULTS);
-        let out = with_cache(&state, |c| {
-            c.discover_workspace_changes()?;
-            c.search(&q.q, limit)
-        })?;
+        let out = with_read_cache(&state, requested_at, |c| Ok(c.search(&q.q, limit)?))?;
         Ok(Json(out))
     })
     .await
@@ -522,19 +544,19 @@ pub(super) async fn resolve_ref(
     State(state): State<AppState>,
     Query(q): Query<ResolveQuery>,
 ) -> ApiResult<Json<ResolveResponse>> {
+    let requested_at = std::time::Instant::now();
     spawn_blocking_api(move || {
-        let mut cache = state
-            .cache
-            .lock()
-            .map_err(|_| anyhow::anyhow!("cache mutex poisoned"))?;
-        let (fnode, title, abs_path) =
-            resolve_with_cache(&mut cache, &q.r#ref).map_err(ApiError::from_resolve)?;
-        let rel_path = to_rel_path(cache.root(), &abs_path);
-        Ok(Json(ResolveResponse {
-            fnode,
-            title,
-            rel_path,
-        }))
+        with_read_cache(&state, requested_at, |cache| {
+            let (fnode, title, abs_path) = cache
+                .resolve_ref(&q.r#ref, Some(cache.root()))
+                .map_err(ApiError::from_resolve)?;
+            let rel_path = to_rel_path(cache.root(), &abs_path);
+            Ok(Json(ResolveResponse {
+                fnode,
+                title,
+                rel_path,
+            }))
+        })
     })
     .await
 }
@@ -543,38 +565,38 @@ pub(super) async fn node_view(
     State(state): State<AppState>,
     Path(fnode): Path<String>,
 ) -> ApiResult<Revisioned<NodeView>> {
+    let requested_at = std::time::Instant::now();
     spawn_blocking_api(move || {
         let _profile = crate::profile::scope("web::api::node_view");
-        let mut cache = state
-            .cache
-            .lock()
-            .map_err(|_| anyhow::anyhow!("cache mutex poisoned"))?;
-        let (fnode, _, abs_path) =
-            resolve_with_cache(&mut cache, &fnode).map_err(ApiError::from_resolve)?;
-        let (snapshot, node) = load_node_generation(&mut cache, &fnode, &abs_path)?;
-        let cache_fields = (|| {
-            Ok::<_, anyhow::Error>((
-                cache.node_summary(&fnode)?,
-                cache.indexed_formalization_status(&fnode)?,
-                cache.direct_referrer_summaries(&fnode)?,
-                cache.direct_dependency_summaries(&fnode)?,
-            ))
-        })();
-        ensure_snapshot_unchanged(&snapshot, &abs_path)?;
-        let (summary, formalization, referrers, children) = cache_fields?;
-        let view = NodeView {
-            node: node_detail_from_generation(
-                summary,
-                node,
-                formalization,
-                snapshot_revision(&snapshot),
-            ),
-            referrers,
-            children,
-        };
-        Ok(Revisioned {
-            revision: view.node.revision.clone(),
-            body: view,
+        with_read_cache(&state, requested_at, |cache| {
+            let (fnode, _, abs_path) = cache
+                .resolve_ref(&fnode, Some(cache.root()))
+                .map_err(ApiError::from_resolve)?;
+            let (snapshot, node) = load_node_generation(cache, &fnode, &abs_path)?;
+            let cache_fields = cache.read_snapshot(|cache| {
+                Ok::<_, anyhow::Error>((
+                    cache.node_summary(&fnode)?,
+                    cache.indexed_formalization_status(&fnode)?,
+                    cache.direct_referrer_summaries(&fnode)?,
+                    cache.direct_dependency_summaries(&fnode)?,
+                ))
+            });
+            ensure_snapshot_unchanged(&snapshot, &abs_path)?;
+            let (summary, formalization, referrers, children) = cache_fields?;
+            let view = NodeView {
+                node: node_detail_from_generation(
+                    summary,
+                    node,
+                    formalization,
+                    snapshot_revision(&snapshot),
+                ),
+                referrers,
+                children,
+            };
+            Ok(Revisioned {
+                revision: view.node.revision.clone(),
+                body: view,
+            })
         })
     })
     .await
@@ -639,18 +661,16 @@ pub(super) async fn node_dependency_candidates(
     Path(fnode): Path<String>,
     Query(q): Query<SearchQuery>,
 ) -> ApiResult<Json<DependencyCandidates>> {
+    let requested_at = std::time::Instant::now();
     spawn_blocking_api(move || {
         let limit = q.n.unwrap_or(MAX_SEARCH_RESULTS).min(MAX_SEARCH_RESULTS);
-        let mut cache = state
-            .cache
-            .lock()
-            .map_err(|_| anyhow::anyhow!("cache mutex poisoned"))?;
-        cache.discover_workspace_changes()?;
-        let (fnode, _, _) = cache
-            .resolve_ref(&fnode, Some(cache.root()))
-            .map_err(ApiError::from_resolve)?;
-        let out = cache.dependency_candidates(&fnode, &q.q, limit)?;
-        Ok(Json(out))
+        with_read_cache(&state, requested_at, |cache| {
+            let (fnode, _, _) = cache
+                .resolve_ref(&fnode, Some(cache.root()))
+                .map_err(ApiError::from_resolve)?;
+            let out = cache.dependency_candidates(&fnode, &q.q, limit)?;
+            Ok(Json(out))
+        })
     })
     .await
 }
@@ -1088,6 +1108,34 @@ mod tests {
         cache.refresh_all().unwrap();
         let state = AppState::new(cache);
         (dir, state, path, fnode)
+    }
+
+    #[test]
+    fn queued_reads_share_discovery_but_later_requests_scan_again() {
+        let (dir, state, _path, _fnode) = setup_state();
+        let queued_at = std::time::Instant::now();
+        assert_eq!(
+            with_read_cache(&state, queued_at, |cache| Ok(cache.count()?)).unwrap(),
+            1
+        );
+        std::fs::write(
+            dir.path().join("external.mdoc"),
+            "@fnode: external\n@title: External\n",
+        )
+        .unwrap();
+        assert_eq!(
+            with_read_cache(&state, queued_at, |cache| Ok(cache.count()?)).unwrap(),
+            1
+        );
+        assert_eq!(
+            with_read_cache(
+                &state,
+                std::time::Instant::now(),
+                |cache| Ok(cache.count()?)
+            )
+            .unwrap(),
+            2
+        );
     }
 
     #[test]
