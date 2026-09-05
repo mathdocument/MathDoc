@@ -395,24 +395,18 @@ fn with_read_cache<R>(
 }
 
 fn lock_until<'a, T>(
-    mutex: &'a std::sync::Mutex<T>,
+    mutex: &'a super::deadline_mutex::DeadlineMutex<T>,
     deadline: std::time::Instant,
     name: &str,
-) -> ApiResult<std::sync::MutexGuard<'a, T>> {
-    loop {
-        if std::time::Instant::now() >= deadline {
-            return Err(anyhow::anyhow!("timed out waiting for {name} mutex").into());
+) -> ApiResult<super::deadline_mutex::Guard<'a, T>> {
+    mutex.lock_until(deadline).map_err(|error| match error {
+        super::deadline_mutex::LockError::TimedOut => {
+            anyhow::anyhow!("timed out waiting for {name} mutex").into()
         }
-        match mutex.try_lock() {
-            Ok(guard) => return Ok(guard),
-            Err(std::sync::TryLockError::Poisoned(_)) => {
-                return Err(anyhow::anyhow!("{name} mutex poisoned").into())
-            }
-            Err(std::sync::TryLockError::WouldBlock) => {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
+        super::deadline_mutex::LockError::Poisoned => {
+            anyhow::anyhow!("{name} mutex poisoned").into()
         }
-    }
+    })
 }
 
 fn with_workspace_mutation<R>(
