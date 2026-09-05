@@ -66,3 +66,10 @@ describe("node mutations", () => {
     }
   });
 });
+
+it("preserves the status and structured body of a revision conflict", async () => {
+  const body = { error: "resource changed; refresh and retry" };
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(body, { status: 412 })));
+  await expect(api.putTitle("conflicted-node", "Title", "old"))
+    .rejects.toMatchObject({ name: "ApiError", status: 412, body, isConflict: true });
+});

@@ -86,3 +86,27 @@ describe("NodeSession", () => {
     expect(session.node).toBeNull();
   });
 });
+
+it("keeps successful navigation and browser history isolated between sessions", async () => {
+  const browserA = { state: () => null, commit: vi.fn() };
+  const browserB = { state: () => null, commit: vi.fn() };
+  const a = new NodeSession(browserA);
+  const b = new NodeSession(browserB);
+  vi.spyOn(api, "nodeView").mockImplementation(async (fnode) => ({
+    node: { ...node("r1"), fnode }, referrers: [], children: [],
+  }));
+  const opts = { skipTransition: true, skipUnsavedGuard: true };
+  expect(await a.select("a", opts)).toBe(true);
+  expect(await b.select("b", opts)).toBe(true);
+  expect(await a.select("next-a", opts)).toBe(true);
+  expect(a.history).toEqual(["a", "next-a"]);
+  expect(b.history).toEqual(["b"]);
+  expect(browserA.commit).toHaveBeenLastCalledWith("push", "next-a", {
+    mdcHistory: 1, fnode: "next-a", index: 1, entries: ["a", "next-a"],
+  });
+  await a.clearSelection({ skipUnsavedGuard: true });
+  expect(a.selectedFnode).toBeNull();
+  expect(b.selectedFnode).toBe("b");
+  expect(browserB.commit).toHaveBeenCalledTimes(1);
+  vi.restoreAllMocks();
+});

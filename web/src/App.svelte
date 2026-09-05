@@ -17,11 +17,10 @@
     nodeSession,
     browserHistoryEntry,
     browserHistoryTarget,
-    commitClearedHistory,
-    initialHistoryOptions,
     type BrowserHistoryEntry,
     type FocusedHistoryOptions,
   } from "./lib/state.svelte";
+  import { WorkspaceSession } from "./lib/workspace.svelte";
   import { api } from "./lib/api";
   import NodeColumn from "./components/NodeColumn.svelte";
   import EditorPane from "./components/EditorPane.svelte";
@@ -30,7 +29,7 @@
   import RmDepOverlay from "./components/RmDepOverlay.svelte";
   import NewNodeOverlay from "./components/NewNodeOverlay.svelte";
   import DepthGraph from "./components/DepthGraph.svelte";
-  import type { GraphCheckReport, NodeDetail } from "./lib/types";
+  import type { NodeDetail } from "./lib/types";
   import {
     confirmDiscardDrafts,
     hasUnsavedDrafts,
@@ -54,11 +53,7 @@
   let refreshing = $state(false);
   let refreshRequest = 0;
   let historyNavigating = $state(false);
-  let graphCheck = $state<GraphCheckReport | null>(null);
-  let graphCheckLoading = $state(false);
-  let graphCheckError: string | null = $state(null);
-  let graphCheckStale = $state(false);
-  let graphCheckRequest = 0;
+  const workspaceSession = new WorkspaceSession();
 
   // Top-level view state: three-column layout vs. full-screen force graph.
   let view = $state<"columns" | "force">("columns");
@@ -70,40 +65,6 @@
   // Increment after dependency mutations to refresh the graph data.
   let graphRevision = $state(0);
   let viewSwitchDone: Promise<void> | null = null;
-  let graphIssueCount = $derived(
-    graphCheck
-      ? graphCheck.missing.length + graphCheck.invalid.length + graphCheck.cycles.length
-      : 0,
-  );
-  let graphCheckTitle = $derived.by(() => {
-    if (graphCheckError) return graphCheckError;
-    if (graphCheckStale) return "Graph counts updated locally; refresh to recheck issues";
-    if (!graphCheck) return "Checking graph";
-    return graphIssueCount === 0
-      ? "Graph check: no issues"
-      : `Graph check: ${graphIssueCount} issue${graphIssueCount === 1 ? "" : "s"}`;
-  });
-
-  async function refreshGraphCheck(refreshWorkspace = false): Promise<boolean> {
-    const request = ++graphCheckRequest;
-    graphCheckLoading = true;
-    graphCheckError = null;
-    try {
-      const report = await (refreshWorkspace ? api.refreshWorkspace() : api.graphCheck());
-      if (request !== graphCheckRequest) return false;
-      graphCheck = report;
-      graphCheckStale = false;
-      return true;
-    } catch (error) {
-      if (request === graphCheckRequest) {
-        graphCheckError = error instanceof Error ? error.message : String(error);
-      }
-      return false;
-    } finally {
-      if (request === graphCheckRequest) graphCheckLoading = false;
-    }
-  }
-
   function cancelStartup() {
     startupRequest++;
   }
@@ -130,9 +91,9 @@
     fnode: string,
     clearedEntry: BrowserHistoryEntry | null = null,
   ): Promise<boolean> {
-    const committed = await nodeSession.select(fnode, initialHistoryOptions(fnode));
+    const committed = await nodeSession.select(fnode, nodeSession.initialHistoryOptions(fnode));
     if (committed && clearedEntry) {
-      commitClearedHistory({
+      nodeSession.commitClearedHistory({
         pushHistory: false,
         historyIndex: clearedEntry.index,
         historyEntries: clearedEntry.entries,
@@ -140,22 +101,6 @@
       });
     }
     return committed;
-  }
-
-  function applyGraphStatsDelta(nodes: number, edges: number) {
-    graphCheckRequest++;
-    graphCheckLoading = false;
-    graphCheckError = null;
-    if (!graphCheck) {
-      void refreshGraphCheck();
-      return;
-    }
-    graphCheck = {
-      ...graphCheck,
-      nodes: Math.max(0, graphCheck.nodes + nodes),
-      edges: Math.max(0, graphCheck.edges + edges),
-    };
-    graphCheckStale = true;
   }
 
   function markColumnsEditorReady() {
@@ -235,7 +180,7 @@
         if (request !== popstateRequest) return;
         if (committed) {
           if (view === "columns" && entry.fnode === null) {
-            commitClearedHistory({
+            nodeSession.commitClearedHistory({
               pushHistory: false,
               historyIndex: entry.index,
               historyEntries: entry.entries,
@@ -262,7 +207,7 @@
     window.addEventListener("popstate", onPopState);
     window.addEventListener("keydown", onKeyDown);
     return () => {
-      graphCheckRequest++;
+      workspaceSession.cancel();
       resolveColumnsEditorReady?.();
       resolveForceEditorReady?.();
       window.removeEventListener("beforeunload", onBeforeUnload);
@@ -307,7 +252,7 @@
       } catch (e) {
         if (isCurrent()) initialError = e instanceof Error ? e.message : String(e);
       } finally {
-        void refreshGraphCheck();
+        void workspaceSession.refresh();
       }
     })();
   });
@@ -328,7 +273,7 @@
     try {
       if (!await settlePendingMutations()) return;
       if (request !== refreshRequest) return;
-      const checked = await refreshGraphCheck(true);
+      const checked = await workspaceSession.refresh(true);
       if (request !== refreshRequest) return;
       const selectionWasCleared = nodeSession.selectionCleared;
       const current = nodeSession.node;
@@ -386,7 +331,7 @@
   function afterDepMutation(updated: NodeDetail, delta: { nodes: number; edges: number }) {
     refreshError = null;
     graphRevision++;
-    applyGraphStatsDelta(delta.nodes, delta.edges);
+    workspaceSession.applyDelta(delta.nodes, delta.edges);
     nodeSession.acceptNode(updated);
     void nodeSession.syncView(updated.fnode).catch((error) => {
       refreshError = error instanceof Error ? error.message : String(error);
@@ -397,7 +342,7 @@
     cancelStartup();
     initialError = null;
     graphRevision++;
-    applyGraphStatsDelta(1, 0);
+    workspaceSession.applyDelta(1, 0);
     if (historyNavigating) return;
     if (view === "force") void onForceSelect(fnode, { skipUnsavedGuard });
     else void nodeSession.select(fnode, { skipUnsavedGuard });
@@ -603,7 +548,7 @@
           if (initialRetry) {
             cancelStartup();
             if (view === "force" && !initialRetry.clearedEntry) {
-              void onForceSelect(target, initialHistoryOptions(target));
+              void onForceSelect(target, nodeSession.initialHistoryOptions(target));
             } else {
               void navigateInitial(target, initialRetry.clearedEntry);
             }
@@ -703,17 +648,17 @@
     <span class="spacer"></span>
     <span
       class="graph-stats"
-      class:checking={graphCheckLoading}
-      class:stale={graphCheckStale}
-      class:issues={graphIssueCount > 0}
-      class:error={graphCheckError !== null}
-      title={graphCheckTitle}
+      class:checking={workspaceSession.loading}
+      class:stale={workspaceSession.stale}
+      class:issues={workspaceSession.issueCount > 0}
+      class:error={workspaceSession.error !== null}
+      title={workspaceSession.title}
       aria-live="polite"
     >
       <span class="graph-stats-dot"></span>
-      {#if graphCheck}
-        {graphCheck.nodes.toLocaleString()} nodes · {graphCheck.edges.toLocaleString()} edges
-      {:else if graphCheckLoading}
+      {#if workspaceSession.report}
+        {workspaceSession.report.nodes.toLocaleString()} nodes · {workspaceSession.report.edges.toLocaleString()} edges
+      {:else if workspaceSession.loading}
         Checking graph…
       {:else}
         Graph check unavailable

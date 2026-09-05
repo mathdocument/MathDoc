@@ -1,3 +1,4 @@
+import { browserHistoryAdapter, type BrowserHistoryAdapter } from "./browser-history";
 import type { NodeDetail, NodeInfo, NodeView } from "./types";
 import { api } from "./api";
 import {
@@ -33,6 +34,8 @@ interface NavigateOptions extends FocusedHistoryOptions {
 }
 
 export class NodeSession {
+  constructor(private readonly browserHistory: BrowserHistoryAdapter = browserHistoryAdapter) {}
+
   snapshot = $state<NodeView | null>(null);
   selectionCleared = $state(false);
   history = $state<string[]>([]);
@@ -106,7 +109,7 @@ export class NodeSession {
         this.loadError = null;
         this.referrersSelected = -1;
         this.childrenSelected = -1;
-        commitFocusedHistory(view.node.fnode, opts);
+        this.commitFocusedHistory(view.node.fnode, opts);
         this.navigationError = null;
         this.failedNavigationFnode = null;
         committed = true;
@@ -138,7 +141,7 @@ export class NodeSession {
         unsavedDraftRevision() !== confirmedDraftRevision) return;
       this.editorRevision++;
       this.selectionCleared = true;
-      commitClearedHistory(opts);
+      this.commitClearedHistory(opts);
       this.navigationError = null;
       this.failedNavigationFnode = null;
       committed = true;
@@ -167,6 +170,68 @@ export class NodeSession {
       throw error;
     }
   }
+  initialHistoryOptions(fnode: string): FocusedHistoryOptions {
+    const entry = browserHistoryEntry(this.browserHistory.state());
+    if (entry && browserHistoryTarget(entry) === fnode) {
+      return {
+        pushHistory: false,
+        historyIndex: entry.index,
+        historyEntries: entry.entries,
+        browserHistory: "replace",
+      };
+    }
+    return { pushHistory: true, browserHistory: "replace" };
+  }
+
+  commitFocusedHistory(
+    fnode: string,
+    opts: FocusedHistoryOptions = {},
+  ): void {
+    const push = opts.pushHistory ?? true;
+    const previousIndex = this.historyIdx;
+    const history = focusedHistoryState(this.history, this.historyIdx, fnode, opts);
+    this.history = history.entries;
+    this.historyIdx = history.index;
+
+    const mode = opts.browserHistory ?? (push ? previousIndex < 0 ? "replace" : "push" : "none");
+    if (mode === "none") return;
+    const state: BrowserHistoryEntry = {
+      mdcHistory: 1,
+      fnode,
+      index: this.historyIdx,
+      entries: [...this.history],
+    };
+    this.browserHistory.commit(mode, fnode, state);
+  }
+
+  commitClearedHistory(
+    opts: FocusedHistoryOptions = {},
+  ): void {
+    const backingEntries = opts.historyEntries ?? this.history;
+    const backingIndex = opts.historyIndex ?? this.historyIdx;
+    const backingFnode = backingEntries[backingIndex];
+
+    if (!backingFnode) {
+      this.browserHistory.commit("replace", null, null);
+      return;
+    }
+
+    const push = opts.pushHistory ?? true;
+    const history = focusedHistoryState(this.history, this.historyIdx, backingFnode, opts);
+    this.history = history.entries;
+    this.historyIdx = history.index;
+
+    const mode = opts.browserHistory ?? (push ? "push" : "none");
+    if (mode === "none") return;
+    const state: BrowserHistoryEntry = {
+      mdcHistory: 1,
+      fnode: null,
+      index: this.historyIdx,
+      entries: [...this.history],
+    };
+    this.browserHistory.commit(mode, null, state);
+  }
+
 }
 
 export const nodeSession = new NodeSession();
@@ -210,79 +275,5 @@ export async function withViewTransition(
   } catch {
     cleanup();
     apply();
-  }
-}
-
-export function initialHistoryOptions(fnode: string): FocusedHistoryOptions {
-  const entry = browserHistoryEntry(window.history.state);
-  if (entry && browserHistoryTarget(entry) === fnode) {
-    return {
-      pushHistory: false,
-      historyIndex: entry.index,
-      historyEntries: entry.entries,
-      browserHistory: "replace",
-    };
-  }
-  return { pushHistory: true, browserHistory: "replace" };
-}
-
-export function commitFocusedHistory(
-  fnode: string,
-  opts: FocusedHistoryOptions = {},
-): void {
-  const push = opts.pushHistory ?? true;
-  const previousIndex = nodeSession.historyIdx;
-  const history = focusedHistoryState(nodeSession.history, nodeSession.historyIdx, fnode, opts);
-  nodeSession.history = history.entries;
-  nodeSession.historyIdx = history.index;
-
-  const mode = opts.browserHistory ?? (push ? previousIndex < 0 ? "replace" : "push" : "none");
-  if (mode === "none") return;
-  const url = new URL(window.location.href);
-  url.hash = new URLSearchParams({ ref: fnode }).toString();
-  const state: BrowserHistoryEntry = {
-    mdcHistory: 1,
-    fnode,
-    index: nodeSession.historyIdx,
-    entries: [...nodeSession.history],
-  };
-  if (mode === "push") {
-    window.history.pushState(state, "", url);
-  } else {
-    window.history.replaceState(state, "", url);
-  }
-}
-
-export function commitClearedHistory(
-  opts: FocusedHistoryOptions = {},
-): void {
-  const backingEntries = opts.historyEntries ?? nodeSession.history;
-  const backingIndex = opts.historyIndex ?? nodeSession.historyIdx;
-  const backingFnode = backingEntries[backingIndex];
-  const url = new URL(window.location.href);
-  url.hash = "";
-
-  if (!backingFnode) {
-    window.history.replaceState(null, "", url);
-    return;
-  }
-
-  const push = opts.pushHistory ?? true;
-  const history = focusedHistoryState(nodeSession.history, nodeSession.historyIdx, backingFnode, opts);
-  nodeSession.history = history.entries;
-  nodeSession.historyIdx = history.index;
-
-  const mode = opts.browserHistory ?? (push ? "push" : "none");
-  if (mode === "none") return;
-  const state: BrowserHistoryEntry = {
-    mdcHistory: 1,
-    fnode: null,
-    index: nodeSession.historyIdx,
-    entries: [...nodeSession.history],
-  };
-  if (mode === "push") {
-    window.history.pushState(state, "", url);
-  } else {
-    window.history.replaceState(state, "", url);
   }
 }

@@ -23,6 +23,17 @@ export function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
 
+export class ApiError extends Error {
+  constructor(message: string, public readonly status: number, public readonly body: unknown) {
+    super(message);
+    this.name = "ApiError";
+  }
+
+  get isConflict(): boolean {
+    return this.status === 409 || this.status === 412;
+  }
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(path, init);
   const text = await resp.text();
@@ -39,7 +50,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
       typeof body === "object" && body !== null && "error" in body
         ? String((body as ErrorResponse).error)
         : `HTTP ${resp.status}`;
-    throw new Error(msg);
+    throw new ApiError(msg, resp.status, body);
   }
   return body as T;
 }
