@@ -42,7 +42,7 @@ pub(super) fn refresh_search_index(
         rebuild_in_degree(conn)?;
     }
     super::derived::backfill_all_topo_depths(conn)?;
-    let formal_validation = crate::formal::status::refresh_index_statuses(conn, root)?;
+    let formal_validation = super::formal::refresh_index_statuses(conn, root)?;
     conn.execute(
         "UPDATE mdoc_index_state SET bootstrapped = 1 WHERE id = 1",
         [],

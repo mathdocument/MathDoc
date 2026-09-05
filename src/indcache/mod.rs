@@ -1,5 +1,6 @@
 mod derived;
 mod discovery;
+mod formal;
 mod queries;
 mod refresh;
 mod schema;
@@ -545,7 +546,7 @@ impl WorkspaceStore {
         if discovery::apply_workspace_changes(&tx, &self.root, changes)? {
             derived::backfill_all_topo_depths(&tx)?;
         }
-        let formal_validation = crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
+        let formal_validation = formal::refresh_index_statuses(&tx, &self.root)?;
         tx.commit()?;
         self.validate_formal_status_commit(formal_validation)
     }
@@ -577,7 +578,7 @@ impl WorkspaceStore {
         if graph_changed {
             derived::backfill_all_topo_depths(&tx)?;
         }
-        let formal_validation = crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
+        let formal_validation = formal::refresh_index_statuses(&tx, &self.root)?;
 
         tx.commit()?;
         self.validate_formal_status_commit(formal_validation)
@@ -696,7 +697,7 @@ impl WorkspaceStore {
             let _phase = crate::profile::scope("derived::refresh_reachable_topo");
             derived::backfill_all_topo_depths(&tx)?;
         }
-        let formal_validation = crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
+        let formal_validation = formal::refresh_index_statuses(&tx, &self.root)?;
         let _commit = crate::profile::scope("sqlite::refresh_reachable_commit");
         tx.commit()?;
         self.validate_formal_status_commit(formal_validation)
@@ -776,7 +777,7 @@ impl WorkspaceStore {
     pub(crate) fn refresh_formal_statuses(&mut self) -> Result<()> {
         self.require_current_database()?;
         let tx = self.conn.transaction()?;
-        let formal_validation = crate::formal::status::refresh_index_statuses(&tx, &self.root)?;
+        let formal_validation = formal::refresh_index_statuses(&tx, &self.root)?;
         tx.commit()?;
         self.validate_formal_status_commit(formal_validation)
     }
@@ -792,7 +793,7 @@ impl WorkspaceStore {
         let repair = (|| {
             self.require_current_database()?;
             let tx = self.conn.transaction()?;
-            crate::formal::status::downgrade_verified_statuses(&tx)?;
+            formal::downgrade_verified_statuses(&tx)?;
             tx.commit()?;
             self.require_current_database()
         })();
@@ -856,7 +857,7 @@ impl WorkspaceStore {
                 ));
                 continue;
             };
-            match crate::formal::status::prepare_attestation(
+            match formal::prepare_attestation(
                 &self.conn,
                 &self.root,
                 &loaded.manifest,
@@ -975,9 +976,7 @@ impl WorkspaceStore {
         }
         let formal_validation = if graph_changed {
             derived::backfill_all_topo_depths(&tx)?;
-            Some(crate::formal::status::refresh_index_statuses(
-                &tx, &self.root,
-            )?)
+            Some(formal::refresh_index_statuses(&tx, &self.root)?)
         } else {
             None
         };

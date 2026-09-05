@@ -1,5 +1,4 @@
 use anyhow::{bail, Context, Result};
-use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
@@ -7,6 +6,8 @@ use std::path::{Component, Path, PathBuf};
 use crate::core::FormalCodeStatus;
 use crate::mdocnode::MdocNode;
 use crate::workspace::{FileSnapshot, FileSnapshotBatch, ReadFileSnapshot};
+
+use super::rules::{language_state, propagate_verified, Candidate, EvaluatedNode, LanguageState};
 
 use super::attestation::{
     self as formal_attestation, FormalAttestation, FormalAttestationManifest,
@@ -28,29 +29,13 @@ struct CurrentEvidence {
     dependencies: BTreeSet<String>,
 }
 
-struct Candidate {
-    token: String,
-    artifact_sha256: String,
-    dependencies: BTreeMap<String, String>,
-}
-
-struct LanguageState {
-    status: FormalCodeStatus,
-    candidate: Option<Candidate>,
-}
-
-struct EvaluatedNode {
-    lean: LanguageState,
-    rocq: LanguageState,
-}
-
 #[derive(Default)]
 struct EvaluationCaches {
     external_input_digests: HashMap<String, String>,
     environment_digests: HashMap<String, Option<String>>,
 }
 
-struct WorkspaceEvaluation {
+pub(crate) struct WorkspaceEvaluation {
     root: PathBuf,
     nodes: Vec<IndexedNode>,
     states: Vec<EvaluatedNode>,
@@ -124,8 +109,42 @@ impl CompilerIdentityEvidence {
 }
 
 impl WorkspaceEvaluation {
-    fn ensure_current(&self) -> Result<()> {
+    pub(crate) fn ensure_current(&self) -> Result<()> {
         ensure_guards(&self.root, &self.guards)
+    }
+}
+
+impl WorkspaceEvaluation {
+    pub(crate) fn statuses(
+        &self,
+    ) -> impl Iterator<Item = (&str, FormalCodeStatus, FormalCodeStatus)> {
+        self.nodes
+            .iter()
+            .zip(&self.states)
+            .map(|(node, state)| (node.rel_path.as_str(), state.lean.status, state.rocq.status))
+    }
+
+    pub(crate) fn finish_validation(
+        self,
+        loaded: formal_attestation::LoadedManifest,
+    ) -> FormalStatusValidation {
+        let evidence = self
+            .states
+            .iter()
+            .any(|state| {
+                state.lean.status == FormalCodeStatus::Verified
+                    || state.rocq.status == FormalCodeStatus::Verified
+            })
+            .then_some(FormalStatusEvidence {
+                root: self.root,
+                guards: self.guards,
+                manifest_path: loaded.path,
+                manifest_snapshot: loaded.snapshot,
+            });
+        crate::workspace::run_test_hook(
+            crate::workspace::TestHookPoint::FormalStatusAfterEvaluation,
+        );
+        FormalStatusValidation { evidence }
     }
 }
 
@@ -143,80 +162,8 @@ impl FormalStatusValidation {
     }
 }
 
-pub(crate) fn refresh_index_statuses(
-    conn: &Connection,
-    root: &Path,
-) -> Result<FormalStatusValidation> {
-    let _profile = crate::profile::scope("formal_status::refresh_index_statuses");
-    let loaded = match formal_attestation::load_for_status(root) {
-        Ok(loaded) => loaded,
-        Err(_) => {
-            downgrade_verified_statuses(conn)?;
-            return Ok(FormalStatusValidation::default());
-        }
-    };
-    if !loaded.manifest.has_attestations() {
-        downgrade_verified_statuses(conn)?;
-        return Ok(FormalStatusValidation::default());
-    }
-    let evaluation =
-        match evaluate_workspace(conn, root, &loaded.manifest, None).and_then(|evaluation| {
-            evaluation.ensure_current()?;
-            ensure_unchanged_beneath(&loaded.snapshot, root, &loaded.path)?;
-            Ok(evaluation)
-        }) {
-            Ok(evaluation) => evaluation,
-            Err(error) if error.chain().any(|cause| cause.is::<rusqlite::Error>()) => {
-                return Err(error)
-            }
-            Err(_) => {
-                downgrade_verified_statuses(conn)?;
-                return Ok(FormalStatusValidation::default());
-            }
-        };
-
-    downgrade_verified_statuses(conn)?;
-    let mut update = conn.prepare(
-        "UPDATE mdoc_files SET lean_status = ?, rocq_status = ?
-         WHERE path = ? AND (lean_status <> ? OR rocq_status <> ?)",
-    )?;
-    for (node, state) in evaluation.nodes.iter().zip(&evaluation.states) {
-        let lean = status_value(state.lean.status);
-        let rocq = status_value(state.rocq.status);
-        update.execute(rusqlite::params![lean, rocq, node.rel_path, lean, rocq,])?;
-    }
-    let evidence = if evaluation.states.iter().any(|state| {
-        state.lean.status == FormalCodeStatus::Verified
-            || state.rocq.status == FormalCodeStatus::Verified
-    }) {
-        Some(FormalStatusEvidence {
-            root: evaluation.root,
-            guards: evaluation.guards,
-            manifest_path: loaded.path,
-            manifest_snapshot: loaded.snapshot,
-        })
-    } else {
-        None
-    };
-    crate::workspace::run_test_hook(crate::workspace::TestHookPoint::FormalStatusAfterEvaluation);
-    Ok(FormalStatusValidation { evidence })
-}
-
-pub(crate) fn downgrade_verified_statuses(conn: &Connection) -> Result<()> {
-    // Keep the index usable without retaining any previously verified state.
-    conn.execute(
-        "UPDATE mdoc_files SET lean_status = 1 WHERE lean_status = 2",
-        [],
-    )?;
-    conn.execute(
-        "UPDATE mdoc_files SET rocq_status = 1 WHERE rocq_status = 2",
-        [],
-    )?;
-    Ok(())
-}
-
 pub(crate) fn prepare_attestation(
-    conn: &Connection,
+    evaluation: WorkspaceEvaluation,
     root: &Path,
     manifest: &FormalAttestationManifest,
     fnode: &str,
@@ -230,7 +177,6 @@ pub(crate) fn prepare_attestation(
             receipt.evidence_scheme_version
         );
     }
-    let evaluation = evaluate_workspace(conn, root, manifest, Some(fnode))?;
     let index = evaluation
         .index_by_fnode
         .get(fnode)
@@ -327,16 +273,61 @@ pub(crate) fn prepare_attestation(
     Ok(attestation)
 }
 
-fn evaluate_workspace(
-    conn: &Connection,
+pub(crate) struct CollectedWorkspace {
+    root: PathBuf,
+    nodes: Vec<IndexedNode>,
+    guards: Vec<InputGuard>,
+}
+
+impl CollectedWorkspace {
+    pub(crate) fn dependency_refs(&self) -> Vec<String> {
+        let loaded = self
+            .nodes
+            .iter()
+            .map(|node| node.fnode.as_str())
+            .collect::<BTreeSet<_>>();
+        self.nodes
+            .iter()
+            .flat_map(|node| node.node.depens.iter())
+            .filter(|fnode| !loaded.contains(fnode.as_str()))
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+}
+
+pub(crate) fn collect_workspace(
     root: &Path,
+    locations: Vec<(String, String)>,
+) -> Result<CollectedWorkspace> {
+    let mut guards = Vec::new();
+    let nodes = load_indexed_nodes(root, locations, &mut guards)?;
+    Ok(CollectedWorkspace {
+        root: root.to_path_buf(),
+        nodes,
+        guards,
+    })
+}
+
+pub(crate) fn evaluate_workspace(
+    collected: CollectedWorkspace,
     manifest: &FormalAttestationManifest,
-    required_fnode: Option<&str>,
+    dependency_locations: Vec<(String, String)>,
 ) -> Result<WorkspaceEvaluation> {
     let _profile = crate::profile::scope("formal_status::evaluate_workspace");
-    let mut guards = Vec::new();
-    let nodes = load_indexed_nodes(conn, root, manifest, required_fnode, &mut guards)?;
-    let module_by_fnode = module_by_fnode(conn, &nodes)?;
+    let CollectedWorkspace {
+        root,
+        nodes,
+        mut guards,
+    } = collected;
+    let root = root.as_path();
+    let module_by_fnode = nodes
+        .iter()
+        .map(|node| (node.rel_path.clone(), node.fnode.clone()))
+        .chain(dependency_locations)
+        .map(|(path, fnode)| Ok((fnode, module_key(Path::new(&path))?)))
+        .collect::<Result<HashMap<_, _>>>()?;
     let mut states = Vec::with_capacity(nodes.len());
     let mut caches = EvaluationCaches::default();
     for node in &nodes {
@@ -379,44 +370,11 @@ fn evaluate_workspace(
 }
 
 fn load_indexed_nodes(
-    conn: &Connection,
     root: &Path,
-    manifest: &FormalAttestationManifest,
-    required_fnode: Option<&str>,
+    mut rows: Vec<(String, String)>,
     guards: &mut Vec<InputGuard>,
 ) -> Result<Vec<IndexedNode>> {
     let _profile = crate::profile::scope("formal_status::load_indexed_nodes");
-    let mut required = manifest.nodes.keys().cloned().collect::<BTreeSet<_>>();
-    if let Some(fnode) = required_fnode {
-        required.insert(fnode.to_string());
-    }
-    if required.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let required = required.into_iter().collect::<Vec<_>>();
-    let mut rows = Vec::with_capacity(required.len());
-    for chunk in required.chunks(512) {
-        let placeholders = std::iter::repeat_n("?", chunk.len())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "SELECT m.path, m.fnode
-             FROM mdocs m
-             WHERE m.fnode IN ({placeholders})
-               AND NOT EXISTS (
-                   SELECT 1 FROM mdoc_issues i
-                   WHERE i.path = m.path AND i.kind IN ('invalid', 'duplicate')
-               )"
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        rows.extend(
-            stmt.query_map(rusqlite::params_from_iter(chunk), |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?,
-        );
-    }
     rows.sort_unstable_by(|left, right| left.0.cmp(&right.0));
 
     let worker_count = formal_worker_count(rows.len());
@@ -597,118 +555,6 @@ fn current_evidence(
         environment_sha256,
         dependencies: expected_dependencies,
     }))
-}
-
-fn propagate_verified(
-    states: &mut [EvaluatedNode],
-    index_by_fnode: &HashMap<String, usize>,
-    language: &str,
-) -> Result<()> {
-    let mut remaining = vec![None; states.len()];
-    let mut referrers = vec![Vec::new(); states.len()];
-    for (index, state) in states.iter().enumerate() {
-        let Some(candidate) = language_state(state, language)?.candidate.as_ref() else {
-            continue;
-        };
-        let mut dependencies = Vec::with_capacity(candidate.dependencies.len());
-        let valid = candidate.dependencies.iter().all(|(fnode, token)| {
-            let Some(dependency_index) = index_by_fnode.get(fnode).copied() else {
-                return false;
-            };
-            let token_matches = language_state(&states[dependency_index], language)
-                .ok()
-                .and_then(|state| state.candidate.as_ref())
-                .is_some_and(|dependency| dependency.token == *token);
-            if token_matches {
-                dependencies.push(dependency_index);
-            }
-            token_matches
-        });
-        if valid {
-            remaining[index] = Some(dependencies.len());
-            for dependency in dependencies {
-                referrers[dependency].push(index);
-            }
-        }
-    }
-
-    let mut queue = std::collections::VecDeque::new();
-    for (index, count) in remaining.iter().enumerate() {
-        if *count == Some(0) {
-            queue.push_back(index);
-        }
-    }
-    while let Some(index) = queue.pop_front() {
-        language_state_mut(&mut states[index], language)?.status = FormalCodeStatus::Verified;
-        for &referrer in &referrers[index] {
-            let Some(count) = &mut remaining[referrer] else {
-                continue;
-            };
-            *count -= 1;
-            if *count == 0 {
-                queue.push_back(referrer);
-            }
-        }
-    }
-    Ok(())
-}
-
-fn language_state<'a>(state: &'a EvaluatedNode, language: &str) -> Result<&'a LanguageState> {
-    match language {
-        "lean" => Ok(&state.lean),
-        "rocq" => Ok(&state.rocq),
-        _ => bail!("unsupported formal language: {language}"),
-    }
-}
-
-fn language_state_mut<'a>(
-    state: &'a mut EvaluatedNode,
-    language: &str,
-) -> Result<&'a mut LanguageState> {
-    match language {
-        "lean" => Ok(&mut state.lean),
-        "rocq" => Ok(&mut state.rocq),
-        _ => bail!("unsupported formal language: {language}"),
-    }
-}
-
-fn module_by_fnode(conn: &Connection, nodes: &[IndexedNode]) -> Result<HashMap<String, String>> {
-    let mut modules = nodes
-        .iter()
-        .map(|node| Ok((node.fnode.clone(), module_key(Path::new(&node.rel_path))?)))
-        .collect::<Result<HashMap<_, _>>>()?;
-    let missing = nodes
-        .iter()
-        .flat_map(|node| node.node.depens.iter())
-        .filter(|fnode| !modules.contains_key(*fnode))
-        .cloned()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    for chunk in missing.chunks(512) {
-        let placeholders = std::iter::repeat_n("?", chunk.len())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "SELECT m.path, m.fnode
-             FROM mdocs m
-             WHERE m.fnode IN ({placeholders})
-               AND NOT EXISTS (
-                   SELECT 1 FROM mdoc_issues i
-                   WHERE i.path = m.path AND i.kind IN ('invalid', 'duplicate')
-               )"
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt
-            .query_map(rusqlite::params_from_iter(chunk), |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        for (path, fnode) in rows {
-            modules.insert(fnode, module_key(Path::new(&path))?);
-        }
-    }
-    Ok(modules)
 }
 
 fn expected_workspace_modules(
@@ -1135,14 +981,6 @@ pub(crate) fn file_digest(root: &Path, path: &Path) -> Result<String> {
 fn hash_value(digest: &mut Sha256, value: &[u8]) {
     digest.update((value.len() as u64).to_le_bytes());
     digest.update(value);
-}
-
-fn status_value(status: FormalCodeStatus) -> i64 {
-    match status {
-        FormalCodeStatus::NoCode => 0,
-        FormalCodeStatus::Unverified => 1,
-        FormalCodeStatus::Verified => 2,
-    }
 }
 
 #[cfg(test)]

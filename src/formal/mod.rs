@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 pub(crate) mod attestation;
+mod rules;
 pub(crate) mod status;
 
 /// Bump when any formal evidence digest, token, or validation recipe changes.
