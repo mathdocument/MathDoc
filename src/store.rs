@@ -1,0 +1,502 @@
+//! Versioned documents in TerminusDB. The in-memory graph is a disposable projection.
+use anyhow::{bail, Context, Result};
+use reqwest::{Client, Method, Response};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::PathBuf;
+
+pub const BLOCK_TYPES: [&str; 4] = ["text", "lean", "rocq", "latex"];
+
+pub fn digest(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Block {
+    pub srctype: String,
+    pub content: String,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Node {
+    pub fnode: String,
+    pub title: String,
+    /// Stable Lean module identity, independent of display name.
+    pub module: String,
+    #[serde(default)]
+    pub depens: Vec<String>,
+    #[serde(default)]
+    pub blocks: Vec<Block>,
+}
+
+impl Node {
+    pub fn new(title: String) -> Result<Self> {
+        let id = uuid::Uuid::new_v4();
+        let node = Self {
+            fnode: id.to_string(),
+            title,
+            module: format!("Lib.N_{}", id.simple()),
+            depens: vec![],
+            blocks: vec![],
+        };
+        node.validate()?;
+        Ok(node)
+    }
+    pub fn revision(&self) -> String {
+        digest(&serde_json::to_vec(self).expect("serializable node"))
+    }
+    pub fn source(&self, language: &str) -> Option<&str> {
+        self.blocks
+            .iter()
+            .find(|b| b.srctype == language)
+            .map(|b| b.content.as_str())
+    }
+    pub fn validate(&self) -> Result<()> {
+        if uuid::Uuid::parse_str(&self.fnode).is_err() {
+            bail!("node identity must be a complete UUID");
+        }
+        if self.title.trim().is_empty()
+            || self.title != self.title.trim()
+            || self.title.chars().any(char::is_control)
+        {
+            bail!("name must be nonempty, trimmed and contain no control characters");
+        }
+        if !self.module.starts_with("Lib.")
+            || self
+                .module
+                .split('.')
+                .any(|p| p.is_empty() || !p.chars().all(|c| c.is_alphanumeric() || c == '_'))
+        {
+            bail!("invalid Lean module name");
+        }
+        let mut types = BTreeSet::new();
+        for block in &self.blocks {
+            if !BLOCK_TYPES.contains(&block.srctype.as_str()) || !types.insert(&block.srctype) {
+                bail!("blocks must have distinct types: text, lean, rocq, latex");
+            }
+        }
+        let mut deps = BTreeSet::new();
+        for dep in &self.depens {
+            if dep == &self.fnode || uuid::Uuid::parse_str(dep).is_err() || !deps.insert(dep) {
+                bail!("dependencies must be distinct UUIDs other than the node itself");
+            }
+        }
+        Ok(())
+    }
+    fn document(&self) -> Value {
+        json!({"@id":format!("Node/{}", self.fnode), "@type":"Node", "fnode":self.fnode,
+            "title":self.title, "module":self.module,
+            "depens":self.depens.iter().map(|id| format!("Node/{id}")).collect::<Vec<_>>(),
+            "blocks":serde_json::to_string(&self.blocks).expect("serializable blocks")})
+    }
+    fn from_document(value: Value) -> Result<Self> {
+        let string = |field: &str| {
+            value[field]
+                .as_str()
+                .map(str::to_owned)
+                .with_context(|| format!("invalid Node.{field}"))
+        };
+        let node = Self {
+            fnode: string("fnode")?,
+            title: string("title")?,
+            module: string("module")?,
+            depens: value["depens"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|v| {
+                    v.as_str()
+                        .and_then(|s| s.rsplit('/').next())
+                        .map(str::to_owned)
+                        .context("invalid dependency link")
+                })
+                .collect::<Result<_>>()?,
+            blocks: serde_json::from_str(&string("blocks")?)?,
+        };
+        node.validate()?;
+        Ok(node)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LeanProject {
+    pub toolchain: String,
+    pub lakefile: String,
+    #[serde(default)]
+    pub manifest: Option<String>,
+}
+impl Default for LeanProject {
+    fn default() -> Self {
+        Self {
+            toolchain: "leanprover/lean4:v4.33.1".into(),
+            lakefile: "name = \"MathDoc\"\nversion = \"0.1.0\"\n\n[[lean_lib]]\nname = \"Lib\"\n"
+                .into(),
+            manifest: None,
+        }
+    }
+}
+impl LeanProject {
+    pub fn key(&self) -> String {
+        digest(&serde_json::to_vec(self).expect("serializable project"))
+    }
+    pub fn validate(&self) -> Result<()> {
+        if !self.toolchain.starts_with("leanprover/lean4:v")
+            || self.toolchain.chars().any(char::is_whitespace)
+        {
+            bail!("pin a Lean toolchain release, such as leanprover/lean4:v4.33.1");
+        }
+        let config: toml::Value = toml::from_str(&self.lakefile)?;
+        if !config
+            .get("lean_lib")
+            .and_then(toml::Value::as_array)
+            .is_some_and(|libs| {
+                libs.iter()
+                    .any(|l| l.get("name").and_then(toml::Value::as_str) == Some("Lib"))
+            })
+        {
+            bail!("Lake project must declare the Lib lean_lib");
+        }
+        for key in ["srcDir", "buildDir", "leanLibDir"] {
+            if config.get(key).is_some() {
+                bail!("custom {key} is not supported in managed projects");
+            }
+        }
+        if let Some(manifest) = &self.manifest {
+            serde_json::from_str::<Value>(manifest)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct Database {
+    client: Client,
+    url: String,
+    user: String,
+    password: String,
+    pub database: String,
+    pub branch: String,
+}
+impl Database {
+    pub fn from_env(database: String, branch: String) -> Result<Self> {
+        for part in [&database, &branch] {
+            if part.is_empty()
+                || !part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            {
+                bail!("database and branch names allow letters, digits, hyphens and underscores");
+            }
+        }
+        let url = std::env::var("MDC_TERMINUS_URL").unwrap_or("http://127.0.0.1:6363".into());
+        let parsed = reqwest::Url::parse(&url)?;
+        if !["http", "https"].contains(&parsed.scheme()) {
+            bail!("invalid database URL");
+        }
+        Ok(Self {
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .build()?,
+            url: url.trim_end_matches('/').into(),
+            user: std::env::var("MDC_TERMINUS_USER").unwrap_or("admin".into()),
+            password: std::env::var("MDC_TERMINUS_PASSWORD")
+                .context("set MDC_TERMINUS_PASSWORD for the local TerminusDB server")?,
+            database,
+            branch,
+        })
+    }
+    fn path(&self) -> String {
+        format!("admin/{}/local/branch/{}", self.database, self.branch)
+    }
+    async fn request(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, &str)],
+        body: Option<Value>,
+        version: Option<&str>,
+    ) -> Result<Response> {
+        let mut request = self
+            .client
+            .request(method, format!("{}/api/{path}", self.url))
+            .basic_auth(&self.user, Some(&self.password))
+            .query(query);
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        if let Some(version) = version {
+            request = request.header("TerminusDB-Data-Version", version);
+        }
+        let response = request.send().await.context("connecting to TerminusDB")?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            if body.contains("DataVersion") || body.contains("data_version") {
+                bail!("database revision conflict; reload and retry");
+            }
+            bail!(
+                "TerminusDB {status}: {}",
+                body.chars().take(1500).collect::<String>()
+            );
+        }
+        Ok(response)
+    }
+    fn response_version(response: &Response) -> Result<String> {
+        response
+            .headers()
+            .get("TerminusDB-Data-Version")
+            .context("TerminusDB omitted data version")?
+            .to_str()
+            .map(str::to_owned)
+            .map_err(Into::into)
+    }
+    pub async fn initialize(&self) -> Result<()> {
+        self.request(
+            Method::POST,
+            &format!("db/admin/{}", self.database),
+            &[],
+            Some(json!({"label":"MathDoc", "comment":"Versioned MathDoc nodes"})),
+            None,
+        )
+        .await?;
+        let schema = json!([
+            {"@type":"Class", "@id":"Node", "@key":{"@type":"Lexical","@fields":["fnode"]},
+             "fnode":"xsd:string", "title":"xsd:string", "module":"xsd:string", "blocks":"xsd:string",
+             "depens":{"@type":"Set","@class":"Node"}},
+            {"@type":"Class", "@id":"Project", "@key":{"@type":"Lexical","@fields":["name"]},
+             "name":"xsd:string", "config":"xsd:string"}
+        ]);
+        self.request(
+            Method::POST,
+            &format!("document/{}", self.path()),
+            &[
+                ("graph_type", "schema"),
+                ("author", "mdc"),
+                ("message", "Initialize MathDoc schema"),
+            ],
+            Some(schema),
+            None,
+        )
+        .await?;
+        self.request(Method::POST, &format!("document/{}",self.path()), &[("author","mdc"),("message","Initialize Lean project")],
+            Some(json!({"@type":"Project","name":"lean","config":serde_json::to_string(&LeanProject::default())?})),None).await?;
+        Ok(())
+    }
+    pub async fn version(&self) -> Result<String> {
+        Self::response_version(
+            &self
+                .request(
+                    Method::GET,
+                    &format!("document/{}", self.path()),
+                    &[("count", "0"), ("as_list", "true")],
+                    None,
+                    None,
+                )
+                .await?,
+        )
+    }
+    pub async fn load(&self) -> Result<Snapshot> {
+        let response = self
+            .request(
+                Method::GET,
+                &format!("document/{}", self.path()),
+                &[("as_list", "true"), ("unfold", "false")],
+                None,
+                None,
+            )
+            .await?;
+        let version = Self::response_version(&response)?;
+        let docs: Vec<Value> = response.json().await?;
+        let mut nodes = BTreeMap::new();
+        let mut project = None;
+        for doc in docs {
+            match doc["@type"].as_str() {
+                Some("Node") => {
+                    let node = Node::from_document(doc)?;
+                    nodes.insert(node.fnode.clone(), node);
+                }
+                Some("Project") if doc["name"] == "lean" => {
+                    project = Some(serde_json::from_str(
+                        doc["config"].as_str().context("invalid project config")?,
+                    )?);
+                }
+                _ => {}
+            }
+        }
+        let mut snapshot = Snapshot {
+            version,
+            nodes,
+            project: project.context("database has no Lean project")?,
+            depths: HashMap::new(),
+        };
+        snapshot.recompute();
+        Ok(snapshot)
+    }
+    pub async fn put(&self, nodes: &[Node], version: &str, message: &str) -> Result<String> {
+        let response = self
+            .request(
+                Method::PUT,
+                &format!("document/{}", self.path()),
+                &[("create", "true"), ("author", "mdc"), ("message", message)],
+                Some(Value::Array(nodes.iter().map(Node::document).collect())),
+                Some(version),
+            )
+            .await?;
+        Self::response_version(&response)
+    }
+    pub async fn put_project(&self, project: &LeanProject, version: &str) -> Result<String> {
+        project.validate()?;
+        let response = self.request(Method::PUT,&format!("document/{}",self.path()),&[("author","mdc"),("message","Update Lean environment")],
+            Some(json!({"@id":"Project/lean","@type":"Project","name":"lean","config":serde_json::to_string(project)?})),Some(version)).await?;
+        Self::response_version(&response)
+    }
+    pub async fn history(&self) -> Result<Value> {
+        Ok(self
+            .request(
+                Method::GET,
+                &format!("log/{}", self.path()),
+                &[("count", "50")],
+                None,
+                None,
+            )
+            .await?
+            .json()
+            .await?)
+    }
+    pub async fn create_branch(&self, name: &str) -> Result<Value> {
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            bail!("invalid branch name");
+        }
+        Ok(self
+            .request(
+                Method::POST,
+                &format!("branch/admin/{}/local/branch/{name}", self.database),
+                &[],
+                Some(json!({"origin":self.path()})),
+                None,
+            )
+            .await?
+            .json()
+            .await?)
+    }
+    pub fn cache_path(&self) -> Result<PathBuf> {
+        let base = std::env::var_os("MDC_CACHE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or(std::env::current_dir()?.join(".mdc-service"));
+        Ok(base.join(&self.database).join(&self.branch))
+    }
+}
+
+pub struct Snapshot {
+    pub version: String,
+    pub nodes: BTreeMap<String, Node>,
+    pub project: LeanProject,
+    pub depths: HashMap<String, u32>,
+}
+impl Snapshot {
+    pub fn graph(&self) -> HashMap<String, Vec<String>> {
+        self.nodes
+            .iter()
+            .map(|(id, n)| (id.clone(), n.depens.clone()))
+            .collect()
+    }
+    pub fn recompute(&mut self) {
+        self.depths = crate::core::all_topo_depths(&self.graph());
+    }
+    pub fn resolve(&self, reference: &str) -> Result<&Node> {
+        if uuid::Uuid::parse_str(reference).is_ok() {
+            return self.nodes.get(reference).context("node not found");
+        }
+        let mut matches = self.nodes.values().filter(|n| n.title == reference);
+        let node = matches
+            .next()
+            .context("node not found; use an exact name or complete UUID")?;
+        if matches.next().is_some() {
+            bail!("name is ambiguous; use the complete UUID");
+        }
+        Ok(node)
+    }
+    pub fn validate_changes(&self, changes: &[Node]) -> Result<()> {
+        let mut graph = self.graph();
+        let mut modules: BTreeMap<_, _> = self
+            .nodes
+            .values()
+            .map(|n| (n.module.clone(), n.fnode.clone()))
+            .collect();
+        for node in changes {
+            node.validate()?;
+            if let Some(owner) = modules.insert(node.module.clone(), node.fnode.clone()) {
+                if owner != node.fnode {
+                    bail!("Lean module name is already assigned to another node");
+                }
+            }
+            graph.insert(node.fnode.clone(), node.depens.clone());
+        }
+        for node in changes {
+            for dep in &node.depens {
+                if !graph.contains_key(dep) {
+                    bail!("dependency node does not exist: {dep}");
+                }
+            }
+        }
+        if crate::core::strongly_connected_components(&graph)
+            .iter()
+            .any(|c| c.len() > 1)
+        {
+            bail!("dependency cycle rejected");
+        }
+        Ok(())
+    }
+    pub fn apply(&mut self, changes: Vec<Node>, version: String) {
+        let graph_changed = changes.iter().any(|n| {
+            self.nodes
+                .get(&n.fnode)
+                .is_none_or(|old| old.depens != n.depens)
+        });
+        for node in changes {
+            self.nodes.insert(node.fnode.clone(), node);
+        }
+        self.version = version;
+        if graph_changed {
+            self.recompute();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn references_and_cycles_are_explicit() {
+        let a = Node::new("A".into()).unwrap();
+        let mut b = Node::new("B".into()).unwrap();
+        b.depens.push(a.fnode.clone());
+        let s = Snapshot {
+            version: String::new(),
+            nodes: [a.clone(), b.clone()]
+                .into_iter()
+                .map(|n| (n.fnode.clone(), n))
+                .collect(),
+            project: LeanProject::default(),
+            depths: HashMap::new(),
+        };
+        assert_eq!(s.resolve("A").unwrap().fnode, a.fnode);
+        assert!(s.resolve("A.mdoc").is_err());
+        assert!(s.resolve(&a.fnode[..8]).is_err());
+        let mut changed = a.clone();
+        changed.depens.push(b.fnode);
+        assert!(s.validate_changes(&[changed]).is_err());
+        assert_eq!(Node::from_document(a.document()).unwrap(), a);
+    }
+}

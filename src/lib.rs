@@ -13,6 +13,7 @@ pub(crate) mod compiler;
 pub mod config;
 #[cfg(unix)]
 pub mod core;
+pub mod store;
 #[cfg(unix)]
 pub mod depgraph;
 #[cfg(unix)]

@@ -36,8 +36,10 @@ sha2 = "0.10"
 dialoguer = { version = "0.12.0", default-features = false }
 ratatui = "0.29"
 # Web frontend (mdc serve)
-axum = { version = "0.7", default-features = false, features = ["http1", "json", "tokio", "query"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
+axum = { version = "0.7", default-features = false, features = ["http1", "json", "tokio", "query", "ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "process", "io-util", "sync", "time", "fs"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+futures-util = "0.3"
 rust-embed = { version = "8", features = ["mime-guess"] }
 tempfile = "3"
 

@@ -1,0 +1,12 @@
+services:
+  terminusdb:
+    image: terminusdb/terminusdb-server@sha256:385faf298ad77aaf2d4d6df5e84a4cbe3596d01dab2e3b991af905639ae56388
+    ports:
+      - "127.0.0.1:6363:6363"
+    environment:
+      TERMINUSDB_ADMIN_PASS: ${MDC_TERMINUS_PASSWORD:?Set MDC_TERMINUS_PASSWORD in .env}
+      TERMINUSDB_SERVER_PORT: "6363"
+    volumes:
+      - terminus-data:/app/terminusdb/storage
+volumes:
+  terminus-data:
