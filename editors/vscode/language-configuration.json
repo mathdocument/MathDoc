@@ -1,8 +1,0 @@
-{
-  "folding": {
-    "markers": {
-      "start": "^@(dep|src):",
-      "end": "^@end\\s*$"
-    }
-  }
-}
