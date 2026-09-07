@@ -328,12 +328,6 @@ fn replace_index_rows(
     files: &[ScannedMdoc],
     issues: &[IndexIssue],
 ) -> Result<()> {
-    conn.execute_batch(
-        "DELETE FROM mdoc_edges;
-         DELETE FROM mdoc_symbols;
-         DELETE FROM mdoc_issues;",
-    )?;
-
     let nodes: Vec<(&ScannedMdoc, &ScannedNode)> = files
         .iter()
         .filter_map(|file| file.node.as_ref().map(|node| (file, node)))
@@ -387,25 +381,35 @@ fn replace_index_rows(
         )?;
     }
 
-    let edges: Vec<(&str, &str, &str, i64)> = files
-        .iter()
-        .filter(|file| file.invalid.is_none())
-        .filter_map(|file| file.node.as_ref().map(|node| (file, node)))
-        .flat_map(|(file, node)| {
-            node.dependencies
-                .iter()
-                .enumerate()
-                .map(move |(order, dep)| {
-                    (
-                        file.path.as_str(),
-                        node.fnode.as_str(),
-                        dep.as_str(),
-                        order as i64,
-                    )
-                })
-        })
-        .collect();
-    insert_edges(conn, &edges)?;
+    replace_edges(conn, files)?;
+
+    let current_issues = conn
+        .prepare(
+            "SELECT path, kind, ref_fnode, error FROM mdoc_issues ORDER BY path, kind, ref_fnode",
+        )?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if current_issues.len() == issues.len()
+        && current_issues
+            .iter()
+            .zip(issues)
+            .all(|((path, kind, fnode, error), issue)| {
+                path == &issue.path
+                    && kind == issue.kind
+                    && fnode == &issue.ref_fnode
+                    && error == &issue.error
+            })
+    {
+        return Ok(());
+    }
+    conn.execute("DELETE FROM mdoc_issues", [])?;
 
     for chunk in issues.chunks(BULK_ROWS) {
         let placeholders = chunk
@@ -428,6 +432,85 @@ fn replace_index_rows(
         )?;
     }
     Ok(())
+}
+
+/// Compare ordered adjacency against freshly parsed files, including invalid
+/// sources, before replacing only the source paths whose edges differ.
+fn replace_edges(conn: &Connection, files: &[ScannedMdoc]) -> Result<()> {
+    let mut expected: HashMap<&str, (&ScannedNode, usize)> = files
+        .iter()
+        .filter(|file| file.invalid.is_none())
+        .filter_map(|file| {
+            file.node
+                .as_ref()
+                .map(|node| (file.path.as_str(), (node, node.dependencies.len())))
+        })
+        .collect();
+    let mut changed = HashSet::new();
+    let mut stmt = conn.prepare(
+        "SELECT e.src_path, src.fnode, dst.fnode, e.ord
+         FROM mdoc_edges e
+         LEFT JOIN mdoc_symbols src ON src.id = e.src_symbol_id
+         LEFT JOIN mdoc_symbols dst ON dst.id = e.dst_symbol_id",
+    )?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let path: String = row.get(0)?;
+        let source: Option<String> = row.get(1)?;
+        let target: Option<String> = row.get(2)?;
+        let order: i64 = row.get(3)?;
+        match expected.get_mut(path.as_str()) {
+            Some((node, remaining))
+                if source.as_deref() == Some(node.fnode.as_str())
+                    && usize::try_from(order)
+                        .ok()
+                        .and_then(|i| node.dependencies.get(i))
+                        .is_some_and(|dependency| {
+                            Some(dependency.as_str()) == target.as_deref()
+                        }) =>
+            {
+                *remaining -= 1;
+            }
+            _ => {
+                changed.insert(path);
+            }
+        }
+    }
+    drop(rows);
+    drop(stmt);
+    for (path, (_, remaining)) in &expected {
+        if *remaining != 0 {
+            changed.insert((*path).to_string());
+        }
+    }
+    if changed.is_empty() {
+        return Ok(());
+    }
+
+    let mut paths: Vec<&str> = changed.iter().map(String::as_str).collect();
+    paths.sort_unstable();
+    let old_symbols = symbol_ids_for_source_paths(conn, &paths)?;
+    for chunk in paths.chunks(CHUNK_SIZE) {
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        conn.execute(
+            &format!("DELETE FROM mdoc_edges WHERE src_path IN ({placeholders})"),
+            rusqlite::params_from_iter(chunk),
+        )?;
+    }
+    let edges = paths
+        .iter()
+        .filter_map(|path| expected.get(path).map(|(node, _)| (*path, *node)))
+        .flat_map(|(path, node)| {
+            node.dependencies
+                .iter()
+                .enumerate()
+                .map(move |(order, target)| {
+                    (path, node.fnode.as_str(), target.as_str(), order as i64)
+                })
+        })
+        .collect::<Vec<_>>();
+    insert_edges(conn, &edges)?;
+    prune_orphaned_symbols(conn, &old_symbols)
 }
 
 fn insert_edges(conn: &Connection, edges: &[(&str, &str, &str, i64)]) -> Result<()> {
@@ -505,12 +588,15 @@ fn insert_edges(conn: &Connection, edges: &[(&str, &str, &str, i64)]) -> Result<
 
 fn rebuild_in_degree(conn: &Connection) -> Result<()> {
     conn.execute_batch(
-        "DELETE FROM mdoc_in_degree;
+        "DELETE FROM mdoc_in_degree
+         WHERE fnode NOT IN (SELECT dst_fnode FROM mdoc_valid_edges);
          INSERT INTO mdoc_in_degree (fnode, in_degree)
          SELECT dst_fnode, COUNT(*)
          FROM mdoc_valid_edges
          GROUP BY dst_fnode
-         HAVING COUNT(*) > 0;",
+         HAVING COUNT(*) > 0
+         ON CONFLICT(fnode) DO UPDATE SET in_degree = excluded.in_degree
+         WHERE mdoc_in_degree.in_degree != excluded.in_degree;",
     )?;
     Ok(())
 }
@@ -819,15 +905,23 @@ pub(super) fn delete_indexed_path(conn: &Connection, stale_path: &str) -> Result
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 fn symbol_ids_for_source_path(conn: &Connection, rel_path: &str) -> Result<HashSet<i64>> {
-    let mut stmt =
-        conn.prepare("SELECT src_symbol_id, dst_symbol_id FROM mdoc_edges WHERE src_path = ?")?;
+    symbol_ids_for_source_paths(conn, &[rel_path])
+}
+
+fn symbol_ids_for_source_paths(conn: &Connection, paths: &[&str]) -> Result<HashSet<i64>> {
     let mut ids = HashSet::new();
-    for row in stmt.query_map([rel_path], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-    })? {
-        let (source, target) = row?;
-        ids.insert(source);
-        ids.insert(target);
+    for chunk in paths.chunks(CHUNK_SIZE) {
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT src_symbol_id, dst_symbol_id FROM mdoc_edges WHERE src_path IN ({placeholders})"
+        ))?;
+        for row in stmt.query_map(rusqlite::params_from_iter(chunk), |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })? {
+            let (source, target) = row?;
+            ids.insert(source);
+            ids.insert(target);
+        }
     }
     Ok(ids)
 }

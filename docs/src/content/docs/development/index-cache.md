@@ -162,9 +162,13 @@ workspace scan on every cache open.
 ## Strong refresh
 
 `refresh_all()` descriptor-relatively rereads and reparses every discovered document.
-Every call rebuilds edge, symbol, issue, in-degree, and topological-depth data. Base node
-rows are upserted only when their identity or title changed, preserving stable row IDs and
-FTS entries for unchanged nodes. There is no digest or document-count shortcut.
+It compares freshly parsed ordered dependencies with stored edges and replaces only
+changed source paths, preserving other edges and their interned IDs. Diagnostics are
+replaced only when their contents differ. In-degree and topological depth are still
+recomputed, so strong refresh repairs stale derived values, but only changed values are
+written. Base node rows are upserted only when their identity or title changed,
+preserving stable row IDs and FTS entries. There is no digest, metadata, or document-count
+shortcut around the strong reads.
 
 Focused and reachable refreshes retain strong byte reads. A path whose parsed identity,
 title, ordered dependencies, parse error, file state, and blocking status are unchanged
@@ -189,8 +193,8 @@ depend on them, may retain partial Kahn accumulation. Cycle reporting is authori
 in those regions.
 
 Every graph-changing path calls `derived::backfill_all_topo_depths()`. It loads the graph
-once, runs the core Kahn-style algorithm, resets stored depths, and persists the complete
-result.
+once, runs the core Kahn-style algorithm, and writes depths that differ from the complete
+result. Rows absent from that result are reset to zero only when necessary.
 
 Weak-component sizes are calculated directly by `global_root_items()`. Representative
 cycles are calculated directly by `graph_check_report()`. Neither result has a persisted

@@ -37,11 +37,15 @@ fn persist_topo_depths(conn: &Connection, depths: &HashMap<String, u32>) -> Resu
             params.as_slice(),
         )?;
     }
-    conn.execute_batch("UPDATE mdocs SET topo_depth = 0;")?;
+    conn.execute_batch(
+        "UPDATE mdocs SET topo_depth = 0
+         WHERE topo_depth != 0 AND fnode NOT IN (SELECT fnode FROM mdc_topo_updates);",
+    )?;
     conn.execute(
         "UPDATE mdocs
          SET topo_depth = (SELECT depth FROM mdc_topo_updates u WHERE u.fnode = mdocs.fnode)
-         WHERE fnode IN (SELECT fnode FROM mdc_topo_updates)",
+         WHERE fnode IN (SELECT fnode FROM mdc_topo_updates)
+           AND topo_depth != (SELECT depth FROM mdc_topo_updates u WHERE u.fnode = mdocs.fnode)",
         [],
     )?;
     Ok(())

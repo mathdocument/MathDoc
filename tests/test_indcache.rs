@@ -2390,3 +2390,142 @@ fn failed_read_snapshot_releases_the_transaction() {
     store.upsert_path(&path).unwrap();
     assert_eq!(store.read_snapshot(|snapshot| snapshot.count()).unwrap(), 1);
 }
+
+#[test]
+fn full_refresh_only_writes_changed_adjacency_and_repairs_derived_values() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    setup(root);
+    let source = root.join("source.mdoc");
+    let initial = "@fnode: source-node\n@title: Source\n\n@dep:\nfirst-node\nsecond-node\n@end\n";
+    write(&source, initial);
+    write(
+        &root.join("first.mdoc"),
+        "@fnode: first-node\n@title: First\n",
+    );
+    write(
+        &root.join("second.mdoc"),
+        "@fnode: second-node\n@title: Second\n",
+    );
+    write(
+        &root.join("other.mdoc"),
+        "@fnode: other-node\n@title: Other\n\n@dep:\nsecond-node\n@end\n",
+    );
+    write(&root.join("broken.mdoc"), "not an mdoc\n");
+    let mut cache = IndCache::open(root.to_path_buf()).unwrap();
+    let conn = rusqlite::Connection::open(index_path(&cache)).unwrap();
+    conn.execute_batch("CREATE TABLE refresh_writes (table_name TEXT, path TEXT);")
+        .unwrap();
+    for table in [
+        "mdoc_edges",
+        "mdoc_symbols",
+        "mdoc_issues",
+        "mdoc_in_degree",
+    ] {
+        for (event, row) in [("INSERT", "new"), ("DELETE", "old"), ("UPDATE", "new")] {
+            let path = if table == "mdoc_edges" {
+                format!("{row}.src_path")
+            } else {
+                "''".into()
+            };
+            conn.execute_batch(&format!(
+                "CREATE TRIGGER log_{table}_{event} AFTER {event} ON {table} BEGIN
+                   INSERT INTO refresh_writes VALUES ('{table}', {path});
+                 END;"
+            ))
+            .unwrap();
+        }
+    }
+    conn.execute_batch(
+        "CREATE TRIGGER log_depth AFTER UPDATE OF topo_depth ON mdocs BEGIN
+           INSERT INTO refresh_writes VALUES ('mdocs', new.path);
+         END;",
+    )
+    .unwrap();
+    let second_id: i64 = conn
+        .query_row(
+            "SELECT id FROM mdoc_symbols WHERE fnode='second-node'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    // A no-op and a title-only change retain every graph row, including diagnostics.
+    cache.refresh_all().unwrap();
+    write(&source, &initial.replace("Source", "Renamed"));
+    cache.refresh_all().unwrap();
+    let writes: i64 = conn
+        .query_row("SELECT COUNT(*) FROM refresh_writes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(writes, 0);
+    assert_eq!(cache.node_summary("source-node").unwrap().title, "Renamed");
+
+    // Strong refresh sees ordered-edge changes even when file metadata is preserved.
+    rewrite_preserving_mtime_and_size(
+        &source,
+        &initial
+            .replace("Source", "Renamed")
+            .replace("first-node\nsecond-node", "second-node\nfirst-node"),
+        false,
+    );
+    cache.refresh_all().unwrap();
+    assert_eq!(
+        cache
+            .direct_dependency_summaries("source-node")
+            .unwrap()
+            .into_iter()
+            .map(|n| n.fnode)
+            .collect::<Vec<_>>(),
+        ["second-node", "first-node"]
+    );
+    let other_writes: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM refresh_writes WHERE path='other.mdoc'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(other_writes, 0);
+    assert_eq!(
+        conn.query_row(
+            "SELECT id FROM mdoc_symbols WHERE fnode='second-node'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        second_id
+    );
+
+    // Unchanged edges must not mask stale derived data during index recovery.
+    conn.execute_batch("UPDATE mdoc_in_degree SET in_degree=99; UPDATE mdocs SET topo_depth=99;")
+        .unwrap();
+    cache.refresh_all().unwrap();
+    assert_eq!(cache.node_summary("source-node").unwrap().depth, 1);
+    assert_eq!(cache.node_summary("second-node").unwrap().depth, 0);
+    assert_eq!(
+        conn.query_row(
+            "SELECT in_degree FROM mdoc_in_degree WHERE fnode='second-node'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
+
+    write(&source, "@fnode: source-node\n@title: Source\n");
+    cache.refresh_all().unwrap();
+    assert!(cache
+        .direct_dependency_summaries("source-node")
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM mdoc_symbols WHERE fnode='first-node'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(cache.graph_check_report().unwrap().edges, 1);
+}

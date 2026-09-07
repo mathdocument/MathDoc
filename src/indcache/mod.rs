@@ -521,7 +521,7 @@ impl WorkspaceStore {
         Ok(())
     }
 
-    /// Full workspace rescan; rebuilds the entire index.
+    /// Strongly reparse the workspace and reconcile the entire index.
     pub fn refresh_all(&mut self) -> Result<()> {
         let _profile = crate::profile::scope("IndCache::refresh_all");
         self.require_current_database()?;
