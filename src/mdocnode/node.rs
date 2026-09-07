@@ -79,11 +79,7 @@ impl MdocNode {
 
     /// Load a node from an existing .mdoc file (full parse including blocks).
     pub fn load(path: &Path) -> Result<Self> {
-        let snapshot = crate::workspace::FileSnapshot::capture(path)?;
-        let content = snapshot
-            .content()
-            .ok_or_else(|| anyhow::anyhow!("node file does not exist: {}", path.display()))?;
-        Self::load_bytes(path, content)
+        Self::load_bytes(path, &std::fs::read(path)?)
     }
 
     pub(crate) fn load_bytes(path: &Path, content: &[u8]) -> Result<Self> {

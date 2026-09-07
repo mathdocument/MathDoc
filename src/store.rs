@@ -49,7 +49,9 @@ impl Node {
         Ok(node)
     }
     pub fn revision(&self) -> String {
-        digest(&serde_json::to_vec(self).expect("serializable node"))
+        let mut canonical = self.clone();
+        canonical.depens.sort();
+        digest(&serde_json::to_vec(&canonical).expect("serializable node"))
     }
     pub fn source(&self, language: &str) -> Option<&str> {
         self.blocks
@@ -340,12 +342,25 @@ impl Database {
         Ok(snapshot)
     }
     pub async fn put(&self, nodes: &[Node], version: &str, message: &str) -> Result<String> {
+        self.put_bundle(nodes, None, version, message).await
+    }
+    pub async fn put_bundle(
+        &self,
+        nodes: &[Node],
+        project: Option<&LeanProject>,
+        version: &str,
+        message: &str,
+    ) -> Result<String> {
+        let mut documents: Vec<Value> = nodes.iter().map(Node::document).collect();
+        if let Some(project) = project {
+            documents.push(json!({"@id":"Project/lean","@type":"Project","name":"lean","config":serde_json::to_string(project)?}));
+        }
         let response = self
             .request(
                 Method::PUT,
                 &format!("document/{}", self.path()),
                 &[("create", "true"), ("author", "mdc"), ("message", message)],
-                Some(Value::Array(nodes.iter().map(Node::document).collect())),
+                Some(Value::Array(documents)),
                 Some(version),
             )
             .await?;

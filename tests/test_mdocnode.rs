@@ -71,7 +71,7 @@ fn test_load_preserves_blank_lines_in_src_blocks() {
         "@fnode: blank-node\n\
          @title: Blank Lines\n\
          \n\
-         @src: python\n\
+         @src: text\n\
          print('line1')\n\
          \n\
          print('line3')\n\
@@ -319,14 +319,14 @@ fn test_parse_and_render_reject_unknown_srctypes() {
 #[test]
 fn test_load_canonicalizes_known_srctype_case() {
     let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("python.mdoc");
+    let path = dir.path().join("lean.mdoc");
     write_file(
         &path,
-        "@fnode: python-node\n@title: Python\n\n@src: Python\nprint('ok')\n@end\n",
+        "@fnode: lean-node\n@title: Lean\n\n@src: Lean\n#check Nat\n@end\n",
     );
 
     let node = MdocNode::load(&path).unwrap();
-    assert_eq!(node.blocks[0].srctype, "python");
+    assert_eq!(node.blocks[0].srctype, "lean");
 }
 
 #[test]
@@ -335,7 +335,7 @@ fn test_load_rejects_case_only_duplicate_srctypes() {
     let path = dir.path().join("duplicate-src.mdoc");
     write_file(
         &path,
-        "@fnode: python-node\n@title: Python\n\n@src: Python\none\n@end\n\n@src: python\ntwo\n@end\n",
+        "@fnode: lean-node\n@title: Lean\n\n@src: Lean\none\n@end\n\n@src: lean\ntwo\n@end\n",
     );
 
     assert!(MdocNode::load(&path).is_err());
