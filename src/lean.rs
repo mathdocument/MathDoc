@@ -354,7 +354,7 @@ struct Manager {
     project_key: String,
     root: PathBuf,
     lsp: Option<Lsp>,
-    sources: HashMap<String, String>,
+    sources: HashMap<String, (String, String)>,
 }
 pub struct LeanService {
     root: PathBuf,
@@ -420,7 +420,11 @@ impl LeanService {
         .await
         .ok()?;
         let mut result: CheckResult = serde_json::from_slice(&bytes).ok()?;
-        if result.fnode != node.fnode || result.input_key != key || !result.certified {
+        if result.fnode != node.fnode
+            || result.input_key != key
+            || !result.certified
+            || !result.passed
+        {
             return None;
         }
         let artifact = self
@@ -489,9 +493,15 @@ impl LeanService {
         }
         for (node, _) in &input.chain {
             if let Some(source) = node.source("lean") {
-                if manager.sources.get(&node.fnode).is_none_or(|s| s != source) {
+                if manager
+                    .sources
+                    .get(&node.fnode)
+                    .is_none_or(|(module, s)| module != &node.module || s != source)
+                {
                     write_source(&manager.root, node, source).await?;
-                    manager.sources.insert(node.fnode.clone(), source.into());
+                    manager
+                        .sources
+                        .insert(node.fnode.clone(), (node.module.clone(), source.into()));
                 }
             }
         }
@@ -671,8 +681,6 @@ impl LeanService {
     }
 
     pub async fn editor_project(&self, input: &Input) -> Result<PathBuf> {
-        // Warm the canonical Lake cache once; even an invalid draft still opens in the editor.
-        let _ = self.check(input.clone(), false).await;
         let id = uuid::Uuid::new_v4().to_string();
         let root = self.root.join("drafts").join(id);
         prepare_project(&root, &input.project).await?;
@@ -682,17 +690,17 @@ impl LeanService {
             }
         }
         // Reuse Lake artifacts with copy-on-write where the host filesystem supports it.
-        let mut manager = self.manager.lock().await;
-        self.prepare_input(&mut manager, input).await?;
-        verify_manifest(&manager.root, &input.project).await?;
-        if manager.project_key == input.project.key() && manager.root.join(".lake").exists() {
+        let _manager = self.manager.lock().await;
+        let canonical = self.root.join("projects").join(input.project.key());
+        if canonical.join(".lake").exists() {
+            verify_manifest(&canonical, &input.project).await?;
             let mut copy = Command::new("cp");
             #[cfg(target_os = "macos")]
             copy.arg("-cR");
             #[cfg(not(target_os = "macos"))]
             copy.args(["-R", "--reflink=auto"]);
             let status = copy
-                .arg(manager.root.join(".lake"))
+                .arg(canonical.join(".lake"))
                 .arg(&root)
                 .status()
                 .await?;

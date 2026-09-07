@@ -333,8 +333,12 @@ async fn resolve(
 async fn view(State(s): State<Arc<Service>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     let snapshot = s.read().await?;
     let n = snapshot.resolve(&id)?;
+    let _ = s
+        .lean
+        .cached_or_load(n, &snapshot.lean_keys[&n.fnode], &snapshot.project, false)
+        .await;
     Ok(Json(json!({"node":detail(&snapshot,n,&s.lean),
-        "referrers":snapshot.nodes.values().filter(|other|other.depens.contains(&n.fnode)).map(|n|summary(&snapshot,n)).collect::<Vec<_>>(),
+        "referrers":snapshot.referrers.get(&n.fnode).into_iter().flatten().map(|id|summary(&snapshot,&snapshot.nodes[id])).collect::<Vec<_>>(),
         "children":n.depens.iter().filter_map(|id|snapshot.nodes.get(id)).map(|n|summary(&snapshot,n)).collect::<Vec<_>>()})))
 }
 #[derive(Deserialize)]
@@ -822,6 +826,7 @@ async fn bridge_editor(
     use axum::extract::ws::Message;
     use futures_util::{SinkExt, StreamExt};
     let actual = crate::lean::file_uri(&session.root)?;
+    let allowed_uri = crate::lean::file_uri(std::path::Path::new(&session.filename))?;
     let mut process = crate::lean::spawn(&session.root, &["serve"])?;
     let mut writer = process
         .child
@@ -856,7 +861,7 @@ async fn bridge_editor(
                         let method=value["method"].as_str().unwrap_or("");
                         if matches!(method,"textDocument/didOpen"|"textDocument/didChange"|"textDocument/didSave"){
                             let uri=value["params"]["textDocument"]["uri"].as_str().context("document URI required")?;
-                            if uri!=format!("file://{}",session.filename){bail!("editor may only change its own draft module");}
+                            if uri!=allowed_uri{bail!("editor may only change its own draft module");}
                         }
                         rewrite_uris(&mut value,"file:///project",&actual);crate::lean::write_message(&mut writer,&value).await?;
                     },

@@ -35,7 +35,7 @@ async fn call(
 }
 
 #[tokio::test]
-#[ignore = "requires TerminusDB"]
+#[ignore = "requires TerminusDB and native Lean v4.33.1"]
 async fn api_mutations_use_database_revisions_without_workspace_files() {
     let db = Database::from_env(
         format!("mdcapi{}", uuid::Uuid::new_v4().simple()),
@@ -138,10 +138,48 @@ async fn api_mutations_use_database_revisions_without_workspace_files() {
     .await;
     assert_eq!(excluded["empty"]["kind"], "excluded");
     assert_eq!(excluded["empty"]["existing_dependencies"], 1);
+    let child = parent["depens"][0].as_str().unwrap();
+    let (_, child_view) = call(
+        &app,
+        "GET",
+        &format!("/api/node/{child}/view"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(child_view["referrers"][0]["fnode"], id);
+    let (_, child_saved) = call(
+        &app,
+        "PUT",
+        &format!("/api/node/{child}/block/lean"),
+        json!({"content":"theorem child : True := by trivial\n"}),
+        child_view["node"]["revision"].as_str(),
+    )
+    .await;
+    let (status, checked) = call(
+        &app,
+        "POST",
+        &format!("/api/node/{child}/lean/check"),
+        json!({"build":true}),
+        child_saved["revision"].as_str(),
+    )
+    .await;
+    assert_eq!(status, 200, "{checked}");
+    assert_eq!(checked["certified"], true);
     drop(app);
     let reopened = Service::open(db).await.unwrap();
     assert_eq!(
         reopened.read().await.unwrap().nodes[id].source("lean"),
         Some("#check Nat")
     );
+    let app = service::router(reopened);
+    let (_, restored) = call(
+        &app,
+        "GET",
+        &format!("/api/node/{child}/view"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(restored["node"]["formalization"]["lean"], "verified");
 }

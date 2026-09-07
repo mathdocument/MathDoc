@@ -5,6 +5,101 @@ use mathdoc::{
 use std::collections::HashMap;
 
 #[tokio::test]
+#[ignore = "requires native Lean and Git; uses a local pinned external library"]
+async fn pinned_external_library_builds_and_reuses_artifacts() {
+    let temp = tempfile::tempdir().unwrap();
+    let library = temp.path().join("library");
+    std::fs::create_dir(&library).unwrap();
+    std::fs::write(
+        library.join("lakefile.toml"),
+        "name = \"fixture\"\n[[lean_lib]]\nname = \"ExternalFixture\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        library.join("ExternalFixture.lean"),
+        "theorem externalTruth : True := by trivial\n",
+    )
+    .unwrap();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&library)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    git(&["init", "--quiet"]);
+    git(&["add", "."]);
+    git(&[
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--quiet",
+        "-m",
+        "test: add pinned library fixture",
+    ]);
+    let revision = git(&["rev-parse", "HEAD"]);
+    let url = mathdoc::lean::file_uri(&library).unwrap();
+    let mut project = LeanProject::default();
+    project.lakefile.push_str(&format!(
+        "\n[[require]]\nname = \"fixture\"\ngit = \"{url}\"\nrev = \"{revision}\"\n"
+    ));
+    project.manifest=Some(serde_json::json!({"version":"1.1.0","name":"MathDoc","lakeDir":".lake","packagesDir":".lake/packages","packages":[{"name":"fixture","type":"git","url":url,"rev":revision,"inputRev":revision,"scope":"","subDir":null,"manifestFile":"lake-manifest.json","configFile":"lakefile.toml","inherited":false}]}).to_string());
+    project.validate().unwrap();
+    let mut node = Node::new("External library user".into()).unwrap();
+    node.blocks.push(Block {
+        srctype: "lean".into(),
+        content: "import ExternalFixture\ntheorem usesLibrary : True := externalTruth\n".into(),
+        ..Default::default()
+    });
+    let mut snapshot = Snapshot {
+        version: "library".into(),
+        nodes: [(node.fnode.clone(), node.clone())].into(),
+        project,
+        depths: HashMap::new(),
+        lean_keys: HashMap::new(),
+        referrers: HashMap::new(),
+    };
+    snapshot.recompute();
+    let cache = temp.path().join("cache");
+    let service = LeanService::new(cache.clone()).unwrap();
+    let result = service
+        .check(Input::capture(&snapshot, &node.fnode).unwrap(), true)
+        .await
+        .unwrap();
+    assert!(result.certified && result.built, "{result:?}");
+    let artifact = cache
+        .join("projects")
+        .join(snapshot.project.key())
+        .join(".lake/packages/fixture/.lake/build/lib/lean/ExternalFixture.olean");
+    let modified = std::fs::metadata(&artifact).unwrap().modified().unwrap();
+    node.blocks[0].content.push_str("\n-- local proof edit\n");
+    snapshot.apply(vec![node.clone()], "edit".into());
+    assert!(
+        service
+            .check(Input::capture(&snapshot, &node.fnode).unwrap(), true)
+            .await
+            .unwrap()
+            .certified
+    );
+    assert_eq!(
+        std::fs::metadata(artifact).unwrap().modified().unwrap(),
+        modified,
+        "unchanged external library should not rebuild"
+    );
+}
+
+#[tokio::test]
 #[ignore = "requires native Lean v4.33.1 and Lake"]
 async fn native_lean_incremental_diagnostics_goals_and_imports() {
     let temp = tempfile::tempdir().unwrap();
@@ -161,6 +256,15 @@ async fn native_lean_incremental_diagnostics_goals_and_imports() {
         .await
         .unwrap()
         .is_null());
+    a.module.push_str("_Moved");
+    snapshot.apply(vec![a.clone()], "module moved".into());
+    assert!(
+        service
+            .check(Input::capture(&snapshot, &a.fnode).unwrap(), false)
+            .await
+            .unwrap()
+            .certified
+    );
     let current = Input::capture(&snapshot, &a.fnode).unwrap();
     assert!(
         LeanService::new(temp.path().to_path_buf()).is_err(),
