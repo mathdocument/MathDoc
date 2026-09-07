@@ -138,6 +138,7 @@ async fn api_mutations_use_database_revisions_without_workspace_files() {
     .await;
     assert_eq!(excluded["empty"]["kind"], "excluded");
     assert_eq!(excluded["empty"]["existing_dependencies"], 1);
+    drop(app);
     let reopened = Service::open(db).await.unwrap();
     assert_eq!(
         reopened.read().await.unwrap().nodes[id].source("lean"),

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 #[ignore = "requires native Lean v4.33.1 and Lake"]
 async fn native_lean_incremental_diagnostics_goals_and_imports() {
     let temp = tempfile::tempdir().unwrap();
-    let service = LeanService::new(temp.path().to_path_buf());
+    let service = LeanService::new(temp.path().to_path_buf()).unwrap();
     let mut a = Node::new("A".into()).unwrap();
     a.blocks.push(Block {
         srctype: "lean".into(),
@@ -139,5 +139,38 @@ async fn native_lean_incremental_diagnostics_goals_and_imports() {
     assert!(mismatch
         .dependency_errors
         .iter()
-        .any(|e| e.contains("exactly match")));
+        .any(|e| e.contains("exactly match"))); // Opening many unrelated nodes must retire idle workers without losing valid certificates.
+    for i in 0..6 {
+        let mut n = Node::new(format!("Extra {i}")).unwrap();
+        n.blocks.push(Block {
+            srctype: "lean".into(),
+            content: format!("theorem extra{i} : True := by trivial\n"),
+            ..Default::default()
+        });
+        snapshot.apply(vec![n.clone()], format!("extra{i}"));
+        assert!(
+            service
+                .check(Input::capture(&snapshot, &n.fnode).unwrap(), false)
+                .await
+                .unwrap()
+                .certified
+        );
+    }
+    assert!(!service
+        .goals(Input::capture(&snapshot, &a.fnode).unwrap(), 0, 31)
+        .await
+        .unwrap()
+        .is_null());
+    let current = Input::capture(&snapshot, &a.fnode).unwrap();
+    assert!(
+        LeanService::new(temp.path().to_path_buf()).is_err(),
+        "two services must not race over Lake artifacts"
+    );
+    drop(service);
+    let restarted = LeanService::new(temp.path().to_path_buf()).unwrap();
+    let restored = restarted.check(current, false).await.unwrap();
+    assert!(
+        restored.certified && restored.cache_hit,
+        "restart must reuse input-matched persisted certification"
+    );
 }

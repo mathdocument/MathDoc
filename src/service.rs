@@ -26,7 +26,7 @@ pub struct Service {
 impl Service {
     pub async fn open(db: Database) -> Result<Arc<Self>> {
         let snapshot = db.load().await?;
-        let lean = crate::lean::LeanService::new(db.cache_path()?);
+        let lean = crate::lean::LeanService::new(db.cache_path()?)?;
         Ok(Arc::new(Self {
             db,
             snapshot: Mutex::new(snapshot),
@@ -111,7 +111,7 @@ pub fn detail(snapshot: &Snapshot, node: &Node, lean: &crate::lean::LeanService)
         "rocq":if node.source("rocq").is_some(){"unverified"}else{"no_code"}});
     if let Some(key) = snapshot.lean_keys.get(&node.fnode) {
         if lean
-            .cached(key, &node.revision(), false)
+            .cached(&node.fnode, key, &node.revision(), false)
             .is_some_and(|r| r.certified)
         {
             value["formalization"]["lean"] = json!("verified");
@@ -654,11 +654,16 @@ async fn lean_check(
         let snapshot = s.read().await?;
         let node = snapshot.resolve(&id)?;
         check_revision(&headers, node)?;
-        if let Some(result) = s.lean.cached(
-            &snapshot.lean_keys[&node.fnode],
-            &node.revision(),
-            body.build,
-        ) {
+        if let Some(result) = s
+            .lean
+            .cached_or_load(
+                node,
+                &snapshot.lean_keys[&node.fnode],
+                &snapshot.project,
+                body.build,
+            )
+            .await
+        {
             return Ok(Json(json!(result)));
         }
         crate::lean::Input::capture(&snapshot, &id)?

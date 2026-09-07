@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     path::{Path, PathBuf},
     process::Stdio,
     sync::RwLock,
@@ -16,7 +16,16 @@ use tokio::{
     sync::Mutex,
 };
 
-const TIMEOUT: Duration = Duration::from_secs(300);
+fn timeout() -> Result<Duration> {
+    let seconds = std::env::var("MDC_LEAN_TIMEOUT_SECONDS")
+        .unwrap_or_else(|_| "300".into())
+        .parse::<u64>()
+        .context("MDC_LEAN_TIMEOUT_SECONDS must be a positive integer")?;
+    if seconds == 0 {
+        bail!("MDC_LEAN_TIMEOUT_SECONDS must be positive");
+    }
+    Ok(Duration::from_secs(seconds))
+}
 const MAX_MESSAGE: usize = 32 * 1024 * 1024;
 
 /// Kill the entire Lake/Lean process group on timeout, disconnect or shutdown.
@@ -117,6 +126,7 @@ struct Lsp {
     reader: BufReader<ChildStdout>,
     sequence: u64,
     documents: HashMap<String, Document>,
+    open_order: VecDeque<String>,
     diagnostics: HashMap<String, (u64, Vec<Value>)>,
 }
 impl Lsp {
@@ -140,6 +150,7 @@ impl Lsp {
             reader,
             sequence: 0,
             documents: HashMap::new(),
+            open_order: VecDeque::new(),
             diagnostics: HashMap::new(),
         };
         lsp.request("initialize",json!({"processId":null,"rootUri":file_uri(root)?,"capabilities":{
@@ -163,7 +174,7 @@ impl Lsp {
             &json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}),
         )
         .await?;
-        tokio::time::timeout(TIMEOUT, async {
+        tokio::time::timeout(timeout()?, async {
             loop {
                 let message = read_message(&mut self.reader).await?;
                 if message.get("id") == Some(&json!(id)) && message.get("method").is_none() {
@@ -175,6 +186,9 @@ impl Lsp {
                 if message["method"] == "textDocument/publishDiagnostics" {
                     let p = &message["params"];
                     if let (Some(uri), Some(version)) = (p["uri"].as_str(), p["version"].as_u64()) {
+                        if !self.documents.contains_key(uri) {
+                            continue;
+                        }
                         let entry = self
                             .diagnostics
                             .entry(uri.into())
@@ -212,6 +226,16 @@ impl Lsp {
         .context("Lean check timed out")?
     }
     async fn open(&mut self, uri: &str, source: &str, dependency_key: &str) -> Result<u64> {
+        self.open_order.retain(|open| open != uri);
+        self.open_order.push_back(uri.into());
+        // ponytail: four hot CLI files; Lake artifacts retain reusable work for evicted files.
+        while self.open_order.len() > 4 {
+            let old = self.open_order.pop_front().unwrap();
+            self.notify("textDocument/didClose", json!({"textDocument":{"uri":old}}))
+                .await?;
+            self.documents.remove(&old);
+            self.diagnostics.remove(&old);
+        }
         if self
             .documents
             .get(uri)
@@ -337,10 +361,22 @@ pub struct LeanService {
     // ponytail: one CLI compiler per branch; add workers if concurrent check throughput requires it.
     manager: Mutex<Manager>,
     results: RwLock<HashMap<String, CheckResult>>,
+    _lease: std::fs::File,
 }
 impl LeanService {
-    pub fn new(root: PathBuf) -> Self {
-        Self {
+    pub fn new(root: PathBuf) -> Result<Self> {
+        use std::os::fd::AsRawFd;
+        std::fs::create_dir_all(&root)?;
+        let lease = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(root.join("service.lock"))?;
+        if unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            bail!("this database branch cache is already owned by another service");
+        }
+        Ok(Self {
             manager: Mutex::new(Manager {
                 project_key: String::new(),
                 root: root.clone(),
@@ -349,14 +385,15 @@ impl LeanService {
             }),
             root,
             results: RwLock::new(HashMap::new()),
-        }
+            _lease: lease,
+        })
     }
-    pub fn cached(&self, key: &str, revision: &str, build: bool) -> Option<CheckResult> {
+    pub fn cached(&self, id: &str, key: &str, revision: &str, build: bool) -> Option<CheckResult> {
         self.results
             .read()
             .ok()?
-            .get(key)
-            .filter(|r| !build || r.built)
+            .get(id)
+            .filter(|r| r.input_key == key && (!build || r.built))
             .cloned()
             .map(|mut r| {
                 r.revision = revision.into();
@@ -365,22 +402,72 @@ impl LeanService {
                 r
             })
     }
+    pub async fn cached_or_load(
+        &self,
+        node: &Node,
+        key: &str,
+        project: &LeanProject,
+        build: bool,
+    ) -> Option<CheckResult> {
+        if let Some(result) = self.cached(&node.fnode, key, &node.revision(), build) {
+            return Some(result);
+        }
+        let bytes = tokio::fs::read(
+            self.root
+                .join("checks-v1")
+                .join(format!("{}.json", node.fnode)),
+        )
+        .await
+        .ok()?;
+        let mut result: CheckResult = serde_json::from_slice(&bytes).ok()?;
+        if result.fnode != node.fnode || result.input_key != key || !result.certified {
+            return None;
+        }
+        let artifact = self
+            .root
+            .join("projects")
+            .join(project.key())
+            .join(".lake/build/lib/lean")
+            .join(node.module.replace('.', "/"))
+            .with_extension("olean");
+        result.built &= artifact.is_file();
+        self.results
+            .write()
+            .ok()?
+            .insert(node.fnode.clone(), result);
+        self.cached(&node.fnode, key, &node.revision(), build)
+    }
+    async fn persist_result(&self, result: &CheckResult) -> Result<()> {
+        if !result.certified {
+            return Ok(());
+        }
+        let root = self.root.join("checks-v1");
+        tokio::fs::create_dir_all(&root).await?;
+        let temporary = root.join(format!("{}.tmp", result.fnode));
+        tokio::fs::write(&temporary, serde_json::to_vec(result)?).await?;
+        tokio::fs::rename(temporary, root.join(format!("{}.json", result.fnode))).await?;
+        Ok(())
+    }
     pub async fn check(&self, input: Input, build: bool) -> Result<CheckResult> {
         let start = Instant::now();
         let (target, key) = input.chain.last().context("no Lean target")?;
-        if let Some(result) = self.cached(key, &target.revision(), build) {
+        if let Some(result) = self
+            .cached_or_load(target, key, &input.project, build)
+            .await
+        {
             return Ok(result);
         }
         let target_id = target.fnode.clone();
         let target_key = key.clone();
         let mut manager = self.manager.lock().await;
-        if let Some(result) = self.cached(&target_key, &target.revision(), build) {
+        if let Some(result) = self.cached(&target.fnode, &target_key, &target.revision(), build) {
             return Ok(result);
         }
         self.prepare_input(&mut manager, &input).await?;
         let result = self.check_chain(&mut manager, &input, build).await;
         if result.is_err() {
             manager.lsp = None;
+            manager.project_key.clear();
         }
         let mut result = result?;
         result.fnode = target_id;
@@ -388,7 +475,7 @@ impl LeanService {
         self.results
             .write()
             .map_err(|_| anyhow::anyhow!("Lean cache lock poisoned"))?
-            .insert(target_key, result.clone());
+            .insert(result.fnode.clone(), result.clone());
         Ok(result)
     }
     async fn prepare_input(&self, manager: &mut Manager, input: &Input) -> Result<()> {
@@ -429,7 +516,10 @@ impl LeanService {
         let mut final_result = None;
         for (i, (node, key)) in input.chain.iter().enumerate() {
             let is_target = i + 1 == input.chain.len();
-            if let Some(cached) = self.cached(key, &node.revision(), build && is_target) {
+            if let Some(cached) = self
+                .cached_or_load(node, key, &input.project, build && is_target)
+                .await
+            {
                 final_result = Some(cached);
                 continue;
             }
@@ -450,7 +540,7 @@ impl LeanService {
                 self.results
                     .write()
                     .unwrap()
-                    .insert(key.clone(), result.clone());
+                    .insert(node.fnode.clone(), result.clone());
                 final_result = Some(result);
                 continue;
             };
@@ -471,6 +561,7 @@ impl LeanService {
                 .unwrap()
                 .check(&uri, source, &dependency_key)
                 .await?;
+            verify_manifest(&manager.root, &input.project).await?;
             let passed = !diagnostics.iter().any(|d| d["severity"] == 1);
             let mut errors = vec![];
             let mut imported = BTreeSet::new();
@@ -494,8 +585,8 @@ impl LeanService {
                     .results
                     .read()
                     .unwrap()
-                    .get(&keys[dep])
-                    .is_some_and(|r| r.certified)
+                    .get(dep)
+                    .is_some_and(|r| r.input_key == keys[dep] && r.certified)
                 {
                     errors.push(format!("dependency {dep} is not verified for Lean"));
                 }
@@ -526,10 +617,11 @@ impl LeanService {
                 }
                 result.built = true;
             }
+            self.persist_result(&result).await?;
             self.results
                 .write()
                 .unwrap()
-                .insert(key.clone(), result.clone());
+                .insert(node.fnode.clone(), result.clone());
             final_result = Some(result);
         }
         final_result.context("Lean check produced no result")
@@ -573,6 +665,7 @@ impl LeanService {
         .await;
         if result.is_err() {
             manager.lsp = None;
+            manager.project_key.clear();
         }
         result
     }
@@ -589,7 +682,9 @@ impl LeanService {
             }
         }
         // Reuse Lake artifacts with copy-on-write where the host filesystem supports it.
-        let manager = self.manager.lock().await;
+        let mut manager = self.manager.lock().await;
+        self.prepare_input(&mut manager, input).await?;
+        verify_manifest(&manager.root, &input.project).await?;
         if manager.project_key == input.project.key() && manager.root.join(".lake").exists() {
             let mut copy = Command::new("cp");
             #[cfg(target_os = "macos")]
@@ -636,6 +731,55 @@ pub async fn prepare_project(root: &Path, project: &LeanProject) -> Result<()> {
     }
     Ok(())
 }
+async fn verify_manifest(root: &Path, project: &LeanProject) -> Result<()> {
+    let Some(expected) = &project.manifest else {
+        return Ok(());
+    };
+    let resolution = |text: &str| -> Result<BTreeMap<String, Value>> {
+        let value: Value = serde_json::from_str(text)?;
+        value["packages"]
+            .as_array()
+            .context("invalid Lake manifest")?
+            .iter()
+            .map(|p| {
+                Ok((
+                    p["name"].as_str().context("package name missing")?.into(),
+                    json!([p["type"], p["url"], p["rev"], p["subDir"]]),
+                ))
+            })
+            .collect()
+    };
+    let actual = tokio::fs::read_to_string(root.join("lake-manifest.json")).await?;
+    if resolution(&actual)? != resolution(expected)? {
+        bail!("Lake changed the locked library revisions; update the versioned project manifest before checking");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn a_changed_library_resolution_cannot_be_cached() {
+        let root = tempfile::tempdir().unwrap();
+        let manifest = |rev: &str| {
+            json!({"packages":[{"name":"Example","type":"git","url":"https://example.org/lib.git","rev":rev}]}).to_string()
+        };
+        let project = LeanProject {
+            manifest: Some(manifest("before")),
+            ..Default::default()
+        };
+        tokio::fs::write(root.path().join("lake-manifest.json"), manifest("before"))
+            .await
+            .unwrap();
+        assert!(verify_manifest(root.path(), &project).await.is_ok());
+        tokio::fs::write(root.path().join("lake-manifest.json"), manifest("after"))
+            .await
+            .unwrap();
+        assert!(verify_manifest(root.path(), &project).await.is_err());
+    }
+}
+
 async fn build_module(root: &Path, module: &str) -> Result<()> {
     let target = format!("+{module}");
     let mut process = spawn(root, &["build", &target])?;
@@ -647,7 +791,7 @@ async fn build_module(root: &Path, module: &str) -> Result<()> {
         .context("Lake stdout unavailable")?;
     let drain =
         tokio::spawn(async move { tokio::io::copy(&mut stdout, &mut tokio::io::sink()).await });
-    let status = tokio::time::timeout(TIMEOUT, process.child.wait())
+    let status = tokio::time::timeout(timeout()?, process.child.wait())
         .await
         .context("Lake build timed out")??;
     drain.await??;
