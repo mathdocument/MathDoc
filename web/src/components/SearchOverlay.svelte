@@ -119,7 +119,7 @@
       <button class="close-btn" onclick={onClose} title="Close" aria-label="Close search"><X size={17} strokeWidth={1.8} /></button>
     </div>
     <ul class="results modal-list modal-results">
-      {#each results as r, i (`${r.fnode}\0${r.rel_path}`)}
+      {#each results as r, i (r.fnode)}
         <li>
           <button
             class="row modal-row modal-result-row"
@@ -130,7 +130,6 @@
             <span class="depth">[{r.depth}]</span>
             <span class="fnode">{shortFnode(r.fnode)}</span>
             <span class="title">{r.title}</span>
-            <span class="path">{r.rel_path}</span>
           </button>
         </li>
       {:else}

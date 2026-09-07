@@ -122,7 +122,6 @@
               <span class="depth">[{c.depth}]</span>
               <span class="fnode">{shortFnode(c.fnode)}</span>
               <span class="title">{c.title}</span>
-              <span class="path">{c.rel_path}</span>
             </button>
           </li>
         {/each}

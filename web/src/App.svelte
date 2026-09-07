@@ -10,6 +10,7 @@
     Plus,
     RefreshCw,
     Search,
+    Settings,
     Sun,
     Unlink2,
   } from "@lucide/svelte";
@@ -28,6 +29,7 @@
   import AddDepOverlay from "./components/AddDepOverlay.svelte";
   import RmDepOverlay from "./components/RmDepOverlay.svelte";
   import NewNodeOverlay from "./components/NewNodeOverlay.svelte";
+  import ProjectSettings from "./components/ProjectSettings.svelte";
   import DepthGraph from "./components/DepthGraph.svelte";
   import type { NodeDetail } from "./lib/types";
   import {
@@ -42,7 +44,8 @@
     | { kind: "search" }
     | { kind: "add-dep"; target: string }
     | { kind: "rm-dep"; target: string }
-    | { kind: "new-node" };
+    | { kind: "new-node" }
+    | { kind: "project" };
 
   let overlay = $state<Overlay>({ kind: "none" });
   let theme = $state<Theme>(currentTheme());
@@ -517,6 +520,7 @@
         ><Network size={15} strokeWidth={1.8} /><span>Graph</span></button>
       </div>
       <span class="toolbar-divider"></span>
+      <button class="tool icon-only" onclick={() => overlay = { kind: "project" }} title="Lean project" aria-label="Lean project"><Settings size={16} /></button>
       <button
         class="tool icon-only"
         onclick={toggleTheme}
@@ -531,8 +535,8 @@
         class:spinning={refreshing}
         onclick={refreshView}
         disabled={refreshing}
-        title="Refresh external file changes"
-        aria-label="Refresh external file changes"
+        title="Refresh database view"
+        aria-label="Refresh database view"
       ><RefreshCw size={16} strokeWidth={1.8} /></button>
     </div>
   </header>
@@ -673,7 +677,9 @@
 </div>
 
 <div class="overlay-layer" inert={historyNavigating}>
-{#if overlay.kind === "search"}
+{#if overlay.kind === "project"}
+  <ProjectSettings onClose={() => overlay = { kind: "none" }} />
+{:else if overlay.kind === "search"}
   <SearchOverlay
     disabled={historyNavigating}
     onPick={(fnode) => {

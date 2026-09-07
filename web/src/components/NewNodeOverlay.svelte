@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { ArrowLeft, ArrowRight, FilePlus2, X } from "@lucide/svelte";
+  import { FilePlus2, X } from "@lucide/svelte";
   import { api } from "../lib/api";
   import { errMsg } from "../lib/format";
   import { modal } from "../lib/modal";
@@ -20,12 +20,9 @@
   let { disabled, onCreated, onClose }: Props = $props();
 
   let title = $state("");
-  let file = $state("");
-  let step = $state<"title" | "file">("title");
   let saving = $state(false);
   let error: string | null = $state(null);
   let titleInputEl = $state<HTMLInputElement | null>(null);
-  let fileInputEl = $state<HTMLInputElement | null>(null);
   let alive = true;
   const draftId = Symbol("new node draft");
 
@@ -35,7 +32,7 @@
   });
 
   $effect(() => {
-    setDraftDirty(draftId, title.trim().length > 0 || file.trim().length > 0);
+    setDraftDirty(draftId, title.trim().length > 0);
   });
 
   function close() {
@@ -46,44 +43,25 @@
     titleInputEl?.focus();
   });
 
-  $effect(() => {
-    if (step === "file") fileInputEl?.focus();
-  });
-
-  function advance() {
-    if (title.trim().length === 0) {
-      error = "title must be non-empty";
-      return;
-    }
-    error = null;
-    step = "file";
-  }
-
   function onKey(e: KeyboardEvent) {
     if (disabled || saving || e.isComposing) return;
     if ((e.key === "Enter" || e.key === " ") &&
       e.target instanceof Element && e.target.closest(".close-btn, .actions")) return;
     if (e.key === "Enter") {
       e.preventDefault();
-      if (step === "title") {
-        advance();
-      } else {
-        void submit();
-      }
+      void submit();
     }
   }
 
   function onCancel(event: Event) {
     event.preventDefault();
     if (disabled || saving) return;
-    if (step === "file") step = "title";
-    else close();
+    close();
   }
 
   async function submit() {
     if (saving) return;
     if (title.trim().length === 0) {
-      step = "title";
       error = "title must be non-empty";
       return;
     }
@@ -92,9 +70,7 @@
     const clearMutation = trackMutation();
     error = null;
     try {
-      const params: { title: string; file?: string } = { title: title.trim() };
-      if (file.trim().length > 0) params.file = file.trim();
-      const node = await api.newNode(params);
+      const node = await api.newNode({ title: title.trim() });
       clearMutation();
       if (!alive) return;
       removeDraft(draftId);
@@ -121,29 +97,17 @@
     <header class="dialog-head">
       <span class="head-icon"><FilePlus2 size={16} strokeWidth={1.8} /></span>
       <span><small>Workspace</small><h2>New node</h2></span>
-      <span class="step">Step {step === "title" ? "1" : "2"} of 2</span>
       <button class="close-btn" onclick={close} title="Close" aria-label="Close new node"><X size={17} strokeWidth={1.8} /></button>
     </header>
     <div class="form-body">
-      <label class="field" class:active={step === "title"}>
+      <label class="field">
         <span class="lbl">Title</span>
         <input
           bind:this={titleInputEl}
           bind:value={title}
           placeholder="New Lemma"
           autocomplete="off"
-          disabled={saving || step !== "title"}
-        />
-      </label>
-      <label class="field" class:active={step === "file"}>
-        <span class="lbl">File path <small>Optional</small></span>
-        <input
-          bind:this={fileInputEl}
-          bind:value={file}
-          placeholder="Default: <fnode>.mdoc at workspace root"
-          autocomplete="off"
-          spellcheck="false"
-          disabled={saving || step !== "file"}
+          disabled={saving}
         />
       </label>
       {#if error}
@@ -151,15 +115,10 @@
       {/if}
     </div>
     <footer class="dialog-footer">
-      <div class="hint"><kbd>Enter</kbd> {step === "title" ? "Next" : "Create"} <span>·</span> <kbd>Esc</kbd> {step === "title" ? "Cancel" : "Back"}</div>
+      <div class="hint"><kbd>Enter</kbd> Create <span>·</span> <kbd>Esc</kbd> Cancel</div>
       <div class="actions">
-        {#if step === "title"}
-          <button class="secondary" onclick={close} disabled={saving}>Cancel</button>
-          <button class="primary" onclick={advance} disabled={saving}>Next <ArrowRight size={14} strokeWidth={1.9} /></button>
-        {:else}
-          <button class="secondary" onclick={() => (step = "title")} disabled={saving}><ArrowLeft size={14} strokeWidth={1.9} />Back</button>
-          <button class="primary" onclick={() => void submit()} disabled={saving}>Create node</button>
-        {/if}
+        <button class="secondary" onclick={close} disabled={saving}>Cancel</button>
+        <button class="primary" onclick={() => void submit()} disabled={saving}>Create node</button>
       </div>
     </footer>
   </dialog>
@@ -173,23 +132,13 @@
     color: var(--mdc-accent);
     background: color-mix(in srgb, var(--mdc-accent) 12%, transparent);
   }
-  .step {
-    margin-left: auto;
-    color: var(--mdc-muted);
-    font-family: var(--mdc-mono);
-    font-size: var(--mdc-text-2xs);
-  }
   .form-body {
     padding: 1rem 1rem 0.5rem;
   }
   .field {
     display: block;
     margin-bottom: 1rem;
-    opacity: 0.4;
     transition: opacity 180ms var(--mdc-ease);
-  }
-  .field.active {
-    opacity: 1;
   }
   .lbl {
     display: block;
@@ -199,13 +148,6 @@
     letter-spacing: var(--mdc-tracking-label);
     color: var(--mdc-dim);
     margin-bottom: 0.4rem;
-  }
-  .lbl small {
-    margin-left: 0.35rem;
-    color: var(--mdc-muted);
-    font-weight: 500;
-    letter-spacing: 0;
-    text-transform: none;
   }
   input {
     width: 100%;
@@ -223,7 +165,7 @@
   input:focus-visible {
     outline: none;
   }
-  .field.active input {
+  input:focus-visible {
     border-color: var(--mdc-accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--mdc-ring) 28%, transparent);
   }

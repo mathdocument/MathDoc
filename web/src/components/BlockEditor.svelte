@@ -411,7 +411,6 @@
   /* Per-srctype accent so block kinds are scannable at a glance. */
   .block[data-srctype="text"] { --block-accent: var(--mdc-block-text); }
   .block[data-srctype="latex"] { --block-accent: var(--mdc-block-latex); }
-  .block[data-srctype="python"] { --block-accent: var(--mdc-block-python); }
   .block[data-srctype="lean"] { --block-accent: var(--mdc-block-lean); }
   .block[data-srctype="rocq"] { --block-accent: var(--mdc-block-rocq); }
   /* Left rail carries the block kind; it is the only always-on decoration. */

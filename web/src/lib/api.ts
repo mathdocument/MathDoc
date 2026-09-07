@@ -99,10 +99,21 @@ function newNode(params: NewNodeBody, expectedRevision?: string): Promise<NodeDe
   return create();
 }
 
+export interface LeanProject { toolchain: string; lakefile: string; manifest: string | null }
 export const api = {
+  project: () => req<{ revision: string; project: LeanProject }>("/api/project/lean"),
+  putProject: (project: LeanProject, revision: string) => req<{ revision: string; project: LeanProject }>("/api/project/lean", {
+    method: "PUT", headers: { "content-type": "application/json", "if-match": `"${revision}"` }, body: JSON.stringify(project),
+  }),
+  leanSession: (fnode: string, revision: string) => req<{ id: string; filename: string; source: string }>(`/api/node/${encodeURIComponent(fnode)}/lean/session`, {
+    method: "POST", headers: { "if-match": `"${revision}"` },
+  }),
+  checkLean: (fnode: string, revision: string, build = false) => req<{ passed: boolean; certified: boolean; built: boolean; cache_hit: boolean; elapsed_ms: number; diagnostics: unknown[]; dependency_errors: string[] }>(`/api/node/${encodeURIComponent(fnode)}/lean/check`, {
+    method: "POST", headers: { "content-type": "application/json", "if-match": `"${revision}"` }, body: JSON.stringify({ build }),
+  }),
   roots: () => req<GraphRootItem[]>("/api/graph/roots"),
   graphCheck: () => req<GraphCheckReport>("/api/graph/check"),
-  refreshWorkspace: () => req<GraphCheckReport>("/api/workspace/refresh", { method: "POST" }),
+  refreshWorkspace: () => req<GraphCheckReport>("/api/graph/check"),
   full: (signal?: AbortSignal) => req<GraphFull>("/api/graph/full", { signal }),
   search: (q: string, n = 200, signal?: AbortSignal) =>
     req<NodeInfo[]>(`/api/search?q=${encodeURIComponent(q)}&n=${n}`, { signal }),

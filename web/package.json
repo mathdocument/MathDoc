@@ -19,12 +19,17 @@
     "@codemirror/language": "^6.11.0",
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.36.4",
+    "@codingame/esbuild-import-meta-url-plugin": "^1.0.3",
     "@lucide/svelte": "^1.27.0",
     "@shikijs/core": "^4.2.0",
     "@shikijs/engine-javascript": "^4.2.0",
     "@shikijs/langs": "^4.2.0",
     "@shikijs/themes": "^4.2.0",
-    "katex": "^0.18.4"
+    "katex": "^0.18.4",
+    "lean4monaco": "^1.1.16",
+    "memfs": "^4.71.0",
+    "vite-plugin-node-polyfills": "^0.24.0",
+    "vite-plugin-static-copy": "^2.3.2"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.3",

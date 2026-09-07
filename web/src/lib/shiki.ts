@@ -8,7 +8,6 @@ import type { HighlighterCore } from "@shikijs/core";
 const LANGUAGE_LOADERS = {
   markdown: () => import("@shikijs/langs/markdown").then((module) => module.default),
   latex: () => import("@shikijs/langs/latex").then((module) => module.default),
-  python: () => import("@shikijs/langs/python").then((module) => module.default),
   lean: () => import("@shikijs/langs/lean").then((module) => module.default),
   coq: () => import("@shikijs/langs/coq").then((module) => module.default),
 } as const;
@@ -19,7 +18,6 @@ type MdcLanguage = keyof typeof LANGUAGE_LOADERS;
 const SRCTYPE_TO_LANG: Record<string, MdcLanguage> = {
   text: "markdown",
   latex: "latex",
-  python: "python",
   lean: "lean",
   rocq: "coq",
 };

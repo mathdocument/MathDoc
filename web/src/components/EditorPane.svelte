@@ -6,6 +6,7 @@
   import type { Theme } from "../lib/theme";
   import { errMsg, shortFnode } from "../lib/format";
   import AddBlockControl from "./AddBlockControl.svelte";
+  import LeanBlock from "./LeanBlock.svelte";
   import { api } from "../lib/api";
   import {
     removeDraft,
@@ -197,11 +198,10 @@
           </h1>
         {/if}
       </div>
-      <!-- One metadata line: identity, location, depth, verification. Separated
+      <!-- One metadata line: identity, depth, verification. Separated
            by rhythm and colour rather than by an outline around each value. -->
       <div class="meta" aria-label="node metadata">
         <code class="meta-item fnode" title={node.fnode}><Hash size={12} strokeWidth={2} />{shortFnode(node.fnode)}</code>
-        <span class="meta-item path" title={node.rel_path}><FileText size={12} strokeWidth={1.8} />{node.rel_path}</span>
         <span class="meta-item depth"><Layers3 size={12} strokeWidth={1.8} />Depth {node.depth}</span>
         {#if node.broken}<span class="meta-item broken"><X size={12} strokeWidth={2.2} />Broken</span>{/if}
         <span class="meta-sep" aria-hidden="true"></span>
@@ -226,6 +226,9 @@
           <span class="status-text">{formalStatusLabels[node.formalization.rocq]}</span>
         </span>
       </div>
+      {#if node.module}
+        <details class="module-import"><summary>Lean import</summary><code>import {node.module}</code></details>
+      {/if}
     </header>
     <div class="blocks">
       {#if node.blocks.length === 0}
@@ -243,6 +246,10 @@
         <div class="editor-loading" aria-busy="true">Loading editor…</div>
       {:else}
         {#each node.blocks as block (block.srctype)}
+          {#if block.srctype === "lean"}
+            <LeanBlock fnode={node.fnode} revision={node.revision} {block} {theme} {active}
+              onDeleted={applyBlockUpdate} onSaved={applyBlockUpdate} onReady={() => reportBlockReady(block.srctype)} />
+          {:else}
           <BlockEditorComponent
             fnode={node.fnode}
             revision={node.revision}
@@ -253,6 +260,7 @@
             onSaved={applyBlockUpdate}
             onReady={() => reportBlockReady(block.srctype)}
           />
+          {/if}
         {/each}
       {/if}
       <AddBlockControl
@@ -266,6 +274,9 @@
 </section>
 
 <style>
+  .module-import { margin-top:.6rem; color:var(--mdc-dim); font-size:.75rem; }
+  .module-import summary { cursor:pointer; }
+  .module-import code { display:block; margin-top:.4rem; overflow-wrap:anywhere; user-select:all; }
   .center {
     flex: 1;
     min-width: 0;
@@ -404,13 +415,6 @@
     color: var(--mdc-accent);
     font-size: var(--mdc-text-xs);
   }
-  .path {
-    font-family: var(--mdc-mono);
-    max-width: 34ch;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
   .depth {
     font-variant-numeric: tabular-nums;
   }
@@ -529,9 +533,6 @@
     }
     .blocks {
       padding: 0.75rem 0.75rem 1.25rem;
-    }
-    .path {
-      max-width: 20ch;
     }
   }
 </style>

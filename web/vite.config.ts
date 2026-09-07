@@ -1,5 +1,9 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { nodePolyfills } from "vite-plugin-node-polyfills";
+import { viteStaticCopy } from "vite-plugin-static-copy";
+import importMetaUrlPlugin from "@codingame/esbuild-import-meta-url-plugin";
+import path from "node:path";
 
 // In `vite dev` mode the backend runs on a random port (127.0.0.1:NNNN).
 // During development we proxy /api → that backend; the dev port is set via
@@ -12,6 +16,12 @@ sveltePlugins.push({ name: "vite-plugin-svelte:config", api: sveltePlugins[0]!.a
 
 export default defineConfig({
   plugins: [
+    nodePolyfills({ overrides: { fs: "memfs" } }),
+    viteStaticCopy({ targets: [
+      { src: "node_modules/@leanprover/infoview/dist/*", dest: "infoview" },
+      { src: "node_modules/lean4monaco/dist/webview/webview.js", dest: "infoview" },
+      { src: "node_modules/@leanprover/infoview/dist/codicon.ttf", dest: "assets" },
+    ] }),
     {
       name: "katex-woff2-only",
       enforce: "pre",
@@ -30,7 +40,10 @@ export default defineConfig({
       "/api": {
         target: apiTarget,
         changeOrigin: true,
+        ws: true,
       },
     },
   },
+  optimizeDeps: { esbuildOptions: { plugins: [importMetaUrlPlugin] } },
+  build: { rollupOptions: { input: { main: path.resolve("index.html"), lean: path.resolve("lean.html") } } },
 });

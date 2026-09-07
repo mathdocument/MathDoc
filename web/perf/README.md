@@ -22,3 +22,10 @@ reports so an unexpected result can be inspected without rerunning it.
 
 Changes to fixtures, budgets, or `baseline.json` should be reviewed alongside
 the optimization that requires them. Lower values are better for every metric.
+
+The TerminusDB/Lean migration intentionally adds the lazy native Monaco/Infoview
+bundle and its fonts. The new recorded total is about 8.46 MB compressed, with a
+9 MB absolute ceiling; the transition ratio permits that explicit feature addition.
+The initial shell remains about 53 KB and has a separate 56 KiB ceiling. Runtime
+fixtures still measure LaTeX and graph interaction; native Lean is checked by the
+real-server browser test.

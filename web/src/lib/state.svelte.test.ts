@@ -8,7 +8,6 @@ function node(revision: string): NodeDetail {
   return {
     fnode: "node",
     title: `Node ${revision}`,
-    rel_path: "node.mdoc",
     broken: false,
     depth: 1,
     revision,
@@ -52,7 +51,6 @@ describe("NodeSession", () => {
     const relation: NodeInfo = {
       fnode: "relation",
       title: "Relation",
-      rel_path: "relation.mdoc",
       broken: false,
       depth: 2,
     };

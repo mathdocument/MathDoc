@@ -15,7 +15,6 @@ function summary(index = 0) {
   return {
     fnode: index === 0 ? rootFnode : `perf-node-${String(index).padStart(5, "0")}`,
     title: index === 0 ? "Performance fixture" : `Deterministic graph node ${index}`,
-    rel_path: `perf/node-${index}.mdoc`,
     broken: false,
     depth: Math.floor(Math.log2(index + 1)),
   };

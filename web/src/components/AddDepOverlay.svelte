@@ -28,7 +28,6 @@
   let error: string | null = $state(null);
   let saving = $state(false);
   let inputEl = $state<HTMLInputElement | null>(null);
-  let creatingFile = $state("");
   let createMode = $state(false);
   const draftId = Symbol("add dependency creation draft");
   let alive = true;
@@ -49,7 +48,7 @@
   $effect(() => {
     setDraftDirty(
       draftId,
-      createMode && (query.trim().length > 0 || creatingFile.trim().length > 0),
+      createMode && (query.trim().length > 0),
     );
   });
 
@@ -157,11 +156,10 @@
     const clearMutation = trackMutation();
     error = null;
     try {
-      const params: { title: string; parent_fnode: string; file?: string } = {
+      const params: { title: string; parent_fnode: string } = {
         title: query.trim(),
         parent_fnode: targetFnode,
       };
-      if (creatingFile.trim().length > 0) params.file = creatingFile.trim();
       const updated = await api.newNode(params, targetRevision);
       clearMutation();
       if (!alive) return;
@@ -207,7 +205,6 @@
     if (disabled || saving) return;
     if (createMode) {
       createMode = false;
-      creatingFile = "";
     } else {
       close();
     }
@@ -240,14 +237,6 @@
       {#if createMode}
         <li class="create-form">
           <div class="create-title"><Plus size={15} strokeWidth={2} />Create new: {query}</div>
-          <input
-            class="create-file-input"
-            bind:value={creatingFile}
-            placeholder="file path (optional, e.g. notes/lemma)"
-            autocomplete="off"
-            spellcheck="false"
-            disabled={saving}
-          />
           <button
             class="create-confirm"
             onclick={() => void createAndAdd()}
@@ -268,7 +257,6 @@
               <span class="depth">[{r.depth}]</span>
               <span class="fnode">{shortFnode(r.fnode)}</span>
               <span class="title">{r.title}</span>
-              <span class="path">{r.rel_path}</span>
             </button>
           </li>
         {:else}
@@ -320,25 +308,6 @@
     font-weight: 620;
     font-size: var(--mdc-text-md);
     letter-spacing: var(--mdc-tracking-tight);
-  }
-  .create-file-input {
-    width: 100%;
-    box-sizing: border-box;
-    flex: initial;
-    background: var(--mdc-bg);
-    color: var(--mdc-fg);
-    border: 1px solid var(--mdc-border);
-    border-radius: var(--mdc-radius-sm);
-    padding: 0.55rem 0.7rem;
-    font-size: var(--mdc-text-sm);
-    font-family: var(--mdc-mono);
-    transition: border-color var(--mdc-dur-fast) var(--mdc-ease),
-      box-shadow var(--mdc-dur-fast) var(--mdc-ease);
-  }
-  .create-file-input:focus {
-    outline: none;
-    border-color: var(--mdc-accent);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--mdc-ring) 28%, transparent);
   }
   .create-confirm {
     align-self: flex-start;

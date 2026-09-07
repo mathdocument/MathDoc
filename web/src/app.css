@@ -43,7 +43,6 @@
   /* Per-srctype hues */
   --mdc-block-text: #7c8cff;
   --mdc-block-latex: #b48cff;
-  --mdc-block-python: #f0b661;
   --mdc-block-lean: #ff9d63;
   --mdc-block-rocq: #4fd6ae;
 
@@ -133,7 +132,6 @@
 
   --mdc-block-text: #3b47b8;
   --mdc-block-latex: #6a3fc0;
-  --mdc-block-python: #7c4e00;
   --mdc-block-lean: #91430a;
   --mdc-block-rocq: #06705a;
 

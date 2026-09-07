@@ -59,7 +59,6 @@
           <span class="title">{item.title}</span>
           <span class="card-meta">
             <span class="fnode">{shortFnode(item.fnode)}</span>
-            <span class="path">{item.rel_path}</span>
             <span class="depth" title={`depth ${item.depth}`}>d{item.depth}</span>
           </span>
         </button>
@@ -231,13 +230,6 @@
   .fnode {
     flex: 0 0 auto;
     color: var(--mdc-accent);
-  }
-  .path {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
   .depth {
     flex: 0 0 auto;
