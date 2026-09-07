@@ -252,6 +252,7 @@ pub fn run() -> i32 {
     }
 }
 async fn dispatch(cli: Cli) -> Result<i32> {
+    let _profile = crate::profile::scope("service.request");
     let url = cli
         .url
         .or_else(|| std::env::var("MDC_URL").ok())

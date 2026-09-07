@@ -240,7 +240,10 @@ pub async fn serve(db: Database, bind: &str) -> Result<()> {
     eprintln!("MathDoc → http://{}", listener.local_addr()?);
     axum::serve(listener, router(service))
         .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
+            let mut terminate =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("install SIGTERM handler");
+            tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{}}
         })
         .await?;
     Ok(())
@@ -472,21 +475,31 @@ async fn candidates(
     let snapshot = s.read().await?;
     let node = snapshot.resolve(&id)?;
     let q = query.q.to_lowercase();
-    let nodes: Vec<_> = snapshot
+    let matches: Vec<_> = snapshot
         .nodes
         .values()
-        .filter(|n| {
-            n.fnode != node.fnode
-                && !node.depens.contains(&n.fnode)
-                && (n.title.to_lowercase().contains(&q) || n.fnode.contains(&q))
-        })
+        .filter(|n| n.title.to_lowercase().contains(&q) || n.fnode.contains(&q))
+        .collect();
+    let source = matches.iter().filter(|n| n.fnode == node.fnode).count();
+    let existing = matches
+        .iter()
+        .filter(|n| node.depens.contains(&n.fnode))
+        .count();
+    let available = matches.len() - source - existing;
+    let nodes: Vec<_> = matches
+        .into_iter()
+        .filter(|n| n.fnode != node.fnode && !node.depens.contains(&n.fnode))
         .take(query.n.unwrap_or(50).min(200))
         .map(|n| summary(&snapshot, n))
         .collect();
-    let empty = if nodes.is_empty() {
-        json!({"kind":"no_match"})
-    } else {
+    let empty = if !nodes.is_empty() {
         Value::Null
+    } else if available > 0 {
+        json!({"kind":"result_limit","available":available})
+    } else if source + existing > 0 {
+        json!({"kind":"excluded","source":source,"existing_dependencies":existing,"invalid_or_duplicate":0})
+    } else {
+        json!({"kind":"no_match"})
     };
     Ok(Json(json!({"nodes":nodes,"empty":empty})))
 }

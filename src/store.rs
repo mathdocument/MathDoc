@@ -242,6 +242,7 @@ impl Database {
         }
         Ok(Self {
             client: Client::builder()
+                .pool_idle_timeout(std::time::Duration::from_secs(2))
                 .timeout(std::time::Duration::from_secs(120))
                 .build()?,
             url: url.trim_end_matches('/').into(),

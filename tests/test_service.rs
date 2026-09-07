@@ -128,6 +128,16 @@ async fn api_mutations_use_database_revisions_without_workspace_files() {
         .0,
         422
     );
+    let (_, excluded) = call(
+        &app,
+        "GET",
+        &format!("/api/node/{id}/dep/candidates?q=linked"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(excluded["empty"]["kind"], "excluded");
+    assert_eq!(excluded["empty"]["existing_dependencies"], 1);
     let reopened = Service::open(db).await.unwrap();
     assert_eq!(
         reopened.read().await.unwrap().nodes[id].source("lean"),
