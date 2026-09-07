@@ -7,7 +7,7 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'MathDoc',
-      description: 'Build connected mathematical knowledge with plain text and native proof tools.',
+      description: 'Versioned mathematical graphs with native Lean editing.',
       logo: {
         src: './src/assets/mdc-logo.svg',
         alt: 'MathDoc',
@@ -71,7 +71,7 @@ export default defineConfig({
           label: 'Core Concepts',
           items: [
             { label: 'The .mdoc Format', slug: 'concepts/mdoc-format' },
-            { label: 'Workspaces & References', slug: 'concepts/workspaces' },
+            { label: 'Databases & References', slug: 'concepts/workspaces' },
             { label: 'Dependency Graph', slug: 'concepts/dependency-graph' },
             { label: 'Source Workflow', slug: 'concepts/source-workflow' },
             { label: 'Web Interface', slug: 'concepts/web-interface' },
@@ -80,10 +80,10 @@ export default defineConfig({
         {
           label: 'CLI Reference',
           items: [
-            { label: 'Workspace Commands', slug: 'reference/workspace-commands' },
+            { label: 'Service & Node Commands', slug: 'reference/workspace-commands' },
             { label: 'Dependency Commands', slug: 'reference/dependency-commands' },
             { label: 'Graph & Metrics', slug: 'reference/graph-and-metrics' },
-            { label: 'Work, Back & Compilers', slug: 'reference/work-and-compilers' },
+            { label: 'Lean Checks & Builds', slug: 'reference/work-and-compilers' },
             { label: 'Configuration & Profiling', slug: 'reference/configuration' },
           ],
         },
@@ -93,7 +93,7 @@ export default defineConfig({
           items: [
             { label: 'Development Setup', slug: 'development/setup' },
             { label: 'Architecture', slug: 'development/architecture' },
-            { label: 'Index & Cache', slug: 'development/index-cache' },
+            { label: 'Graph & Compilation Caches', slug: 'development/index-cache' },
             { label: 'Safe Mutations', slug: 'development/safe-mutations' },
             { label: 'Web Frontend', slug: 'development/web-frontend' },
             { label: 'Compiler Internals', slug: 'development/compiler-internals' },

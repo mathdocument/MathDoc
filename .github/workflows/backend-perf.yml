@@ -1,167 +1,23 @@
 name: Backend performance
-
 on:
   pull_request:
-    paths:
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "benches/**"
-      - "perf/**"
-      - "src/application/**"
-      - "src/depgraph/**"
-      - "src/web/**"
-      - "src/config.rs"
-      - "src/core/**"
-      - "src/formal/**"
-      - "src/indcache/**"
-      - "src/mdocnode/**"
-      - "src/profile.rs"
-      - "src/workspace/**"
-      - ".github/workflows/backend-perf.yml"
-
+    paths: ["src/**", "tests/test_service_scale.rs", "Cargo.*", "compose.yaml", ".github/workflows/backend-perf.yml"]
 permissions:
   contents: read
-
 jobs:
-  compare:
+  graph-service:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
+    env:
+      MDC_TERMINUS_PASSWORD: local-ci-mathdoc
     steps:
-      - name: Check out current revision
-        uses: actions/checkout@v7
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
-          path: perf-head
-
-      - name: Check out base revision
-        uses: actions/checkout@v7
-        with:
-          repository: ${{ github.event.pull_request.base.repo.full_name }}
-          ref: ${{ github.event.pull_request.base.sha }}
-          path: perf-base
-
-      - name: Install stable Rust
-        run: rustup toolchain install stable --profile minimal --no-self-update
-
-      - name: Detect base benchmark
-        id: base
-        run: |
-          if test -f perf-base/benches/backend.rs; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Build base benchmark
-        if: steps.base.outputs.available == 'true'
-        working-directory: perf-base
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-base
-        run: cargo +stable bench --locked --bench backend --no-run
-
-      - name: Prepare shared API benchmark in base checkout
-        if: steps.base.outputs.available == 'true'
-        run: python3 perf-head/perf/prepare-api-base.py perf-base
-
-      - name: Build base API benchmark
-        if: steps.base.outputs.available == 'true'
-        working-directory: perf-base
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-base
-        run: cargo +stable bench --locked --bench api --no-run
-
-      - name: Build current benchmark
-        working-directory: perf-head
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-head
-        run: cargo +stable bench --locked --bench backend --no-run
-
-      - name: Build current API benchmark
-        working-directory: perf-head
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-head
-        run: cargo +stable bench --locked --bench api --no-run
-
-      - name: Measure base revision
-        if: steps.base.outputs.available == 'true'
-        working-directory: perf-base
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-base
-        run: >-
-          cargo +stable bench --locked --bench backend --
-          --output "$RUNNER_TEMP/backend-perf-base.json"
-
-      - name: Compare current revision
-        if: steps.base.outputs.available == 'true'
-        working-directory: perf-head
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-head
-        run: >-
-          cargo +stable bench --locked --bench backend --
-          --output "$RUNNER_TEMP/backend-perf-current.json"
-          --compare "$RUNNER_TEMP/backend-perf-base.json"
-
-      - name: Measure initial current baseline
-        if: steps.base.outputs.available != 'true'
-        working-directory: perf-head
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-head
-        run: >-
-          cargo +stable bench --locked --bench backend --
-          --output "$RUNNER_TEMP/backend-perf-current.json"
-
-      - name: Measure and compare application workflows
-        working-directory: perf-head
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-head
-        run: |
-          if test -f ../perf-base/benches/workflows.rs; then
-            cd ../perf-base
-            CARGO_TARGET_DIR="${{ runner.temp }}/backend-target-base" cargo +stable bench --locked --bench workflows -- --output "$RUNNER_TEMP/workflows-base.json"
-            cd ../perf-head
-            cargo +stable bench --locked --bench workflows -- --output "$RUNNER_TEMP/workflows-current.json" --compare "$RUNNER_TEMP/workflows-base.json"
-          else
-            cargo +stable bench --locked --bench workflows -- --output "$RUNNER_TEMP/workflows-current.json"
-          fi
-
-      - name: Measure base API latency
-        if: steps.base.outputs.available == 'true'
-        working-directory: perf-base
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-base
-        run: >-
-          cargo +stable bench --locked --bench api --
-          --output "$RUNNER_TEMP/api-perf-base.json"
-
-      - name: Compare current API latency
-        if: steps.base.outputs.available == 'true'
-        working-directory: perf-head
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-head
-        run: >-
-          cargo +stable bench --locked --bench api --
-          --output "$RUNNER_TEMP/api-perf-current.json"
-          --compare "$RUNNER_TEMP/api-perf-base.json"
-
-      - name: Measure initial current API latency
-        if: steps.base.outputs.available != 'true'
-        working-directory: perf-head
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/backend-target-head
-        run: >-
-          cargo +stable bench --locked --bench api --
-          --output "$RUNNER_TEMP/api-perf-current.json"
-
-      - name: Upload reports
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: backend-performance
-          path: |
-            ${{ runner.temp }}/backend-perf-base.json
-            ${{ runner.temp }}/backend-perf-current.json
-            ${{ runner.temp }}/workflows-base.json
-            ${{ runner.temp }}/workflows-current.json
-            ${{ runner.temp }}/api-perf-base.json
-            ${{ runner.temp }}/api-perf-current.json
+      - uses: actions/checkout@v7
+      - run: docker compose up -d
+      - run: |
+          for i in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:6363/api/ok; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+      - name: Measure database-backed graph requests
+        run: cargo test --release --locked --test test_service_scale -- --ignored --nocapture

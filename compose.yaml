@@ -1,5 +1,6 @@
 services:
   terminusdb:
+    restart: unless-stopped
     image: terminusdb/terminusdb-server@sha256:385faf298ad77aaf2d4d6df5e84a4cbe3596d01dab2e3b991af905639ae56388
     ports:
       - "127.0.0.1:6363:6363"

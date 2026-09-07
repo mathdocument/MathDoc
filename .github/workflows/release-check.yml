@@ -15,7 +15,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version: 26
           cache: npm
           cache-dependency-path: |
             web/package-lock.json
@@ -60,11 +60,36 @@ jobs:
       - name: Test Rust
         run: cargo +stable test --locked
 
+      - name: Start local TerminusDB
+        env:
+          MDC_TERMINUS_PASSWORD: local-ci-mathdoc
+        run: docker compose up -d
+
+      - name: Wait for TerminusDB
+        run: |
+          for i in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:6363/api/ok; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+
+      - name: Install native Lean
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain leanprover/lean4:v4.33.1
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Test database and native Lean integration
+        env:
+          MDC_TERMINUS_PASSWORD: local-ci-mathdoc
+        run: python3 scripts/test-local.py test_database test_service test_lean_service
+
       - name: Install browser for integration tests
         run: npx playwright install --with-deps --no-shell chromium
         working-directory: web
 
       - name: Test browser with real backend
+        env:
+          MDC_TERMINUS_PASSWORD: local-ci-mathdoc
         run: npm run test:e2e
         working-directory: web
 
@@ -74,5 +99,5 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install stable Rust
         run: rustup toolchain install stable --profile minimal --no-self-update
-      - name: Test macOS filesystem and process implementations
+      - name: Test macOS library and graph algorithms
         run: cargo +stable test --locked
