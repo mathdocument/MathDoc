@@ -12,6 +12,7 @@ pub mod config;
 pub mod core;
 pub mod store;
 pub mod service;
+pub mod lean;
 #[cfg(unix)]
 pub mod mdocnode;
 pub(crate) mod profile;

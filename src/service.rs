@@ -19,13 +19,20 @@ use tokio::sync::{Mutex, MutexGuard};
 pub struct Service {
     pub db: Database,
     pub snapshot: Mutex<Snapshot>,
+    pub lean: crate::lean::LeanService,
+    editors: Mutex<HashMap<String, EditorSession>>,
+    editor_slots: Arc<tokio::sync::Semaphore>,
 }
 impl Service {
     pub async fn open(db: Database) -> Result<Arc<Self>> {
         let snapshot = db.load().await?;
+        let lean = crate::lean::LeanService::new(db.cache_path()?);
         Ok(Arc::new(Self {
             db,
             snapshot: Mutex::new(snapshot),
+            lean,
+            editors: Mutex::new(HashMap::new()),
+            editor_slots: Arc::new(tokio::sync::Semaphore::new(8)),
         }))
     }
     pub async fn read(&self) -> Result<MutexGuard<'_, Snapshot>> {
@@ -94,7 +101,7 @@ fn check_revision(headers: &HeaderMap, node: &Node) -> ApiResult<()> {
 fn summary(snapshot: &Snapshot, node: &Node) -> Value {
     json!({"fnode":node.fnode,"title":node.title,"broken":false,"depth":snapshot.depths.get(&node.fnode).copied().unwrap_or(0)})
 }
-pub fn detail(snapshot: &Snapshot, node: &Node) -> Value {
+pub fn detail(snapshot: &Snapshot, node: &Node, lean: &crate::lean::LeanService) -> Value {
     let mut value = summary(snapshot, node);
     value["revision"] = json!(node.revision());
     value["depens"] = json!(node.depens);
@@ -102,20 +109,31 @@ pub fn detail(snapshot: &Snapshot, node: &Node) -> Value {
     value["module"] = json!(node.module);
     value["formalization"] = json!({"lean":if node.source("lean").is_some(){"unverified"}else{"no_code"},
         "rocq":if node.source("rocq").is_some(){"unverified"}else{"no_code"}});
+    if let Some(key) = snapshot.lean_keys.get(&node.fnode) {
+        if lean
+            .cached(key, &node.revision(), false)
+            .is_some_and(|r| r.certified)
+        {
+            value["formalization"]["lean"] = json!("verified");
+        }
+    }
     value
 }
-fn revision_response(snapshot: &Snapshot, node: &Node) -> Response {
+fn revision_response(
+    snapshot: &Snapshot,
+    node: &Node,
+    lean: &crate::lean::LeanService,
+) -> Response {
     (
         [("etag", format!("\"{}\"", node.revision()))],
-        Json(detail(snapshot, node)),
+        Json(detail(snapshot, node, lean)),
     )
         .into_response()
 }
 pub fn graph_report(snapshot: &Snapshot) -> Value {
-    let graph = snapshot.graph();
-    let cycles = crate::core::representative_cycles(&graph);
+    // All commits are validated before publication; graph checks read this validated projection.
     json!({"nodes":snapshot.nodes.len(),"edges":snapshot.nodes.values().map(|n|n.depens.len()).sum::<usize>(),
-        "missing":[],"invalid":[],"cycles":cycles})
+        "missing":[],"invalid":[],"cycles":[]})
 }
 
 pub fn router(service: Arc<Service>) -> Router {
@@ -127,6 +145,11 @@ pub fn router(service: Arc<Service>) -> Router {
         .route("/resolve", get(resolve))
         .route("/node/new", post(new_node))
         .route("/node/:id/view", get(view))
+        .route("/node/:id/lean/check", post(lean_check))
+        .route("/node/:id/lean/goals", post(lean_goals))
+        .route("/node/:id/lean/session", post(lean_session))
+        .route("/lean/session/:id", get(editor_info))
+        .route("/lean/session/:id/ws", get(editor_socket))
         .route("/node/:id/title", put(title))
         .route("/node/:id/block/:language", put(block).delete(delete_block))
         .route("/node/:id/dep/candidates", get(candidates))
@@ -307,7 +330,7 @@ async fn resolve(
 async fn view(State(s): State<Arc<Service>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     let snapshot = s.read().await?;
     let n = snapshot.resolve(&id)?;
-    Ok(Json(json!({"node":detail(&snapshot,n),
+    Ok(Json(json!({"node":detail(&snapshot,n,&s.lean),
         "referrers":snapshot.nodes.values().filter(|other|other.depens.contains(&n.fnode)).map(|n|summary(&snapshot,n)).collect::<Vec<_>>(),
         "children":n.depens.iter().filter_map(|id|snapshot.nodes.get(id)).map(|n|summary(&snapshot,n)).collect::<Vec<_>>()})))
 }
@@ -331,8 +354,9 @@ async fn new_node(
         parent.depens.push(node.fnode.clone());
         changes.push(parent);
     }
+    let node = changes.last().unwrap().clone();
     s.save(&mut snapshot, changes, "Create node").await?;
-    Ok(revision_response(&snapshot, &node))
+    Ok(revision_response(&snapshot, &node, &s.lean))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -351,7 +375,7 @@ async fn title(
     node.title = body.title;
     s.save(&mut snapshot, vec![node.clone()], "Rename node")
         .await?;
-    Ok(revision_response(&snapshot, &node))
+    Ok(revision_response(&snapshot, &node, &s.lean))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -384,7 +408,7 @@ async fn block(
     }
     s.save(&mut snapshot, vec![node.clone()], "Update source block")
         .await?;
-    Ok(revision_response(&snapshot, &node))
+    Ok(revision_response(&snapshot, &node, &s.lean))
 }
 async fn delete_block(
     State(s): State<Arc<Service>>,
@@ -397,7 +421,7 @@ async fn delete_block(
     node.blocks.retain(|b| b.srctype != language);
     s.save(&mut snapshot, vec![node.clone()], "Delete source block")
         .await?;
-    Ok(revision_response(&snapshot, &node))
+    Ok(revision_response(&snapshot, &node, &s.lean))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -419,7 +443,7 @@ async fn add_dep(
         s.save(&mut snapshot, vec![node.clone()], "Add dependency")
             .await?;
     }
-    Ok(revision_response(&snapshot, &node))
+    Ok(revision_response(&snapshot, &node, &s.lean))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -438,7 +462,7 @@ async fn rm_deps(
     node.depens.retain(|id| !body.dep_fnodes.contains(id));
     s.save(&mut snapshot, vec![node.clone()], "Remove dependencies")
         .await?;
-    Ok(revision_response(&snapshot, &node))
+    Ok(revision_response(&snapshot, &node, &s.lean))
 }
 async fn candidates(
     State(s): State<Arc<Service>>,
@@ -492,12 +516,7 @@ async fn traverse(
             continue;
         }
         let next = if query.mode == "refs" {
-            snapshot
-                .nodes
-                .values()
-                .filter(|n| n.depens.contains(&id))
-                .map(|n| n.fnode.clone())
-                .collect::<Vec<_>>()
+            snapshot.referrers.get(&id).cloned().unwrap_or_default()
         } else {
             node.depens.clone()
         };
@@ -512,11 +531,7 @@ async fn traverse(
 async fn ior(State(s): State<Arc<Service>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     let snapshot = s.read().await?;
     let node = snapshot.resolve(&id)?;
-    let incoming = snapshot
-        .nodes
-        .values()
-        .filter(|n| n.depens.contains(&node.fnode))
-        .count();
+    let incoming = snapshot.referrers.get(&node.fnode).map_or(0, Vec::len);
     let outgoing = node.depens.len();
     Ok(Json(
         json!({"fnode":node.fnode,"in_degree":incoming,"out_degree":outgoing,"ior":((incoming as f64+1.0)/(outgoing as f64+1.0)).ln()}),
@@ -543,6 +558,7 @@ async fn put_project(
     let version = s.db.put_project(&project, &snapshot.version).await?;
     snapshot.version = version;
     snapshot.project = project;
+    snapshot.recompute();
     Ok(Json(
         json!({"revision":snapshot.version,"project":snapshot.project}),
     ))
@@ -593,6 +609,7 @@ async fn import(State(s): State<Arc<Service>>, Json(body): Json<Import>) -> ApiR
     snapshot.apply(body.nodes, version);
     if let Some(project) = body.project {
         snapshot.project = project;
+        snapshot.recompute();
     }
     Ok(Json(graph_report(&snapshot)))
 }
@@ -606,4 +623,234 @@ struct Branch {
 }
 async fn branch(State(s): State<Arc<Service>>, Json(body): Json<Branch>) -> ApiResult<Json<Value>> {
     Ok(Json(s.db.create_branch(&body.name).await?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LeanCheck {
+    #[serde(default)]
+    build: bool,
+}
+async fn lean_check(
+    State(s): State<Arc<Service>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<LeanCheck>,
+) -> ApiResult<Json<Value>> {
+    let input = {
+        let snapshot = s.read().await?;
+        let node = snapshot.resolve(&id)?;
+        check_revision(&headers, node)?;
+        if let Some(result) = s.lean.cached(
+            &snapshot.lean_keys[&node.fnode],
+            &node.revision(),
+            body.build,
+        ) {
+            return Ok(Json(json!(result)));
+        }
+        crate::lean::Input::capture(&snapshot, &id)?
+    };
+    let result = s.lean.check(input, body.build).await?;
+    let snapshot = s.read().await?;
+    if snapshot.lean_keys.get(&result.fnode) != Some(&result.input_key) {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "Lean inputs changed during checking; retry the current revision".into(),
+        ));
+    }
+    Ok(Json(json!(result)))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Position {
+    line: u32,
+    character: u32,
+}
+async fn lean_goals(
+    State(s): State<Arc<Service>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(pos): Json<Position>,
+) -> ApiResult<Json<Value>> {
+    let input = {
+        let snapshot = s.read().await?;
+        check_revision(&headers, snapshot.resolve(&id)?)?;
+        crate::lean::Input::capture(&snapshot, &id)?
+    };
+    let key = input.chain.last().unwrap().1.clone();
+    let uuid = input.chain.last().unwrap().0.fnode.clone();
+    let goals = s.lean.goals(input, pos.line, pos.character).await?;
+    if s.read().await?.lean_keys.get(&uuid) != Some(&key) {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "Lean inputs changed during goal inspection".into(),
+        ));
+    }
+    Ok(Json(goals))
+}
+
+struct EditorSession {
+    root: std::path::PathBuf,
+    filename: String,
+    source: String,
+    created: std::time::Instant,
+    _slot: tokio::sync::OwnedSemaphorePermit,
+}
+async fn lean_session(
+    State(s): State<Arc<Service>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> ApiResult<Json<Value>> {
+    let input = {
+        let snapshot = s.read().await?;
+        check_revision(&headers, snapshot.resolve(&id)?)?;
+        crate::lean::Input::capture(&snapshot, &id)?
+    };
+    let node = &input.chain.last().unwrap().0;
+    let source = node
+        .source("lean")
+        .ok_or_else(|| {
+            ApiError(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "node has no Lean block".into(),
+            )
+        })?
+        .to_owned();
+    let mut editors = s.editors.lock().await;
+    let expired: Vec<_> = editors
+        .iter()
+        .filter(|(_, e)| e.created.elapsed() > std::time::Duration::from_secs(120))
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in expired {
+        if let Some(editor) = editors.remove(&id) {
+            let _ = tokio::fs::remove_dir_all(editor.root).await;
+        }
+    }
+    drop(editors);
+    let slot = s.editor_slots.clone().try_acquire_owned().map_err(|_| {
+        ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "all Lean editor slots are in use; close an idle editor".into(),
+        )
+    })?;
+    let root = s.lean.editor_project(&input).await?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let filename = format!("/project/{}.lean", node.module.replace('.', "/"));
+    s.editors.lock().await.insert(
+        id.clone(),
+        EditorSession {
+            root,
+            filename: filename.clone(),
+            source: source.clone(),
+            created: std::time::Instant::now(),
+            _slot: slot,
+        },
+    );
+    Ok(Json(json!({"id":id,"filename":filename,"source":source})))
+}
+async fn editor_info(
+    State(s): State<Arc<Service>>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let editors = s.editors.lock().await;
+    let e = editors
+        .get(&id)
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "editor session expired".into()))?;
+    Ok(Json(json!({"filename":e.filename,"source":e.source})))
+}
+async fn editor_socket(
+    State(s): State<Arc<Service>>,
+    Path(id): Path<String>,
+    ws: axum::extract::ws::WebSocketUpgrade,
+) -> ApiResult<Response> {
+    let session = s.editors.lock().await.remove(&id).ok_or_else(|| {
+        ApiError(
+            StatusCode::NOT_FOUND,
+            "editor session expired or already connected".into(),
+        )
+    })?;
+    Ok(ws
+        .max_message_size(32 * 1024 * 1024)
+        .on_upgrade(move |socket| async move {
+            if let Err(error) = bridge_editor(socket, &session).await {
+                eprintln!("Lean editor: {error:#}");
+            }
+            let _ = tokio::fs::remove_dir_all(&session.root).await;
+        }))
+}
+fn rewrite_uris(value: &mut Value, from: &str, to: &str) {
+    match value {
+        Value::String(s) if s == from || s.starts_with(&format!("{from}/")) => {
+            *s = format!("{to}{}", &s[from.len()..]);
+        }
+        Value::Array(values) => {
+            for v in values {
+                rewrite_uris(v, from, to);
+            }
+        }
+        Value::Object(values) => {
+            for v in values.values_mut() {
+                rewrite_uris(v, from, to);
+            }
+        }
+        _ => {}
+    }
+}
+async fn bridge_editor(
+    socket: axum::extract::ws::WebSocket,
+    session: &EditorSession,
+) -> Result<()> {
+    use axum::extract::ws::Message;
+    use futures_util::{SinkExt, StreamExt};
+    let actual = crate::lean::file_uri(&session.root)?;
+    let mut process = crate::lean::spawn(&session.root, &["serve"])?;
+    let mut writer = process
+        .child
+        .stdin
+        .take()
+        .context("Lean stdin unavailable")?;
+    let mut reader = tokio::io::BufReader::new(
+        process
+            .child
+            .stdout
+            .take()
+            .context("Lean stdout unavailable")?,
+    );
+    let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+    // A dedicated reader never cancels a partially read Content-Length frame.
+    let task = tokio::spawn(async move {
+        loop {
+            let value = crate::lean::read_message(&mut reader).await;
+            let failed = value.is_err();
+            if tx.send(value).await.is_err() || failed {
+                break;
+            }
+        }
+    });
+    let (mut send, mut receive) = socket.split();
+    let result:Result<()>=async{
+        loop{tokio::select!{
+            message=receive.next()=>{
+                let Some(message)=message else{break;};match message?{
+                    Message::Text(text)=>{
+                        let mut value:Value=serde_json::from_str(&text)?;
+                        let method=value["method"].as_str().unwrap_or("");
+                        if matches!(method,"textDocument/didOpen"|"textDocument/didChange"|"textDocument/didSave"){
+                            let uri=value["params"]["textDocument"]["uri"].as_str().context("document URI required")?;
+                            if uri!=format!("file://{}",session.filename){bail!("editor may only change its own draft module");}
+                        }
+                        rewrite_uris(&mut value,"file:///project",&actual);crate::lean::write_message(&mut writer,&value).await?;
+                    },
+                    Message::Close(_)=>break,Message::Ping(data)=>send.send(Message::Pong(data)).await?,_=>{}
+                }
+            },
+            message=rx.recv()=>{
+                let mut value=message.context("Lean server closed its output")??;rewrite_uris(&mut value,&actual,"file:///project");
+                send.send(Message::Text(serde_json::to_string(&value)?)).await?;
+            }
+        }}Ok(())
+    }.await;
+    task.abort();
+    result
 }

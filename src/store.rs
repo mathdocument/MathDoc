@@ -170,8 +170,46 @@ impl LeanProject {
                 bail!("custom {key} is not supported in managed projects");
             }
         }
+        let required = config.get("require").and_then(toml::Value::as_array);
+        if required.is_some_and(|r| !r.is_empty()) && self.manifest.is_none() {
+            bail!("external libraries require a committed lake-manifest.json with pinned Git revisions");
+        }
+        if required
+            .into_iter()
+            .flatten()
+            .any(|r| r.get("path").is_some())
+        {
+            bail!("publish local libraries to Git and pin them; mutable path dependencies are unsupported");
+        }
         if let Some(manifest) = &self.manifest {
-            serde_json::from_str::<Value>(manifest)?;
+            let manifest: Value = serde_json::from_str(manifest)?;
+            let packages = manifest["packages"]
+                .as_array()
+                .context("Lake manifest must contain packages")?;
+            if manifest["packagesDir"]
+                .as_str()
+                .is_some_and(|p| p != ".lake/packages")
+            {
+                bail!("Lake packagesDir must be .lake/packages");
+            }
+            for package in packages {
+                let rev = package["rev"].as_str().unwrap_or("");
+                if package["type"] != "git"
+                    || rev.len() != 40
+                    || !rev.bytes().all(|b| b.is_ascii_hexdigit())
+                {
+                    bail!("every library must be locked to a full Git commit in the Lake manifest");
+                }
+            }
+            for required in required.into_iter().flatten() {
+                let name = required
+                    .get("name")
+                    .and_then(toml::Value::as_str)
+                    .context("Lake dependency needs a name")?;
+                if !packages.iter().any(|p| p["name"] == name) {
+                    bail!("library {name} is missing from the Lake manifest");
+                }
+            }
         }
         Ok(())
     }
@@ -337,7 +375,20 @@ impl Database {
             nodes,
             project: project.context("database has no Lean project")?,
             depths: HashMap::new(),
+            lean_keys: HashMap::new(),
+            referrers: HashMap::new(),
         };
+        snapshot.project.validate()?;
+        let nodes: Vec<_> = snapshot.nodes.values().cloned().collect();
+        let empty = Snapshot {
+            version: String::new(),
+            nodes: BTreeMap::new(),
+            project: snapshot.project.clone(),
+            depths: HashMap::new(),
+            lean_keys: HashMap::new(),
+            referrers: HashMap::new(),
+        };
+        empty.validate_changes(&nodes)?;
         snapshot.recompute();
         Ok(snapshot)
     }
@@ -409,7 +460,10 @@ impl Database {
         let base = std::env::var_os("MDC_CACHE_DIR")
             .map(PathBuf::from)
             .unwrap_or(std::env::current_dir()?.join(".mdc-service"));
-        Ok(base.join(&self.database).join(&self.branch))
+        Ok(std::env::current_dir()?
+            .join(base)
+            .join(&self.database)
+            .join(&self.branch))
     }
 }
 
@@ -418,6 +472,8 @@ pub struct Snapshot {
     pub nodes: BTreeMap<String, Node>,
     pub project: LeanProject,
     pub depths: HashMap<String, u32>,
+    pub lean_keys: HashMap<String, String>,
+    pub referrers: HashMap<String, Vec<String>>,
 }
 impl Snapshot {
     pub fn graph(&self) -> HashMap<String, Vec<String>> {
@@ -428,6 +484,43 @@ impl Snapshot {
     }
     pub fn recompute(&mut self) {
         self.depths = crate::core::all_topo_depths(&self.graph());
+        self.referrers = self.nodes.keys().map(|id| (id.clone(), vec![])).collect();
+        for node in self.nodes.values() {
+            for dep in &node.depens {
+                self.referrers
+                    .entry(dep.clone())
+                    .or_default()
+                    .push(node.fnode.clone());
+            }
+        }
+        self.refresh_lean_keys(self.nodes.keys().cloned().collect());
+    }
+    fn refresh_lean_keys(&mut self, seeds: BTreeSet<String>) {
+        let mut affected = seeds.clone();
+        let mut queue: Vec<_> = seeds.into_iter().collect();
+        while let Some(id) = queue.pop() {
+            for parent in self.referrers.get(&id).into_iter().flatten() {
+                if affected.insert(parent.clone()) {
+                    queue.push(parent.clone());
+                }
+            }
+        }
+        let mut ordered: Vec<_> = affected.into_iter().collect();
+        ordered.sort_by_key(|id| self.depths.get(id).copied().unwrap_or(0));
+        let environment = self.project.key();
+        for id in ordered {
+            let node = &self.nodes[&id];
+            let deps: BTreeMap<_, _> = node
+                .depens
+                .iter()
+                .map(|dep| (dep, self.lean_keys.get(dep)))
+                .collect();
+            let key = digest(
+                &serde_json::to_vec(&(&environment, &node.module, node.source("lean"), deps))
+                    .expect("serializable compilation inputs"),
+            );
+            self.lean_keys.insert(id, key);
+        }
     }
     pub fn resolve(&self, reference: &str) -> Result<&Node> {
         if uuid::Uuid::parse_str(reference).is_ok() {
@@ -443,6 +536,20 @@ impl Snapshot {
         Ok(node)
     }
     pub fn validate_changes(&self, changes: &[Node]) -> Result<()> {
+        let mut ids = BTreeSet::new();
+        for node in changes {
+            node.validate()?;
+            if !ids.insert(&node.fnode) {
+                bail!("duplicate UUID in transaction");
+            }
+        }
+        if changes.iter().all(|n| {
+            self.nodes
+                .get(&n.fnode)
+                .is_some_and(|old| old.depens == n.depens && old.module == n.module)
+        }) {
+            return Ok(());
+        }
         let mut graph = self.graph();
         let mut modules: BTreeMap<_, _> = self
             .nodes
@@ -474,6 +581,15 @@ impl Snapshot {
         Ok(())
     }
     pub fn apply(&mut self, changes: Vec<Node>, version: String) {
+        let lean_changed = changes
+            .iter()
+            .filter(|n| {
+                self.nodes.get(&n.fnode).is_none_or(|old| {
+                    old.source("lean") != n.source("lean") || old.module != n.module
+                })
+            })
+            .map(|n| n.fnode.clone())
+            .collect();
         let graph_changed = changes.iter().any(|n| {
             self.nodes
                 .get(&n.fnode)
@@ -485,6 +601,8 @@ impl Snapshot {
         self.version = version;
         if graph_changed {
             self.recompute();
+        } else {
+            self.refresh_lean_keys(lean_changed);
         }
     }
 }
@@ -492,6 +610,19 @@ impl Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn project_requires_immutable_libraries() {
+        let mut p = LeanProject::default();
+        assert!(p.validate().is_ok());
+        p.lakefile
+            .push_str("\n[[require]]\nname=\"example\"\ngit=\"https://example.org/lib.git\"\n");
+        assert!(p.validate().is_err());
+        p.manifest =
+            Some(json!({"packages":[{"name":"example","type":"path","dir":"../lib"}]}).to_string());
+        assert!(p.validate().is_err());
+        p.manifest=Some(json!({"packages":[{"name":"example","type":"git","rev":"0123456789012345678901234567890123456789"}]}).to_string());
+        assert!(p.validate().is_ok());
+    }
     #[test]
     fn references_and_cycles_are_explicit() {
         let a = Node::new("A".into()).unwrap();
@@ -505,6 +636,8 @@ mod tests {
                 .collect(),
             project: LeanProject::default(),
             depths: HashMap::new(),
+            lean_keys: HashMap::new(),
+            referrers: HashMap::new(),
         };
         assert_eq!(s.resolve("A").unwrap().fnode, a.fnode);
         assert!(s.resolve("A.mdoc").is_err());

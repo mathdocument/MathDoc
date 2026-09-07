@@ -97,6 +97,37 @@ async fn api_mutations_use_database_revisions_without_workspace_files() {
         .0,
         422
     );
+    let (_, view) = call(
+        &app,
+        "GET",
+        &format!("/api/node/{id}/view"),
+        Value::Null,
+        None,
+    )
+    .await;
+    let (status, parent) = call(
+        &app,
+        "POST",
+        "/api/node/new",
+        json!({"title":"linked","parent_fnode":id}),
+        view["node"]["revision"].as_str(),
+    )
+    .await;
+    assert_eq!(status, 200, "{parent}");
+    assert_eq!(parent["fnode"], id);
+    assert_eq!(parent["depens"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        call(
+            &app,
+            "PUT",
+            &format!("/api/node/{id}/block/python"),
+            json!({"content":"print(1)"}),
+            parent["revision"].as_str()
+        )
+        .await
+        .0,
+        422
+    );
     let reopened = Service::open(db).await.unwrap();
     assert_eq!(
         reopened.read().await.unwrap().nodes[id].source("lean"),
