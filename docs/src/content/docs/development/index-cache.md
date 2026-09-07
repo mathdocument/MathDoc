@@ -148,6 +148,12 @@ the unbounded non-search query used by the full graph API.
 those operations changes graph semantics, the transaction recomputes every topological
 depth.
 
+Discovered paths are sorted by their normalized OS strings before metadata reads,
+avoiding repeated path-component parsing while retaining directory locality. Strong
+refresh uses the same ordering. Every discovery still enumerates and checks all files;
+there is no directory-mtime shortcut or TTL. `--prof` separates cached file-state reads,
+directory enumeration, path sorting, and metadata reads.
+
 Same-metadata external edits are intentionally deferred to strong refresh paths. File
 time is stored as `secs * 1_000_000_000 + subsec_nanos`.
 

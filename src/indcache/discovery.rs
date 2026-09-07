@@ -31,10 +31,14 @@ pub(super) fn discover_workspace_changes(
     conn: &Connection,
     root: &Path,
 ) -> Result<WorkspaceChanges> {
-    let mut known = file_states(conn)?;
-    for orphan in orphaned_index_paths(conn)? {
-        known.entry(orphan).or_insert(None);
-    }
+    let mut known = {
+        let _phase = crate::profile::scope("discovery::file_states");
+        let mut known = file_states(conn)?;
+        for orphan in orphaned_index_paths(conn)? {
+            known.entry(orphan).or_insert(None);
+        }
+        known
+    };
 
     let files = scan_workspace_metadata(root)?;
     let mut changed_paths = Vec::new();
@@ -102,8 +106,16 @@ fn file_states(conn: &Connection) -> Result<HashMap<String, Option<FileState>>> 
 }
 
 fn scan_workspace_metadata(root: &Path) -> Result<Vec<(PathBuf, String, FileState)>> {
-    let mut paths = crate::workspace::iter_mdoc_files(root).collect::<Result<Vec<_>>>()?;
-    paths.sort();
+    let mut paths = {
+        let _phase = crate::profile::scope("discovery::walk_workspace");
+        crate::workspace::iter_mdoc_files(root).collect::<Result<Vec<_>>>()?
+    };
+    {
+        let _phase = crate::profile::scope("discovery::sort_paths");
+        // These discovered paths are already normalized. Comparing their OS
+        // strings avoids reparsing components at every sorting comparison.
+        paths.sort_unstable_by(|left, right| left.as_os_str().cmp(right.as_os_str()));
+    }
     if paths.is_empty() {
         return Ok(Vec::new());
     }
@@ -114,6 +126,7 @@ fn scan_workspace_metadata(root: &Path) -> Result<Vec<(PathBuf, String, FileStat
         .min(MAX_METADATA_WORKERS)
         .min(paths.len());
     let chunk_size = paths.len().div_ceil(worker_count);
+    let _phase = crate::profile::scope("discovery::stat_files");
     std::thread::scope(|scope| {
         let workers = paths
             .chunks(chunk_size)

@@ -1,0 +1,147 @@
+{
+  "workspace": "ETP",
+  "nodes": 47435,
+  "edges": 368017,
+  "base_revision": "f5303a8ccde7adf10a4f834fa3d1fd7ed29c9ae9",
+  "variant": "discovery",
+  "samples": [
+    {
+      "sample": 1,
+      "operation": "check",
+      "wall_ms": 3992.4783339956775,
+      "phases_ms": {
+        "cli::dispatch": 3987.0,
+        "cli::cmd_graph_check": 3987.0,
+        "IndCache::open_refreshed": 3653.0,
+        "IndCache::refresh_all": 3651.0,
+        "refresh::refresh_search_index": 3649.0,
+        "refresh::scan_workspace": 739.771,
+        "refresh::sync_file_states": 103.824,
+        "refresh::build_issues": 4.188,
+        "refresh::replace_index_rows": 1418.0,
+        "refresh::rebuild_in_degree": 275.16,
+        "derived::persist_topo_depths": 165.211,
+        "formal_status::refresh_index_statuses": 64.439,
+        "formal_status::load_indexed_nodes": 1.398,
+        "formal_status::evaluate_workspace": 58.991,
+        "formal_status::ensure_workspace_guards": 1.55,
+        "sqlite::refresh_all_commit": 1.425,
+        "IndCache::graph_check_report": 328.565
+      },
+      "validation": "no graph issues; counts unchanged"
+    },
+    {
+      "sample": 1,
+      "operation": "search",
+      "wall_ms": 183.7379999924451,
+      "phases_ms": {
+        "cli::dispatch": 178.799,
+        "IndCache::open": 21.912,
+        "IndCache::bootstrap_if_needed": 19.798,
+        "formal_status::refresh_index_statuses": 19.771,
+        "formal_status::load_indexed_nodes": 1.189,
+        "formal_status::evaluate_workspace": 16.388,
+        "formal_status::ensure_workspace_guards": 1.811,
+        "IndCache::discover_workspace_changes": 117.879,
+        "discovery::file_states": 20.199,
+        "discovery::walk_workspace": 59.8,
+        "discovery::sort_paths": 3.74,
+        "discovery::stat_files": 28.68,
+        "queries::search": 38.003
+      },
+      "validation": "20 results"
+    },
+    {
+      "sample": 2,
+      "operation": "check",
+      "wall_ms": 3464.9899170035496,
+      "phases_ms": {
+        "cli::dispatch": 3459.0,
+        "cli::cmd_graph_check": 3459.0,
+        "IndCache::open_refreshed": 3170.0,
+        "IndCache::refresh_all": 3169.0,
+        "refresh::refresh_search_index": 3168.0,
+        "refresh::scan_workspace": 723.16,
+        "refresh::sync_file_states": 57.044,
+        "refresh::build_issues": 4.027,
+        "refresh::replace_index_rows": 1266.0,
+        "refresh::rebuild_in_degree": 307.741,
+        "derived::persist_topo_depths": 147.681,
+        "formal_status::refresh_index_statuses": 19.369,
+        "formal_status::load_indexed_nodes": 1.207,
+        "formal_status::evaluate_workspace": 15.913,
+        "formal_status::ensure_workspace_guards": 1.318,
+        "sqlite::refresh_all_commit": 1.37,
+        "IndCache::graph_check_report": 282.456
+      },
+      "validation": "no graph issues; counts unchanged"
+    },
+    {
+      "sample": 2,
+      "operation": "search",
+      "wall_ms": 175.6673330673948,
+      "phases_ms": {
+        "cli::dispatch": 170.104,
+        "IndCache::open": 20.07,
+        "IndCache::bootstrap_if_needed": 19.035,
+        "formal_status::refresh_index_statuses": 19.011,
+        "formal_status::load_indexed_nodes": 1.147,
+        "formal_status::evaluate_workspace": 15.722,
+        "formal_status::ensure_workspace_guards": 1.787,
+        "IndCache::discover_workspace_changes": 113.85,
+        "discovery::file_states": 19.069,
+        "discovery::walk_workspace": 55.778,
+        "discovery::sort_paths": 3.463,
+        "discovery::stat_files": 30.729,
+        "queries::search": 35.129
+      },
+      "validation": "20 results"
+    },
+    {
+      "sample": 3,
+      "operation": "check",
+      "wall_ms": 3282.942833029665,
+      "phases_ms": {
+        "cli::dispatch": 3277.0,
+        "cli::cmd_graph_check": 3277.0,
+        "IndCache::open_refreshed": 2985.0,
+        "IndCache::refresh_all": 2984.0,
+        "refresh::refresh_search_index": 2982.0,
+        "refresh::scan_workspace": 692.56,
+        "refresh::sync_file_states": 57.855,
+        "refresh::build_issues": 4.058,
+        "refresh::replace_index_rows": 1158.0,
+        "refresh::rebuild_in_degree": 271.501,
+        "derived::persist_topo_depths": 149.151,
+        "formal_status::refresh_index_statuses": 19.358,
+        "formal_status::load_indexed_nodes": 1.162,
+        "formal_status::evaluate_workspace": 15.955,
+        "formal_status::ensure_workspace_guards": 1.345,
+        "sqlite::refresh_all_commit": 1.513,
+        "IndCache::graph_check_report": 285.274
+      },
+      "validation": "no graph issues; counts unchanged"
+    },
+    {
+      "sample": 3,
+      "operation": "search",
+      "wall_ms": 173.78466692753136,
+      "phases_ms": {
+        "cli::dispatch": 169.226,
+        "IndCache::open": 19.522,
+        "IndCache::bootstrap_if_needed": 18.474,
+        "formal_status::refresh_index_statuses": 18.45,
+        "formal_status::load_indexed_nodes": 1.166,
+        "formal_status::evaluate_workspace": 15.784,
+        "formal_status::ensure_workspace_guards": 1.15,
+        "IndCache::discover_workspace_changes": 112.632,
+        "discovery::file_states": 19.191,
+        "discovery::walk_workspace": 55.331,
+        "discovery::sort_paths": 3.452,
+        "discovery::stat_files": 29.643,
+        "queries::search": 36.062
+      },
+      "validation": "20 results"
+    }
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "generatedAtUnixSeconds": 1788773995,
+  "environment": {
+    "os": "macos",
+    "arch": "aarch64",
+    "cpu": "Apple M3 Pro",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "samples": 5
+  },
+  "fixtures": {
+    "nodes": 10000,
+    "edges": 19993,
+    "search_results": 200
+  },
+  "metrics": {
+    "graph.check": {
+      "value": 15.191,
+      "unit": "ms"
+    },
+    "graph.fullRead": {
+      "value": 10.07,
+      "unit": "ms"
+    },
+    "index.discoverNoop": {
+      "value": 16.972,
+      "unit": "ms"
+    },
+    "index.fullRefresh": {
+      "value": 163.007,
+      "unit": "ms"
+    },
+    "query.search200": {
+      "value": 5579.439,
+      "unit": "us"
+    }
+  },
+  "rawSamples": {
+    "graph.check": [
+      15.191,
+      15.188,
+      15.081,
+      15.507,
+      15.297
+    ],
+    "graph.fullRead": [
+      10.442,
+      10.335,
+      10.07,
+      9.958,
+      10.063
+    ],
+    "index.discoverNoop": [
+      17.179,
+      16.562,
+      17.06,
+      14.868,
+      16.972
+    ],
+    "index.fullRefresh": [
+      166.21,
+      163.926,
+      160.469,
+      162.137,
+      163.007
+    ],
+    "query.search200": [
+      5608.238,
+      5572.217,
+      5579.439,
+      5565.033,
+      5582.847
+    ]
+  }
+}

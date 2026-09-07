@@ -85,7 +85,7 @@ struct IndexedFileSemantics {
 
 fn scan_workspace(root: &Path) -> Result<Vec<ScannedMdoc>> {
     let mut paths = iter_mdoc_files(root).collect::<Result<Vec<_>>>()?;
-    paths.sort();
+    paths.sort_unstable_by(|left, right| left.as_os_str().cmp(right.as_os_str()));
     let mut files = Vec::with_capacity(paths.len());
     for paths in paths.chunks(SCAN_BATCH) {
         files.extend(scan_workspace_batch(root, paths)?);
