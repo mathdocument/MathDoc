@@ -300,7 +300,11 @@ fn open_db_once(path: &Path) -> Result<Connection> {
     let mut conn = Connection::open_with_flags(path, flags)?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     checked_user_version(&conn)?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+    // ponytail: cap each connection at 128 MiB, allocated on demand; revisit the
+    // budget if many simultaneously open workspaces cause memory pressure.
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA cache_size=-131072;",
+    )?;
     apply_schema(&mut conn)?;
     Ok(conn)
 }

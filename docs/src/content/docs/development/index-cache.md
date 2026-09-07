@@ -23,7 +23,9 @@ the migration; the removed values were rebuildable cache state.
 
 MathDoc bundles SQLite and requires engine version 3.51.3 or newer so concurrent WAL
 readers cannot encounter older WAL-reset defects. The connection enables WAL mode and
-foreign keys. It is opened without following
+foreign keys. Its page cache has a 128 MiB per-connection budget, allocated on demand,
+to avoid repeated dirty-page spills during large index refreshes. Transaction
+synchronization and foreign-key checks remain enabled. It is opened without following
 symlinks, and multiply linked database files are rejected. `WorkspaceStore` also keeps an open
 guard descriptor for the accepted `index.db` inode. Public operations and mutation
 boundaries reject a pathname replacement instead of continuing against a detached
