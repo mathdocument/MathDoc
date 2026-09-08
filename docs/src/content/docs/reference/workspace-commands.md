@@ -2,7 +2,7 @@
 title: Service and node commands
 ---
 
-`mdc init` initializes a TerminusDB database. `mdc serve --bind 127.0.0.1:7599` runs its local service. Global `--database` and `--branch` select the served database branch; clients select their service with `--url` or `MDC_URL`.
+`mdc init DATABASE` creates a new project database on an existing TerminusDB instance. `mdc serve DATABASE [--branch main] [--bind 127.0.0.1:7599]` serves that branch. Both run from any directory. Ordinary clients select their service with `--url`, `MDC_URL`, or the user configuration; database flags are not accepted on client commands.
 
 ```sh
 mdc new -t 'A theorem'

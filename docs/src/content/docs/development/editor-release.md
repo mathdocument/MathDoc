@@ -2,7 +2,7 @@
 title: Release checks
 ---
 
-The MathDoc VS Code editing extension has been removed. Authoring is through the local browser and service API.
+Authoring is through the local browser and service API. Install the executable independently of its source checkout.
 
 Release validation builds the frontend assets embedded into the Rust binary, checks Svelte and Rust, and runs database/browser/Lean integration tests. Keep the TerminusDB image and Lean toolchain pinned in the deployment/test configuration.
 

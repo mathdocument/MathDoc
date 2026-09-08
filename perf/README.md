@@ -7,12 +7,12 @@ lookup and API response decoding. It excludes CLI startup, HTTP client transport
 and browser rendering.
 
 ```sh
-python3 scripts/test-local.py test_service_scale
+cargo test --release --locked --test test_service_scale -- --ignored --nocapture
 ```
 
 The test creates a separate database and prints its name. To reuse that same
 fixture without importing it again, set `MDC_SCALE_DATABASE` to the printed name.
-The local database and private `.env` are required. CI runs the same target with
+A local TerminusDB instance and credentials are required. CI runs the same target with
 `--release`; compare results only with the same build mode and machine.
 
 The benchmark validates node/edge counts and acyclicity. It reports timing without

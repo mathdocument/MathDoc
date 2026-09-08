@@ -70,7 +70,7 @@ export default defineConfig({
         {
           label: 'Core Concepts',
           items: [
-            { label: 'The .mdoc Format', slug: 'concepts/mdoc-format' },
+            { label: 'Export & Restore', slug: 'concepts/import-export' },
             { label: 'Databases & References', slug: 'concepts/workspaces' },
             { label: 'Dependency Graph', slug: 'concepts/dependency-graph' },
             { label: 'Source Workflow', slug: 'concepts/source-workflow' },
