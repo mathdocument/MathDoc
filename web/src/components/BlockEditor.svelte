@@ -342,7 +342,7 @@
   });
 </script>
 
-<article class="block" data-srctype={block.srctype}>
+<article class="source-block" data-srctype={block.srctype}>
   <header class="block-head">
     <span class="srctype">{block.srctype}</span>
     <span class="spacer"></span>
@@ -359,6 +359,7 @@
         disabled={!expanded}
         aria-pressed={previewing}
         title={previewing ? "Return to LaTeX editor" : "Render LaTeX preview"}
+        aria-label={previewing ? "Return to LaTeX editor" : "Render LaTeX preview"}
       >
         {#if previewing}<Code2 size={14} strokeWidth={1.8} /><span class="btn-label">Edit</span>
         {:else}<Eye size={14} strokeWidth={1.8} /><span class="btn-label">Preview</span>{/if}
@@ -367,7 +368,7 @@
     <button class="icon-btn expand" onclick={toggleExpand} title={expanded ? "Collapse" : "Expand"} aria-label={expanded ? "Collapse block" : "Expand block"}>
       {#if expanded}<ChevronDown size={15} strokeWidth={1.9} />{:else}<ChevronRight size={15} strokeWidth={1.9} />{/if}
     </button>
-    <button class="save" onclick={save} disabled={!dirty || saving || deleting} title="Save (Ctrl/⌘+S)"><SaveIcon size={13} strokeWidth={1.9} /><span class="btn-label">Save</span></button>
+    <button class="save" onclick={save} disabled={!dirty || saving || deleting} title="Save (Ctrl/⌘+S)" aria-label="Save"><SaveIcon size={13} strokeWidth={1.9} /><span class="btn-label">Save</span></button>
     <button class="delete" onclick={onDelete} disabled={saving || deleting} title="Delete block" aria-label="Delete block"><Trash2 size={14} strokeWidth={1.8} /></button>
   </header>
   <div
@@ -389,131 +390,6 @@
 </article>
 
 <style>
-  .block {
-    --block-accent: var(--mdc-accent);
-    position: relative;
-    border: 1px solid var(--mdc-border);
-    border-radius: var(--mdc-radius-md);
-    overflow: clip;
-    display: flex;
-    flex-direction: column;
-    flex-shrink: 0;
-    background: var(--mdc-code-bg);
-    box-shadow: var(--mdc-shadow-sm);
-    transition: border-color var(--mdc-dur-fast) var(--mdc-ease),
-      box-shadow var(--mdc-dur-fast) var(--mdc-ease);
-    container-type: inline-size;
-  }
-  .block:focus-within {
-    border-color: color-mix(in srgb, var(--block-accent) 40%, var(--mdc-border));
-    box-shadow: var(--mdc-shadow-md);
-  }
-  /* Per-srctype accent so block kinds are scannable at a glance. */
-  .block[data-srctype="text"] { --block-accent: var(--mdc-block-text); }
-  .block[data-srctype="latex"] { --block-accent: var(--mdc-block-latex); }
-  .block[data-srctype="lean"] { --block-accent: var(--mdc-block-lean); }
-  .block[data-srctype="rocq"] { --block-accent: var(--mdc-block-rocq); }
-  /* Left rail carries the block kind; it is the only always-on decoration. */
-  .block::before {
-    content: "";
-    position: absolute;
-    inset: 0 auto 0 0;
-    width: 2px;
-    z-index: 4;
-    background: var(--block-accent);
-    opacity: 0.9;
-  }
-  .block-head {
-    position: sticky;
-    top: 0;
-    z-index: 3;
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    min-height: 38px;
-    padding: 0.3rem 0.4rem 0.3rem 0.6rem;
-    background: var(--mdc-panel-raised);
-    font-size: var(--mdc-text-xs);
-    color: var(--mdc-muted);
-    border-bottom: 1px solid var(--mdc-border);
-  }
-  /* Type is stated once, as a coloured word rather than a bordered chip. */
-  .srctype {
-    margin-right: 0.15rem;
-    color: var(--block-accent);
-    font-family: var(--mdc-mono);
-    font-size: var(--mdc-text-2xs);
-    font-weight: 650;
-    letter-spacing: var(--mdc-tracking-label);
-    text-transform: uppercase;
-  }
-  .spacer { flex: 1; }
-  .dirty {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.32rem;
-    margin-right: 0.15rem;
-    color: var(--mdc-warning);
-    font-size: var(--mdc-text-2xs);
-    font-weight: 550;
-  }
-  .dirty-dot {
-    width: 5px;
-    height: 5px;
-    flex: 0 0 auto;
-    border-radius: 50%;
-    background: currentColor;
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--mdc-warning) 20%, transparent);
-  }
-  .saving { color: var(--mdc-muted); font-family: var(--mdc-mono); font-size: var(--mdc-text-2xs); }
-  .error { display: inline-flex; color: var(--mdc-error); cursor: help; }
-  .save, .delete, .icon-btn, .preview-toggle {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.3rem;
-    min-height: 26px;
-    background: transparent;
-    color: var(--mdc-dim);
-    border: 1px solid transparent;
-    border-radius: 7px;
-    padding: 0 0.45rem;
-    font-size: var(--mdc-text-2xs);
-    font-weight: 550;
-    cursor: pointer;
-    font-family: inherit;
-    transition: background var(--mdc-dur-fast) var(--mdc-ease),
-      color var(--mdc-dur-fast) var(--mdc-ease);
-  }
-  .icon-btn,
-  .delete {
-    width: 26px;
-    padding: 0;
-  }
-  .preview-toggle.active,
-  .preview-toggle:hover:not(:disabled) {
-    color: var(--mdc-accent-up);
-    background: color-mix(in srgb, var(--mdc-accent-up) 14%, transparent);
-  }
-  .preview-toggle:disabled {
-    opacity: 0.35;
-    cursor: default;
-  }
-  .save:disabled { opacity: 0.3; cursor: default; }
-  /* Save only draws attention once there is something to save. */
-  .save:not(:disabled) {
-    color: var(--mdc-on-accent);
-    background: var(--block-accent);
-    font-weight: 620;
-  }
-  .save:not(:disabled):hover {
-    filter: brightness(1.08);
-  }
-  .delete:hover {
-    background: color-mix(in srgb, var(--mdc-error) 14%, transparent);
-    color: var(--mdc-error);
-  }
-  .expand:hover { background: var(--mdc-card-hover); color: var(--mdc-fg); }
   .editor-host { background: var(--mdc-code-bg); }
   .editor-host.expanded { height: auto; }
   .editor-host.expanded :global(.cm-editor) { height: auto; }
@@ -544,22 +420,4 @@
     border-top: 1px solid color-mix(in srgb, var(--mdc-error) 25%, transparent);
   }
 
-  /* Narrow blocks (the graph view's side pane, or a phone) shed text labels and
-     keep only glyphs. Labels are removed from layout rather than made
-     transparent, so the remaining icon stays centred instead of being clipped. */
-  @container (max-width: 420px) {
-    .btn-label {
-      display: none;
-    }
-    .dirty,
-    .preview-toggle,
-    .save {
-      gap: 0;
-    }
-    .preview-toggle,
-    .save {
-      width: 26px;
-      padding: 0;
-    }
-  }
 </style>

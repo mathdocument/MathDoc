@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -172,7 +172,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
       fixture(browser, async ({ root, page, cli, url }) => {
         const source = "theorem demo : True ∧ True := by\n  constructor\n  · trivial\n  · trivial\n";
         // Legacy modules can be nested and quoted; later nodes use the flat Lib directory.
-        const a = { fnode: randomUUID(), title: "Lean Example", module: "Lib.EGA.«1-1.7.1»", depens: [], blocks: [{ srctype: "lean", content: source }] };
+        const a = { fnode: randomUUID(), title: "Lean Example", module: "Lib.EGA.«1-1.7.1»", depens: [], blocks: [{ srctype: "lean", content: source }, { srctype: "text", content: "A shared block header." }, { srctype: "rocq", content: "Check nat." }, { srctype: "latex", content: "A formula: $x^2$." }] };
         const saved = await fetch(`${url}/api/import`, {
           method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ nodes: [a] }),
         });
@@ -206,6 +206,30 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         const input = frame.getByRole("textbox", { name: /Editor content/ });
         await frame.getByText("constructor", { exact: true }).click();
         await frame.frameLocator("#infoview iframe").getByText("True", { exact: true }).first().waitFor();
+        await page.locator('article[data-srctype] .block-head').nth(3).waitFor();
+        const headers = await page.locator('article[data-srctype] .block-head').evaluateAll(elements => elements.map(el => {
+          const s = getComputedStyle(el); return [s.minHeight, s.backgroundColor, s.fontSize, getComputedStyle(el.parentElement).borderRadius];
+        }));
+        assert.equal(headers.length, 4);
+        for (const style of headers) assert.deepEqual(style, headers[0]);
+        const leanBlock = page.locator('article[data-srctype="lean"]');
+        const initializedBeforeCollapse = messages.filter(m => m.method === "initialize").length;
+        await leanBlock.getByRole("button", { name: "Collapse block" }).click();
+        assert.equal(await leanBlock.locator("iframe").isVisible(), false);
+        await leanBlock.getByRole("button", { name: "Expand block" }).click();
+        await frame.locator(".monaco-editor").waitFor();
+        assert.equal(messages.filter(m => m.method === "initialize").length, initializedBeforeCollapse);
+        if (process.env.MDC_E2E_ARTIFACTS) {
+          await mkdir(process.env.MDC_E2E_ARTIFACTS, { recursive: true });
+          await page.screenshot({ path: resolve(process.env.MDC_E2E_ARTIFACTS, "editors-wide.png"), fullPage: true });
+          await page.setViewportSize({ width: 420, height: 900 });
+          const boxes = await leanBlock.locator("button").evaluateAll(buttons => buttons.map(b => { const r=b.getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height}; }));
+          for (let i=0;i<boxes.length;i++) for(let j=i+1;j<boxes.length;j++) {
+            const a=boxes[i], b=boxes[j]; assert.ok(a.x+a.w<=b.x+.5 || b.x+b.w<=a.x+.5 || a.y+a.h<=b.y+.5 || b.y+b.h<=a.y+.5, "toolbar buttons overlap");
+          }
+          await page.screenshot({ path: resolve(process.env.MDC_E2E_ARTIFACTS, "editors-narrow.png"), fullPage: true });
+          await page.setViewportSize({ width: 1440, height: 900 });
+        }
         await page.screenshot({ path: resolve(root, "lean-editor.png"), fullPage: true });
         await input.press("ControlOrMeta+A");
         await page.keyboard.insertText("theorem demo : True := by\n  exact 42\n");

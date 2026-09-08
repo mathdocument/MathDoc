@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, untrack } from "svelte";
+  import { ChevronDown, ChevronRight, Save, Trash2, Check, Hammer, RotateCcw } from "@lucide/svelte";
   import type { NodeDetail, SrcBlock } from "../lib/types";
   import type { Theme } from "../lib/theme";
   import { api } from "../lib/api";
@@ -30,6 +31,7 @@
   let openedSelection = -1;
   let initialTheme = $state<Theme>("light");
   let alive = true;
+  let expanded = $state(true);
   const draft = Symbol("Lean draft");
   $effect(() => { setDraftDirty(draft, !!block && dirty); });
   $effect(() => {
@@ -118,26 +120,28 @@
 </script>
 
 <svelte:window onmessage={message} />
-<article class="lean-block" class:hidden={!block} data-srctype="lean">
-  <header>
-    <strong>Lean</strong><span class="unsaved">{dirty ? "Unsaved" : ""}</span>
-    <div class="actions">
-    <button onclick={() => void save()} disabled={busy || !dirty}>Save</button>
-    <button onclick={() => void save(true)} disabled={busy} aria-busy={action === "check"}>Save & check</button>
-    <button onclick={() => void save(true, true)} disabled={busy}>Save & build</button>
-    <button onclick={() => void open()} disabled={dirty || busy}>Reload environment</button>
-    <button onclick={() => void remove()} disabled={busy} aria-label="Delete Lean block">Delete</button>
+<article class="source-block lean-block" class:hidden={!block} data-srctype="lean">
+  <header class="block-head">
+    <span class="srctype">lean</span><span class="spacer"></span>
+    {#if dirty}<span class="dirty" title="Unsaved changes"><span class="dirty-dot"></span><span class="btn-label">Unsaved</span></span>{/if}
+    <div class="block-actions">
+      <button class="preview-toggle" onclick={() => void save(true)} disabled={busy} aria-busy={action === "check"} aria-label="Save & check" title="Save & check (Ctrl/⌘+Enter)"><Check size={14} strokeWidth={1.8}/><span class="btn-label">Save & check</span></button>
+      <button class="preview-toggle" onclick={() => void save(true, true)} disabled={busy} aria-label="Save & build" title="Save & build"><Hammer size={14} strokeWidth={1.8}/><span class="btn-label">Save & build</span></button>
+      <button class="icon-btn expand" onclick={() => void open()} disabled={dirty || busy} aria-label="Reload environment" title="Reload environment"><RotateCcw size={14} strokeWidth={1.8}/></button>
+      <button class="icon-btn expand" onclick={() => expanded = !expanded} aria-expanded={expanded} aria-label={expanded ? "Collapse block" : "Expand block"} title={expanded ? "Collapse" : "Expand"}>{#if expanded}<ChevronDown size={15}/>{:else}<ChevronRight size={15}/>{/if}</button>
+      <button class="save" onclick={() => void save()} disabled={busy || !dirty} aria-label="Save" title="Save (Ctrl/⌘+S)"><Save size={13} strokeWidth={1.9}/><span class="btn-label">Save</span></button>
+      <button class="delete" onclick={() => void remove()} disabled={busy} aria-label="Delete block" title="Delete block"><Trash2 size={14} strokeWidth={1.8}/></button>
     </div>
   </header>
   {#if action}<div class="status activity" role="status" aria-live="polite">{{ save: "Saving…", check: "Checking…", build: "Building…", delete: "Deleting…" }[action]}</div>{/if}
   {#if !ready && !error}<div class="status" aria-busy="true">{session && runtimeReady ? "Opening Lean node…" : "Starting Lean editor…"}</div>{/if}
   {#if ready && progress}<div class="status" role="status">{progress}</div>{/if}
   {#if session}
-    <div class:pending={!ready} inert={!ready}><iframe bind:this={frame} title="Lean source and Infoview" src={`/lean.html?session=${encodeURIComponent(session)}&theme=${initialTheme}`} allow="clipboard-write"></iframe></div>
+    <div class:pending={!ready} class:collapsed={!expanded} inert={!ready || !expanded}><iframe bind:this={frame} title="Lean source and Infoview" src={`/lean.html?session=${encodeURIComponent(session)}&theme=${initialTheme}`} allow="clipboard-write"></iframe></div>
   {/if}
-  {#if error}<div class="error" role="alert">{error}</div>{/if}
+  {#if error}<div class="error-bar" role="alert">{error}</div>{/if}
   {#if result}
-    <div class="status" class:error={!result.certified}>
+    <div class="status" class:error-bar={!result.certified}>
       {result.certified ? "Checked" : result.passed ? "Dependency check failed" : "Lean errors"}
       {result.built ? "· olean ready" : ""} · {result.cache_hit ? "cached" : `${result.elapsed_ms} ms`}
       {#each result.dependency_errors as issue}<div>{issue}</div>{/each}
@@ -145,15 +149,7 @@
   {/if}
 </article>
 <style>
-  .lean-block { border: 1px solid var(--mdc-border); border-radius: var(--mdc-radius-md); overflow: hidden; flex-shrink: 0; }
-  .hidden { display:none; }
-  .pending { visibility:hidden; }
-  header { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem; padding:.6rem; background:var(--mdc-card); font-size:.75rem; }
-  .unsaved { flex:1; color:var(--mdc-warning); }
-  .actions { display:flex; flex-wrap:wrap; gap:.5rem; }
-  button { flex:0 0 auto; white-space:nowrap; background:var(--mdc-bg); color:var(--mdc-fg); border:1px solid var(--mdc-border); padding:.3rem .5rem; border-radius:4px; cursor:pointer; }
-  button:disabled { opacity:.5; cursor:default; }
-  iframe { display:block; width:100%; height:500px; border:0; }
-  .status,.error { padding:.6rem; font-size:.8rem; color:var(--mdc-muted); }
-  .error { color:var(--mdc-error); }
+  .hidden, .collapsed { display: none; }
+  .pending { visibility: hidden; }
+  iframe { display: block; width: 100%; height: 500px; border: 0; }
 </style>
