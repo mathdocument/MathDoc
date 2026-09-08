@@ -15,16 +15,9 @@ const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const binary = resolve(process.env.MDC_BIN ?? resolve(webRoot, "../target/debug/mdc"));
 
 const env = { ...process.env };
-try {
-  for (const line of (await readFile(resolve(webRoot, "../.env"), "utf8")).split("\n")) {
-    if (line.startsWith("MDC_") && line.includes("=")) {
-      const at = line.indexOf("="); env[line.slice(0, at)] ??= line.slice(at + 1);
-    }
-  }
-} catch (e) { if (e.code !== "ENOENT") throw e; }
 async function startServer(cwd, database) {
-  const child = spawn(binary, ["--database", database, "serve", "--bind", "127.0.0.1:0"], {
-    cwd, env, stdio: ["ignore", "pipe", "pipe"],
+  const child = spawn(binary, ["serve", database, "--bind", "127.0.0.1:0"], {
+    cwd, env: { ...env, MDC_CACHE_DIR: resolve(cwd, "cache") }, stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
   const url = await new Promise((resolveURL, reject) => {
@@ -45,7 +38,7 @@ async function fixture(browser, body) {
   let server;
   let context;
   const database = `mdce2e${randomUUID().replaceAll("-", "")}`;
-  const cli = (...args) => run(binary, ["--database", database, ...args], { cwd: root, env: { ...env, ...(server ? { MDC_URL: server.url } : {}) }, timeout: 30000 });
+  const cli = (...args) => run(binary, (args[0] === "init" ? ["init", database] : args), { cwd: root, env: { ...env, ...(server ? { MDC_URL: server.url } : {}) }, timeout: 30000 });
   try {
     await cli("init");
     server = await startServer(root, database);

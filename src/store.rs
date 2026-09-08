@@ -66,24 +66,6 @@ fn plain_module_part(part: &str) -> bool {
             .all(|c| c.is_alphanumeric() || matches!(c, '_' | '\''))
 }
 
-pub fn legacy_module(path: &std::path::Path) -> Result<String> {
-    let mut module = String::from("Lib");
-    for part in path.components() {
-        let part = part
-            .as_os_str()
-            .to_str()
-            .context("module path must be UTF-8")?;
-        module.push('.');
-        if plain_module_part(part) {
-            module.push_str(part);
-        } else {
-            module.push_str(&format!("«{part}»"));
-        }
-    }
-    module_parts(&module)?;
-    Ok(module)
-}
-
 pub fn module_file(module: &str, extension: &str) -> Result<PathBuf> {
     let mut parts = module_parts(module)?;
     let filename = format!("{}.{extension}", parts.pop().unwrap());
@@ -291,6 +273,7 @@ pub struct Database {
     url: String,
     user: String,
     password: String,
+    cache_root: PathBuf,
     pub database: String,
     pub branch: String,
 }
@@ -305,7 +288,12 @@ impl Database {
                 bail!("database and branch names allow letters, digits, hyphens and underscores");
             }
         }
-        let url = std::env::var("MDC_TERMINUS_URL").unwrap_or("http://127.0.0.1:6363".into());
+        let settings = crate::config::Settings::load()?;
+        let cache_root = settings.cache_root()?;
+        let url = std::env::var("MDC_TERMINUS_URL")
+            .ok()
+            .or(settings.terminus_url)
+            .unwrap_or("http://127.0.0.1:6363".into());
         let parsed = reqwest::Url::parse(&url)?;
         if !["http", "https"].contains(&parsed.scheme()) {
             bail!("invalid database URL");
@@ -316,9 +304,15 @@ impl Database {
                 .timeout(std::time::Duration::from_secs(120))
                 .build()?,
             url: url.trim_end_matches('/').into(),
-            user: std::env::var("MDC_TERMINUS_USER").unwrap_or("admin".into()),
+            user: std::env::var("MDC_TERMINUS_USER")
+                .ok()
+                .or(settings.terminus_user)
+                .unwrap_or("admin".into()),
             password: std::env::var("MDC_TERMINUS_PASSWORD")
-                .context("set MDC_TERMINUS_PASSWORD for the local TerminusDB server")?,
+                .ok()
+                .or(settings.terminus_password)
+                .context("set terminus_password in the user config or MDC_TERMINUS_PASSWORD")?,
+            cache_root,
             database,
             branch,
         })
@@ -528,11 +522,9 @@ impl Database {
             .await?)
     }
     pub fn cache_path(&self) -> Result<PathBuf> {
-        let base = std::env::var_os("MDC_CACHE_DIR")
-            .map(PathBuf::from)
-            .unwrap_or(std::env::current_dir()?.join(".mdc-service"));
-        Ok(std::env::current_dir()?
-            .join(base)
+        Ok(self
+            .cache_root
+            .join(&digest(self.url.as_bytes())[..12])
             .join(&self.database)
             .join(&self.branch))
     }
@@ -682,8 +674,8 @@ impl Snapshot {
 mod tests {
     use super::*;
     #[test]
-    fn legacy_module_names_preserve_filename_boundaries() {
-        let name = legacy_module(std::path::Path::new("EGA/1-1.7.1")).unwrap();
+    fn module_names_preserve_filename_boundaries() {
+        let name = "Lib.EGA.«1-1.7.1»";
         assert_eq!(name, "Lib.EGA.«1-1.7.1»");
         assert_eq!(
             module_file(&name, "lean").unwrap(),

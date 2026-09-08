@@ -5,9 +5,10 @@ services:
     ports:
       - "127.0.0.1:6363:6363"
     environment:
-      TERMINUSDB_ADMIN_PASS: ${MDC_TERMINUS_PASSWORD:?Set MDC_TERMINUS_PASSWORD in .env}
+      TERMINUSDB_ADMIN_PASS: ${MDC_TERMINUS_PASSWORD:?Set MDC_TERMINUS_PASSWORD}
       TERMINUSDB_SERVER_PORT: "6363"
     volumes:
       - terminus-data:/app/terminusdb/storage
 volumes:
   terminus-data:
+    name: mathdoc-terminus-data

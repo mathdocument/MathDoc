@@ -1,5 +1,5 @@
 //! API client. Files are only read by explicit import and stdin source editing.
-use crate::store::{Block, Database, LeanProject, Node};
+use crate::store::Database;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use reqwest::{Client, Method};
@@ -11,10 +11,6 @@ use std::io::Read;
 struct Cli {
     #[arg(long, global = true)]
     url: Option<String>,
-    #[arg(long, global = true, default_value = "mathdoc")]
-    database: String,
-    #[arg(long, global = true, default_value = "main")]
-    branch: String,
     #[arg(long, global = true)]
     prof: bool,
     #[command(subcommand)]
@@ -22,10 +18,15 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize a TerminusDB database. Requires MDC_TERMINUS_PASSWORD.
-    Init,
-    /// Start the local browser service. Requires MDC_TERMINUS_PASSWORD.
+    /// Create a new project database on the configured TerminusDB instance.
+    Init {
+        database: String,
+    },
+    /// Serve one project database branch from any directory.
     Serve {
+        database: String,
+        #[arg(long, default_value = "main")]
+        branch: String,
         #[arg(long, default_value = "127.0.0.1:7599")]
         bind: String,
     },
@@ -68,21 +69,15 @@ enum Commands {
         #[command(subcommand)]
         command: Metric,
     },
-    /// Check the saved Lean block through the persistent Lean server.
-    Work {
-        source: String,
-        #[arg(long)]
-        build: bool,
-    },
     Lean {
         #[command(subcommand)]
         command: Lean,
     },
-    /// Export the database as portable JSON, or a selected node as mdoc.
+    /// Export the database, or one node, as a portable JSON bundle.
     Export {
         source: Option<String>,
     },
-    /// Explicit one-time import of a JSON export or a legacy .mdoc directory.
+    /// Import a JSON bundle. Existing node UUIDs are never overwritten.
     Import {
         input: std::path::PathBuf,
     },
@@ -256,6 +251,7 @@ async fn dispatch(cli: Cli) -> Result<i32> {
     let url = cli
         .url
         .or_else(|| std::env::var("MDC_URL").ok())
+        .or(crate::config::Settings::load()?.url)
         .unwrap_or("http://127.0.0.1:7599".into());
     let api = Api {
         client: Client::builder()
@@ -264,14 +260,18 @@ async fn dispatch(cli: Cli) -> Result<i32> {
         url: url.trim_end_matches('/').into(),
     };
     let value = match cli.command {
-        Commands::Init => {
-            Database::from_env(cli.database, cli.branch)?
+        Commands::Init { database } => {
+            Database::from_env(database, "main".into())?
                 .initialize()
                 .await?;
             json!({"initialized":true})
         }
-        Commands::Serve { bind } => {
-            crate::service::serve(Database::from_env(cli.database, cli.branch)?, &bind).await?;
+        Commands::Serve {
+            database,
+            branch,
+            bind,
+        } => {
+            crate::service::serve(Database::from_env(database, branch)?, &bind).await?;
             return Ok(0);
         }
         Commands::New { title } => {
@@ -351,7 +351,6 @@ async fn dispatch(cli: Cli) -> Result<i32> {
             ))
             .await?
         }
-        Commands::Work { source, build } => api.check(&source, build, None).await?,
         Commands::Lean { command } => match command {
             Lean::Check {
                 source,
@@ -379,25 +378,20 @@ async fn dispatch(cli: Cli) -> Result<i32> {
             source: Some(source),
         } => {
             let n = api.node(&source).await?;
-            let node = crate::mdocnode::MdocNode {
-                path: std::path::PathBuf::new(),
-                fnode: n["fnode"].as_str().unwrap().into(),
-                title: n["title"].as_str().unwrap().into(),
-                depens: serde_json::from_value(n["depens"].clone())?,
-                blocks: serde_json::from_value(n["blocks"].clone())?,
-            };
-            print!("{}", node.render()?);
-            return Ok(0);
+            let node = serde_json::from_value::<crate::store::Node>(json!({
+                "fnode":n["fnode"], "title":n["title"], "module":n["module"],
+                "depens":n["depens"], "blocks":n["blocks"]
+            }))?;
+            json!({"nodes":[node], "project":null})
         }
         Commands::Import { input } => {
-            let body = if input.is_dir() {
-                legacy_import(&input)?
-            } else {
-                serde_json::from_slice(&std::fs::read(input)?)?
-            };
+            let body: Value = serde_json::from_slice(
+                &std::fs::read(input).context("import expects a JSON bundle file")?,
+            )?;
             api.request(Method::POST, "/import", &[], Some(body), None)
                 .await?
         }
+
         Commands::Project {
             command: Project::Show,
         } => api.get("/project/lean").await?,
@@ -472,52 +466,19 @@ async fn mutate_dep(api: &Api, source: &str, target: &str, add: bool) -> Result<
     )
     .await
 }
-fn legacy_import(root: &std::path::Path) -> Result<Value> {
-    let mut nodes = Vec::new();
-    for entry in walkdir::WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.') || e.depth() == 0)
-    {
-        let entry = entry?;
-        if !entry.file_type().is_file()
-            || entry.path().extension().and_then(|e| e.to_str()) != Some("mdoc")
-        {
-            continue;
-        }
-        let legacy = crate::mdocnode::MdocNode::load(entry.path())?;
-        let relative = entry.path().strip_prefix(root)?.with_extension("");
-        let module = crate::store::legacy_module(&relative)?;
-        let node = Node {
-            fnode: legacy.fnode,
-            title: legacy.title,
-            module,
-            depens: legacy.depens,
-            blocks: legacy
-                .blocks
-                .into_iter()
-                .map(|b| Block {
-                    srctype: b.srctype,
-                    content: b.content,
-                    metadata: b.metadata.into_iter().collect(),
-                })
-                .collect(),
-        };
-        node.validate()
-            .with_context(|| format!("import {}", entry.path().display()))?;
-        nodes.push(node);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn project_selection_belongs_to_service_commands() {
+        assert!(Cli::try_parse_from(["mdc", "init"]).is_err());
+        assert!(Cli::try_parse_from(["mdc", "serve", "mdocs", "--branch", "agent"]).is_ok());
+        assert!(Cli::try_parse_from(["mdc", "--database", "other", "graph", "check"]).is_err());
+        assert!(
+            Cli::try_parse_from(["mdc", "--url", "http://localhost:7600", "graph", "check"])
+                .is_ok()
+        );
+        assert!(Cli::try_parse_from(["mdc", "work", "node"]).is_err());
     }
-    let lean = root.join(".mdc/lean");
-    let project = if lean.join("lean-toolchain").exists() {
-        Some(LeanProject {
-            toolchain: std::fs::read_to_string(lean.join("lean-toolchain"))?
-                .trim()
-                .into(),
-            lakefile: std::fs::read_to_string(lean.join("lakefile.toml"))?,
-            manifest: std::fs::read_to_string(lean.join("lake-manifest.json")).ok(),
-        })
-    } else {
-        None
-    };
-    Ok(json!({"nodes":nodes,"project":project}))
 }

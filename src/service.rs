@@ -863,7 +863,9 @@ async fn bridge_editor(
     use futures_util::{SinkExt, StreamExt};
     let actual = crate::lean::file_uri(root)?;
     let document = editor_document(input)?;
-    let mut allowed = HashSet::from([crate::lean::file_uri(std::path::Path::new(document["filename"].as_str().unwrap()))?]);
+    let mut allowed = HashSet::from([crate::lean::file_uri(std::path::Path::new(
+        document["filename"].as_str().unwrap(),
+    ))?]);
     let mut process = crate::lean::spawn(root, &["serve"])?;
     let mut writer = process
         .child

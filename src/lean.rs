@@ -18,9 +18,12 @@ use tokio::{
 
 fn timeout() -> Result<Duration> {
     let seconds = std::env::var("MDC_LEAN_TIMEOUT_SECONDS")
-        .unwrap_or_else(|_| "300".into())
-        .parse::<u64>()
-        .context("MDC_LEAN_TIMEOUT_SECONDS must be a positive integer")?;
+        .ok()
+        .map(|value| value.parse::<u64>())
+        .transpose()
+        .context("MDC_LEAN_TIMEOUT_SECONDS must be a positive integer")?
+        .or(crate::config::Settings::load()?.lean_timeout_seconds)
+        .unwrap_or(300);
     if seconds == 0 {
         bail!("MDC_LEAN_TIMEOUT_SECONDS must be positive");
     }
@@ -738,7 +741,9 @@ pub async fn refresh_editor_sources(root: &Path, input: &Input) -> Result<()> {
             let path = module_path(root, &node.module)?;
             match tokio::fs::read_to_string(path).await {
                 Ok(existing) if existing == source => continue,
-                Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(error.into())
+                }
                 _ => write_source(root, node, source).await?,
             }
         }
