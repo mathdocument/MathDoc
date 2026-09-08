@@ -487,14 +487,7 @@ fn legacy_import(root: &std::path::Path) -> Result<Value> {
         }
         let legacy = crate::mdocnode::MdocNode::load(entry.path())?;
         let relative = entry.path().strip_prefix(root)?.with_extension("");
-        let module = format!(
-            "Lib.{}",
-            relative
-                .components()
-                .map(|p| p.as_os_str().to_string_lossy())
-                .collect::<Vec<_>>()
-                .join(".")
-        );
+        let module = crate::store::legacy_module(&relative)?;
         let node = Node {
             fnode: legacy.fnode,
             title: legacy.title,

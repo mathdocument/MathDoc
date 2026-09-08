@@ -432,8 +432,7 @@ impl LeanService {
             .join("projects")
             .join(project.key())
             .join(".lake/build/lib/lean")
-            .join(node.module.replace('.', "/"))
-            .with_extension("olean");
+            .join(crate::store::module_file(&node.module, "olean").ok()?);
         result.built &= artifact.is_file();
         self.results
             .write()
@@ -516,8 +515,13 @@ impl LeanService {
         let known: BTreeMap<_, _> = input
             .chain
             .iter()
-            .map(|(n, _)| (n.module.clone(), n.fnode.clone()))
-            .collect();
+            .map(|(n, _)| {
+                Ok((
+                    crate::store::module_file(&n.module, "lean")?,
+                    n.fnode.clone(),
+                ))
+            })
+            .collect::<Result<_>>()?;
         let keys: BTreeMap<_, _> = input
             .chain
             .iter()
@@ -557,7 +561,7 @@ impl LeanService {
             if manager.lsp.is_none() {
                 manager.lsp = Some(Lsp::start(&manager.root).await?);
             }
-            let uri = file_uri(&module_path(&manager.root, &node.module))?;
+            let uri = file_uri(&module_path(&manager.root, &node.module)?)?;
             let dependency_key = digest(&serde_json::to_vec(
                 &node
                     .depens
@@ -580,7 +584,7 @@ impl LeanService {
                     .as_str()
                     .context("Lean import omitted module name")?;
                 if module.starts_with("Lib.") {
-                    if let Some(id) = known.get(module) {
+                    if let Some(id) = known.get(&crate::store::module_file(module, "lean")?) {
                         imported.insert(id.clone());
                     } else {
                         errors.push(format!("managed import {module} is not declared in dep"));
@@ -620,8 +624,7 @@ impl LeanService {
                 let artifact = manager
                     .root
                     .join(".lake/build/lib/lean")
-                    .join(node.module.replace('.', "/"))
-                    .with_extension("olean");
+                    .join(crate::store::module_file(&node.module, "olean")?);
                 if !artifact.is_file() {
                     bail!("Lake succeeded without producing the target olean");
                 }
@@ -644,7 +647,7 @@ impl LeanService {
         if manager.lsp.is_none() {
             manager.lsp = Some(Lsp::start(&manager.root).await?);
         }
-        let uri = file_uri(&module_path(&manager.root, &node.module))?;
+        let uri = file_uri(&module_path(&manager.root, &node.module)?)?;
         let keys: BTreeMap<_, _> = input
             .chain
             .iter()
@@ -711,8 +714,8 @@ impl LeanService {
         Ok(root)
     }
 }
-pub fn module_path(root: &Path, module: &str) -> PathBuf {
-    root.join(module.replace('.', "/")).with_extension("lean")
+pub fn module_path(root: &Path, module: &str) -> Result<PathBuf> {
+    Ok(root.join(crate::store::module_file(module, "lean")?))
 }
 pub fn file_uri(path: &Path) -> Result<String> {
     reqwest::Url::from_file_path(path)
@@ -720,7 +723,7 @@ pub fn file_uri(path: &Path) -> Result<String> {
         .map_err(|_| anyhow::anyhow!("invalid Lean file path"))
 }
 async fn write_source(root: &Path, node: &Node, source: &str) -> Result<()> {
-    let path = module_path(root, &node.module);
+    let path = module_path(root, &node.module)?;
     tokio::fs::create_dir_all(path.parent().unwrap()).await?;
     tokio::fs::write(path, source).await?;
     Ok(())

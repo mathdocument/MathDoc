@@ -13,6 +13,83 @@ pub fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+/// Lean's quoted identifiers can contain dots; those dots belong to one filename.
+pub fn module_parts(mut module: &str) -> Result<Vec<&str>> {
+    let mut parts = Vec::new();
+    while !module.is_empty() {
+        let (part, rest) = if let Some(quoted) = module.strip_prefix('«') {
+            quoted
+                .split_once('»')
+                .context("unclosed Lean module identifier")?
+        } else {
+            let (part, rest) = module.split_once('.').unwrap_or((module, ""));
+            if !plain_module_part(part) {
+                bail!("invalid unquoted Lean module identifier");
+            }
+            parts.push(part);
+            if rest.is_empty() {
+                if module.ends_with('.') {
+                    bail!("empty Lean module identifier");
+                }
+                break;
+            }
+            module = rest;
+            continue;
+        };
+        if part.is_empty()
+            || matches!(part, "." | "..")
+            || part
+                .chars()
+                .any(|c| c.is_control() || matches!(c, '/' | '\\' | '«' | '»'))
+        {
+            bail!("unsafe Lean module identifier");
+        }
+        parts.push(part);
+        if rest.is_empty() {
+            break;
+        }
+        module = rest
+            .strip_prefix('.')
+            .filter(|s| !s.is_empty())
+            .context("invalid Lean module separator")?;
+    }
+    if parts.len() < 2 || parts[0] != "Lib" {
+        bail!("managed Lean module must start with Lib.");
+    }
+    Ok(parts)
+}
+
+fn plain_module_part(part: &str) -> bool {
+    part.starts_with(|c: char| c.is_alphabetic() || c == '_')
+        && part
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '\''))
+}
+
+pub fn legacy_module(path: &std::path::Path) -> Result<String> {
+    let mut module = String::from("Lib");
+    for part in path.components() {
+        let part = part
+            .as_os_str()
+            .to_str()
+            .context("module path must be UTF-8")?;
+        module.push('.');
+        if plain_module_part(part) {
+            module.push_str(part);
+        } else {
+            module.push_str(&format!("«{part}»"));
+        }
+    }
+    module_parts(&module)?;
+    Ok(module)
+}
+
+pub fn module_file(module: &str, extension: &str) -> Result<PathBuf> {
+    let mut parts = module_parts(module)?;
+    let filename = format!("{}.{extension}", parts.pop().unwrap());
+    Ok(parts.into_iter().collect::<PathBuf>().join(filename))
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Block {
@@ -69,14 +146,7 @@ impl Node {
         {
             bail!("name must be nonempty, trimmed and contain no control characters");
         }
-        if !self.module.starts_with("Lib.")
-            || self
-                .module
-                .split('.')
-                .any(|p| p.is_empty() || !p.chars().all(|c| c.is_alphanumeric() || c == '_'))
-        {
-            bail!("invalid Lean module name");
-        }
+        module_parts(&self.module)?;
         let mut types = BTreeSet::new();
         for block in &self.blocks {
             if !BLOCK_TYPES.contains(&block.srctype.as_str()) || !types.insert(&block.srctype) {
@@ -611,6 +681,32 @@ impl Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_module_names_preserve_filename_boundaries() {
+        let name = legacy_module(std::path::Path::new("EGA/1-1.7.1")).unwrap();
+        assert_eq!(name, "Lib.EGA.«1-1.7.1»");
+        assert_eq!(
+            module_file(&name, "lean").unwrap(),
+            PathBuf::from("Lib/EGA/1-1.7.1.lean")
+        );
+        assert_eq!(
+            module_file(&name, "olean").unwrap(),
+            PathBuf::from("Lib/EGA/1-1.7.1.olean")
+        );
+        for invalid in [
+            "Lib.«..»",
+            "Lib.«a/b»",
+            "Lib.«a\\b»",
+            "Lib.«unclosed",
+            "Lib.«a»b",
+            "Lib.a.",
+            "Lib..a",
+            "Lib.«a».",
+            "Other.a",
+        ] {
+            assert!(module_file(invalid, "lean").is_err(), "{invalid}");
+        }
+    }
     #[test]
     fn project_requires_immutable_libraries() {
         let mut p = LeanProject::default();

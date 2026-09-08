@@ -758,7 +758,10 @@ async fn lean_session(
     })?;
     let root = s.lean.editor_project(&input).await?;
     let id = uuid::Uuid::new_v4().to_string();
-    let filename = format!("/project/{}.lean", node.module.replace('.', "/"));
+    let filename = format!(
+        "/project/{}",
+        crate::store::module_file(&node.module, "lean")?.display()
+    );
     s.editors.lock().await.insert(
         id.clone(),
         EditorSession {

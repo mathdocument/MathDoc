@@ -105,6 +105,7 @@ async fn native_lean_incremental_diagnostics_goals_and_imports() {
     let temp = tempfile::tempdir().unwrap();
     let service = LeanService::new(temp.path().to_path_buf()).unwrap();
     let mut a = Node::new("A".into()).unwrap();
+    a.module = "Lib.EGA.«1-1.7.1»".into();
     a.blocks.push(Block {
         srctype: "lean".into(),
         content: "theorem exampleA : True := by\n  trivial\n".into(),
@@ -256,7 +257,7 @@ async fn native_lean_incremental_diagnostics_goals_and_imports() {
         .await
         .unwrap()
         .is_null());
-    a.module.push_str("_Moved");
+    a.module = "Lib.EGA.«1-1.7.1_Moved»".into();
     snapshot.apply(vec![a.clone()], "module moved".into());
     assert!(
         service
