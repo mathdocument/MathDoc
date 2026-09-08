@@ -507,9 +507,17 @@ async fn candidates(
     };
     Ok(Json(json!({"nodes":nodes,"empty":empty})))
 }
+#[derive(Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum TraversalMode {
+    Show,
+    Refs,
+    Leaf,
+}
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Traversal {
-    mode: String,
+    mode: TraversalMode,
     depth: i32,
 }
 async fn traverse(
@@ -518,13 +526,19 @@ async fn traverse(
     Query(query): Query<Traversal>,
 ) -> ApiResult<Json<Value>> {
     let snapshot = s.read().await?;
+    if query.depth < -1 {
+        return Err(ApiError(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "depth must be -1 (unlimited) or nonnegative".into(),
+        ));
+    }
     let root = snapshot.resolve(&id)?;
     let mut seen = HashSet::from([root.fnode.clone()]);
     let mut queue = std::collections::VecDeque::from([(root.fnode.clone(), 0i32)]);
     let mut nodes = vec![];
     while let Some((id, depth)) = queue.pop_front() {
         let node = &snapshot.nodes[&id];
-        if depth > 0 && (query.mode != "leaf" || node.depens.is_empty()) {
+        if depth > 0 && (query.mode != TraversalMode::Leaf || node.depens.is_empty()) {
             let mut item = summary(&snapshot, node);
             item["depth"] = json!(depth);
             nodes.push(item);
@@ -532,7 +546,7 @@ async fn traverse(
         if query.depth >= 0 && depth >= query.depth {
             continue;
         }
-        let next = if query.mode == "refs" {
+        let next = if query.mode == TraversalMode::Refs {
             snapshot.referrers.get(&id).cloned().unwrap_or_default()
         } else {
             node.depens.clone()

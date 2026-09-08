@@ -173,6 +173,23 @@ async fn native_lean_incremental_diagnostics_goals_and_imports() {
         .await
         .unwrap();
     assert!(fixed.certified && fixed.built, "{fixed:?}");
+    let artifact = temp
+        .path()
+        .join("projects")
+        .join(snapshot.project.key())
+        .join(".lake/build/lib/lean")
+        .join(mathdoc::store::module_file(&a.module, "olean").unwrap());
+    std::fs::remove_file(&artifact).unwrap();
+    assert!(service
+        .cached_or_load(&a, &snapshot.lean_keys[&a.fnode], &snapshot.project, true)
+        .await
+        .is_none());
+    let rebuilt = service
+        .check(Input::capture(&snapshot, &a.fnode).unwrap(), true)
+        .await
+        .unwrap();
+    assert!(rebuilt.built && !rebuilt.cache_hit && artifact.is_file());
+
     let mut b = Node::new("B".into()).unwrap();
     b.depens.push(a.fnode.clone());
     b.blocks.push(Block {

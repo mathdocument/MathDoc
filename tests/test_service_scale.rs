@@ -1,10 +1,11 @@
+mod common;
 use axum::{
     body::{to_bytes, Body},
     http::Request,
 };
 use mathdoc::{
     service::{router, Service},
-    store::{Database, Node},
+    store::Node,
 };
 use std::time::Instant;
 use tower::ServiceExt;
@@ -12,17 +13,9 @@ use tower::ServiceExt;
 #[tokio::test]
 #[ignore = "requires local TerminusDB; creates an ETP-sized synthetic graph"]
 async fn graph_checks_on_47435_nodes_and_368017_edges() {
-    let existing = std::env::var("MDC_SCALE_DATABASE").ok();
-    let db = Database::from_env(
-        existing
-            .clone()
-            .unwrap_or_else(|| format!("mdcscale{}", uuid::Uuid::new_v4().simple())),
-        "main".into(),
-    )
-    .unwrap();
-    eprintln!("benchmark database: {}", db.database);
-    if existing.is_none() {
-        db.initialize().await.unwrap();
+    let fixture = common::TestDatabase::new("mdcscale").await;
+    let db = fixture.db.clone();
+    {
         let version = db.version().await.unwrap();
         let mut nodes: Vec<Node> = Vec::with_capacity(47435);
         let mut edges = 0;

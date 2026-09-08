@@ -1,11 +1,9 @@
+mod common;
 use axum::{
     body::{to_bytes, Body},
     http::Request,
 };
-use mathdoc::{
-    service::{self, Service},
-    store::Database,
-};
+use mathdoc::service::{self, Service};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -37,16 +35,23 @@ async fn call(
 #[tokio::test]
 #[ignore = "requires TerminusDB and native Lean v4.33.1"]
 async fn api_mutations_use_database_revisions_without_workspace_files() {
-    let db = Database::from_env(
-        format!("mdcapi{}", uuid::Uuid::new_v4().simple()),
-        "main".into(),
-    )
-    .unwrap();
-    eprintln!("test database: {}", db.database);
-    db.initialize().await.unwrap();
+    let fixture = common::TestDatabase::new("mdcapi").await;
+    let db = &fixture.db;
     let app = service::router(Service::open(db.clone()).await.unwrap());
     let (status, a) = call(&app, "POST", "/api/node/new", json!({"title":"A"}), None).await;
     assert_eq!(status, 200, "{a}");
+    for query in ["mode=unknown&depth=1", "mode=show&depth=-2"] {
+        let (status, _) = call(
+            &app,
+            "GET",
+            &format!("/api/node/{}/dep?{query}", a["fnode"].as_str().unwrap()),
+            Value::Null,
+            None,
+        )
+        .await;
+        assert!((400..500).contains(&status));
+    }
+
     let id = a["fnode"].as_str().unwrap();
     let rev = a["revision"].as_str().unwrap();
     let path = format!("/api/node/{id}/block/lean");
@@ -194,7 +199,7 @@ async fn api_mutations_use_database_revisions_without_workspace_files() {
         assert_eq!(call(&app, "GET", &path, Value::Null, None).await.0, 404);
     }
     drop(app);
-    let reopened = Service::open(db).await.unwrap();
+    let reopened = Service::open(db.clone()).await.unwrap();
     assert_eq!(
         reopened.read().await.unwrap().nodes[id].source("lean"),
         Some("#check Nat")
@@ -209,4 +214,15 @@ async fn api_mutations_use_database_revisions_without_workspace_files() {
     )
     .await;
     assert_eq!(restored["node"]["formalization"]["lean"], "verified");
+    let (_, bundle) = call(&app, "GET", "/api/export", Value::Null, None).await;
+    let restore = common::TestDatabase::new("mdcrestore").await;
+    let restored = service::router(Service::open(restore.db.clone()).await.unwrap());
+    let (status, _) = call(&restored, "POST", "/api/import", bundle.clone(), None).await;
+    assert_eq!(status, 200);
+    let (_, roundtrip) = call(&restored, "GET", "/api/export", Value::Null, None).await;
+    assert_eq!(bundle, roundtrip);
+    assert_eq!(
+        call(&restored, "POST", "/api/import", bundle, None).await.0,
+        409
+    );
 }

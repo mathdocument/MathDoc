@@ -8,7 +8,7 @@
     },
     "bundle.totalTransferBytes": {
       "max": 9000000,
-      "maxIncreaseRatio": 16,
+      "maxIncreaseRatio": 0.08,
       "noise": 2048
     },
     "runtime.editorReadyMs": {

@@ -1,11 +1,11 @@
-use mathdoc::store::{Database, Node};
+mod common;
+use mathdoc::store::Node;
 
 #[tokio::test]
 #[ignore = "requires local TerminusDB and MDC_TERMINUS_PASSWORD"]
 async fn terminus_atomic_revisions_and_persistence() {
-    let name = format!("mdctest{}", uuid::Uuid::new_v4().simple());
-    let database = Database::from_env(name, "main".into()).unwrap();
-    database.initialize().await.unwrap();
+    let fixture = common::TestDatabase::new("mdctest").await;
+    let database = &fixture.db;
     let mut snapshot = database.load().await.unwrap();
     let a = Node::new("A".into()).unwrap();
     let mut b = Node::new("B".into()).unwrap();

@@ -413,8 +413,21 @@ impl LeanService {
         project: &LeanProject,
         build: bool,
     ) -> Option<CheckResult> {
-        if let Some(result) = self.cached(&node.fnode, key, &node.revision(), build) {
-            return Some(result);
+        let artifact = self
+            .root
+            .join("projects")
+            .join(project.key())
+            .join(".lake/build/lib/lean")
+            .join(crate::store::module_file(&node.module, "olean").ok()?);
+        if let Some(mut result) = self.cached(&node.fnode, key, &node.revision(), false) {
+            if result.built && !artifact.is_file() {
+                result.built = false;
+                self.results
+                    .write()
+                    .ok()?
+                    .insert(node.fnode.clone(), result.clone());
+            }
+            return (!build || result.built).then_some(result);
         }
         let bytes = tokio::fs::read(
             self.root
@@ -431,12 +444,6 @@ impl LeanService {
         {
             return None;
         }
-        let artifact = self
-            .root
-            .join("projects")
-            .join(project.key())
-            .join(".lake/build/lib/lean")
-            .join(crate::store::module_file(&node.module, "olean").ok()?);
         result.built &= artifact.is_file();
         self.results
             .write()

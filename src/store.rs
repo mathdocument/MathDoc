@@ -119,8 +119,10 @@ impl Node {
             .map(|b| b.content.as_str())
     }
     pub fn validate(&self) -> Result<()> {
-        if uuid::Uuid::parse_str(&self.fnode).is_err() {
-            bail!("node identity must be a complete UUID");
+        if uuid::Uuid::parse_str(&self.fnode).is_err()
+            || uuid::Uuid::parse_str(&self.fnode)?.to_string() != self.fnode
+        {
+            bail!("node identity must be a canonical lowercase hyphenated UUID");
         }
         if self.title.trim().is_empty()
             || self.title != self.title.trim()
@@ -137,7 +139,11 @@ impl Node {
         }
         let mut deps = BTreeSet::new();
         for dep in &self.depens {
-            if dep == &self.fnode || uuid::Uuid::parse_str(dep).is_err() || !deps.insert(dep) {
+            if dep == &self.fnode
+                || uuid::Uuid::parse_str(dep).is_err()
+                || uuid::Uuid::parse_str(dep)?.to_string() != *dep
+                || !deps.insert(dep)
+            {
                 bail!("dependencies must be distinct UUIDs other than the node itself");
             }
         }
@@ -521,6 +527,10 @@ impl Database {
             .json()
             .await?)
     }
+    pub fn with_cache_root(mut self, root: PathBuf) -> Self {
+        self.cache_root = root;
+        self
+    }
     pub fn cache_path(&self) -> Result<PathBuf> {
         Ok(self
             .cache_root
@@ -586,8 +596,8 @@ impl Snapshot {
         }
     }
     pub fn resolve(&self, reference: &str) -> Result<&Node> {
-        if uuid::Uuid::parse_str(reference).is_ok() {
-            return self.nodes.get(reference).context("node not found");
+        if let Ok(id) = uuid::Uuid::parse_str(reference) {
+            return self.nodes.get(&id.to_string()).context("node not found");
         }
         let mut matches = self.nodes.values().filter(|n| n.title == reference);
         let node = matches
@@ -731,6 +741,13 @@ mod tests {
         assert_eq!(s.resolve("A").unwrap().fnode, a.fnode);
         assert!(s.resolve("A.mdoc").is_err());
         assert!(s.resolve(&a.fnode[..8]).is_err());
+        assert_eq!(s.resolve(&a.fnode.to_uppercase()).unwrap().fnode, a.fnode);
+        let mut alias = a.clone();
+        alias.fnode = uuid::Uuid::parse_str(&alias.fnode)
+            .unwrap()
+            .simple()
+            .to_string();
+        assert!(alias.validate().is_err());
         let mut changed = a.clone();
         changed.depens.push(b.fnode);
         assert!(s.validate_changes(&[changed]).is_err());

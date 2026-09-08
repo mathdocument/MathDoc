@@ -10,10 +10,10 @@ and browser rendering.
 cargo test --release --locked --test test_service_scale -- --ignored --nocapture
 ```
 
-The test creates a separate database and prints its name. To reuse that same
-fixture without importing it again, set `MDC_SCALE_DATABASE` to the printed name.
-A local TerminusDB instance and credentials are required. CI runs the same target with
-`--release`; compare results only with the same build mode and machine.
+The test creates a separate database and a temporary compiler cache, and removes
+both when it finishes, including on assertion failure. A local database and
+credentials in `MDC_TERMINUS_PASSWORD` are required. CI runs with `--release`;
+compare results only with the same build mode and machine.
 
 The benchmark validates node/edge counts and acyclicity. It reports timing without
 enforcing a machine-independent latency threshold. Browser measurements remain in
