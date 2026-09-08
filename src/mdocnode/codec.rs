@@ -2,25 +2,23 @@ use anyhow::{bail, Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use super::{MdocIdentity, MdocNode, SrcBlock};
+use super::{MdocNode, SrcBlock};
 
 #[derive(Debug)]
 pub(super) struct ParsedMdoc {
     pub fnode: String,
     pub title: String,
     pub depens: Vec<String>,
-    pub source_types: Vec<String>,
     pub blocks: Vec<SrcBlock>,
 }
 
-pub(super) fn parse(path: &Path, content: &[u8], include_blocks: bool) -> Result<ParsedMdoc> {
+pub(super) fn parse(path: &Path, content: &[u8]) -> Result<ParsedMdoc> {
     let content = std::str::from_utf8(content)
         .with_context(|| format!("reading {} as UTF-8", path.display()))?;
     let mut fnode = String::new();
     let mut title = String::new();
     let mut depens: Vec<String> = Vec::new();
     let mut seen_dep_block = false;
-    let mut source_types = Vec::new();
     let mut blocks: Vec<SrcBlock> = Vec::new();
     let mut seen_srctypes: HashSet<String> = HashSet::new();
 
@@ -71,11 +69,9 @@ pub(super) fn parse(path: &Path, content: &[u8], include_blocks: bool) -> Result
                     status = Status::None;
                     continue;
                 }
-                if include_blocks {
-                    let last = blocks.last_mut().expect("source block exists");
-                    last.content.push_str(raw_line);
-                    last.content.push('\n');
-                }
+                let last = blocks.last_mut().expect("source block exists");
+                last.content.push_str(raw_line);
+                last.content.push('\n');
                 continue;
             }
             Status::None => {}
@@ -146,14 +142,11 @@ pub(super) fn parse(path: &Path, content: &[u8], include_blocks: bool) -> Result
                 );
             }
             seen_srctypes.insert(srctype_identity);
-            source_types.push(srctype.clone());
-            if include_blocks {
-                blocks.push(SrcBlock {
-                    srctype,
-                    content: String::new(),
-                    metadata,
-                });
-            }
+            blocks.push(SrcBlock {
+                srctype,
+                content: String::new(),
+                metadata,
+            });
             status = Status::Src;
             continue;
         }
@@ -183,63 +176,8 @@ pub(super) fn parse(path: &Path, content: &[u8], include_blocks: bool) -> Result
         fnode,
         title,
         depens,
-        source_types,
         blocks,
     })
-}
-
-pub(super) fn identity(content: &[u8]) -> MdocIdentity {
-    let Ok(content) = std::str::from_utf8(content) else {
-        return MdocIdentity::default();
-    };
-    let mut identity = MdocIdentity::default();
-
-    #[derive(PartialEq, Eq)]
-    enum Status {
-        None,
-        Dep,
-        Src,
-    }
-    let mut status = Status::None;
-
-    for raw_line in content.lines() {
-        let line = raw_line.trim();
-        match status {
-            Status::Dep | Status::Src => {
-                if line.eq_ignore_ascii_case("@end") {
-                    status = Status::None;
-                }
-                continue;
-            }
-            Status::None => {}
-        }
-
-        if line.eq_ignore_ascii_case("@dep:") {
-            status = Status::Dep;
-            continue;
-        }
-        if line
-            .get(..5)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("@src:"))
-        {
-            status = Status::Src;
-            continue;
-        }
-
-        let Some((directive, value)) = line.split_once(':') else {
-            continue;
-        };
-        let value = value.trim();
-        if value.is_empty() {
-            continue;
-        }
-        if identity.fnode.is_none() && directive.eq_ignore_ascii_case("@fnode") {
-            identity.fnode = Some(value.to_string());
-        } else if identity.title.is_none() && directive.eq_ignore_ascii_case("@title") {
-            identity.title = Some(value.to_string());
-        }
-    }
-    identity
 }
 
 pub(super) fn render(node: &MdocNode) -> Result<String> {
@@ -525,7 +463,7 @@ mod tests {
             ("@src: text\nbody\n", "Unclosed block '@src'"),
         ] {
             let content = format!("@fnode: parse-node\n@title: Parse Node\n\n{body}");
-            let error = parse(path, content.as_bytes(), true).unwrap_err();
+            let error = parse(path, content.as_bytes()).unwrap_err();
             assert!(
                 error.to_string().contains(expected),
                 "unexpected error: {error}"
@@ -545,7 +483,7 @@ mod tests {
             ),
         ] {
             let content = format!("@fnode: parse-node\n@title: Parse Node\n\n{body}");
-            let error = parse(path, content.as_bytes(), true).unwrap_err();
+            let error = parse(path, content.as_bytes()).unwrap_err();
             assert!(
                 error.to_string().contains(expected),
                 "unexpected error: {error}"

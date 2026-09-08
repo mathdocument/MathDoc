@@ -105,10 +105,6 @@ workspace. Python blocks require explicit conversion/removal before import.
 
 ## Development checks
 
-Legacy backend/test cleanup is pending approval; until then the default Rust test
-command still encounters retired APIs. See [migration status](MIGRATION.md).
-The new service's targeted checks below have passed.
-
 ```sh
 npm --prefix web ci
 npm --prefix web run check

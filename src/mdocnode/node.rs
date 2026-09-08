@@ -12,20 +12,6 @@ pub struct SrcBlock {
     pub metadata: HashMap<String, String>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct MdocHead {
-    pub fnode: String,
-    pub title: String,
-    pub depens: Vec<String>,
-    pub source_types: Vec<String>,
-}
-
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct MdocIdentity {
-    pub fnode: Option<String>,
-    pub title: Option<String>,
-}
-
 #[derive(Debug, Clone)]
 pub struct MdocNode {
     pub path: PathBuf,
@@ -33,36 +19,6 @@ pub struct MdocNode {
     pub title: String,
     pub depens: Vec<String>,
     pub blocks: Vec<SrcBlock>,
-}
-
-impl MdocHead {
-    pub(crate) fn load_bytes(path: &Path, content: &[u8]) -> Result<Self> {
-        let parsed = super::codec::parse(path, content, false)?;
-        Ok(Self {
-            fnode: parsed.fnode,
-            title: parsed.title,
-            depens: parsed.depens,
-            source_types: parsed.source_types,
-        })
-    }
-
-    pub(crate) fn has_source_block(&self, srctype: &str) -> bool {
-        self.source_types
-            .iter()
-            .any(|candidate| candidate.eq_ignore_ascii_case(srctype))
-    }
-}
-
-impl MdocIdentity {
-    /// Recover header identity from malformed content without interpreting block
-    /// bodies as document-level structure.
-    pub(crate) fn from_bytes(content: &[u8]) -> Self {
-        super::codec::identity(content)
-    }
-
-    pub(crate) fn complete(&self) -> Option<(&str, &str)> {
-        Some((self.fnode.as_deref()?, self.title.as_deref()?))
-    }
 }
 
 impl MdocNode {
@@ -83,7 +39,7 @@ impl MdocNode {
     }
 
     pub(crate) fn load_bytes(path: &Path, content: &[u8]) -> Result<Self> {
-        let parsed = super::codec::parse(path, content, true)?;
+        let parsed = super::codec::parse(path, content)?;
         Ok(Self {
             path: path.to_path_buf(),
             fnode: parsed.fnode,
@@ -156,34 +112,6 @@ impl MdocNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn load_head_returns_explicit_structural_type() {
-        let path = Path::new("c.mdoc");
-        let head = MdocHead::load_bytes(
-            path,
-            b"@fnode: ff\n@title: C\n\n@src: lean\nbig content\n@end\n",
-        )
-        .unwrap();
-        assert_eq!(head.fnode, "ff");
-        assert!(head.depens.is_empty());
-        assert_eq!(head.source_types, ["lean"]);
-        assert!(head.has_source_block("LEAN"));
-    }
-
-    #[test]
-    fn fallback_identity_is_case_insensitive_but_block_aware() {
-        let identity = MdocIdentity::from_bytes(
-            b"@FNODE: real-node\n@TITLE: Real Title\n\
-              @src: \"unterminated\n@fnode: fake-src\n@title: Fake Src\n",
-        );
-        assert_eq!(identity.complete(), Some(("real-node", "Real Title")));
-
-        let identity = MdocIdentity::from_bytes(
-            b"@dep:\nnot a dependency\n@fnode: fake-dep\n@title: Fake Dep\n@end\n",
-        );
-        assert_eq!(identity, MdocIdentity::default());
-    }
 
     #[test]
     fn upsert_source_block_uses_parser_canonical_trailing_newline() {

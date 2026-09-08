@@ -36,9 +36,8 @@ consumer reused the unchanged external `.olean` artifact. Small warm proof edits
 took about 0.2 s in the native integration test. Large cold library builds have
 not been benchmarked.
 
-The standalone MathDoc VS Code extension has been removed. Deletion of the
-following unused old implementation remains pending explicit user approval after
-automatic approval review rejected the broader cleanup twice:
+The standalone MathDoc VS Code extension has been removed. Following explicit
+user approval, the unused old implementation and its tests have also been removed:
 
 - `src/application`, `src/cli`, `src/compiler`, `src/depgraph`, `src/formal`,
   `src/indcache`, `src/workdraft`, `src/workspace`.
@@ -47,7 +46,11 @@ automatic approval review rejected the broader cleanup twice:
   `test_compiler_process`, `test_config`, `test_depgraph`, `test_formal_status`,
   `test_indcache`, `test_sync`, `test_web_api`, `test_workspace`).
 
-`src/core`, the portable mdoc codec and their tests stay. Default `cargo test`
-remains blocked by old test targets referencing replaced APIs until this cleanup
-is approved. Do not bypass the approval rejection by hiding or indirectly deleting
-these targets. No ETP files or data have been migrated or modified.
+`src/core`, the portable mdoc codec and their tests remain. The codec no longer
+contains the old index's header-only parser, identity recovery or file revision
+helpers. Unused benchmark scripts, budgets and the direct `thiserror` dependency
+have been removed; historical performance reports remain in `perf/reports`.
+Default `cargo test --locked` passes all 39 regular tests without Rust warnings.
+The four database/API/native Lean integration tests also pass when explicitly
+enabled against local TerminusDB and Lean. No ETP files or data have been migrated
+or modified.
