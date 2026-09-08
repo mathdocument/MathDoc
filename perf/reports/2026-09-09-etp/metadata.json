@@ -1,0 +1,37 @@
+{
+  "main_revision": "branch:akvqzbr9wobymzuc7kbay28l80r5v5b",
+  "branch_create_seconds": 0.018814000068232417,
+  "code_commit": "bd88be40bc128cac1ce921007c6c9addf92fc4f3",
+  "service_startup_seconds": 5.052500333986245,
+  "service_rss_kib": 468176,
+  "cpu": "Apple M3 Pro",
+  "memory_bytes": 19327352832,
+  "main_unchanged": true,
+  "migration_import_seconds": 39.68254466599319,
+  "verification": {
+    "exact_semantic_match": true,
+    "nodes": 47435,
+    "edges": 368017,
+    "source_bytes": 143809123,
+    "export_verify_seconds": 2.5764382500201464
+  },
+  "blocks": {
+    "text": {
+      "blocks": 47435,
+      "bytes": 8528411,
+      "lines": 47435
+    },
+    "latex": {
+      "blocks": 47435,
+      "bytes": 80755022,
+      "lines": 1319879
+    },
+    "lean": {
+      "blocks": 47435,
+      "bytes": 54525690,
+      "lines": 1191301
+    }
+  },
+  "measurement": "20 sequential samples per operation; one untimed API warmup; direct loopback HTTP without proxy discovery; service process cold, OS and database caches warm",
+  "lean_compilation_requested": false
+}

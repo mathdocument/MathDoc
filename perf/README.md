@@ -1,6 +1,33 @@
 # Backend performance
 
-The current benchmark exercises the real TerminusDB-backed service on a synthetic
+## Existing project over HTTP and CLI
+
+`graph-service.py` measures graph validation, roots, full graph transfer, searches,
+name/UUID resolution, node views, direct/transitive dependencies and referrers,
+leaves, dependency candidates, IOR, history, and eight concurrent readers. It
+records all samples, median/p95 and response size. It never requests Lean checking
+or opens a Lean editor.
+
+```sh
+python3 perf/graph-service.py --url http://127.0.0.1:7600 \
+  --cli "$(command -v mdc)" --samples 20 --output /tmp/graph-baseline.json
+```
+
+The default is read-only. For writes, create a disposable database branch and run
+a separate service for that branch, then pass `--writes` to its URL. This adds
+temporary nodes and measures creation, rename, text saves, adding/removing edges,
+and rejection of stale revisions and cycles. Delete the test branch and its
+compiler-cache directory afterwards. The benchmark does not delete nodes itself.
+
+HTTP measurements include connection establishment, response transfer and JSON
+decoding. CLI measurements additionally include a fresh client process and output
+decoding. Both require an already running service; record process startup separately.
+No OS/database caches are flushed. These local sample percentiles are observations,
+not production latency guarantees. Browser rendering is excluded.
+
+## Synthetic graph regression
+
+The Rust benchmark exercises the real TerminusDB-backed service on a synthetic
 47,435-node / 368,017-edge graph. It reports one-time import and startup separately,
 then seven graph-check samples and their median, including the database revision
 lookup and API response decoding. It excludes CLI startup, HTTP client transport
