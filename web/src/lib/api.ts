@@ -108,6 +108,9 @@ export const api = {
   leanSession: (fnode: string, revision: string) => req<{ id: string; filename: string; source: string }>(`/api/node/${encodeURIComponent(fnode)}/lean/session`, {
     method: "POST", headers: { "if-match": `"${revision}"` },
   }),
+  closeLeanSession: (id: string) => req<void>(`/api/lean/session/${encodeURIComponent(id)}`, {
+    method: "DELETE", keepalive: true,
+  }),
   checkLean: (fnode: string, revision: string, build = false) => req<{ passed: boolean; certified: boolean; built: boolean; cache_hit: boolean; elapsed_ms: number; diagnostics: unknown[]; dependency_errors: string[] }>(`/api/node/${encodeURIComponent(fnode)}/lean/check`, {
     method: "POST", headers: { "content-type": "application/json", "if-match": `"${revision}"` }, body: JSON.stringify({ build }),
   }),

@@ -42,6 +42,7 @@ async fn api_mutations_use_database_revisions_without_workspace_files() {
         "main".into(),
     )
     .unwrap();
+    eprintln!("test database: {}", db.database);
     db.initialize().await.unwrap();
     let app = service::router(Service::open(db.clone()).await.unwrap());
     let (status, a) = call(&app, "POST", "/api/node/new", json!({"title":"A"}), None).await;
@@ -166,6 +167,32 @@ async fn api_mutations_use_database_revisions_without_workspace_files() {
     .await;
     assert_eq!(status, 200, "{checked}");
     assert_eq!(checked["certified"], true);
+    for _ in 0..12 {
+        let (status, session) = call(
+            &app,
+            "POST",
+            &format!("/api/node/{child}/lean/session"),
+            Value::Null,
+            child_saved["revision"].as_str(),
+        )
+        .await;
+        assert_eq!(status, 200, "{session}");
+        let path = format!("/api/lean/session/{}", session["id"].as_str().unwrap());
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(&path)
+                    .header("host", "localhost")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 204);
+        assert_eq!(call(&app, "GET", &path, Value::Null, None).await.0, 404);
+    }
     drop(app);
     let reopened = Service::open(db).await.unwrap();
     assert_eq!(

@@ -683,7 +683,7 @@ impl LeanService {
         result
     }
 
-    pub async fn editor_project(&self, input: &Input) -> Result<PathBuf> {
+    pub async fn editor_project(&self, input: &Input) -> Result<tempfile::TempDir> {
         let drafts = self.root.join("drafts");
         tokio::fs::create_dir_all(&drafts).await?;
         let directory = tempfile::tempdir_in(drafts)?;
@@ -725,7 +725,7 @@ impl LeanService {
                 }
             }
         }
-        Ok(directory.keep())
+        Ok(directory)
     }
 }
 pub fn module_path(root: &Path, module: &str) -> Result<PathBuf> {
@@ -813,12 +813,12 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(draft.join(".lake/packages").is_symlink());
-        assert!(!draft.join(".lake/build").exists());
-        tokio::fs::remove_dir_all(draft).await.unwrap();
+        assert!(draft.path().join(".lake/packages").is_symlink());
+        assert!(!draft.path().join(".lake/build").exists());
+        drop(draft);
         drop(busy);
         let draft = service.editor_project(&input).await.unwrap();
-        tokio::fs::write(draft.join(".lake/build/local.olean"), "draft")
+        tokio::fs::write(draft.path().join(".lake/build/local.olean"), "draft")
             .await
             .unwrap();
         assert_eq!(
@@ -827,7 +827,7 @@ mod tests {
                 .unwrap(),
             "original"
         );
-        tokio::fs::remove_dir_all(draft).await.unwrap();
+        drop(draft);
         assert!(canonical
             .join(".lake/packages/example/library.olean")
             .is_file());

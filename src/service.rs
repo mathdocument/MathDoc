@@ -148,7 +148,7 @@ pub fn router(service: Arc<Service>) -> Router {
         .route("/node/:id/lean/check", post(lean_check))
         .route("/node/:id/lean/goals", post(lean_goals))
         .route("/node/:id/lean/session", post(lean_session))
-        .route("/lean/session/:id", get(editor_info))
+        .route("/lean/session/:id", get(editor_info).delete(close_editor))
         .route("/lean/session/:id/ws", get(editor_socket))
         .route("/node/:id/title", put(title))
         .route("/node/:id/block/:language", put(block).delete(delete_block))
@@ -712,10 +712,10 @@ async fn lean_goals(
 }
 
 struct EditorSession {
-    root: std::path::PathBuf,
+    input: Option<crate::lean::Input>,
     filename: String,
     source: String,
-    created: std::time::Instant,
+    _cancel: tokio::sync::watch::Sender<()>,
     _slot: tokio::sync::OwnedSemaphorePermit,
 }
 async fn lean_session(
@@ -738,25 +738,12 @@ async fn lean_session(
             )
         })?
         .to_owned();
-    let mut editors = s.editors.lock().await;
-    let expired: Vec<_> = editors
-        .iter()
-        .filter(|(_, e)| e.created.elapsed() > std::time::Duration::from_secs(120))
-        .map(|(id, _)| id.clone())
-        .collect();
-    for id in expired {
-        if let Some(editor) = editors.remove(&id) {
-            let _ = tokio::fs::remove_dir_all(editor.root).await;
-        }
-    }
-    drop(editors);
     let slot = s.editor_slots.clone().try_acquire_owned().map_err(|_| {
         ApiError(
             StatusCode::SERVICE_UNAVAILABLE,
             "all Lean editor slots are in use; close an idle editor".into(),
         )
     })?;
-    let root = s.lean.editor_project(&input).await?;
     let id = uuid::Uuid::new_v4().to_string();
     let filename = format!(
         "/project/{}",
@@ -765,15 +752,35 @@ async fn lean_session(
     s.editors.lock().await.insert(
         id.clone(),
         EditorSession {
-            root,
+            input: Some(input),
             filename: filename.clone(),
             source: source.clone(),
-            created: std::time::Instant::now(),
+            _cancel: tokio::sync::watch::channel(()).0,
             _slot: slot,
         },
     );
+    // A browser can disappear before connecting. Expire its reservation even if
+    // no other request arrives; environment preparation starts only on connection.
+    let service = Arc::downgrade(&s);
+    let pending = id.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+        if let Some(s) = service.upgrade() {
+            let mut editors = s.editors.lock().await;
+            if editors.get(&pending).is_some_and(|e| e.input.is_some()) {
+                editors.remove(&pending);
+            }
+        }
+    });
     Ok(Json(json!({"id":id,"filename":filename,"source":source})))
 }
+async fn close_editor(State(s): State<Arc<Service>>, Path(id): Path<String>) -> StatusCode {
+    // Dropping the sender cancels preparation or the active LSP bridge. The permit
+    // belongs to the registry, so filesystem cleanup never delays slot release.
+    s.editors.lock().await.remove(&id);
+    StatusCode::NO_CONTENT
+}
+
 async fn editor_info(
     State(s): State<Arc<Service>>,
     Path(id): Path<String>,
@@ -789,19 +796,43 @@ async fn editor_socket(
     Path(id): Path<String>,
     ws: axum::extract::ws::WebSocketUpgrade,
 ) -> ApiResult<Response> {
-    let session = s.editors.lock().await.remove(&id).ok_or_else(|| {
-        ApiError(
-            StatusCode::NOT_FOUND,
-            "editor session expired or already connected".into(),
-        )
-    })?;
+    let (input, filename, mut cancelled) = {
+        let mut editors = s.editors.lock().await;
+        let session = editors
+            .get_mut(&id)
+            .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "editor session expired".into()))?;
+        let input = session.input.take().ok_or_else(|| {
+            ApiError(
+                StatusCode::CONFLICT,
+                "editor session already connected".into(),
+            )
+        })?;
+        (input, session.filename.clone(), session._cancel.subscribe())
+    };
+    let failed_service = s.clone();
+    let failed_id = id.clone();
     Ok(ws
         .max_message_size(32 * 1024 * 1024)
+        .on_failed_upgrade(move |_| {
+            tokio::spawn(async move { failed_service.editors.lock().await.remove(&failed_id); });
+        })
         .on_upgrade(move |socket| async move {
-            if let Err(error) = bridge_editor(socket, &session).await {
+            let mut directory = None;
+            let result = tokio::select! {
+                biased;
+                _ = cancelled.changed() => Ok(()),
+                result = async {
+                    directory = Some(tokio::time::timeout(std::time::Duration::from_secs(30), s.lean.editor_project(&input)).await.context("editor environment preparation timed out")??);
+                    bridge_editor(socket, directory.as_ref().unwrap().path(), &filename).await
+                } => result,
+            };
+            s.editors.lock().await.remove(&id);
+            if let Some(directory) = directory {
+                tokio::task::spawn_blocking(move || drop(directory));
+            }
+            if let Err(error) = result {
                 eprintln!("Lean editor: {error:#}");
             }
-            let _ = tokio::fs::remove_dir_all(&session.root).await;
         }))
 }
 fn rewrite_uris(value: &mut Value, from: &str, to: &str) {
@@ -824,13 +855,14 @@ fn rewrite_uris(value: &mut Value, from: &str, to: &str) {
 }
 async fn bridge_editor(
     socket: axum::extract::ws::WebSocket,
-    session: &EditorSession,
+    root: &std::path::Path,
+    filename: &str,
 ) -> Result<()> {
     use axum::extract::ws::Message;
     use futures_util::{SinkExt, StreamExt};
-    let actual = crate::lean::file_uri(&session.root)?;
-    let allowed_uri = crate::lean::file_uri(std::path::Path::new(&session.filename))?;
-    let mut process = crate::lean::spawn(&session.root, &["serve"])?;
+    let actual = crate::lean::file_uri(root)?;
+    let allowed_uri = crate::lean::file_uri(std::path::Path::new(filename))?;
+    let mut process = crate::lean::spawn(root, &["serve"])?;
     let mut writer = process
         .child
         .stdin

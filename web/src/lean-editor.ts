@@ -53,4 +53,7 @@ void start().catch((error) => {
   document.getElementById("error")!.textContent = String(error);
   send("lean-error", String(error));
 });
-window.addEventListener("pagehide", () => { editor.dispose(); runtime.dispose(); });
+window.addEventListener("pagehide", () => {
+  if (id) void fetch(`/api/lean/session/${encodeURIComponent(id)}`, { method: "DELETE", keepalive: true }).catch(console.warn);
+  editor.dispose(); runtime.dispose();
+});

@@ -36,12 +36,18 @@
   });
   async function open(node = fnode) {
     const current = ++generation;
+    closeSession();
     session = null; ready = false; busy = false; error = null; result = null; initialTheme = theme;
     content = block.content; baseline = block.content;
     try {
       const response = await api.leanSession(node, revision);
       if (alive && generation === current) session = response.id;
+      else void api.closeLeanSession(response.id).catch(console.warn);
     } catch (e) { if (alive && generation === current) { error = errMsg(e); onReady?.(); } }
+  }
+  function closeSession() {
+    if (session) void api.closeLeanSession(session).catch(console.warn);
+    session = null;
   }
   async function save(check = false, build = false) {
     if (busy) return;
@@ -76,10 +82,10 @@
       case "lean-save": void save(); break;
       case "lean-check": void save(true); break;
       case "lean-ready": ready = true; onReady?.(); break;
-      case "lean-error": error = String(event.data.value); onReady?.(); break;
+      case "lean-error": error = String(event.data.value); closeSession(); onReady?.(); break;
     }
   }
-  onDestroy(() => { alive = false; generation++; removeDraft(draft); });
+  onDestroy(() => { alive = false; generation++; closeSession(); removeDraft(draft); });
 </script>
 
 <svelte:window onmessage={message} />

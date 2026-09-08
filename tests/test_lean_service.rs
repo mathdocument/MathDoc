@@ -101,9 +101,9 @@ async fn pinned_external_library_builds_and_reuses_artifacts() {
         .editor_project(&Input::capture(&snapshot, &node.fnode).unwrap())
         .await
         .unwrap();
-    assert!(draft.join(".lake/packages").is_symlink());
+    assert!(draft.path().join(".lake/packages").is_symlink());
     let mut lean = mathdoc::lean::spawn(
-        &draft,
+        draft.path(),
         &[
             "env",
             "lean",
@@ -114,7 +114,7 @@ async fn pinned_external_library_builds_and_reuses_artifacts() {
     )
     .unwrap();
     assert!(lean.child.wait().await.unwrap().success());
-    std::fs::remove_dir_all(&draft).unwrap();
+    drop(draft);
     assert_eq!(
         std::fs::metadata(&artifact).unwrap().modified().unwrap(),
         modified
