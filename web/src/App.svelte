@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount } from "svelte";
   import {
     ArrowLeft,
     ArrowRight,
@@ -60,14 +60,8 @@
 
   // Top-level view state: three-column layout vs. full-screen force graph.
   let view = $state<"columns" | "force">("columns");
-  let viewSwitching = $state(false);
-  let columnsMounted = $state(true);
-  let forceEditorMounted = $state(false);
-  let resolveColumnsEditorReady: (() => void) | null = null;
-  let resolveForceEditorReady: (() => void) | null = null;
   // Increment after dependency mutations to refresh the graph data.
   let graphRevision = $state(0);
-  let viewSwitchDone: Promise<void> | null = null;
   function cancelStartup() {
     startupRequest++;
   }
@@ -106,18 +100,6 @@
     return committed;
   }
 
-  function markColumnsEditorReady() {
-    const resolve = resolveColumnsEditorReady;
-    resolveColumnsEditorReady = null;
-    resolve?.();
-  }
-
-  function markForceEditorReady() {
-    const resolve = resolveForceEditorReady;
-    resolveForceEditorReady = null;
-    resolve?.();
-  }
-
   onMount(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
       if (!hasUnsavedDrafts()) return;
@@ -129,7 +111,7 @@
     // Global shortcuts: "/" opens search, "g" toggles the workspace view.
     // Ignored while typing (inputs, textareas, contenteditable e.g. CodeMirror).
     const onKeyDown = (event: KeyboardEvent) => {
-      if (overlay.kind !== "none" || viewSwitching || refreshing || historyNavigating) return;
+      if (overlay.kind !== "none" || refreshing || historyNavigating) return;
       const target = event.target;
       if (target instanceof HTMLElement) {
         const tag = target.tagName;
@@ -160,8 +142,6 @@
       historyNavigating = true;
       let awaitingRollback = false;
       try {
-        const pendingViewSwitch = viewSwitchDone;
-        if (pendingViewSwitch) await pendingViewSwitch;
         if (request !== popstateRequest) return;
         const activeEntry = browserHistoryEntry(window.history.state);
         if (!activeEntry || activeEntry.index !== entry.index || activeEntry.fnode !== entry.fnode) return;
@@ -211,8 +191,6 @@
     window.addEventListener("keydown", onKeyDown);
     return () => {
       workspaceSession.cancel();
-      resolveColumnsEditorReady?.();
-      resolveForceEditorReady?.();
       window.removeEventListener("beforeunload", onBeforeUnload);
       window.removeEventListener("popstate", onPopState);
       window.removeEventListener("keydown", onKeyDown);
@@ -387,61 +365,29 @@
     return fnode ? nodeSession.select(fnode, opts) : nodeSession.clearSelection(opts);
   }
 
-  async function toggleGraphView() {
-    if (viewSwitching || refreshing || historyNavigating || !confirmDiscardDrafts()) return;
+  function toggleGraphView() {
+    if (refreshing || historyNavigating) return;
     cancelStartup();
-    viewSwitching = true;
     nodeSession.cancel();
-    let resolveViewSwitch: () => void;
-    const switchDone = new Promise<void>((resolve) => {
-      resolveViewSwitch = resolve;
-    });
-    viewSwitchDone = switchDone;
-    try {
-      if (!await settlePendingMutations()) return;
-      if (view === "columns") {
-        if (nodeSession.node) {
-          const entry = browserHistoryEntry(window.history.state);
-          const selectionWasCleared = entry?.fnode === null &&
-            browserHistoryTarget(entry) === nodeSession.node.fnode;
-          nodeSession.selectionCleared = selectionWasCleared;
-        }
-        const editorReady = new Promise<void>((resolve) => {
-          resolveForceEditorReady = resolve;
-        });
-        forceEditorMounted = true;
-        await tick();
-        await editorReady;
-        view = "force";
-        await tick();
-        columnsMounted = false;
-        await tick();
-      } else {
-        // The backing NodeView remains loaded when graph selection is cleared.
-        nodeSession.selectionCleared = false;
-        const editorReady = new Promise<void>((resolve) => {
-          resolveColumnsEditorReady = resolve;
-        });
-        columnsMounted = true;
-        await tick();
-        if (initialError) markColumnsEditorReady();
-        await editorReady;
-        view = "columns";
-        await tick();
-        forceEditorMounted = false;
-      }
-    } finally {
-      resolveViewSwitch!();
-      if (viewSwitchDone === switchDone) viewSwitchDone = null;
-      viewSwitching = false;
+    // Both layouts use the same editor, including its unsaved buffer and LSP.
+    // A layout change never waits for Lean or discards drafts.
+    if (view === "columns") {
+      const entry = browserHistoryEntry(window.history.state);
+      nodeSession.selectionCleared = entry?.fnode === null &&
+        browserHistoryTarget(entry) === nodeSession.node?.fnode;
+      view = "force";
+    } else {
+      nodeSession.selectionCleared = false;
+      view = "columns";
     }
   }
+
 </script>
 
 <div
   class="app"
-  inert={viewSwitching || refreshing || historyNavigating}
-  aria-busy={viewSwitching || refreshing || historyNavigating}
+  inert={refreshing || historyNavigating}
+  aria-busy={refreshing || historyNavigating}
 >
   <header class="toolbar">
     <!-- Zone 1: identity and navigation history. -->
@@ -507,14 +453,12 @@
         <button
           class:active={view === "columns"}
           aria-pressed={view === "columns"}
-          disabled={viewSwitching}
           onclick={() => { if (view !== "columns") void toggleGraphView(); }}
           title="Knowledge view"
         ><Columns3 size={15} strokeWidth={1.8} /><span>Knowledge</span></button>
         <button
           class:active={view === "force"}
           aria-pressed={view === "force"}
-          disabled={viewSwitching}
           onclick={() => { if (view !== "force") void toggleGraphView(); }}
           title="Graph view"
         ><Network size={15} strokeWidth={1.8} /><span>Graph</span></button>
@@ -571,48 +515,17 @@
     </div>
   {/if}
 
-  <!-- Force graph view: always mounted, hidden via CSS when in columns mode. -->
-  <main
-    class="force-layout"
-    class:hidden={view !== "force"}
-    inert={view !== "force"}
-    aria-hidden={view !== "force"}
-  >
-    <div class="force-canvas-wrap">
-        <DepthGraph
-          active={view === "force"}
-          {theme}
-          onSelect={onForceSelect}
-          selectedFnode={nodeSession.selectedFnode}
-          revision={graphRevision}
-        />
+  <main class="layout" class:force-layout={view === "force"}>
+    <div class="force-canvas-wrap" class:hidden={view !== "force"}>
+      <DepthGraph
+        active={view === "force"}
+        {theme}
+        onSelect={onForceSelect}
+        selectedFnode={nodeSession.selectedFnode}
+        revision={graphRevision}
+      />
     </div>
-    <div class="force-editor-wrap">
-      {#if forceEditorMounted}
-        {#key nodeSession.editorRevision}
-          <EditorPane
-            load={nodeSession.selectedLoad}
-            {theme}
-            active={view === "force"}
-            onRefresh={refreshNode}
-            onReady={markForceEditorReady}
-          />
-        {/key}
-      {/if}
-    </div>
-  </main>
-
-  <!-- Pre-mount the destination editor while transparent, then discard the source. -->
-  {#if columnsMounted}
-  <main
-    class="layout"
-    class:hidden={view !== "columns"}
-    inert={view !== "columns"}
-    aria-hidden={view !== "columns"}
-  >
-    {#if initialError}
-      <div class="full-error">{initialError}</div>
-    {:else}
+    {#if view === "columns" && !initialError}
       <NodeColumn
         title="Referrers"
         items={nodeSession.referrers.items}
@@ -622,15 +535,21 @@
         onSelect={(fnode) => { cancelStartup(); return nodeSession.select(fnode); }}
         onHover={(i) => (nodeSession.referrersSelected = i)}
       />
-      {#key nodeSession.editorRevision}
-        <EditorPane
-          load={nodeSession.load}
-          {theme}
-          active={view === "columns"}
-          onRefresh={refreshNode}
-          onReady={markColumnsEditorReady}
-        />
-      {/key}
+    {/if}
+    <div class="editor-wrap" class:force-editor-wrap={view === "force"}>
+      {#if initialError && view === "columns"}
+        <div class="full-error">{initialError}</div>
+      {:else}
+        {#key nodeSession.editorRevision}
+          <EditorPane
+            load={view === "force" ? nodeSession.selectedLoad : nodeSession.load}
+            {theme}
+            onRefresh={refreshNode}
+          />
+        {/key}
+      {/if}
+    </div>
+    {#if view === "columns" && !initialError}
       <NodeColumn
         title="Dependencies"
         items={nodeSession.children.items}
@@ -642,7 +561,6 @@
       />
     {/if}
   </main>
-  {/if}
 
   <!-- Ambient state lives here instead of competing with actions in the header. -->
   <footer class="statusbar">
@@ -1076,12 +994,14 @@
     overflow: hidden;
     min-height: 0;
   }
-  .force-layout.hidden,
-  .layout.hidden {
-    position: absolute;
-    inset: var(--mdc-toolbar-h) 0 var(--mdc-statusbar-h);
-    opacity: 0;
-    pointer-events: none;
+  .hidden { display: none; }
+  .editor-wrap {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
   .force-canvas-wrap {
     flex: 1 1 auto;

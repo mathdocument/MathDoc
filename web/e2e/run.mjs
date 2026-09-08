@@ -65,7 +65,7 @@ async function fixture(browser, body) {
     await title(page, "Alpha");
     try { await body({ root, cli, page, url: server.url }); }
     catch(e) {
-      await page.screenshot({ path: resolve(webRoot, "e2e/failure.png"), fullPage: true });
+      await page.screenshot({ path: resolve(root, "failure.png"), fullPage: true });
       console.error("Server:", server.output());
       console.error("Browser errors:", errors);
       console.error("Page:", (await page.locator("body").innerText()).slice(-5000));
@@ -82,6 +82,13 @@ async function fixture(browser, body) {
       server.child.kill("SIGTERM");
       await exited;
       clearTimeout(timeout);
+    }
+    if (env.MDC_TERMINUS_PASSWORD) {
+      const response = await fetch(`${env.MDC_TERMINUS_URL ?? "http://127.0.0.1:6363"}/api/db/admin/${database}`, {
+        method: "DELETE",
+        headers: { Authorization: `Basic ${Buffer.from(`${env.MDC_TERMINUS_USER ?? "admin"}:${env.MDC_TERMINUS_PASSWORD}`).toString("base64")}` },
+      });
+      assert.ok(response.ok || response.status === 404, `test database cleanup failed: ${response.status}`);
     }
     await rm(root, { recursive: true, force: true });
   }
@@ -169,28 +176,56 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.equal(report.edges, 2);
       }));
     await suite.test("native Lean editor renders goals, diagnostics and saves to the database", () =>
-      fixture(browser, async ({ page, cli, url }) => {
+      fixture(browser, async ({ root, page, cli, url }) => {
         const a = JSON.parse((await cli("new", "-t", "Lean Example")).stdout);
         const source = "theorem demo : True ∧ True := by\n  constructor\n  · trivial\n  · trivial\n";
         const saved = await fetch(`${url}/api/node/${a.fnode}/block/lean`, {
           method: "PUT", headers: { "content-type": "application/json", "if-match": `"${a.revision}"` }, body: JSON.stringify({ content: source }),
         });
         assert.equal(saved.status, 200);
+        let sessions = 0;
+        page.on("request", request => { if (request.method() === "POST" && request.url().endsWith("/lean/session")) sessions++; });
+        let releaseSession;
+        const sessionGate = new Promise(resolveGate => { releaseSession = resolveGate; });
+        await page.route(/\/lean\/session$/, async route => {
+          const response = await route.fetch();
+          await sessionGate;
+          await route.fulfill({ response });
+        });
         await page.goto(`${url}/?node=${a.fnode}`);
         // Select by exact name through the same browser search used by authors.
         await page.getByRole("button", { name: /Search nodes/ }).click();
         await page.getByPlaceholder("Search by title or fnode…").fill("Lean Example");
         await page.getByRole("button", { name: /Lean Example/ }).click();
+        await page.getByText("Starting Lean editor…").waitFor();
+        for (const name of ["Graph", "Knowledge"]) {
+          await page.getByRole("button", { name, exact: true }).click();
+          await page.getByRole("button", { name, exact: true }).and(page.locator('[aria-pressed="true"]')).waitFor({ timeout: 1000 });
+        }
+        releaseSession();
         const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
         await frame.locator(".monaco-editor").waitFor();
         const input = frame.getByRole("textbox", { name: /Editor content/ });
         await frame.getByText("constructor", { exact: true }).click();
         await frame.frameLocator("#infoview iframe").getByText("True", { exact: true }).first().waitFor();
-        await page.screenshot({ path: resolve(webRoot, "e2e/lean-editor.png"), fullPage: true });
+        await page.screenshot({ path: resolve(root, "lean-editor.png"), fullPage: true });
         await input.press("ControlOrMeta+A");
         await page.keyboard.insertText("theorem demo : True := by\n  exact 42\n");
         await page.getByText("Unsaved", { exact: true }).waitFor();
         await frame.locator(".squiggly-error").first().waitFor();
+        const sessionURL = await page.locator('iframe[title="Lean source and Infoview"]').getAttribute("src");
+        const switchTimes = [];
+        for (let i = 0; i < 12; i++) {
+          const started = performance.now();
+          const name = i % 2 === 0 ? "Graph" : "Knowledge";
+          await page.getByRole("button", { name, exact: true }).click();
+          await page.getByRole("button", { name, exact: true }).and(page.locator('[aria-pressed="true"]')).waitFor({ timeout: 1000 });
+          assert.equal(await page.locator('iframe[title="Lean source and Infoview"]').getAttribute("src"), sessionURL);
+          await page.getByText("Unsaved", { exact: true }).waitFor();
+          switchTimes.push(Math.round(performance.now() - started));
+        }
+        assert.equal(sessions, 1, "layout changes must reuse the Lean session, including a loading or dirty editor");
+        console.log("Lean editor layout switch durations (ms):", switchTimes.join(", "));
         await page.getByRole("button", { name: "Save & check", exact: true }).click();
         await page.getByText("Lean errors", { exact: false }).waitFor();
         assert.match(JSON.parse((await cli("show", a.fnode)).stdout).blocks[0].content, /exact 42/);
@@ -201,6 +236,12 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         const built=await (await buildResponse).json();
         assert.equal(built.certified,true,JSON.stringify(built));
         await page.getByText("olean ready", { exact: false }).waitFor();
+        for (let i = 0; i < 3; i++) {
+          const old = new URL(await page.locator('iframe[title="Lean source and Infoview"]').getAttribute("src"), url).searchParams.get("session");
+          await page.getByRole("button", { name: "Reload environment", exact: true }).click();
+          await frame.locator(".monaco-editor").waitFor();
+          assert.equal((await fetch(`${url}/api/lean/session/${old}`)).status, 404, "reload must retire the old LSP session");
+        }
       }));
   } finally { await browser.close(); }
 });
