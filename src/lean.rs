@@ -684,34 +684,48 @@ impl LeanService {
     }
 
     pub async fn editor_project(&self, input: &Input) -> Result<PathBuf> {
-        let id = uuid::Uuid::new_v4().to_string();
-        let root = self.root.join("drafts").join(id);
-        prepare_project(&root, &input.project).await?;
+        let drafts = self.root.join("drafts");
+        tokio::fs::create_dir_all(&drafts).await?;
+        let directory = tempfile::tempdir_in(drafts)?;
+        let root = directory.path();
+        prepare_project(root, &input.project).await?;
         for (node, _) in &input.chain {
             if let Some(source) = node.source("lean") {
-                write_source(&root, node, source).await?;
+                write_source(root, node, source).await?;
             }
         }
-        // Reuse Lake artifacts with copy-on-write where the host filesystem supports it.
-        let _manager = self.manager.lock().await;
         let canonical = self.root.join("projects").join(input.project.key());
-        if canonical.join(".lake").exists() {
-            verify_manifest(&canonical, &input.project).await?;
-            let mut copy = Command::new("cp");
-            #[cfg(target_os = "macos")]
-            copy.arg("-cR");
-            #[cfg(not(target_os = "macos"))]
-            copy.args(["-R", "--reflink=auto"]);
-            let status = copy
-                .arg(canonical.join(".lake"))
-                .arg(&root)
-                .status()
-                .await?;
-            if !status.success() {
-                bail!("copying editor build environment failed");
+        // Package revisions and toolchain are pinned by the project key. Share that
+        // cache; cloning Mathlib's entire file tree costs seconds even with APFS COW.
+        let packages = canonical.join(".lake/packages");
+        tokio::fs::create_dir_all(&packages).await?;
+        tokio::fs::create_dir_all(root.join(".lake")).await?;
+        tokio::fs::symlink(
+            tokio::fs::canonicalize(packages).await?,
+            root.join(".lake/packages"),
+        )
+        .await?;
+        // Never wait for a running CLI check. Lake can rebuild the isolated managed
+        // modules from this snapshot while still using the shared external libraries.
+        if let Ok(_manager) = self.manager.try_lock() {
+            if canonical.join(".lake/build").exists() {
+                let mut copy = Command::new("cp");
+                #[cfg(target_os = "macos")]
+                copy.arg("-cR");
+                #[cfg(not(target_os = "macos"))]
+                copy.args(["-R", "--reflink=auto"]);
+                let status = copy
+                    .arg(canonical.join(".lake/build"))
+                    .arg(root.join(".lake"))
+                    .kill_on_drop(true)
+                    .status()
+                    .await?;
+                if !status.success() {
+                    bail!("copying managed module artifacts failed");
+                }
             }
         }
-        Ok(root)
+        Ok(directory.keep())
     }
 }
 pub fn module_path(root: &Path, module: &str) -> Result<PathBuf> {
@@ -770,6 +784,55 @@ async fn verify_manifest(root: &Path, project: &LeanProject) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn editor_shares_libraries_without_waiting_for_the_compiler() {
+        let cache = tempfile::tempdir().unwrap();
+        let service = LeanService::new(cache.path().to_path_buf()).unwrap();
+        let input = Input {
+            project: LeanProject::default(),
+            chain: vec![],
+        };
+        let canonical = cache.path().join("projects").join(input.project.key());
+        tokio::fs::create_dir_all(canonical.join(".lake/packages/example"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            canonical.join(".lake/packages/example/library.olean"),
+            "shared",
+        )
+        .await
+        .unwrap();
+        tokio::fs::create_dir_all(canonical.join(".lake/build"))
+            .await
+            .unwrap();
+        tokio::fs::write(canonical.join(".lake/build/local.olean"), "original")
+            .await
+            .unwrap();
+        let busy = service.manager.lock().await;
+        let draft = tokio::time::timeout(Duration::from_secs(2), service.editor_project(&input))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(draft.join(".lake/packages").is_symlink());
+        assert!(!draft.join(".lake/build").exists());
+        tokio::fs::remove_dir_all(draft).await.unwrap();
+        drop(busy);
+        let draft = service.editor_project(&input).await.unwrap();
+        tokio::fs::write(draft.join(".lake/build/local.olean"), "draft")
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(canonical.join(".lake/build/local.olean"))
+                .await
+                .unwrap(),
+            "original"
+        );
+        tokio::fs::remove_dir_all(draft).await.unwrap();
+        assert!(canonical
+            .join(".lake/packages/example/library.olean")
+            .is_file());
+    }
+
     #[tokio::test]
     async fn a_changed_library_resolution_cannot_be_cached() {
         let root = tempfile::tempdir().unwrap();

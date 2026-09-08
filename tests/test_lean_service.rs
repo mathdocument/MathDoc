@@ -93,9 +93,31 @@ async fn pinned_external_library_builds_and_reuses_artifacts() {
             .certified
     );
     assert_eq!(
-        std::fs::metadata(artifact).unwrap().modified().unwrap(),
+        std::fs::metadata(&artifact).unwrap().modified().unwrap(),
         modified,
         "unchanged external library should not rebuild"
+    );
+    let draft = service
+        .editor_project(&Input::capture(&snapshot, &node.fnode).unwrap())
+        .await
+        .unwrap();
+    assert!(draft.join(".lake/packages").is_symlink());
+    let mut lean = mathdoc::lean::spawn(
+        &draft,
+        &[
+            "env",
+            "lean",
+            &mathdoc::store::module_file(&node.module, "lean")
+                .unwrap()
+                .to_string_lossy(),
+        ],
+    )
+    .unwrap();
+    assert!(lean.child.wait().await.unwrap().success());
+    std::fs::remove_dir_all(&draft).unwrap();
+    assert_eq!(
+        std::fs::metadata(&artifact).unwrap().modified().unwrap(),
+        modified
     );
 }
 
