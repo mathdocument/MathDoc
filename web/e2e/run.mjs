@@ -177,10 +177,11 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
       }));
     await suite.test("native Lean editor renders goals, diagnostics and saves to the database", () =>
       fixture(browser, async ({ root, page, cli, url }) => {
-        const a = JSON.parse((await cli("new", "-t", "Lean Example")).stdout);
         const source = "theorem demo : True ∧ True := by\n  constructor\n  · trivial\n  · trivial\n";
-        const saved = await fetch(`${url}/api/node/${a.fnode}/block/lean`, {
-          method: "PUT", headers: { "content-type": "application/json", "if-match": `"${a.revision}"` }, body: JSON.stringify({ content: source }),
+        // Legacy modules can be nested and quoted; later nodes use the flat Lib directory.
+        const a = { fnode: randomUUID(), title: "Lean Example", module: "Lib.EGA.«1-1.7.1»", depens: [], blocks: [{ srctype: "lean", content: source }] };
+        const saved = await fetch(`${url}/api/import`, {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ nodes: [a] }),
         });
         assert.equal(saved.status, 200);
         let sessions = 0;

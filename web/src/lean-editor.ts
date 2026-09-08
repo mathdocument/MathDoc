@@ -1,6 +1,7 @@
 import { LeanMonaco, LeanMonacoEditor, type LeanClient } from "lean4monaco";
 import { Uri, KeyCode, KeyMod, type editor as MonacoEditor } from "monaco-editor";
 import { createModelReference } from "vscode/monaco";
+import { FileUri } from "lean4monaco/dist/vscode-lean4/vscode-lean4/src/utils/exturi";
 
 const params = new URLSearchParams(location.search);
 const id = params.get("session");
@@ -94,6 +95,11 @@ async function start() {
       "workbench.colorTheme": params.get("theme") === "light" ? "Default Light Modern" : "Default Dark Modern",
     },
   });
+  // Upstream's browser fallback treats each file's parent as a project. Our
+  // session has one known root, including modules nested under Lib/EGA, etc.
+  const provider = runtime.clientProvider!;
+  const ensureClient = provider.ensureClient.bind(provider);
+  provider.ensureClient = () => ensureClient(new FileUri("/project/lean-toolchain"));
   runtime.clientProvider!.clientAdded((client: LeanClient) => {
     client.restarted(() => resolveClient(client));
     if (client.isRunning()) resolveClient(client);
