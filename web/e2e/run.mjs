@@ -226,7 +226,20 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         }
         assert.equal(sessions, 1, "layout changes must reuse the Lean session, including a loading or dirty editor");
         console.log("Lean editor layout switch durations (ms):", switchTimes.join(", "));
-        await page.getByRole("button", { name: "Save & check", exact: true }).click();
+        let finishCheck;
+        const checkGate = new Promise(resolve => { finishCheck = resolve; });
+        await page.route(/\/lean\/check$/, async route => { await checkGate; await route.continue(); });
+        await page.getByRole("button", { name: "Graph", exact: true }).click();
+        const checkButton = page.getByRole("button", { name: "Save & check", exact: true });
+        await checkButton.click();
+        const activity = page.getByRole("status").filter({ hasText: /^Checking…$/ });
+        await activity.waitFor();
+        assert.equal(await checkButton.textContent(), "Save & check");
+        const buttonBox = await checkButton.boundingBox(), activityBox = await activity.boundingBox();
+        assert.ok(activityBox.y >= buttonBox.y + buttonBox.height, "checking status must be below the toolbar, without overlapping button labels");
+        finishCheck();
+        await page.unroute(/\/lean\/check$/);
+        await page.getByRole("button", { name: "Knowledge", exact: true }).click();
         await page.getByText("Lean errors", { exact: false }).waitFor();
         assert.match(JSON.parse((await cli("show", a.fnode)).stdout).blocks[0].content, /exact 42/);
         await input.press("ControlOrMeta+A"); await page.keyboard.insertText("theorem demo : True ∧ True := by constructor <;> trivial\n");
