@@ -18,10 +18,12 @@
     load: LoadState;
     theme: Theme;
     active?: boolean;
+    selection?: number;
     onRefresh?: (node: NodeDetail, graphChanged?: boolean) => void;
     onReady?: () => void;
   }
-  let { load, theme, active = true, onRefresh, onReady }: Props = $props();
+  let { load, theme, active = true, selection = 0, onRefresh, onReady }: Props = $props();
+  let node = $derived(load.kind === "ready" ? load.node : null);
 
   // Inline title editing.
   let editingTitle = $state(false);
@@ -168,8 +170,7 @@
     <div class="placeholder">no node selected</div>
   {:else if load.kind === "error"}
     <div class="placeholder error">{load.message}</div>
-  {:else}
-    {@const node = load.node}
+  {:else if node}
     <header class="head">
       <div class="title-row">
         {#if editingTitle}
@@ -230,7 +231,9 @@
         <details class="module-import"><summary>Lean import</summary><code>import {node.module}</code></details>
       {/if}
     </header>
-    <div class="blocks">
+  {/if}
+    <div class="blocks" class:hidden={!node}>
+      {#if node}
       {#if node.blocks.length === 0}
         <div class="empty-state">
           <span class="empty-icon"><FileText size={20} strokeWidth={1.6} /></span>
@@ -245,11 +248,7 @@
       {:else if !BlockEditorComponent}
         <div class="editor-loading" aria-busy="true">Loading editor…</div>
       {:else}
-        {#each node.blocks as block (block.srctype)}
-          {#if block.srctype === "lean"}
-            <LeanBlock fnode={node.fnode} revision={node.revision} {block} {theme} {active}
-              onDeleted={applyBlockUpdate} onSaved={applyBlockUpdate} onReady={() => reportBlockReady(block.srctype)} />
-          {:else}
+        {#each node.blocks.filter(block => block.srctype !== "lean") as block (`${node.fnode}:${block.srctype}`)}
           <BlockEditorComponent
             fnode={node.fnode}
             revision={node.revision}
@@ -260,20 +259,26 @@
             onSaved={applyBlockUpdate}
             onReady={() => reportBlockReady(block.srctype)}
           />
-          {/if}
         {/each}
       {/if}
+      {/if}
+      <LeanBlock fnode={node?.fnode ?? ""} revision={node?.revision ?? ""} block={node?.blocks.find(block => block.srctype === "lean")} {theme} {active} {selection}
+        onDeleted={applyBlockUpdate} onSaved={applyBlockUpdate} onReady={() => reportBlockReady("lean")} />
+      {#if node}
+      {#key node.fnode}
       <AddBlockControl
         fnode={node.fnode}
         revision={node.revision}
         existingSrctypes={node.blocks.map((b) => b.srctype)}
         onAdded={applyBlockUpdate}
       />
+      {/key}
+      {/if}
     </div>
-  {/if}
 </section>
 
 <style>
+  .hidden { display:none !important; }
   .module-import { margin-top:.6rem; color:var(--mdc-dim); font-size:.75rem; }
   .module-import summary { cursor:pointer; }
   .module-import code { display:block; margin-top:.4rem; overflow-wrap:anywhere; user-select:all; }

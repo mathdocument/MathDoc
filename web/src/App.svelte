@@ -540,13 +540,12 @@
       {#if initialError && view === "columns"}
         <div class="full-error">{initialError}</div>
       {:else}
-        {#key nodeSession.editorRevision}
           <EditorPane
             load={view === "force" ? nodeSession.selectedLoad : nodeSession.load}
+            selection={nodeSession.editorRevision}
             {theme}
             onRefresh={refreshNode}
           />
-        {/key}
       {/if}
     </div>
     {#if view === "columns" && !initialError}

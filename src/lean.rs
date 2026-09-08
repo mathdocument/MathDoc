@@ -228,8 +228,9 @@ impl Lsp {
     async fn open(&mut self, uri: &str, source: &str, dependency_key: &str) -> Result<u64> {
         self.open_order.retain(|open| open != uri);
         self.open_order.push_back(uri.into());
-        // ponytail: four hot CLI files; Lake artifacts retain reusable work for evicted files.
-        while self.open_order.len() > 4 {
+        // ponytail: one hot CLI file avoids retaining several whole Mathlib environments.
+        // Lake artifacts and certificates retain reusable work for evicted files.
+        while self.open_order.len() > 1 {
             let old = self.open_order.pop_front().unwrap();
             self.notify("textDocument/didClose", json!({"textDocument":{"uri":old}}))
                 .await?;
@@ -730,6 +731,19 @@ impl LeanService {
 }
 pub fn module_path(root: &Path, module: &str) -> Result<PathBuf> {
     Ok(root.join(crate::store::module_file(module, "lean")?))
+}
+pub async fn refresh_editor_sources(root: &Path, input: &Input) -> Result<()> {
+    for (node, _) in &input.chain {
+        if let Some(source) = node.source("lean") {
+            let path = module_path(root, &node.module)?;
+            match tokio::fs::read_to_string(path).await {
+                Ok(existing) if existing == source => continue,
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+                _ => write_source(root, node, source).await?,
+            }
+        }
+    }
+    Ok(())
 }
 pub fn file_uri(path: &Path) -> Result<String> {
     reqwest::Url::from_file_path(path)

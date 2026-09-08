@@ -184,6 +184,10 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         });
         assert.equal(saved.status, 200);
         let sessions = 0;
+        const messages = [];
+        page.on("websocket", ws => ws.on("framesent", ({ payload }) => {
+          try { messages.push(JSON.parse(String(payload))); } catch {}
+        }));
         page.on("request", request => { if (request.method() === "POST" && request.url().endsWith("/lean/session")) sessions++; });
         let releaseSession;
         const sessionGate = new Promise(resolveGate => { releaseSession = resolveGate; });
@@ -249,12 +253,91 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         const built=await (await buildResponse).json();
         assert.equal(built.certified,true,JSON.stringify(built));
         await page.getByText("olean ready", { exact: false }).waitFor();
+        const select = async name => {
+          await page.getByRole("button", { name: /Search nodes/ }).click();
+          await page.getByPlaceholder("Search by title or fnode…").fill(name);
+          await page.getByRole("button", { name: new RegExp(name) }).last().click();
+          await title(page, name);
+        };
+        for (const name of ["Second Lean", "Third Lean"]) {
+          const node = JSON.parse((await cli("new", "-t", name)).stdout);
+          const response = await fetch(`${url}/api/node/${node.fnode}/block/lean`, {
+            method: "PUT", headers: { "content-type": "application/json", "if-match": `"${node.revision}"` },
+            body: JSON.stringify({ content: `theorem ${name === "Second Lean" ? "second" : "third"} : True := by trivial\n` }),
+          });
+          assert.equal(response.status, 200);
+        }
+        await select("Second Lean");
+        await page.getByText("Lean editor ready", { exact: true }).waitFor();
+        const initialized = messages.filter(m => m.method === "initialize").length;
+        const opened = messages.filter(m => m.method === "textDocument/didOpen").length;
+        assert.equal(initialized, 1);
+        assert.equal(opened, 2);
+        const warmed = performance.now();
+        await select("Lean Example");
+        await frame.getByText("constructor", { exact: true }).waitFor();
+        await page.getByText("Lean editor ready", { exact: true }).waitFor();
+        assert.equal(messages.filter(m => m.method === "initialize").length, initialized);
+        assert.equal(messages.filter(m => m.method === "textDocument/didOpen").length, opened, "warm navigation must retain the native worker");
+        console.log("Warm Lean node navigation (ms):", Math.round(performance.now() - warmed));
+        await select("Alpha"); // A node without Lean must not tear down the runtime.
+        await select("Lean Example");
+        await page.getByText("Lean editor ready", { exact: true }).waitFor();
+        assert.equal(sessions, 1);
+        assert.equal(messages.filter(m => m.method === "textDocument/didOpen").length, opened);
+        await input.press("ControlOrMeta+A");
+        const edited = performance.now();
+        await page.keyboard.insertText("theorem demo : True := by exact 42\n");
+        await frame.locator(".squiggly-error").first().waitFor();
+        console.log("Warm Lean edit diagnostics (ms):", Math.round(performance.now() - edited));
+        await select("Third Lean"); // Confirmed navigation discards that unsaved edit.
+        await page.getByText("Lean editor ready", { exact: true }).waitFor();
+        assert.ok(messages.some(m => m.method === "textDocument/didClose"), "eviction must release a native Lean worker");
+        await select("Lean Example");
+        await page.getByText("Lean editor ready", { exact: true }).waitFor();
+        await frame.getByText("constructor", { exact: true }).waitFor();
+        assert.equal(await page.getByText("Unsaved", { exact: true }).count(), 0);
         for (let i = 0; i < 3; i++) {
           const old = new URL(await page.locator('iframe[title="Lean source and Infoview"]').getAttribute("src"), url).searchParams.get("session");
           await page.getByRole("button", { name: "Reload environment", exact: true }).click();
           await frame.locator(".monaco-editor").waitFor();
           assert.equal((await fetch(`${url}/api/lean/session/${old}`)).status, 404, "reload must retire the old LSP session");
         }
+      }));
+    await suite.test("changed dependencies refresh the native worker without restarting its connection", () =>
+      fixture(browser, async ({ cli, page, url }) => {
+        const dep = JSON.parse((await cli("new", "-t", "Lean Dependency")).stdout);
+        const target = JSON.parse((await cli("new", "-t", "Lean Dependent")).stdout);
+        const put = async (id, content) => {
+          const { node } = await (await fetch(`${url}/api/node/${id}/view`)).json();
+          const response = await fetch(`${url}/api/node/${id}/block/lean`, {
+            method: "PUT", headers: { "content-type": "application/json", "if-match": `"${node.revision}"` }, body: JSON.stringify({ content }),
+          });
+          assert.equal(response.status, 200);
+        };
+        await put(dep.fnode, "def anchor : Nat := 1\n");
+        await put(target.fnode, `import ${dep.module}\ntheorem usesAnchor : anchor = 1 := rfl\n`);
+        await cli("dep", "add", target.fnode, "--target", dep.fnode);
+        const sent = [];
+        page.on("websocket", ws => ws.on("framesent", ({ payload }) => {
+          try { sent.push(JSON.parse(String(payload))); } catch {}
+        }));
+        const select = async name => {
+          await page.getByRole("button", { name: /Search nodes/ }).click();
+          await page.getByPlaceholder("Search by title or fnode…").fill(name);
+          await page.getByRole("button", { name: new RegExp(name) }).last().click();
+          await title(page, name);
+        };
+        await select("Lean Dependent");
+        await page.getByText("Lean editor ready", { exact: true }).waitFor();
+        const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
+        assert.equal(await frame.locator(".squiggly-error").count(), 0);
+        await put(dep.fnode, "def anchor : Nat := 2\n");
+        await select("Alpha");
+        await select("Lean Dependent");
+        await frame.locator(".squiggly-error").first().waitFor();
+        assert.equal(sent.filter(m => m.method === "initialize").length, 1);
+        assert.ok(sent.some(m => m.method === "textDocument/didClose"), "a changed dependency must invalidate the worker environment");
       }));
   } finally { await browser.close(); }
 });

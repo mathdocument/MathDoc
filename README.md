@@ -63,8 +63,10 @@ Only startup or an external database commit reloads the graph projection.
 
 The browser's left pane edits Lean; its right pane shows native Infoview goals,
 messages and widgets. Save, Save & check and Save & build use the shared service.
-Each browser editor has its own draft and dependency snapshot; reload its
-environment after dependencies or project configuration change. CLI checks always
+Each browser tab has an isolated draft environment. Switching nodes keeps its
+Lean connection and the two most recently used document workers alive. Selecting a
+node refreshes its dependency snapshot; changed dependencies restart that worker.
+Reload the environment after project configuration changes. CLI checks always
 capture the current database dependency versions. Rocq and LaTeX remain editable;
 Rocq compilation and language-server integration are not provided yet.
 
@@ -122,8 +124,8 @@ Playwright Chromium installation. They create uniquely named test databases.
 The compiler currently serializes CLI checks per service branch and limits live
 browser editors to eight; use separate branches/services for independent work.
 One latest result per node is kept in memory; certified results are also loaded
-on demand from the cache after a restart, using the full input key. Four recently
-used CLI files retain live Lean workers. Lake artifacts survive restarts. Only one
+on demand from the cache after a restart, using the full input key. The most recent
+CLI file retains its live Lean worker. Lake artifacts survive restarts. Only one
 service may own a branch cache at a time.
 
 [Documentation](https://mathdocument.github.io/MathDoc/) · [MIT License](LICENSE)

@@ -713,10 +713,22 @@ async fn lean_goals(
 
 struct EditorSession {
     input: Option<crate::lean::Input>,
-    filename: String,
-    source: String,
+    document: Value,
     _cancel: tokio::sync::watch::Sender<()>,
     _slot: tokio::sync::OwnedSemaphorePermit,
+}
+fn editor_document(input: &crate::lean::Input) -> Result<Value> {
+    let node = &input.chain.last().context("no Lean target")?.0;
+    Ok(json!({
+        "fnode": node.fnode,
+        "filename": format!("/project/{}", crate::store::module_file(&node.module, "lean")?.display()),
+        "source": node.source("lean").context("node has no Lean block")?,
+        // Source edits reuse the worker; changed imports/dependencies must reload its environment.
+        "environment_key": crate::store::digest(&serde_json::to_vec(&(
+            input.project.key(), &node.module,
+            input.chain[..input.chain.len() - 1].iter().map(|(_, key)| key).collect::<Vec<_>>()
+        ))?),
+    }))
 }
 async fn lean_session(
     State(s): State<Arc<Service>>,
@@ -728,16 +740,7 @@ async fn lean_session(
         check_revision(&headers, snapshot.resolve(&id)?)?;
         crate::lean::Input::capture(&snapshot, &id)?
     };
-    let node = &input.chain.last().unwrap().0;
-    let source = node
-        .source("lean")
-        .ok_or_else(|| {
-            ApiError(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "node has no Lean block".into(),
-            )
-        })?
-        .to_owned();
+    let document = editor_document(&input)?;
     let slot = s.editor_slots.clone().try_acquire_owned().map_err(|_| {
         ApiError(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -745,16 +748,11 @@ async fn lean_session(
         )
     })?;
     let id = uuid::Uuid::new_v4().to_string();
-    let filename = format!(
-        "/project/{}",
-        crate::store::module_file(&node.module, "lean")?.display()
-    );
     s.editors.lock().await.insert(
         id.clone(),
         EditorSession {
             input: Some(input),
-            filename: filename.clone(),
-            source: source.clone(),
+            document: document.clone(),
             _cancel: tokio::sync::watch::channel(()).0,
             _slot: slot,
         },
@@ -772,7 +770,9 @@ async fn lean_session(
             }
         }
     });
-    Ok(Json(json!({"id":id,"filename":filename,"source":source})))
+    let mut response = document;
+    response["id"] = json!(id);
+    Ok(Json(response))
 }
 async fn close_editor(State(s): State<Arc<Service>>, Path(id): Path<String>) -> StatusCode {
     // Dropping the sender cancels preparation or the active LSP bridge. The permit
@@ -789,14 +789,14 @@ async fn editor_info(
     let e = editors
         .get(&id)
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "editor session expired".into()))?;
-    Ok(Json(json!({"filename":e.filename,"source":e.source})))
+    Ok(Json(e.document.clone()))
 }
 async fn editor_socket(
     State(s): State<Arc<Service>>,
     Path(id): Path<String>,
     ws: axum::extract::ws::WebSocketUpgrade,
 ) -> ApiResult<Response> {
-    let (input, filename, mut cancelled) = {
+    let (input, mut cancelled) = {
         let mut editors = s.editors.lock().await;
         let session = editors
             .get_mut(&id)
@@ -807,7 +807,7 @@ async fn editor_socket(
                 "editor session already connected".into(),
             )
         })?;
-        (input, session.filename.clone(), session._cancel.subscribe())
+        (input, session._cancel.subscribe())
     };
     let failed_service = s.clone();
     let failed_id = id.clone();
@@ -823,7 +823,7 @@ async fn editor_socket(
                 _ = cancelled.changed() => Ok(()),
                 result = async {
                     directory = Some(tokio::time::timeout(std::time::Duration::from_secs(30), s.lean.editor_project(&input)).await.context("editor environment preparation timed out")??);
-                    bridge_editor(socket, directory.as_ref().unwrap().path(), &filename).await
+                    bridge_editor(socket, directory.as_ref().unwrap().path(), &input, &s).await
                 } => result,
             };
             s.editors.lock().await.remove(&id);
@@ -856,12 +856,14 @@ fn rewrite_uris(value: &mut Value, from: &str, to: &str) {
 async fn bridge_editor(
     socket: axum::extract::ws::WebSocket,
     root: &std::path::Path,
-    filename: &str,
+    input: &crate::lean::Input,
+    service: &Service,
 ) -> Result<()> {
     use axum::extract::ws::Message;
     use futures_util::{SinkExt, StreamExt};
     let actual = crate::lean::file_uri(root)?;
-    let allowed_uri = crate::lean::file_uri(std::path::Path::new(filename))?;
+    let document = editor_document(input)?;
+    let mut allowed = HashSet::from([crate::lean::file_uri(std::path::Path::new(document["filename"].as_str().unwrap()))?]);
     let mut process = crate::lean::spawn(root, &["serve"])?;
     let mut writer = process
         .child
@@ -894,9 +896,31 @@ async fn bridge_editor(
                     Message::Text(text)=>{
                         let mut value:Value=serde_json::from_str(&text)?;
                         let method=value["method"].as_str().unwrap_or("");
+                        if method == "mdc/selectNode" {
+                            let selected: Result<Value> = async {
+                                let id = value["params"]["fnode"].as_str().context("node required")?;
+                                let revision = value["params"]["revision"].as_str().context("revision required")?;
+                                let next = {
+                                    let snapshot = service.read().await?;
+                                    if snapshot.resolve(id)?.revision() != revision { bail!("node changed; reload and retry"); }
+                                    crate::lean::Input::capture(&snapshot, id)?
+                                };
+                                if next.project.key() != input.project.key() { bail!("Lean project changed; reload environment"); }
+                                let document = editor_document(&next)?;
+                                crate::lean::refresh_editor_sources(root, &next).await?;
+                                allowed.insert(crate::lean::file_uri(std::path::Path::new(document["filename"].as_str().unwrap()))?);
+                                Ok(document)
+                            }.await;
+                            let reply = match selected {
+                                Ok(document) => json!({"jsonrpc":"2.0","id":value["id"],"result":document}),
+                                Err(error) => json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":-32000,"message":error.to_string()}}),
+                            };
+                            send.send(Message::Text(serde_json::to_string(&reply)?)).await?;
+                            continue;
+                        }
                         if matches!(method,"textDocument/didOpen"|"textDocument/didChange"|"textDocument/didSave"){
                             let uri=value["params"]["textDocument"]["uri"].as_str().context("document URI required")?;
-                            if uri!=allowed_uri{bail!("editor may only change its own draft module");}
+                            if !allowed.contains(uri){bail!("editor may only change its selected draft modules");}
                         }
                         rewrite_uris(&mut value,"file:///project",&actual);crate::lean::write_message(&mut writer,&value).await?;
                     },
