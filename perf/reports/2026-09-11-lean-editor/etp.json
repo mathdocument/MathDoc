@@ -1,0 +1,34 @@
+{
+  "graph": {
+    "cycles": [],
+    "edges": 368017,
+    "invalid": [],
+    "missing": [],
+    "nodes": 47435
+  },
+  "first_source_visible_ms": 975,
+  "first_lean_ready_ms": 8331,
+  "Equation 83 implies Equation 117": [
+    {
+      "visible_ms": 384,
+      "lean_ready_ms": 4202
+    },
+    {
+      "visible_ms": 498,
+      "lean_ready_ms": 499
+    }
+  ],
+  "Equation 181 implies Equation 24": [
+    {
+      "visible_ms": 670,
+      "lean_ready_ms": 671
+    }
+  ],
+  "rpc_calls": 32,
+  "initializations": 1,
+  "max_rpc_depth": 14,
+  "max_rpc_bytes": 9489,
+  "browser_errors": [],
+  "server_errors": [],
+  "database_revision_unchanged": true
+}
