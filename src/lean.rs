@@ -76,11 +76,20 @@ pub fn spawn(root: &Path, args: &[&str]) -> Result<Process> {
     Ok(Process { child, pid })
 }
 pub async fn read_message(reader: &mut BufReader<ChildStdout>) -> Result<Value> {
+    Ok(serde_json::from_str(&read_frame(reader).await?)?)
+}
+
+/// Keep editor RPC payloads opaque: Lean's tagged expressions can exceed JSON
+/// tree deserializers' recursion limits even for ordinary mathematical terms.
+pub async fn read_frame(reader: &mut (impl tokio::io::AsyncBufRead + Unpin)) -> Result<String> {
     let mut length = None;
     let mut header_bytes = 0;
     loop {
         let mut line = String::new();
-        let n = reader.read_line(&mut line).await?;
+        let n = (&mut *reader)
+            .take((8193 - header_bytes) as u64)
+            .read_line(&mut line)
+            .await?;
         if n == 0 {
             bail!("Lean server exited");
         }
@@ -103,17 +112,22 @@ pub async fn read_message(reader: &mut BufReader<ChildStdout>) -> Result<Value> 
     }
     let mut data = vec![0; length];
     reader.read_exact(&mut data).await?;
-    Ok(serde_json::from_slice(&data)?)
+    Ok(String::from_utf8(data)?)
 }
 pub async fn write_message(writer: &mut ChildStdin, value: &Value) -> Result<()> {
-    let data = serde_json::to_vec(value)?;
+    write_frame(writer, &serde_json::to_string(value)?).await
+}
+pub async fn write_frame(
+    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+    data: &str,
+) -> Result<()> {
     if data.len() > MAX_MESSAGE {
         bail!("Lean request too large");
     }
     writer
         .write_all(format!("Content-Length: {}\r\n\r\n", data.len()).as_bytes())
         .await?;
-    writer.write_all(&data).await?;
+    writer.write_all(data.as_bytes()).await?;
     writer.flush().await?;
     Ok(())
 }
@@ -810,6 +824,24 @@ async fn verify_manifest(root: &Path, project: &LeanProject) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn editor_frames_preserve_deep_json_and_bound_protocol_input() {
+        let text = format!("{}0{}", "[".repeat(2048), "]".repeat(2048));
+        let mut wire = Vec::new();
+        write_frame(&mut wire, &text).await.unwrap();
+        let mut reader = BufReader::new(wire.as_slice());
+        assert_eq!(read_frame(&mut reader).await.unwrap(), text);
+        for invalid in [
+            "x".repeat(8193),
+            format!("Content-Length: {}\r\n\r\n", MAX_MESSAGE + 1),
+            "Content-Length: 10\r\n\r\n{}".into(),
+        ] {
+            assert!(read_frame(&mut BufReader::new(invalid.as_bytes()))
+                .await
+                .is_err());
+        }
+    }
+
     #[tokio::test]
     async fn editor_shares_libraries_without_waiting_for_the_compiler() {
         let cache = tempfile::tempdir().unwrap();

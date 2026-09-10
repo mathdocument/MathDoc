@@ -849,23 +849,62 @@ async fn editor_socket(
             }
         }))
 }
-fn rewrite_uris(value: &mut Value, from: &str, to: &str) {
-    match value {
-        Value::String(s) if s == from || s.starts_with(&format!("{from}/")) => {
-            *s = format!("{to}{}", &s[from.len()..]);
+/// Validate with serde's iterative skip parser and rewrite individual string
+/// values, without constructing, serializing or dropping a deeply nested tree.
+fn rewrite_uris(text: &str, from: &str, to: &str) -> Result<String> {
+    let _: serde::de::IgnoredAny = serde_json::from_str(text)?;
+    let bytes = text.as_bytes();
+    let mut output = String::with_capacity(text.len());
+    let (mut index, mut copied) = (0, 0);
+    while index < bytes.len() {
+        if bytes[index] != b'"' {
+            index += 1;
+            continue;
         }
-        Value::Array(values) => {
-            for v in values {
-                rewrite_uris(v, from, to);
+        let start = index;
+        index += 1;
+        while bytes[index] != b'"' {
+            if bytes[index] == b'\\' {
+                index += 1;
             }
+            index += 1;
         }
-        Value::Object(values) => {
-            for v in values.values_mut() {
-                rewrite_uris(v, from, to);
-            }
+        index += 1;
+        // Object keys are not URI values. Escaped quotes inside source text are
+        // consumed with their enclosing string, so source literals stay intact.
+        if text[index..].trim_start().starts_with(':') {
+            continue;
         }
-        _ => {}
+        let value: String = serde_json::from_str(&text[start..index])?;
+        if let Some(suffix) = value
+            .strip_prefix(from)
+            .filter(|s| s.is_empty() || s.starts_with('/'))
+        {
+            output.push_str(&text[copied..start]);
+            output.push_str(&serde_json::to_string(&format!("{to}{suffix}"))?);
+            copied = index;
+        }
     }
+    output.push_str(&text[copied..]);
+    Ok(output)
+}
+
+#[derive(Deserialize)]
+struct EditorMessage {
+    method: Option<String>,
+}
+#[derive(Deserialize)]
+struct DocumentChange {
+    params: DocumentChangeParams,
+}
+#[derive(Deserialize)]
+struct DocumentChangeParams {
+    #[serde(rename = "textDocument")]
+    document: DocumentUri,
+}
+#[derive(Deserialize)]
+struct DocumentUri {
+    uri: String,
 }
 async fn bridge_editor(
     socket: axum::extract::ws::WebSocket,
@@ -897,7 +936,7 @@ async fn bridge_editor(
     // A dedicated reader never cancels a partially read Content-Length frame.
     let task = tokio::spawn(async move {
         loop {
-            let value = crate::lean::read_message(&mut reader).await;
+            let value = crate::lean::read_frame(&mut reader).await;
             let failed = value.is_err();
             if tx.send(value).await.is_err() || failed {
                 break;
@@ -910,9 +949,10 @@ async fn bridge_editor(
             message=receive.next()=>{
                 let Some(message)=message else{break;};match message?{
                     Message::Text(text)=>{
-                        let mut value:Value=serde_json::from_str(&text)?;
-                        let method=value["method"].as_str().unwrap_or("");
+                        let message: EditorMessage = serde_json::from_str(&text)?;
+                        let method = message.method.as_deref().unwrap_or("");
                         if method == "mdc/selectNode" {
+                            let value: Value = serde_json::from_str(&text)?;
                             let selected: Result<Value> = async {
                                 let id = value["params"]["fnode"].as_str().context("node required")?;
                                 let revision = value["params"]["revision"].as_str().context("revision required")?;
@@ -935,20 +975,53 @@ async fn bridge_editor(
                             continue;
                         }
                         if matches!(method,"textDocument/didOpen"|"textDocument/didChange"|"textDocument/didSave"){
-                            let uri=value["params"]["textDocument"]["uri"].as_str().context("document URI required")?;
-                            if !allowed.contains(uri){bail!("editor may only change its selected draft modules");}
+                            let change: DocumentChange = serde_json::from_str(&text)?;
+                            if !allowed.contains(&change.params.document.uri){bail!("editor may only change its selected draft modules");}
                         }
-                        rewrite_uris(&mut value,"file:///project",&actual);crate::lean::write_message(&mut writer,&value).await?;
+                        let text = rewrite_uris(&text, "file:///project", &actual)?;
+                        crate::lean::write_frame(&mut writer, &text).await?;
                     },
                     Message::Close(_)=>break,Message::Ping(data)=>send.send(Message::Pong(data)).await?,_=>{}
                 }
             },
             message=rx.recv()=>{
-                let mut value=message.context("Lean server closed its output")??;rewrite_uris(&mut value,&actual,"file:///project");
-                send.send(Message::Text(serde_json::to_string(&value)?)).await?;
+                let text = message.context("Lean server closed its output")??;
+                send.send(Message::Text(rewrite_uris(&text, &actual, "file:///project")?)).await?;
             }
         }}Ok(())
     }.await;
     task.abort();
     result
+}
+
+#[cfg(test)]
+mod editor_protocol_tests {
+    use super::*;
+
+    #[test]
+    fn deep_rpc_payloads_and_escaped_source_survive_uri_translation() {
+        let deep = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"result":{}"file:///project/Lib/A.lean"{}}}"#,
+            "[".repeat(2048),
+            "]".repeat(2048)
+        );
+        assert!(serde_json::from_str::<Value>(&deep).is_err());
+        let translated = rewrite_uris(&deep, "file:///project", "file:///tmp/draft").unwrap();
+        assert_eq!(
+            translated,
+            deep.replace("file:///project/", "file:///tmp/draft/")
+        );
+        let _: EditorMessage = serde_json::from_str(&translated).unwrap();
+        let source = r#"def path := \"file:///project/Lib/A.lean\""#;
+        let message = json!({"params":{"uri":"file:///project/Lib/A.lean","text":source}, "prefix":"file:///project-other/A.lean", "file:///project/key":"untouched"});
+        let translated: Value = serde_json::from_str(
+            &rewrite_uris(&message.to_string(), "file:///project", "file:///tmp/draft").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(translated["params"]["text"], source);
+        assert_eq!(translated["params"]["uri"], "file:///tmp/draft/Lib/A.lean");
+        assert_eq!(translated["prefix"], message["prefix"]);
+        assert_eq!(translated["file:///project/key"], "untouched");
+        assert!(rewrite_uris(r#"{"bad": [}"#, "a", "b").is_err());
+    }
 }
