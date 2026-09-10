@@ -322,6 +322,89 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           assert.equal((await fetch(`${url}/api/lean/session/${old}`)).status, 404, "reload must retire the old LSP session");
         }
       }));
+    await suite.test("Lean stays editable during delayed startup and selection, and reconnects without losing drafts", () =>
+      fixture(browser, async ({ cli, page, url }) => {
+        const ids = {};
+        for (const name of ["Alpha", "Gamma"]) {
+          const node = JSON.parse((await cli("show", name)).stdout);
+          ids[name] = node.fnode;
+          const response = await fetch(`${url}/api/node/${node.fnode}/block/lean`, {
+            method: "PUT", headers: { "content-type": "application/json", "if-match": `"${node.revision}"` },
+            body: JSON.stringify({ content: `theorem ${name.toLowerCase()} : True := by trivial\n` }),
+          });
+          assert.equal(response.status, 200);
+        }
+        let releaseInit, releaseSelect, initSeen;
+        const initializeGate = new Promise(resolve => { releaseInit = resolve; });
+        const initializeSeen = new Promise(resolve => { initSeen = resolve; });
+        let selectionGate = Promise.resolve();
+        let blockSelect = false;
+        const sent = [];
+        await page.routeWebSocket(/\/api\/lean\/session\/.*\/ws$/, ws => {
+          const server = ws.connectToServer();
+          ws.onMessage(message => { sent.push(JSON.parse(String(message))); server.send(message); });
+          server.onMessage(async message => {
+            const value = JSON.parse(String(message));
+            if (value.result?.capabilities) { initSeen(); await initializeGate; }
+            if (value.result?.fnode && blockSelect) await selectionGate;
+            ws.send(message);
+          });
+        });
+        await page.reload();
+        await initializeSeen;
+        const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
+        const input = frame.getByRole("textbox", { name: /Editor content/ });
+        await frame.getByText("alpha", { exact: true }).waitFor({ timeout: 3000 });
+        await input.press("ControlOrMeta+End");
+        await page.keyboard.insertText("-- typed before Lean initialized\n");
+        await page.getByText("Unsaved", { exact: true }).waitFor();
+        releaseInit();
+        await page.getByText("Lean editor ready", { exact: true }).waitFor();
+        await frame.getByText("-- typed before Lean initialized", { exact: true }).waitFor();
+        const select = async name => {
+          await page.getByRole("button", { name: /Search nodes/ }).click();
+          await page.getByPlaceholder("Search by title or fnode…").fill(name);
+          await page.getByRole("button", { name: new RegExp(name) }).last().click();
+          await title(page, name);
+        };
+        blockSelect = true;
+        selectionGate = new Promise(resolve => { releaseSelect = resolve; });
+        await select("Gamma");
+        await frame.getByText("gamma", { exact: true }).waitFor({ timeout: 1000 });
+        await input.press("ControlOrMeta+End");
+        await page.keyboard.insertText("-- typed while preparing node\n");
+        await page.getByText("Unsaved", { exact: true }).waitFor();
+        blockSelect = false; releaseSelect();
+        await page.getByText("Lean editor ready", { exact: true }).waitFor();
+        await frame.getByText("-- typed while preparing node", { exact: true }).waitFor();
+        await input.press("ControlOrMeta+z");
+        await frame.getByText("-- typed while preparing node", { exact: true }).waitFor({ state: "hidden" });
+        await input.press("ControlOrMeta+Shift+z");
+        await frame.getByText("-- typed while preparing node", { exact: true }).waitFor();
+        // Delay an older selection, then navigate away before its response arrives.
+        blockSelect = true;
+        selectionGate = new Promise(resolve => { releaseSelect = resolve; });
+        await select("Alpha");
+        await frame.getByText("alpha", { exact: true }).waitFor({ timeout: 1000 });
+        await select("Gamma");
+        blockSelect = false; releaseSelect();
+        await frame.getByText("gamma", { exact: true }).waitFor();
+        await page.getByText("Lean editor ready", { exact: true }).waitFor();
+        await input.press("ControlOrMeta+End");
+        await page.keyboard.insertText("-- draft must survive a disconnect\n");
+        await page.getByText("Unsaved", { exact: true }).waitFor();
+        const sessionPath = () => page.locator('iframe[title="Lean source and Infoview"]').getAttribute("src");
+        const oldPath = await sessionPath();
+        const oldId = new URL(oldPath, url).searchParams.get("session");
+        assert.equal((await fetch(`${url}/api/lean/session/${oldId}`, { method: "DELETE" })).status, 204);
+        await page.waitForFunction(old => document.querySelector('iframe[title="Lean source and Infoview"]')?.getAttribute("src") !== old, oldPath);
+        await frame.getByText("-- draft must survive a disconnect", { exact: true }).waitFor();
+        await page.getByText("Lean editor ready", { exact: true }).waitFor();
+        await page.getByText("Unsaved", { exact: true }).waitFor();
+        assert.ok(sent.filter(m => m.method === "initialize").length >= 2, "a stopped server should reconnect once");
+        assert.ok(sent.filter(m => m.method === "textDocument/didOpen").every(m => m.params.textDocument.uri.startsWith("file:///project/")), "temporary display models must not create Lean workers");
+        assert.doesNotMatch(JSON.parse((await cli("show", ids.Gamma)).stdout).blocks[0].content, /draft must survive/, "reconnection must not save drafts implicitly");
+      }));
     await suite.test("changed dependencies refresh the native worker without restarting its connection", () =>
       fixture(browser, async ({ cli, page, url }) => {
         const dep = JSON.parse((await cli("new", "-t", "Lean Dependency")).stdout);

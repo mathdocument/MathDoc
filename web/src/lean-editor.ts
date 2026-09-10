@@ -1,5 +1,5 @@
 import { LeanMonaco, LeanMonacoEditor, type LeanClient } from "lean4monaco";
-import { Uri, KeyCode, KeyMod, type editor as MonacoEditor } from "monaco-editor";
+import { Uri, KeyCode, KeyMod, editor as MonacoEditor } from "monaco-editor";
 import { createModelReference } from "vscode/monaco";
 import { FileUri } from "lean4monaco/dist/vscode-lean4/vscode-lean4/src/utils/exturi";
 
@@ -26,13 +26,34 @@ const runtime = new BrowserLean();
 const editor = new LeanMonacoEditor();
 const documents = new Map<string, OpenDocument>();
 let selected: OpenDocument | undefined;
+let shownFnode = "";
+let preview: MonacoEditor.ITextModel | undefined;
 let updating = false;
 let selection = 0;
 let selecting = Promise.resolve();
 let resolveClient: (client: LeanClient) => void;
 const clientReady = new Promise<LeanClient>(resolve => { resolveClient = resolve; });
-const send = (type: string, value?: unknown, generation?: number) => parent.postMessage({ type, value, fnode: selected?.document.fnode, generation }, location.origin);
-function showProgress() { send("lean-progress", selected?.progress ?? ""); }
+const send = (type: string, value?: unknown, generation?: number) => parent.postMessage({ type, value, fnode: shownFnode, generation }, location.origin);
+function showProgress() { send("lean-progress", preview ? "Preparing Lean environment…" : selected?.progress ?? ""); }
+function showNode(fnode: string, source: string, generation: number) {
+  if (selected && !preview) selected.view = editor.editor.saveViewState();
+  const oldPreview = preview;
+  selected = [...documents.values()].find(entry => entry.document.fnode === fnode);
+  shownFnode = fnode;
+  // In-memory models retain Lean highlighting but are excluded by the native
+  // client's file/untitled selector. Typing need not wait for imports or LSP init.
+  preview = selected ? undefined : MonacoEditor.createModel(source, "lean4", Uri.parse(`inmemory://mdc/${fnode}/${generation}.lean`));
+  updating = true;
+  editor.editor.setModel(selected?.reference.object.textEditorModel ?? preview!);
+  if (editor.editor.getValue() !== source) editor.editor.setValue(source);
+  if (selected?.view) editor.editor.restoreViewState(selected.view);
+  updating = false;
+  oldPreview?.dispose();
+  editor.editor.focus();
+  document.getElementById("infoview-pending")!.hidden = !preview;
+  showProgress();
+  send("lean-ready", undefined, generation);
+}
 function error(error: unknown) {
   document.getElementById("error")!.textContent = String(error);
   send("lean-error", String(error));
@@ -51,7 +72,7 @@ async function selectNode(fnode: string, revision: string, generation: number, r
   const next: Document = await client.sendRequest("mdc/selectNode", { fnode, revision });
   if (request !== selection) return;
   document.getElementById("error")!.textContent = "";
-  if (selected) selected.view = editor.editor.saveViewState();
+
   let entry = documents.get(next.filename);
   const restart = entry && entry.document.environment_key !== next.environment_key;
   if (!entry) {
@@ -59,21 +80,34 @@ async function selectNode(fnode: string, revision: string, generation: number, r
     // environment per file. Evicted files keep Lake's shared compiled artifacts.
     if (documents.size >= 2) {
       const oldest = documents.keys().next().value!;
-      if (documents.get(oldest) === selected) editor.editor.setModel(null);
       await evict(oldest);
+      if (request !== selection) return;
     }
     const reference = await createModelReference(Uri.file(next.filename), next.source);
+    if (request !== selection) {
+      await reference.object.revert({ soft: true }); reference.dispose(); return;
+    }
     entry = { document: next, reference, view: null, progress: "Loading Lean imports…" };
   }
   documents.delete(next.filename);
   documents.set(next.filename, entry);
   entry.document = next;
+  const source = editor.editor.getValue();
+  const view = editor.editor.saveViewState();
+  const model = entry.reference.object.textEditorModel;
+  if (!model) throw new Error("Lean document closed while switching nodes");
   selected = entry;
   updating = true;
-  editor.editor.setModel(entry.reference.object.textEditorModel);
-  if (editor.editor.getValue() !== next.source) editor.editor.setValue(next.source);
-  if (entry.view) editor.editor.restoreViewState(entry.view);
+  editor.editor.setModel(model);
+  if (model.getValue() !== source) {
+    model.pushStackElement();
+    model.pushEditOperations([], [{ range: model.getFullModelRange(), text: source }], () => null);
+    model.pushStackElement();
+  }
+  if (view) editor.editor.restoreViewState(view);
   updating = false;
+  preview?.dispose(); preview = undefined;
+  document.getElementById("infoview-pending")!.hidden = true;
   editor.editor.focus();
   if (restart) { entry.progress = "Reloading changed Lean dependencies…"; runtime.clientProvider!.restartActiveFile(); }
   showProgress();
@@ -101,7 +135,9 @@ async function start() {
   const ensureClient = provider.ensureClient.bind(provider);
   provider.ensureClient = () => ensureClient(new FileUri("/project/lean-toolchain"));
   runtime.clientProvider!.clientAdded((client: LeanClient) => {
-    client.restarted(() => resolveClient(client));
+    client.restarted(() => { if (client.isRunning()) resolveClient(client); });
+    client.stopped((reason: { message: string }) => send("lean-disconnected", reason.message));
+    client.serverFailed((reason: string) => send("lean-disconnected", reason));
     if (client.isRunning()) resolveClient(client);
     client.progressChanged(([uri, processing]: [string, { range: { start: { line: number } } }[]]) => {
       const entry = documents.get(Uri.parse(uri).path);
@@ -113,6 +149,7 @@ async function start() {
   });
   applyTheme(params.get("theme") ?? "light");
   await editor.start(document.getElementById("editor")!, session.filename, session.source);
+  shownFnode = session.fnode;
   selected = { document: session, reference: editor.modelRef, view: null, progress: "Loading Lean imports…" };
   documents.set(session.filename, selected);
   editor.editor.onDidChangeModelContent(() => { if (!updating) send("lean-change", editor.editor.getValue()); });
@@ -122,11 +159,14 @@ async function start() {
     if (event.origin !== location.origin || event.source !== parent) return;
     if (event.data?.type === "lean-theme") applyTheme(event.data.value);
     if (event.data?.type === "lean-select") {
-      const { fnode, revision, generation } = event.data;
+      const { fnode, revision, generation, source } = event.data;
       const request = ++selection;
-      selecting = selecting.then(() => selectNode(fnode, revision, generation, request)).catch(error);
+      showNode(fnode, source, generation);
+      selecting = selecting.then(() => selectNode(fnode, revision, generation, request)).catch(e => {
+        if (request === selection) error(e);
+      });
     }
-    if (event.data?.type === "lean-source" && event.data.fnode === selected?.document.fnode && typeof event.data.value === "string" && editor.editor.getValue() !== event.data.value) {
+    if (event.data?.type === "lean-source" && event.data.fnode === shownFnode && typeof event.data.value === "string" && editor.editor.getValue() !== event.data.value) {
       editor.editor.setValue(event.data.value);
     }
   });
@@ -136,6 +176,7 @@ async function start() {
 void start().catch(error);
 window.addEventListener("pagehide", () => {
   if (id) void fetch(`/api/lean/session/${encodeURIComponent(id)}`, { method: "DELETE", keepalive: true }).catch(console.warn);
+  preview?.dispose();
   for (const entry of documents.values()) entry.reference.dispose();
   editor.editor?.dispose(); runtime.dispose();
 });

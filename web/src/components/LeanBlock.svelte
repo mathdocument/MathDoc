@@ -23,7 +23,9 @@
   let result = $state<Awaited<ReturnType<typeof api.checkLean>> | null>(null);
   let ready = $state(false);
   let runtimeReady = $state(false);
-  let opening = false;
+  let opening = $state(false);
+  let reconnects = 0;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   let connection = 0;
   let progress = $state("");
   let generation = 0;
@@ -59,9 +61,11 @@
     baseline = next;
   });
   function selectNode() {
-    if (runtimeReady && block) frame?.contentWindow?.postMessage({ type: "lean-select", fnode, revision, generation }, location.origin);
+    if (runtimeReady && block) frame?.contentWindow?.postMessage({ type: "lean-select", fnode, revision, generation, source: content }, location.origin);
   }
   async function open() {
+    if (!block) return;
+    clearTimeout(reconnectTimer); reconnectTimer = undefined;
     const current = ++connection;
     closeSession();
     opening = true; runtimeReady = false; ready = false; error = null; result = null; initialTheme = theme;
@@ -71,6 +75,17 @@
       else void api.closeLeanSession(response.id).catch(console.warn);
     } catch (e) { if (alive && connection === current) { error = errMsg(e); onReady?.(); } }
     finally { if (connection === current) opening = false; }
+  }
+  function reload() { reconnects = 0; void open(); }
+  function disconnected(reason: string) {
+    error = reason;
+    // One automatic attempt per editor lifetime; repeated crashes need an explicit
+    // retry. The parent owns unsaved text and restores it into the new runtime.
+    if (!reconnectTimer && reconnects < 1 && block) {
+      reconnects++;
+      progress = "Reconnecting Lean…";
+      reconnectTimer = setTimeout(() => { if (alive) void open(); }, 500);
+    }
   }
   function closeSession() {
     if (session) void api.closeLeanSession(session).catch(console.warn);
@@ -105,6 +120,7 @@
   function message(event: MessageEvent) {
     if (event.origin !== location.origin || event.source !== frame?.contentWindow) return;
     if (event.data?.type === "lean-runtime-ready") { runtimeReady = true; selectNode(); return; }
+    if (event.data?.type === "lean-disconnected") { disconnected(String(event.data.value)); return; }
     if (event.data?.type === "lean-error") { error = String(event.data.value); onReady?.(); return; }
     if (event.data?.fnode !== fnode || !block) return;
     switch (event.data?.type) {
@@ -116,7 +132,7 @@
 
     }
   }
-  onDestroy(() => { alive = false; generation++; connection++; closeSession(); removeDraft(draft); });
+  onDestroy(() => { clearTimeout(reconnectTimer); alive = false; generation++; connection++; closeSession(); removeDraft(draft); });
 </script>
 
 <svelte:window onmessage={message} />
@@ -127,7 +143,7 @@
     <div class="block-actions">
       <button class="preview-toggle" onclick={() => void save(true)} disabled={busy} aria-busy={action === "check"} aria-label="Save & check" title="Save & check (Ctrl/⌘+Enter)"><Check size={14} strokeWidth={1.8}/><span class="btn-label">Save & check</span></button>
       <button class="preview-toggle" onclick={() => void save(true, true)} disabled={busy} aria-label="Save & build" title="Save & build"><Hammer size={14} strokeWidth={1.8}/><span class="btn-label">Save & build</span></button>
-      <button class="icon-btn expand" onclick={() => void open()} disabled={dirty || busy} aria-label="Reload environment" title="Reload environment"><RotateCcw size={14} strokeWidth={1.8}/></button>
+      <button class="icon-btn expand" onclick={reload} disabled={opening || busy} aria-label="Reload environment" title="Reload environment"><RotateCcw size={14} strokeWidth={1.8}/></button>
       <button class="icon-btn expand" onclick={() => expanded = !expanded} aria-expanded={expanded} aria-label={expanded ? "Collapse block" : "Expand block"} title={expanded ? "Collapse" : "Expand"}>{#if expanded}<ChevronDown size={15}/>{:else}<ChevronRight size={15}/>{/if}</button>
       <button class="save" onclick={() => void save()} disabled={busy || !dirty} aria-label="Save" title="Save (Ctrl/⌘+S)"><Save size={13} strokeWidth={1.9}/><span class="btn-label">Save</span></button>
       <button class="delete" onclick={() => void remove()} disabled={busy} aria-label="Delete block" title="Delete block"><Trash2 size={14} strokeWidth={1.8}/></button>
@@ -136,9 +152,12 @@
   {#if action}<div class="status activity" role="status" aria-live="polite">{{ save: "Saving…", check: "Checking…", build: "Building…", delete: "Deleting…" }[action]}</div>{/if}
   {#if !ready && !error}<div class="status" aria-busy="true">{session && runtimeReady ? "Opening Lean node…" : "Starting Lean editor…"}</div>{/if}
   {#if ready && progress}<div class="status" role="status">{progress}</div>{/if}
+  <div class="editor-surface">
+    {#if !ready && expanded}<pre class="source-placeholder" aria-label="Lean source while editor loads">{content}</pre>{/if}
   {#if session}
     <div class:pending={!ready} class:collapsed={!expanded} inert={!ready || !expanded}><iframe bind:this={frame} title="Lean source and Infoview" src={`/lean.html?session=${encodeURIComponent(session)}&theme=${initialTheme}`} allow="clipboard-write"></iframe></div>
   {/if}
+  </div>
   {#if error}<div class="error-bar" role="alert">{error}</div>{/if}
   {#if result}
     <div class="status" class:error-bar={!result.certified}>
@@ -150,6 +169,8 @@
 </article>
 <style>
   .hidden, .collapsed { display: none; }
-  .pending { visibility: hidden; }
+  .editor-surface { position: relative; }
+  .source-placeholder { box-sizing: border-box; height: 500px; overflow: auto; margin: 0; padding: 12px; font: 13px/1.6 monospace; white-space: pre-wrap; }
+  .pending { visibility: hidden; position: absolute; inset: 0; }
   iframe { display: block; width: 100%; height: 500px; border: 0; }
 </style>
