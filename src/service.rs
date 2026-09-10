@@ -238,14 +238,28 @@ pub async fn serve(db: Database, bind: &str) -> Result<()> {
     let service = Service::open(db).await?;
     let listener = tokio::net::TcpListener::bind(address).await?;
     eprintln!("MathDoc → http://{}", listener.local_addr()?);
-    axum::serve(listener, router(service))
-        .with_graceful_shutdown(async {
+    let stopping = service.clone();
+    axum::serve(listener, router(service.clone()))
+        .with_graceful_shutdown(async move {
             let mut terminate =
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
                     .expect("install SIGTERM handler");
             tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{}}
+            stopping.editor_slots.close();
+            let closing = std::mem::take(&mut *stopping.editors.lock().await);
+            for session in closing.values() {
+                let _ = session._cancel.send(());
+            }
+            for session in closing.values() {
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    session._cancel.closed(),
+                )
+                .await;
+            }
         })
         .await?;
+    service.lean.shutdown().await;
     Ok(())
 }
 
@@ -789,9 +803,14 @@ async fn lean_session(
     Ok(Json(response))
 }
 async fn close_editor(State(s): State<Arc<Service>>, Path(id): Path<String>) -> StatusCode {
-    // Dropping the sender cancels preparation or the active LSP bridge. The permit
-    // belongs to the registry, so filesystem cleanup never delays slot release.
-    s.editors.lock().await.remove(&id);
+    // Release the slot before waiting for native shutdown or filesystem cleanup.
+    let session = s.editors.lock().await.remove(&id);
+    if let Some(session) = session {
+        let cancel = session._cancel.clone();
+        drop(session);
+        let _ = cancel.send(());
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), cancel.closed()).await;
+    }
     StatusCode::NO_CONTENT
 }
 
@@ -831,19 +850,23 @@ async fn editor_socket(
             tokio::spawn(async move { failed_service.editors.lock().await.remove(&failed_id); });
         })
         .on_upgrade(move |socket| async move {
-            let mut directory = None;
-            let result = tokio::select! {
+            let prepared = tokio::select! {
                 biased;
-                _ = cancelled.changed() => Ok(()),
+                _ = cancelled.changed() => Ok(None),
                 result = async {
-                    directory = Some(tokio::time::timeout(std::time::Duration::from_secs(30), s.lean.editor_project(&input)).await.context("editor environment preparation timed out")??);
-                    bridge_editor(socket, directory.as_ref().unwrap().path(), &input, &s).await
+                    Ok::<_, anyhow::Error>(Some(tokio::time::timeout(std::time::Duration::from_secs(30), s.lean.editor_project(&input)).await.context("editor environment preparation timed out")??))
                 } => result,
             };
+            let result = match prepared {
+                Ok(Some(directory)) => {
+                    let result = bridge_editor(socket, directory.path(), &input, &s, &mut cancelled).await;
+                    tokio::task::spawn_blocking(move || drop(directory));
+                    result
+                },
+                Ok(None) => Ok(()),
+                Err(error) => Err(error),
+            };
             s.editors.lock().await.remove(&id);
-            if let Some(directory) = directory {
-                tokio::task::spawn_blocking(move || drop(directory));
-            }
             if let Err(error) = result {
                 eprintln!("Lean editor: {error:#}");
             }
@@ -911,6 +934,7 @@ async fn bridge_editor(
     root: &std::path::Path,
     input: &crate::lean::Input,
     service: &Service,
+    cancelled: &mut tokio::sync::watch::Receiver<()>,
 ) -> Result<()> {
     use axum::extract::ws::Message;
     use futures_util::{SinkExt, StreamExt};
@@ -919,33 +943,11 @@ async fn bridge_editor(
     let mut allowed = HashSet::from([crate::lean::file_uri(std::path::Path::new(
         document["filename"].as_str().unwrap(),
     ))?]);
-    let mut process = crate::lean::spawn(root, &["serve"])?;
-    let mut writer = process
-        .child
-        .stdin
-        .take()
-        .context("Lean stdin unavailable")?;
-    let mut reader = tokio::io::BufReader::new(
-        process
-            .child
-            .stdout
-            .take()
-            .context("Lean stdout unavailable")?,
-    );
-    let (tx, mut rx) = tokio::sync::mpsc::channel(32);
-    // A dedicated reader never cancels a partially read Content-Length frame.
-    let task = tokio::spawn(async move {
-        loop {
-            let value = crate::lean::read_frame(&mut reader).await;
-            let failed = value.is_err();
-            if tx.send(value).await.is_err() || failed {
-                break;
-            }
-        }
-    });
+    let mut server = crate::lean::Server::start(root)?;
     let (mut send, mut receive) = socket.split();
     let result:Result<()>=async{
         loop{tokio::select!{
+            _=cancelled.changed()=>break,
             message=receive.next()=>{
                 let Some(message)=message else{break;};match message?{
                     Message::Text(text)=>{
@@ -979,18 +981,18 @@ async fn bridge_editor(
                             if !allowed.contains(&change.params.document.uri){bail!("editor may only change its selected draft modules");}
                         }
                         let text = rewrite_uris(&text, "file:///project", &actual)?;
-                        crate::lean::write_frame(&mut writer, &text).await?;
+                        server.send(text).await?;
                     },
                     Message::Close(_)=>break,Message::Ping(data)=>send.send(Message::Pong(data)).await?,_=>{}
                 }
             },
-            message=rx.recv()=>{
-                let text = message.context("Lean server closed its output")??;
+            message=server.receive()=>{
+                let text = message?;
                 send.send(Message::Text(rewrite_uris(&text, &actual, "file:///project")?)).await?;
             }
         }}Ok(())
     }.await;
-    task.abort();
+    server.shutdown().await;
     result
 }
 

@@ -119,6 +119,7 @@ async fn pinned_external_library_builds_and_reuses_artifacts() {
         std::fs::metadata(&artifact).unwrap().modified().unwrap(),
         modified
     );
+    service.shutdown().await;
 }
 
 #[tokio::test]
@@ -310,6 +311,7 @@ async fn native_lean_incremental_diagnostics_goals_and_imports() {
         LeanService::new(temp.path().to_path_buf()).is_err(),
         "two services must not race over Lake artifacts"
     );
+    service.shutdown().await;
     drop(service);
     let restarted = LeanService::new(temp.path().to_path_buf()).unwrap();
     let restored = restarted.check(current, false).await.unwrap();

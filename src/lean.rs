@@ -12,8 +12,8 @@ use std::{
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    process::{Child, ChildStdin, ChildStdout, Command},
-    sync::Mutex,
+    process::{Child, Command},
+    sync::{mpsc, Mutex},
 };
 
 fn timeout() -> Result<Duration> {
@@ -75,8 +75,93 @@ pub fn spawn(root: &Path, args: &[&str]) -> Result<Process> {
     let pid = child.id().context("compiler process has no PID")? as i32;
     Ok(Process { child, pid })
 }
-pub async fn read_message(reader: &mut BufReader<ChildStdout>) -> Result<Value> {
-    Ok(serde_json::from_str(&read_frame(reader).await?)?)
+/// One transport for CLI and browser clients. Dropping it asks Lean's watchdog
+/// to terminate its workers, which use separate process groups of their own.
+pub struct Server {
+    input: mpsc::Sender<String>,
+    output: mpsc::Receiver<Result<String>>,
+    task: tokio::task::JoinHandle<()>,
+}
+impl Server {
+    pub fn start(root: &Path) -> Result<Self> {
+        let mut process = spawn(root, &["serve"])?;
+        let mut writer = process
+            .child
+            .stdin
+            .take()
+            .context("Lean stdin unavailable")?;
+        let mut reader = BufReader::new(
+            process
+                .child
+                .stdout
+                .take()
+                .context("Lean stdout unavailable")?,
+        );
+        let (input, mut incoming) = mpsc::channel::<String>(32);
+        let (outgoing, output) = mpsc::channel(32);
+        let errors = outgoing.clone();
+        // Never cancel a partially read frame. After the client disconnects,
+        // continue draining stdout until Lean finishes its shutdown handshake.
+        tokio::spawn(async move {
+            loop {
+                let message = read_frame(&mut reader).await;
+                let failed = message.is_err();
+                let _ = outgoing.send(message).await;
+                if failed {
+                    break;
+                }
+            }
+        });
+        let task = tokio::spawn(async move {
+            tokio::select! {
+                _ = errors.closed() => {},
+                _ = async {
+                    while let Some(text) = incoming.recv().await {
+                        if let Err(error) = write_frame(&mut writer, &text).await {
+                            let _ = errors.send(Err(error)).await;
+                            break;
+                        }
+                    }
+                } => {},
+            }
+            // Lean processes these in order. Keep both pipes alive until it has
+            // killed and reaped the file workers; dropping stdout first causes EPIPE.
+            let _ = tokio::time::timeout(Duration::from_secs(2), async {
+                write_frame(
+                    &mut writer,
+                    r#"{"jsonrpc":"2.0","id":"mdc-shutdown","method":"shutdown","params":null}"#,
+                )
+                .await?;
+                write_frame(&mut writer, r#"{"jsonrpc":"2.0","method":"exit"}"#).await?;
+                process.child.wait().await?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .await;
+            // Process::drop is the fallback for a stuck or crashed server.
+        });
+        Ok(Self {
+            input,
+            output,
+            task,
+        })
+    }
+    pub async fn send(&self, text: String) -> Result<()> {
+        self.input
+            .send(text)
+            .await
+            .context("Lean server closed its input")
+    }
+    pub async fn receive(&mut self) -> Result<String> {
+        self.output
+            .recv()
+            .await
+            .context("Lean server closed its output")?
+    }
+    pub async fn shutdown(self) {
+        drop(self.input);
+        drop(self.output);
+        let _ = self.task.await;
+    }
 }
 
 /// Keep editor RPC payloads opaque: Lean's tagged expressions can exceed JSON
@@ -114,9 +199,6 @@ pub async fn read_frame(reader: &mut (impl tokio::io::AsyncBufRead + Unpin)) -> 
     reader.read_exact(&mut data).await?;
     Ok(String::from_utf8(data)?)
 }
-pub async fn write_message(writer: &mut ChildStdin, value: &Value) -> Result<()> {
-    write_frame(writer, &serde_json::to_string(value)?).await
-}
 pub async fn write_frame(
     writer: &mut (impl tokio::io::AsyncWrite + Unpin),
     data: &str,
@@ -138,9 +220,7 @@ struct Document {
     dependency_key: String,
 }
 struct Lsp {
-    _process: Process,
-    writer: ChildStdin,
-    reader: BufReader<ChildStdout>,
+    server: Server,
     sequence: u64,
     documents: HashMap<String, Document>,
     open_order: VecDeque<String>,
@@ -148,23 +228,8 @@ struct Lsp {
 }
 impl Lsp {
     async fn start(root: &Path) -> Result<Self> {
-        let mut process = spawn(root, &["serve"])?;
-        let writer = process
-            .child
-            .stdin
-            .take()
-            .context("Lean stdin unavailable")?;
-        let reader = BufReader::new(
-            process
-                .child
-                .stdout
-                .take()
-                .context("Lean stdout unavailable")?,
-        );
         let mut lsp = Self {
-            _process: process,
-            writer,
-            reader,
+            server: Server::start(root)?,
             sequence: 0,
             documents: HashMap::new(),
             open_order: VecDeque::new(),
@@ -177,23 +242,19 @@ impl Lsp {
         Ok(lsp)
     }
     async fn notify(&mut self, method: &str, params: Value) -> Result<()> {
-        write_message(
-            &mut self.writer,
-            &json!({"jsonrpc":"2.0","method":method,"params":params}),
-        )
-        .await
+        self.server
+            .send(json!({"jsonrpc":"2.0","method":method,"params":params}).to_string())
+            .await
     }
     async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
         self.sequence += 1;
         let id = self.sequence;
-        write_message(
-            &mut self.writer,
-            &json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}),
-        )
-        .await?;
+        self.server
+            .send(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}).to_string())
+            .await?;
         tokio::time::timeout(timeout()?, async {
             loop {
-                let message = read_message(&mut self.reader).await?;
+                let message: Value = serde_json::from_str(&self.server.receive().await?)?;
                 if message.get("id") == Some(&json!(id)) && message.get("method").is_none() {
                     if let Some(error) = message.get("error") {
                         bail!("Lean {method}: {error}");
@@ -231,11 +292,11 @@ impl Lsp {
                     } else {
                         Value::Null
                     };
-                    write_message(
-                        &mut self.writer,
-                        &json!({"jsonrpc":"2.0","id":message["id"],"result":result}),
-                    )
-                    .await?;
+                    self.server
+                        .send(
+                            json!({"jsonrpc":"2.0","id":message["id"],"result":result}).to_string(),
+                        )
+                        .await?;
                 }
             }
         })
@@ -505,6 +566,11 @@ impl LeanService {
             .map_err(|_| anyhow::anyhow!("Lean cache lock poisoned"))?
             .insert(result.fnode.clone(), result.clone());
         Ok(result)
+    }
+    pub async fn shutdown(&self) {
+        if let Some(lsp) = self.manager.lock().await.lsp.take() {
+            lsp.server.shutdown().await;
+        }
     }
     async fn prepare_input(&self, manager: &mut Manager, input: &Input) -> Result<()> {
         let project_key = input.project.key();

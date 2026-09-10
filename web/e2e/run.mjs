@@ -56,7 +56,7 @@ async function fixture(browser, body) {
     page.on("dialog", (dialog) => void dialog.accept());
     await page.goto(server.url);
     await title(page, "Alpha");
-    try { await body({ root, cli, page, url: server.url }); }
+    try { await body({ root, cli, page, url: server.url, serverOutput: server.output }); }
     catch(e) {
       await page.screenshot({ path: resolve(root, "failure.png"), fullPage: true });
       console.error("Server:", server.output());
@@ -84,6 +84,7 @@ async function fixture(browser, body) {
       assert.ok(response.ok || response.status === 404, `test database cleanup failed: ${response.status}`);
     }
     await rm(root, { recursive: true, force: true });
+    assert.doesNotMatch(server?.output() ?? "", /broken pipe|recursion limit exceeded/, "service shutdown must finish native cleanup before closing the runtime");
   }
 }
 
@@ -323,7 +324,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         }
       }));
     await suite.test("Lean stays editable during delayed startup and selection, and reconnects without losing drafts", () =>
-      fixture(browser, async ({ cli, page, url }) => {
+      fixture(browser, async ({ root, cli, page, url, serverOutput }) => {
         const ids = {};
         for (const name of ["Alpha", "Gamma"]) {
           const node = JSON.parse((await cli("show", name)).stdout);
@@ -396,12 +397,19 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         const sessionPath = () => page.locator('iframe[title="Lean source and Infoview"]').getAttribute("src");
         const oldPath = await sessionPath();
         const oldId = new URL(oldPath, url).searchParams.get("session");
+        const workers = async () => (await run("ps", ["-axo", "pid=,command="])).stdout.split("\n")
+          .filter(line => line.includes("--worker ") && line.includes(root)).map(line => Number(line.trim().split(/\s+/)[0]));
+        const oldWorkers = await workers();
+        assert.ok(oldWorkers.length > 0, "the session must have native file workers");
         assert.equal((await fetch(`${url}/api/lean/session/${oldId}`, { method: "DELETE" })).status, 204);
         await page.waitForFunction(old => document.querySelector('iframe[title="Lean source and Infoview"]')?.getAttribute("src") !== old, oldPath);
         await frame.getByText("-- draft must survive a disconnect", { exact: true }).waitFor();
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
         await page.getByText("Unsaved", { exact: true }).waitFor();
         assert.ok(sent.filter(m => m.method === "initialize").length >= 2, "a stopped server should reconnect once");
+        const remaining = await workers();
+        assert.ok(oldWorkers.every(pid => !remaining.includes(pid)), "disconnect must reap the old workers, including their separate process groups");
+        assert.doesNotMatch(serverOutput(), /broken pipe|recursion limit exceeded/, "disconnect must keep stdout open through native shutdown");
         assert.ok(sent.filter(m => m.method === "textDocument/didOpen").every(m => m.params.textDocument.uri.startsWith("file:///project/")), "temporary display models must not create Lean workers");
         assert.doesNotMatch(JSON.parse((await cli("show", ids.Gamma)).stdout).blocks[0].content, /draft must survive/, "reconnection must not save drafts implicitly");
       }));
