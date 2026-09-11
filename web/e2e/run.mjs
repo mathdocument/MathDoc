@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,7 +23,7 @@ async function startServer(cwd, database) {
   return { ...info, output: () => readFileSync(info.log, "utf8").slice(-16000) };
 }
 
-async function fixture(browser, body) {
+async function fixture(browser, body, extraNodes = []) {
   const root = await mkdtemp(resolve(tmpdir(), "mdc-e2e-"));
   let server;
   let context;
@@ -32,9 +32,14 @@ async function fixture(browser, body) {
   try {
     await cli("init");
     server = await startServer(root, database);
-    for (const name of ["alpha", "beta", "gamma"]) {
-      await cli("new", "-t", name[0].toUpperCase() + name.slice(1));
-    }
+    const bundle = JSON.parse((await cli("export")).stdout);
+    bundle.nodes = ["Alpha", "Beta", "Gamma"].map(title => {
+      const fnode = randomUUID();
+      return { fnode, title, module: `Lib.N_${fnode.replaceAll("-", "")}`, depens: [], blocks: [] };
+    }).concat(extraNodes);
+    const input = resolve(root, "graph.json");
+    await writeFile(input, JSON.stringify(bundle));
+    await cli("import", input);
     await cli("dep", "add", "Alpha", "--target", "Beta");
     await cli("graph", "check");
     context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
@@ -158,15 +163,11 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.deepEqual(report.cycles, []);
         assert.equal(report.edges, 2);
       }));
-    await suite.test("native Lean editor renders goals, diagnostics and saves to the database", () =>
-      fixture(browser, async ({ root, page, cli, url }) => {
-        const source = "theorem demo : True ∧ True := by\n  constructor\n  · trivial\n  · trivial\n";
-        // Legacy modules can be nested and quoted; later nodes use the flat Lib directory.
-        const a = { fnode: randomUUID(), title: "Lean Example", module: "Lib.EGA.«1-1.7.1»", depens: [], blocks: [{ srctype: "lean", content: source }, { srctype: "text", content: "A shared block header." }, { srctype: "rocq", content: "Check nat." }, { srctype: "latex", content: "A formula: $x^2$." }] };
-        const saved = await fetch(`${url}/api/import`, {
-          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ nodes: [a] }),
-        });
-        assert.equal(saved.status, 200);
+    await suite.test("native Lean editor renders goals, diagnostics and saves to the database", () => {
+      const source = "theorem demo : True ∧ True := by\n  constructor\n  · trivial\n  · trivial\n";
+      // Imported modules can be nested and quoted; later nodes use the flat Lib directory.
+      const a = { fnode: randomUUID(), title: "Lean Example", module: "Lib.EGA.«1-1.7.1»", depens: [], blocks: [{ srctype: "lean", content: source }, { srctype: "text", content: "A shared block header." }, { srctype: "rocq", content: "Check nat." }, { srctype: "latex", content: "A formula: $x^2$." }] };
+      return fixture(browser, async ({ root, page, cli, url }) => {
         let sessions = 0;
         const messages = [];
         page.on("websocket", ws => ws.on("framesent", ({ payload }) => {
@@ -321,7 +322,8 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           await frame.locator(".monaco-editor").waitFor();
           assert.equal((await fetch(`${url}/api/lean/session/${old}`)).status, 404, "reload must retire the old LSP session");
         }
-      }));
+      }, [a]);
+    });
     await suite.test("Lean stays editable during delayed startup and selection, and reconnects without losing drafts", () =>
       fixture(browser, async ({ root, cli, page, url, serverOutput }) => {
         const ids = {};

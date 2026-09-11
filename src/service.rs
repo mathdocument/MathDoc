@@ -816,44 +816,30 @@ async fn export(State(s): State<Arc<Service>>) -> ApiResult<Json<Value>> {
 #[serde(deny_unknown_fields)]
 pub struct Import {
     pub nodes: Vec<Node>,
-    pub project: Option<LeanProject>,
+    pub project: LeanProject,
 }
 async fn import(State(s): State<Arc<Service>>, Json(body): Json<Import>) -> ApiResult<Json<Value>> {
     let mut snapshot = s.read().await?;
-    if body
-        .nodes
-        .iter()
-        .any(|n| snapshot.nodes.contains_key(&n.fnode))
-    {
+    if !snapshot.nodes.is_empty() {
         return Err(ApiError(
             StatusCode::CONFLICT,
-            "import would overwrite existing UUIDs".into(),
-        ));
-    }
-    if body.project.is_some() && !snapshot.nodes.is_empty() {
-        return Err(ApiError(
-            StatusCode::CONFLICT,
-            "project import requires an empty database".into(),
+            "graph import requires an empty branch".into(),
         ));
     }
     // Project configuration is validated before any data is imported.
-    if let Some(p) = &body.project {
-        p.validate()?;
-    }
+    body.project.validate()?;
     snapshot.validate_changes(&body.nodes)?;
     let version =
         s.db.put_bundle(
             &body.nodes,
-            body.project.as_ref(),
+            Some(&body.project),
             &snapshot.version,
-            "Import nodes",
+            "Import graph",
         )
         .await?;
     snapshot.apply(body.nodes, version);
-    if let Some(project) = body.project {
-        snapshot.project = project;
-        snapshot.recompute();
-    }
+    snapshot.project = body.project;
+    snapshot.recompute();
     Ok(Json(graph_report(&snapshot)))
 }
 async fn history(State(s): State<Arc<Service>>) -> ApiResult<Json<Value>> {

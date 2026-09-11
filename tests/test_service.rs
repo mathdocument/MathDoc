@@ -217,10 +217,45 @@ async fn api_mutations_use_database_revisions_without_workspace_files() {
     let (_, bundle) = call(&app, "GET", "/api/export", Value::Null, None).await;
     let restore = common::TestDatabase::new("mdcrestore").await;
     let restored = service::router(Service::open(restore.db.clone()).await.unwrap());
+    let empty_version = restore.db.version().await.unwrap();
+    let mut missing_project = bundle.clone();
+    missing_project.as_object_mut().unwrap().remove("project");
+    let mut null_project = bundle.clone();
+    null_project["project"] = Value::Null;
+    let mut invalid_project = bundle.clone();
+    invalid_project["project"]["toolchain"] = json!("unpinned");
+    let mut dangling = bundle.clone();
+    dangling["nodes"][0]["depens"] = json!([uuid::Uuid::new_v4().to_string()]);
+    let mut duplicate = bundle.clone();
+    let node = duplicate["nodes"][0].clone();
+    duplicate["nodes"].as_array_mut().unwrap().push(node);
+    for invalid in [
+        missing_project,
+        null_project,
+        invalid_project,
+        dangling,
+        duplicate,
+    ] {
+        let (status, response) = call(&restored, "POST", "/api/import", invalid, None).await;
+        assert_eq!(status, 422, "{response}");
+        assert_eq!(restore.db.version().await.unwrap(), empty_version);
+    }
     let (status, _) = call(&restored, "POST", "/api/import", bundle.clone(), None).await;
     assert_eq!(status, 200);
     let (_, roundtrip) = call(&restored, "GET", "/api/export", Value::Null, None).await;
     assert_eq!(bundle, roundtrip);
+    let version = restore.db.version().await.unwrap();
+    let disjoint = json!({
+        "nodes":[mathdoc::store::Node::new("Disjoint".into()).unwrap()],
+        "project":bundle["project"]
+    });
+    assert_eq!(
+        call(&restored, "POST", "/api/import", disjoint, None)
+            .await
+            .0,
+        409
+    );
+    assert_eq!(restore.db.version().await.unwrap(), version);
     assert_eq!(
         call(&restored, "POST", "/api/import", bundle, None).await.0,
         409

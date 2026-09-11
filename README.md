@@ -133,15 +133,16 @@ edits do not invalidate Lean results. Ordinary commands never scan source files.
 
 ```sh
 mdc export --proj myproject/main > backup.json
-mdc export --proj myproject/main 'My theorem' > theorem.json
+mdc init other
+mdc start other/main
 mdc import --proj other/main backup.json
 ```
 
-Full JSON bundles contain all current nodes, module identities and Lean project
-settings. A single-node bundle omits project settings and requires its dependencies
-to exist when imported. Import never overwrites existing UUIDs; project settings
-can only be imported into an empty database. JSON export is a snapshot, not the
-full commit history: back up the TerminusDB volume to preserve history/branches.
+JSON bundles contain the entire branch graph: all current nodes, module identities
+and Lean project settings. Import requires these settings and an empty destination
+branch; it neither creates a database nor merges or overwrites nodes. Export
+contains no Lean caches or olean files. It is a current snapshot; back up the
+TerminusDB volume to preserve history and other branches.
 Legacy `.mdoc` conversion is an external, read-only migration utility; the runtime
 has no legacy parser, sync/back commands, path references or workspace scanner.
 

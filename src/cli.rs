@@ -53,9 +53,9 @@ enum Commands {
         #[command(subcommand)]
         command: Graph,
     },
-    /// Export the database, or one node, as a portable JSON bundle.
-    Export { source: Option<String> },
-    /// Import a JSON bundle without overwriting existing node UUIDs.
+    /// Export the entire branch graph and Lean project configuration as JSON.
+    Export,
+    /// Restore a complete graph JSON bundle into an empty branch.
     Import { input: std::path::PathBuf },
     /// Manage the branch's Lean toolchain and library configuration.
     Project {
@@ -510,17 +510,7 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
                 .await?
             }
         },
-        Commands::Export { source: None } => api.get("/export").await?,
-        Commands::Export {
-            source: Some(source),
-        } => {
-            let n = api.node(&source).await?;
-            let node = serde_json::from_value::<crate::store::Node>(json!({
-                "fnode":n["fnode"], "title":n["title"], "module":n["module"],
-                "depens":n["depens"], "blocks":n["blocks"]
-            }))?;
-            json!({"nodes":[node], "project":null})
-        }
+        Commands::Export => api.get("/export").await?,
         Commands::Import { input } => {
             let body: Value = serde_json::from_slice(
                 &std::fs::read(input).context("import expects a JSON bundle file")?,
@@ -771,6 +761,12 @@ mod tests {
             .is_ok());
         assert!(grouped_command()
             .try_get_matches_from(["mdc", "branch", "del", "agent", "--proj", "db/main"])
+            .is_err());
+        assert!(grouped_command()
+            .try_get_matches_from(["mdc", "export", "--proj", "db/main"])
+            .is_ok());
+        assert!(grouped_command()
+            .try_get_matches_from(["mdc", "export", "node", "--proj", "db/main"])
             .is_err());
     }
 }
