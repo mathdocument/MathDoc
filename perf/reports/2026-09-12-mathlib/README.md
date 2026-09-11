@@ -82,3 +82,22 @@ preservation, cancellation, changed dependencies and concurrent CLI/browser edge
 The small native fixture measured 302 ms from save to automatic verification,
 301 ms warm navigation and 500 ms warm edit diagnostics. These are fixture timings,
 not full-Mathlib editor measurements. Documentation checking and build passed.
+
+## Structural writes
+
+After separating topology/index rebuilding from source hashing, the same mutation
+sequence on a fresh fork gives these median HTTP latencies (five samples):
+
+| Operation | Full source rehash | Affected keys only |
+| --- | ---: | ---: |
+| Create node | 360.28 ms | 56.65 ms |
+| Add dependency | 358.07 ms | 53.00 ms |
+| Remove dependency | 359.66 ms | 53.13 ms |
+
+The graph is still validated, topology is recomputed, and TerminusDB persists the
+transaction before responding. Unrelated source hashes and certificates remain
+unchanged. An incremental-update regression compares keys and depths with a full
+rebuild; the real database API/import tests and ordinary Rust tests pass.
+`graph-final.json` contains all read/write samples. Startup/import/config changes
+still rebuild the full projection; concurrent reads still serialize through the
+service snapshot lock. No claim of eliminating those costs is made.

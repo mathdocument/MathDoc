@@ -694,6 +694,10 @@ impl Snapshot {
     }
     pub fn recompute(&mut self) {
         self.project_key = self.project.key();
+        self.recompute_graph();
+        self.refresh_lean_keys(self.nodes.keys().cloned().collect());
+    }
+    fn recompute_graph(&mut self) {
         self.modules = Arc::new(
             self.nodes
                 .values()
@@ -715,7 +719,6 @@ impl Snapshot {
                     .push(node.fnode.clone());
             }
         }
-        self.refresh_lean_keys(self.nodes.keys().cloned().collect());
     }
     fn refresh_lean_keys(&mut self, seeds: BTreeSet<String>) {
         // Cache the SHA state after environment/module/source. Dependent edits
@@ -823,7 +826,9 @@ impl Snapshot {
             .iter()
             .filter(|n| {
                 self.nodes.get(&n.fnode).is_none_or(|old| {
-                    old.source("lean") != n.source("lean") || old.module != n.module
+                    old.source("lean") != n.source("lean")
+                        || old.module != n.module
+                        || old.depens != n.depens
                 })
             })
             .map(|n| n.fnode.clone())
@@ -838,10 +843,9 @@ impl Snapshot {
         }
         self.version = version;
         if graph_changed {
-            self.recompute();
-        } else {
-            self.refresh_lean_keys(lean_changed);
+            self.recompute_graph();
         }
+        self.refresh_lean_keys(lean_changed);
     }
 }
 
@@ -1019,5 +1023,25 @@ mod tests {
         assert!(!Arc::ptr_eq(&old.chain[0].0, &snapshot.nodes[&a.fnode]));
         assert!(Arc::ptr_eq(&old.chain[1].0, &snapshot.nodes[&b.fnode]));
         assert_ne!(old.chain[1].1, snapshot.lean_keys[&b.fnode]);
+
+        let c = Node::new("C".into()).unwrap();
+        b.depens = vec![c.fnode.clone()];
+        let a_key = snapshot.lean_keys[&a.fnode].clone();
+        snapshot.apply(vec![b.clone(), c.clone()], "rewired".into());
+        assert_eq!(snapshot.lean_keys[&a.fnode], a_key);
+        assert!(snapshot.referrers[&a.fnode].is_empty());
+        assert_eq!(snapshot.referrers[&c.fnode], vec![b.fnode.clone()]);
+        assert_eq!(
+            snapshot.modules[&module_file(&c.module, "lean").unwrap()],
+            c.fnode
+        );
+        let keys = snapshot.lean_keys.clone();
+        let depths = snapshot.depths.clone();
+        snapshot.recompute();
+        assert_eq!(
+            snapshot.lean_keys, keys,
+            "incremental graph edits must agree with a full rebuild"
+        );
+        assert_eq!(snapshot.depths, depths);
     }
 }

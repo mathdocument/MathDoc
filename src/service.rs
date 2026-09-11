@@ -902,7 +902,13 @@ async fn import(State(s): State<Arc<Service>>, Json(body): Json<Import>) -> ApiR
         )
         .await?;
     snapshot.project = body.project.into();
-    snapshot.apply(body.nodes, version);
+    snapshot.nodes = body
+        .nodes
+        .into_iter()
+        .map(|n| (n.fnode.clone(), Arc::new(n)))
+        .collect();
+    snapshot.version = version;
+    snapshot.recompute();
     Ok(Json(graph_report(&snapshot)))
 }
 async fn history(State(s): State<Arc<Service>>) -> ApiResult<Json<Value>> {
