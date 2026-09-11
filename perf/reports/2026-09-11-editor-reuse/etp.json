@@ -1,0 +1,49 @@
+{
+  "graph": {
+    "cycles": [],
+    "edges": 368017,
+    "invalid": [],
+    "missing": [],
+    "nodes": 47435
+  },
+  "toolchain": "leanprover/lean4:v4.29.1",
+  "node": {
+    "fnode": "03505d3e-baee-4a7b-a9fe-162060751335",
+    "title": "Equation 181 implies Equation 24",
+    "direct_dependencies": 23
+  },
+  "runs": [
+    {
+      "label": "first_session_restored_cache",
+      "visible_ms": 1173,
+      "ready_ms": 22558,
+      "verified_ms": 22602,
+      "cli_wall_ms": 43,
+      "cli_elapsed_ms": 0,
+      "cli_cache_hit": true,
+      "deps_verified": 23,
+      "initializations": 1,
+      "certificate_requests": 1
+    },
+    {
+      "label": "fresh_session_shared_native_cache",
+      "visible_ms": 1031,
+      "ready_ms": 7846,
+      "verified_ms": 7892,
+      "cli_wall_ms": 40,
+      "cli_elapsed_ms": 0,
+      "cli_cache_hit": true,
+      "deps_verified": 23,
+      "initializations": 1,
+      "certificate_requests": 1
+    }
+  ],
+  "browser_errors": [],
+  "database_revision_unchanged": true,
+  "native_certification_ms": [
+    34,
+    0
+  ],
+  "certified_closure_nodes": 56,
+  "server_errors": []
+}
