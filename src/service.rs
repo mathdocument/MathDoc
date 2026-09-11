@@ -587,7 +587,12 @@ async fn view(State(s): State<Arc<Service>>, Path(id): Path<String>) -> ApiResul
     let n = snapshot.resolve(&id)?;
     let _ = s
         .lean
-        .cached_or_load(n, &snapshot.lean_keys[&n.fnode], &snapshot.project, false)
+        .cached_or_load(
+            n,
+            &snapshot.lean_keys[&n.fnode],
+            &snapshot.project_key,
+            false,
+        )
         .await;
     Ok(Json(json!({"node":detail(&snapshot,n,&s.lean),
         "referrers":snapshot.referrers.get(&n.fnode).into_iter().flatten().map(|id|summary(&snapshot,&snapshot.nodes[id])).collect::<Vec<_>>(),
@@ -854,10 +859,10 @@ async fn put_project(
             "project changed; reload and retry".into(),
         ));
     }
-    project.validate_modules(snapshot.nodes.values())?;
+    project.validate_modules(snapshot.nodes.values().map(AsRef::as_ref))?;
     let version = s.db.put_project(&project, &snapshot.version).await?;
     snapshot.version = version;
-    snapshot.project = project;
+    snapshot.project = project.into();
     snapshot.recompute();
     Ok(Json(
         json!({"revision":snapshot.version,"project":snapshot.project}),
@@ -895,7 +900,7 @@ async fn import(State(s): State<Arc<Service>>, Json(body): Json<Import>) -> ApiR
             "Import graph",
         )
         .await?;
-    snapshot.project = body.project;
+    snapshot.project = body.project.into();
     snapshot.apply(body.nodes, version);
     Ok(Json(graph_report(&snapshot)))
 }
@@ -932,7 +937,7 @@ async fn lean_check(
             .cached_or_load(
                 node,
                 &snapshot.lean_keys[&node.fnode],
-                &snapshot.project,
+                &snapshot.project_key,
                 body.build,
             )
             .await
@@ -1174,6 +1179,11 @@ async fn bridge_editor(
     use axum::extract::ws::Message;
     use futures_util::{SinkExt, StreamExt};
     let actual = crate::lean::file_uri(root)?;
+    let mut sources: crate::lean::SourceState = input
+        .chain
+        .iter()
+        .map(|(node, _)| (node.fnode.clone(), node.clone()))
+        .collect();
     let document = editor_document(input)?;
     let mut allowed = HashSet::from([crate::lean::file_uri(std::path::Path::new(
         document["filename"].as_str().unwrap(),
@@ -1207,11 +1217,11 @@ async fn bridge_editor(
                                     if snapshot.resolve(id)?.revision() != revision { bail!("node changed; reload and retry"); }
                                     crate::lean::Input::capture(&snapshot, id)?
                                 };
-                                if next.project.key() != input.project.key() { bail!("Lean project changed; reload environment"); }
+                                if next.project_key != input.project_key { bail!("Lean project changed; reload environment"); }
                                 let document = editor_document(&next)?;
                                 let uri = crate::lean::file_uri(std::path::Path::new(document["filename"].as_str().unwrap()))?;
                                 if method == "mdc/selectNode" {
-                                    crate::lean::refresh_editor_sources(root, &next).await?;
+                                    crate::lean::refresh_editor_sources(root, &next, &mut sources).await?;
                                     allowed.insert(uri.clone());
                                     observer.lock().unwrap().prepare(uri, next);
                                     Ok(document)

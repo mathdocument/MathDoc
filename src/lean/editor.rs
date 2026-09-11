@@ -286,13 +286,16 @@ mod tests {
             ..Default::default()
         });
         let input = Input {
-            project: LeanProject::default(),
+            project: LeanProject::default().into(),
+            project_key: LeanProject::default().key(),
             modules: [(
                 crate::store::module_file(&node.module, "lean").unwrap(),
                 node.fnode.clone(),
             )]
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>()
             .into(),
-            chain: vec![(node.clone(), "key".into())],
+            chain: vec![(std::sync::Arc::new(node.clone()), "key".into())],
         };
         let uri = "file:///project/Lib/Test.lean";
         let mut observer = Observer::default();
@@ -341,13 +344,13 @@ mod tests {
         observer.server(r#"{"id":3,"result":{}}"#).unwrap();
         assert!(observer.document(uri, &input).is_err());
         let mut changed = input.clone();
-        changed.chain[0].0.blocks[0].content = "-- changed".into();
+        std::sync::Arc::make_mut(&mut changed.chain[0].0).blocks[0].content = "-- changed".into();
         assert!(observer.document(uri, &changed).is_ok());
         assert!(observer.evidence(uri, &changed, 2).is_err());
-        changed
-            .project
+        std::sync::Arc::make_mut(&mut changed.project)
             .lakefile
             .push_str("\n# changed environment\n");
+        changed.project_key = changed.project.key();
         assert!(observer.document(uri, &changed).is_err());
         client(
             &mut observer,

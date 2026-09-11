@@ -18,9 +18,10 @@ async fn native_project_keeps_module_names_configuration_and_dependency_guards()
     };
     let mut a = Node::new("A".into()).unwrap();
     a.module = "Mathlib.A".into();
+    let executions = temp.path().join("dependency-executions");
     a.blocks.push(Block {
         srctype: "lean".into(),
-        content: "import Support\ntheorem base : supportValue = 7 := rfl\n".into(),
+        content: format!("import Lean\nimport Support\nrun_cmd Lean.Elab.Command.liftIO <| do\n  let file ← IO.FS.Handle.mk {} .append\n  file.putStr \"compiled\\n\"\ntheorem base : supportValue = 7 := rfl\n", serde_json::to_string(&executions.to_string_lossy()).unwrap()),
         ..Default::default()
     });
     let mut b = Node::new("B".into()).unwrap();
@@ -35,9 +36,12 @@ async fn native_project_keeps_module_names_configuration_and_dependency_guards()
         version: "native".into(),
         nodes: [a, b.clone()]
             .into_iter()
-            .map(|n| (n.fnode.clone(), n))
+            .map(|n| (n.fnode.clone(), n.into()))
             .collect(),
-        project,
+        project: project.into(),
+        project_key: String::new(),
+        modules: Default::default(),
+        lean_prefixes: HashMap::new(),
         depths: HashMap::new(),
         lean_keys: HashMap::new(),
         referrers: HashMap::new(),
@@ -49,6 +53,11 @@ async fn native_project_keeps_module_names_configuration_and_dependency_guards()
         .await
         .unwrap();
     assert!(checked.certified && checked.built, "{checked:?}");
+    assert_eq!(
+        std::fs::read_to_string(&executions).unwrap(),
+        "compiled\n",
+        "CLI must use the dependency compiled by Lake without elaborating it in another LSP worker"
+    );
     let root = temp.path().join("projects").join(snapshot.project.key());
     assert_eq!(
         std::fs::read_to_string(root.join("lakefile.lean")).unwrap(),
@@ -125,8 +134,11 @@ async fn pinned_external_library_builds_and_reuses_artifacts() {
     });
     let mut snapshot = Snapshot {
         version: "library".into(),
-        nodes: [(node.fnode.clone(), node.clone())].into(),
-        project,
+        nodes: [(node.fnode.clone(), node.clone().into())].into(),
+        project: project.into(),
+        project_key: String::new(),
+        modules: Default::default(),
+        lean_prefixes: HashMap::new(),
         depths: HashMap::new(),
         lean_keys: HashMap::new(),
         referrers: HashMap::new(),
@@ -197,8 +209,11 @@ async fn native_lean_incremental_diagnostics_goals_and_imports() {
     });
     let mut snapshot = Snapshot {
         version: "test".into(),
-        nodes: [(a.fnode.clone(), a.clone())].into(),
-        project: LeanProject::default(),
+        nodes: [(a.fnode.clone(), a.clone().into())].into(),
+        project: LeanProject::default().into(),
+        project_key: String::new(),
+        modules: Default::default(),
+        lean_prefixes: HashMap::new(),
         depths: HashMap::new(),
         lean_keys: HashMap::new(),
         referrers: HashMap::new(),
@@ -243,7 +258,12 @@ async fn native_lean_incremental_diagnostics_goals_and_imports() {
         .join(mathdoc::store::module_file(&a.module, "olean").unwrap());
     std::fs::remove_file(&artifact).unwrap();
     assert!(service
-        .cached_or_load(&a, &snapshot.lean_keys[&a.fnode], &snapshot.project, true)
+        .cached_or_load(
+            &a,
+            &snapshot.lean_keys[&a.fnode],
+            &snapshot.project_key,
+            true
+        )
         .await
         .is_none());
     let rebuilt = service
@@ -310,8 +330,7 @@ async fn native_lean_incremental_diagnostics_goals_and_imports() {
     );
     // Cached results survive environment switches; goals must reopen the exact document.
     let previous = snapshot.project.clone();
-    snapshot
-        .project
+    std::sync::Arc::make_mut(&mut snapshot.project)
         .lakefile
         .push_str("\n# another environment\n");
     snapshot.recompute();

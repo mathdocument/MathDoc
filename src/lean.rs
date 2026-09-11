@@ -8,7 +8,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::RwLock,
+    sync::{Arc, RwLock},
     time::{Duration, Instant},
 };
 use tokio::{
@@ -450,15 +450,16 @@ async fn artifact_has_sorry(base: &Path, module: &str) -> Option<bool> {
 }
 #[derive(Clone)]
 pub struct Input {
-    pub project: LeanProject,
-    pub chain: Vec<(Node, String)>,
-    pub modules: BTreeMap<PathBuf, String>,
+    pub project: Arc<LeanProject>,
+    pub project_key: String,
+    pub chain: Vec<(Arc<Node>, String)>,
+    pub modules: Arc<BTreeMap<PathBuf, String>>,
 }
 impl Input {
     pub fn environment_key(&self) -> Result<String> {
         let node = &self.chain.last().context("no Lean target")?.0;
         Ok(digest(&serde_json::to_vec(&(
-            self.project.key(),
+            &self.project_key,
             &node.module,
             self.chain[..self.chain.len() - 1]
                 .iter()
@@ -480,16 +481,8 @@ impl Input {
         ids.sort_by_key(|id| snapshot.depths[id]);
         Ok(Self {
             project: snapshot.project.clone(),
-            modules: snapshot
-                .nodes
-                .values()
-                .map(|n| {
-                    Ok((
-                        crate::store::module_file(&n.module, "lean")?,
-                        n.fnode.clone(),
-                    ))
-                })
-                .collect::<Result<_>>()?,
+            project_key: snapshot.project_key.clone(),
+            modules: snapshot.modules.clone(),
             chain: ids
                 .into_iter()
                 .map(|id| (snapshot.nodes[&id].clone(), snapshot.lean_keys[&id].clone()))
@@ -501,7 +494,7 @@ struct Manager {
     project_key: String,
     root: PathBuf,
     lsp: Option<Lsp>,
-    sources: HashMap<String, (String, String)>,
+    sources: SourceState,
 }
 fn dependency_errors(
     node: &Node,
@@ -587,6 +580,15 @@ impl LeanService {
             let Some(node) = nodes.get(id) else {
                 continue;
             };
+            if self
+                .results
+                .read()
+                .unwrap()
+                .get(id)
+                .is_some_and(|r| r.certified && keys.get(id) == Some(&r.input_key))
+            {
+                continue;
+            }
             let Some(source) = node.source("lean") else {
                 continue;
             };
@@ -628,14 +630,6 @@ impl LeanService {
         }
         let mut final_result = None;
         for (node, key) in &input.chain {
-            if let Some(result) = self
-                .cached_or_load(node, key, &input.project, false)
-                .await
-                .filter(|r| r.certified)
-            {
-                final_result = Some(result);
-                continue;
-            }
             let Some((has_sorry, diagnostics, imports)) = observed.remove(&node.fnode) else {
                 continue;
             };
@@ -757,13 +751,13 @@ impl LeanService {
         &self,
         node: &Node,
         key: &str,
-        project: &LeanProject,
+        project_key: &str,
         build: bool,
     ) -> Option<CheckResult> {
         let artifact = self
             .root
             .join("projects")
-            .join(project.key())
+            .join(project_key)
             .join(".lake/build/lib/lean")
             .join(crate::store::module_file(&node.module, "olean").ok()?);
         if let Some(mut result) = self.cached(&node.fnode, key, &node.revision(), false) {
@@ -813,7 +807,7 @@ impl LeanService {
         let start = Instant::now();
         let (target, key) = input.chain.last().context("no Lean target")?;
         if let Some(result) = self
-            .cached_or_load(target, key, &input.project, build)
+            .cached_or_load(target, key, &input.project_key, build)
             .await
         {
             return Ok(result);
@@ -858,7 +852,7 @@ impl LeanService {
         }
     }
     async fn prepare_input(&self, manager: &mut Manager, input: &Input) -> Result<()> {
-        let project_key = input.project.key();
+        let project_key = input.project_key.clone();
         if manager.project_key != project_key {
             manager.lsp = None;
             manager.sources.clear();
@@ -866,108 +860,32 @@ impl LeanService {
             prepare_project(&manager.root, &input.project).await?;
             manager.project_key = project_key;
         }
-        for (node, _) in &input.chain {
-            if let Some(source) = node.source("lean") {
-                if manager
-                    .sources
-                    .get(&node.fnode)
-                    .is_none_or(|(module, s)| module != &node.module || s != source)
-                {
-                    write_source(&manager.root, node, source).await?;
-                    manager
-                        .sources
-                        .insert(node.fnode.clone(), (node.module.clone(), source.into()));
-                }
-            }
-        }
-        Ok(())
+        refresh_editor_sources(&manager.root, input, &mut manager.sources).await
     }
     async fn check_chain(&self, manager: &mut Manager, input: &Input) -> Result<CheckResult> {
         let (target, key) = input.chain.last().context("no Lean target")?;
         if let Some(result) = self
-            .cached_or_load(target, key, &input.project, false)
+            .cached_or_load(target, key, &input.project_key, false)
             .await
         {
             return Ok(result);
         }
-        let known = &input.modules;
-        let keys: BTreeMap<_, _> = input
-            .chain
-            .iter()
-            .map(|(n, k)| (n.fnode.clone(), k.clone()))
-            .collect();
-        let mut final_result = None;
-        for (node, key) in &input.chain {
-            if let Some(cached) = self.cached_or_load(node, key, &input.project, false).await {
-                final_result = Some(cached);
-                continue;
-            }
-            let Some(source) = node.source("lean") else {
-                let result = CheckResult {
-                    fnode: node.fnode.clone(),
-                    revision: node.revision(),
-                    input_key: key.clone(),
-                    passed: false,
-                    certified: false,
-                    has_sorry: None,
-                    built: false,
-                    cache_hit: false,
-                    diagnostics: vec![],
-                    imports: vec![],
-                    dependency_errors: vec![format!("dependency {} has no Lean block", node.title)],
-                    elapsed_ms: 0,
-                };
-                self.results
-                    .write()
-                    .unwrap()
-                    .insert(node.fnode.clone(), result.clone());
-                final_result = Some(result);
-                continue;
-            };
-            if manager.lsp.is_none() {
-                manager.lsp = Some(Lsp::start(&manager.root).await?);
-            }
-            let uri = file_uri(&module_path(&manager.root, &node.module)?)?;
-            let dependency_key = digest(&serde_json::to_vec(
-                &node
-                    .depens
-                    .iter()
-                    .map(|id| (id, &keys[id]))
-                    .collect::<BTreeMap<_, _>>(),
-            )?);
-            let (diagnostics, imports) = manager
-                .lsp
-                .as_mut()
-                .unwrap()
-                .check(&uri, source, &dependency_key)
-                .await?;
-            verify_manifest(&manager.root, &input.project).await?;
-            let passed = !diagnostics.iter().any(|d| d["severity"] == 1);
-            let errors =
-                dependency_errors(node, &imports, &known, &keys, &self.results.read().unwrap())?;
-            let certified = passed && errors.is_empty();
-            let result = CheckResult {
-                fnode: node.fnode.clone(),
-                revision: node.revision(),
-                input_key: key.clone(),
-                passed,
-                certified,
-                has_sorry: Some(diagnostics_have_sorry(&diagnostics)),
-                built: false,
-                cache_hit: false,
-                diagnostics,
-                imports,
-                dependency_errors: errors,
-                elapsed_ms: 0,
-            };
-            self.persist_result(&result).await?;
-            self.results
-                .write()
-                .unwrap()
-                .insert(node.fnode.clone(), result.clone());
-            final_result = Some(result);
+        let source = target.source("lean").context("node has no Lean block")?;
+        if manager.lsp.is_none() {
+            manager.lsp = Some(Lsp::start(&manager.root).await?);
         }
-        final_result.context("Lean check produced no result")
+        let uri = file_uri(&module_path(&manager.root, &target.module)?)?;
+        // Lake prepares the import closure once. Reuse its native artifact
+        // metadata, as browser certification does, instead of opening every
+        // dependency in a second interactive worker.
+        let (diagnostics, imports) = manager
+            .lsp
+            .as_mut()
+            .unwrap()
+            .check(&uri, source, &input.environment_key()?)
+            .await?;
+        self.record_editor_check(&manager.root, input, diagnostics, imports)
+            .await
     }
     pub async fn goals(&self, input: Input, line: u32, character: u32) -> Result<Value> {
         let node = input.chain.last().context("no Lean target")?.0.clone();
@@ -978,18 +896,7 @@ impl LeanService {
             manager.lsp = Some(Lsp::start(&manager.root).await?);
         }
         let uri = file_uri(&module_path(&manager.root, &node.module)?)?;
-        let keys: BTreeMap<_, _> = input
-            .chain
-            .iter()
-            .map(|(n, k)| (n.fnode.clone(), k.clone()))
-            .collect();
-        let dependency_key = digest(&serde_json::to_vec(
-            &node
-                .depens
-                .iter()
-                .map(|id| (id, &keys[id]))
-                .collect::<BTreeMap<_, _>>(),
-        )?);
+        let dependency_key = input.environment_key()?;
         let lsp = manager.lsp.as_mut().unwrap();
         let result = async {
             // A cached result can outlive its worker; reopen the exact input before querying goals.
@@ -1024,7 +931,7 @@ impl LeanService {
                 write_source(root, node, source).await?;
             }
         }
-        let canonical = self.root.join("projects").join(input.project.key());
+        let canonical = self.root.join("projects").join(&input.project_key);
         // Package revisions and toolchain are pinned by the project key. Share that
         // cache; cloning Mathlib's entire file tree costs seconds even with APFS COW.
         let packages = canonical.join(".lake/packages");
@@ -1068,18 +975,23 @@ impl LeanService {
 pub fn module_path(root: &Path, module: &str) -> Result<PathBuf> {
     Ok(root.join(crate::store::module_file(module, "lean")?))
 }
-pub async fn refresh_editor_sources(root: &Path, input: &Input) -> Result<()> {
+pub type SourceState = HashMap<String, Arc<Node>>;
+pub async fn refresh_editor_sources(
+    root: &Path,
+    input: &Input,
+    sources: &mut SourceState,
+) -> Result<()> {
     for (node, _) in &input.chain {
-        if let Some(source) = node.source("lean") {
-            let path = module_path(root, &node.module)?;
-            match tokio::fs::read_to_string(path).await {
-                Ok(existing) if existing == source => continue,
-                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                    return Err(error.into())
-                }
-                _ => write_source(root, node, source).await?,
-            }
+        if sources.get(&node.fnode).is_some_and(|old| {
+            Arc::ptr_eq(old, node)
+                || old.module == node.module && old.source("lean") == node.source("lean")
+        }) {
+            continue;
         }
+        if let Some(source) = node.source("lean") {
+            write_source(root, node, source).await?;
+        }
+        sources.insert(node.fnode.clone(), node.clone());
     }
     Ok(())
 }
@@ -1163,7 +1075,8 @@ mod tests {
             ..Default::default()
         });
         let input = Input {
-            project: LeanProject::default(),
+            project: LeanProject::default().into(),
+            project_key: LeanProject::default().key(),
             modules: [&dependency, &target]
                 .into_iter()
                 .map(|n| {
@@ -1172,10 +1085,11 @@ mod tests {
                         n.fnode.clone(),
                     )
                 })
-                .collect(),
+                .collect::<BTreeMap<_, _>>()
+                .into(),
             chain: vec![
-                (dependency.clone(), "dep-key".into()),
-                (target.clone(), "target-key".into()),
+                (Arc::new(dependency.clone()), "dep-key".into()),
+                (Arc::new(target.clone()), "target-key".into()),
             ],
         };
         let draft = service.editor_project(&input).await.unwrap();
@@ -1220,7 +1134,9 @@ mod tests {
             "building artifacts must not repeat an already certified LSP check"
         );
         let mut wrong = input.clone();
-        wrong.chain.last_mut().unwrap().0.depens.clear();
+        Arc::make_mut(&mut wrong.chain.last_mut().unwrap().0)
+            .depens
+            .clear();
         wrong.chain.last_mut().unwrap().1 = "wrong-deps".into();
         let (diagnostics, imports) = editor
             .check(&uri, target.source("lean").unwrap(), "deps")
@@ -1257,13 +1173,16 @@ mod tests {
             ..Default::default()
         });
         let input = Input {
-            project: LeanProject::default(),
+            project: LeanProject::default().into(),
+            project_key: LeanProject::default().key(),
             modules: [(
                 crate::store::module_file(&node.module, "lean").unwrap(),
                 node.fnode.clone(),
             )]
+            .into_iter()
+            .collect::<BTreeMap<_, _>>()
             .into(),
-            chain: vec![(node.clone(), "input".into())],
+            chain: vec![(Arc::new(node.clone()), "input".into())],
         };
         let first = service.editor_project(&input).await.unwrap();
         build_module(first.path(), &node.module).await.unwrap();
@@ -1316,11 +1235,12 @@ mod tests {
         let cache = tempfile::tempdir().unwrap();
         let service = LeanService::new(cache.path().to_path_buf()).unwrap();
         let input = Input {
-            project: LeanProject::default(),
-            modules: BTreeMap::new(),
+            project: LeanProject::default().into(),
+            project_key: LeanProject::default().key(),
+            modules: Default::default(),
             chain: vec![],
         };
-        let canonical = cache.path().join("projects").join(input.project.key());
+        let canonical = cache.path().join("projects").join(&input.project_key);
         tokio::fs::create_dir_all(canonical.join(".lake/packages/example"))
             .await
             .unwrap();
@@ -1359,6 +1279,47 @@ mod tests {
         assert!(canonical
             .join(".lake/packages/example/library.olean")
             .is_file());
+    }
+
+    #[tokio::test]
+    async fn materialization_only_writes_changed_saved_sources() {
+        let root = tempfile::tempdir().unwrap();
+        let mut node = Node::new("A".into()).unwrap();
+        node.blocks.push(crate::store::Block {
+            srctype: "lean".into(),
+            content: "-- saved\n".into(),
+            ..Default::default()
+        });
+        let mut input = Input {
+            project: LeanProject::default().into(),
+            project_key: LeanProject::default().key(),
+            chain: vec![(Arc::new(node), "a".into())],
+            modules: Default::default(),
+        };
+        let mut sources = SourceState::new();
+        refresh_editor_sources(root.path(), &input, &mut sources)
+            .await
+            .unwrap();
+        let file = module_path(root.path(), &input.chain[0].0.module).unwrap();
+        let modified = std::fs::metadata(&file).unwrap().modified().unwrap();
+        refresh_editor_sources(root.path(), &input, &mut sources)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().modified().unwrap(),
+            modified
+        );
+        let original = input.clone();
+        Arc::make_mut(&mut input.chain[0].0).blocks[0].content = "-- changed\n".into();
+        refresh_editor_sources(root.path(), &input, &mut sources)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "-- changed\n");
+        assert_eq!(original.chain[0].0.source("lean"), Some("-- saved\n"));
+        assert!(Arc::ptr_eq(
+            &sources[&input.chain[0].0.fnode],
+            &input.chain[0].0
+        ));
     }
 
     #[tokio::test]

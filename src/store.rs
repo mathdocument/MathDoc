@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 pub const BLOCK_TYPES: [&str; 4] = ["text", "lean", "rocq", "latex"];
 
@@ -538,7 +539,7 @@ impl Database {
             match doc["@type"].as_str() {
                 Some("Node") => {
                     let node = Node::from_document(doc)?;
-                    nodes.insert(node.fnode.clone(), node);
+                    nodes.insert(node.fnode.clone(), Arc::new(node));
                 }
                 Some("Project") if doc["name"] == "lean" => {
                     project = Some(serde_json::from_str(
@@ -552,16 +553,26 @@ impl Database {
             version,
             nodes,
             project: project.context("database has no Lean project")?,
+            project_key: String::new(),
+            modules: Default::default(),
+            lean_prefixes: HashMap::new(),
             depths: HashMap::new(),
             lean_keys: HashMap::new(),
             referrers: HashMap::new(),
         };
         snapshot.project.validate()?;
-        let nodes: Vec<_> = snapshot.nodes.values().cloned().collect();
+        let nodes: Vec<_> = snapshot
+            .nodes
+            .values()
+            .map(|n| n.as_ref().clone())
+            .collect();
         let empty = Snapshot {
             version: String::new(),
             nodes: BTreeMap::new(),
             project: snapshot.project.clone(),
+            project_key: String::new(),
+            modules: Default::default(),
+            lean_prefixes: HashMap::new(),
             depths: HashMap::new(),
             lean_keys: HashMap::new(),
             referrers: HashMap::new(),
@@ -665,8 +676,11 @@ impl Database {
 
 pub struct Snapshot {
     pub version: String,
-    pub nodes: BTreeMap<String, Node>,
-    pub project: LeanProject,
+    pub nodes: BTreeMap<String, Arc<Node>>,
+    pub project: Arc<LeanProject>,
+    pub project_key: String,
+    pub modules: Arc<BTreeMap<PathBuf, String>>,
+    pub lean_prefixes: HashMap<String, Sha256>,
     pub depths: HashMap<String, u32>,
     pub lean_keys: HashMap<String, String>,
     pub referrers: HashMap<String, Vec<String>>,
@@ -679,6 +693,18 @@ impl Snapshot {
             .collect()
     }
     pub fn recompute(&mut self) {
+        self.project_key = self.project.key();
+        self.modules = Arc::new(
+            self.nodes
+                .values()
+                .map(|n| {
+                    (
+                        module_file(&n.module, "lean").expect("validated module"),
+                        n.fnode.clone(),
+                    )
+                })
+                .collect(),
+        );
         self.depths = crate::core::all_topo_depths(&self.graph());
         self.referrers = self.nodes.keys().map(|id| (id.clone(), vec![])).collect();
         for node in self.nodes.values() {
@@ -692,6 +718,18 @@ impl Snapshot {
         self.refresh_lean_keys(self.nodes.keys().cloned().collect());
     }
     fn refresh_lean_keys(&mut self, seeds: BTreeSet<String>) {
+        // Cache the SHA state after environment/module/source. Dependent edits
+        // rehash only their short dependency maps, preserving existing input keys.
+        for id in &seeds {
+            let node = &self.nodes[id];
+            let mut prefix =
+                serde_json::to_vec(&(&self.project_key, &node.module, node.source("lean")))
+                    .expect("serializable inputs");
+            *prefix.last_mut().unwrap() = b',';
+            let mut hash = Sha256::new();
+            hash.update(prefix);
+            self.lean_prefixes.insert(id.clone(), hash);
+        }
         let mut affected = seeds.clone();
         let mut queue: Vec<_> = seeds.into_iter().collect();
         while let Some(id) = queue.pop() {
@@ -703,7 +741,6 @@ impl Snapshot {
         }
         let mut ordered: Vec<_> = affected.into_iter().collect();
         ordered.sort_by_key(|id| self.depths.get(id).copied().unwrap_or(0));
-        let environment = self.project.key();
         for id in ordered {
             let node = &self.nodes[&id];
             let deps: BTreeMap<_, _> = node
@@ -711,16 +748,20 @@ impl Snapshot {
                 .iter()
                 .map(|dep| (dep, self.lean_keys.get(dep)))
                 .collect();
-            let key = digest(
-                &serde_json::to_vec(&(&environment, &node.module, node.source("lean"), deps))
-                    .expect("serializable compilation inputs"),
-            );
+            let mut hash = self.lean_prefixes[&id].clone();
+            hash.update(serde_json::to_vec(&deps).expect("serializable dependencies"));
+            hash.update(b"]");
+            let key = format!("{:x}", hash.finalize());
             self.lean_keys.insert(id, key);
         }
     }
     pub fn resolve(&self, reference: &str) -> Result<&Node> {
         if let Ok(id) = uuid::Uuid::parse_str(reference) {
-            return self.nodes.get(&id.to_string()).context("node not found");
+            return self
+                .nodes
+                .get(&id.to_string())
+                .map(Arc::as_ref)
+                .context("node not found");
         }
         let mut matches = self.nodes.values().filter(|n| n.title == reference);
         let node = matches
@@ -790,10 +831,10 @@ impl Snapshot {
         let graph_changed = changes.iter().any(|n| {
             self.nodes
                 .get(&n.fnode)
-                .is_none_or(|old| old.depens != n.depens)
+                .is_none_or(|old| old.depens != n.depens || old.module != n.module)
         });
         for node in changes {
-            self.nodes.insert(node.fnode.clone(), node);
+            self.nodes.insert(node.fnode.clone(), Arc::new(node));
         }
         self.version = version;
         if graph_changed {
@@ -902,9 +943,12 @@ mod tests {
             version: String::new(),
             nodes: [a.clone(), b.clone()]
                 .into_iter()
-                .map(|n| (n.fnode.clone(), n))
+                .map(|n| (n.fnode.clone(), n.into()))
                 .collect(),
-            project: LeanProject::default(),
+            project: LeanProject::default().into(),
+            project_key: String::new(),
+            modules: Default::default(),
+            lean_prefixes: HashMap::new(),
             depths: HashMap::new(),
             lean_keys: HashMap::new(),
             referrers: HashMap::new(),
@@ -923,5 +967,57 @@ mod tests {
         changed.depens.push(b.fnode);
         assert!(s.validate_changes(&[changed]).is_err());
         assert_eq!(Node::from_document(a.document()).unwrap(), a);
+    }
+    #[test]
+    fn incremental_hashes_preserve_certificates_and_captured_sources() {
+        let mut a = Node::new("A".into()).unwrap();
+        a.blocks.push(Block {
+            srctype: "lean".into(),
+            content: "theorem a : True := by trivial\n".into(),
+            ..Default::default()
+        });
+        let mut b = Node::new("B".into()).unwrap();
+        b.depens.push(a.fnode.clone());
+        let mut snapshot = Snapshot {
+            version: String::new(),
+            nodes: [&a, &b]
+                .into_iter()
+                .map(|n| (n.fnode.clone(), Arc::new(n.clone())))
+                .collect(),
+            project: LeanProject::default().into(),
+            project_key: String::new(),
+            modules: Default::default(),
+            lean_prefixes: HashMap::new(),
+            depths: HashMap::new(),
+            lean_keys: HashMap::new(),
+            referrers: HashMap::new(),
+        };
+        snapshot.recompute();
+        let old = crate::lean::Input::capture(&snapshot, &b.fnode).unwrap();
+        for _ in 0..2 {
+            for node in snapshot.nodes.values() {
+                let deps: BTreeMap<_, _> = node
+                    .depens
+                    .iter()
+                    .map(|id| (id, snapshot.lean_keys.get(id)))
+                    .collect();
+                let original = digest(
+                    &serde_json::to_vec(&(
+                        &snapshot.project.key(),
+                        &node.module,
+                        node.source("lean"),
+                        deps,
+                    ))
+                    .unwrap(),
+                );
+                assert_eq!(snapshot.lean_keys[&node.fnode], original);
+            }
+            a.blocks[0].content.push_str("-- edit\n");
+            snapshot.apply(vec![a.clone()], "edited".into());
+        }
+        assert!(!old.chain[0].0.source("lean").unwrap().contains("-- edit"));
+        assert!(!Arc::ptr_eq(&old.chain[0].0, &snapshot.nodes[&a.fnode]));
+        assert!(Arc::ptr_eq(&old.chain[1].0, &snapshot.nodes[&b.fnode]));
+        assert_ne!(old.chain[1].1, snapshot.lean_keys[&b.fnode]);
     }
 }

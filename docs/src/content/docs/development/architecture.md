@@ -45,7 +45,7 @@ coordination. No global daemon or port scan is needed.
 `Snapshot` holds a disposable graph projection, topological depths, reverse
 adjacency and transitive Lean input keys. Service writes update it; requests
 check the database commit and reload after external commits. The current
-projection also contains complete source blocks in memory. Startup and external
+projection also contains complete source blocks in memory. Immutable nodes and project configuration are shared with Lean requests, avoiding copies of source closures for each editor. Startup and external
 reload costs therefore scale with total source size, even though ordinary
 commands no longer pay filesystem synchronization costs.
 

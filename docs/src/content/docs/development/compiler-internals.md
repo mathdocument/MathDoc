@@ -4,6 +4,12 @@ title: Lean Server integration
 
 The service runs native `lake serve` with JSON-RPC Content-Length framing. It sends versioned `didOpen`/`didChange` messages and waits for `textDocument/waitForDiagnostics`. Diagnostics are associated with document versions, including incremental diagnostic notifications.
 
+CLI checks open only the requested target. Lake builds its necessary imports,
+then the same native artifact-certification path used by the browser validates
+their dependency edges. Already certified input keys skip repeated metadata
+reads. A dependency is not elaborated again in a separate LSP worker merely to
+refresh its status. Missing or mismatched evidence remains unverified.
+
 The browser bridge forwards framed JSON without constructing a recursive JSON tree.
 URI values are translated independently, so deeply nested Infoview expressions do
 not hit a 128-level deserialization limit. JSON syntax, frame headers and the

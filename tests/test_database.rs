@@ -17,14 +17,14 @@ async fn terminus_atomic_revisions_and_persistence() {
         .await
         .unwrap();
     snapshot.apply(vec![a.clone(), b.clone()], version);
-    assert_eq!(database.load().await.unwrap().nodes[&b.fnode], b);
+    assert_eq!(database.load().await.unwrap().nodes[&b.fnode].as_ref(), &b);
     let mut changed = a.clone();
     changed.title = "Changed".into();
     assert!(database
         .put(&[changed], &old_version, "Stale write")
         .await
         .is_err());
-    assert_eq!(database.load().await.unwrap().nodes[&a.fnode], a);
+    assert_eq!(database.load().await.unwrap().nodes[&a.fnode].as_ref(), &a);
     assert_eq!(database.version().await.unwrap(), snapshot.version);
     database.create_branch("agent").await.unwrap();
     assert!(database.history().await.unwrap().as_array().unwrap().len() >= 3);
