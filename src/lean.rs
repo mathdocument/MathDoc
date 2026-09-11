@@ -1,4 +1,5 @@
 //! Native Lean LSP sessions plus Lake's existing incremental artifact store.
+pub(crate) mod editor;
 use crate::store::{digest, LeanProject, Node, Snapshot};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -413,6 +414,17 @@ pub struct Input {
     pub chain: Vec<(Node, String)>,
 }
 impl Input {
+    pub fn environment_key(&self) -> Result<String> {
+        let node = &self.chain.last().context("no Lean target")?.0;
+        Ok(digest(&serde_json::to_vec(&(
+            self.project.key(),
+            &node.module,
+            self.chain[..self.chain.len() - 1]
+                .iter()
+                .map(|(_, key)| key)
+                .collect::<Vec<_>>(),
+        ))?))
+    }
     pub fn capture(snapshot: &Snapshot, id: &str) -> Result<Self> {
         let node = snapshot.resolve(id)?;
         let mut seen = BTreeSet::new();
@@ -440,6 +452,40 @@ struct Manager {
     lsp: Option<Lsp>,
     sources: HashMap<String, (String, String)>,
 }
+fn dependency_errors(
+    node: &Node,
+    imports: &[Value],
+    known: &BTreeMap<PathBuf, String>,
+    keys: &BTreeMap<String, String>,
+    results: &HashMap<String, CheckResult>,
+) -> Result<Vec<String>> {
+    let mut errors = vec![];
+    let mut imported = BTreeSet::new();
+    for import in imports {
+        let module = import["module"]["name"]
+            .as_str()
+            .context("Lean import omitted module name")?;
+        if module.starts_with("Lib.") {
+            if let Some(id) = known.get(&crate::store::module_file(module, "lean")?) {
+                imported.insert(id.clone());
+            } else {
+                errors.push(format!("managed import {module} is not declared in dep"));
+            }
+        }
+    }
+    if imported != node.depens.iter().cloned().collect() {
+        errors.push("Lean workspace imports must exactly match direct dep entries".into());
+    }
+    for dep in &node.depens {
+        if !results
+            .get(dep)
+            .is_some_and(|r| keys.get(dep) == Some(&r.input_key) && r.certified)
+        {
+            errors.push(format!("dependency {dep} is not verified for Lean"));
+        }
+    }
+    Ok(errors)
+}
 pub struct LeanService {
     root: PathBuf,
     // ponytail: one CLI compiler per branch; add workers if concurrent check throughput requires it.
@@ -448,6 +494,125 @@ pub struct LeanService {
     _lease: std::fs::File,
 }
 impl LeanService {
+    /// Certify only the saved snapshot whose diagnostics the native editor has
+    /// completed. Imported .ilean metadata is emitted by the same Lean compiler
+    /// that produced the dependencies the worker successfully loaded.
+    pub async fn record_editor_check(
+        &self,
+        root: &Path,
+        input: &Input,
+        diagnostics: Vec<Value>,
+        imports: Vec<Value>,
+    ) -> Result<CheckResult> {
+        let started = Instant::now();
+        verify_manifest(root, &input.project).await?;
+        let target = &input.chain.last().context("no Lean target")?.0;
+        let known: BTreeMap<_, _> = input
+            .chain
+            .iter()
+            .map(|(n, _)| {
+                Ok((
+                    crate::store::module_file(&n.module, "lean")?,
+                    n.fnode.clone(),
+                ))
+            })
+            .collect::<Result<_>>()?;
+        let keys: BTreeMap<_, _> = input
+            .chain
+            .iter()
+            .map(|(n, k)| (n.fnode.clone(), k.clone()))
+            .collect();
+        let nodes: HashMap<_, _> = input.chain.iter().map(|(n, _)| (&n.fnode, n)).collect();
+        let mut observed =
+            HashMap::from([(target.fnode.clone(), (diagnostics.clone(), imports.clone()))]);
+        let mut pending = if diagnostics.iter().any(|d| d["severity"] == 1) {
+            vec![]
+        } else {
+            imports
+        };
+        while let Some(import) = pending.pop() {
+            let module = import["module"]["name"]
+                .as_str()
+                .context("Lean import omitted module name")?;
+            let Some(id) = known.get(&crate::store::module_file(module, "lean")?) else {
+                continue;
+            };
+            if observed.contains_key(id) {
+                continue;
+            }
+            let node = nodes[id];
+            let Some(source) = node.source("lean") else {
+                continue;
+            };
+            if tokio::fs::read_to_string(module_path(root, &node.module)?).await? != source {
+                bail!("editor dependency source changed during checking");
+            }
+            let base = root.join(".lake/build/lib/lean");
+            if !base
+                .join(crate::store::module_file(&node.module, "olean")?)
+                .is_file()
+            {
+                continue; // No compiler evidence: leave the dependency unverified.
+            }
+            #[derive(Deserialize)]
+            struct Ilean {
+                module: String,
+                #[serde(rename = "directImports")]
+                direct_imports: Vec<Vec<Value>>,
+            }
+            let data =
+                tokio::fs::read(base.join(crate::store::module_file(&node.module, "ilean")?))
+                    .await?;
+            let metadata: Ilean = serde_json::from_slice(&data)?;
+            if crate::store::module_file(&metadata.module, "lean")?
+                != crate::store::module_file(&node.module, "lean")?
+            {
+                bail!("Lean artifact module mismatch");
+            }
+            let imports = metadata.direct_imports.iter().map(|i| Ok(json!({"module":{"name":i.first().and_then(Value::as_str).context("invalid Lean artifact import")?}}))).collect::<Result<Vec<_>>>()?;
+            pending.extend(imports.clone());
+            observed.insert(id.clone(), (vec![], imports));
+        }
+        let mut final_result = None;
+        for (node, key) in &input.chain {
+            if let Some(result) = self
+                .cached_or_load(node, key, &input.project, false)
+                .await
+                .filter(|r| r.certified)
+            {
+                final_result = Some(result);
+                continue;
+            }
+            let Some((diagnostics, imports)) = observed.remove(&node.fnode) else {
+                continue;
+            };
+            let passed = !diagnostics.iter().any(|d| d["severity"] == 1);
+            let errors =
+                dependency_errors(node, &imports, &known, &keys, &self.results.read().unwrap())?;
+            let result = CheckResult {
+                fnode: node.fnode.clone(),
+                revision: node.revision(),
+                input_key: key.clone(),
+                passed,
+                certified: passed && errors.is_empty(),
+                built: false,
+                cache_hit: false,
+                diagnostics,
+                imports,
+                dependency_errors: errors,
+                elapsed_ms: started.elapsed().as_millis(),
+            };
+            self.persist_result(&result).await?;
+            self.results
+                .write()
+                .unwrap()
+                .insert(node.fnode.clone(), result.clone());
+            final_result = Some(result);
+        }
+        final_result
+            .filter(|r| r.fnode == target.fnode)
+            .context("editor check produced no target result")
+    }
     pub fn new(root: PathBuf) -> Result<Self> {
         use std::os::fd::AsRawFd;
         std::fs::create_dir_all(&root)?;
@@ -537,7 +702,7 @@ impl LeanService {
         }
         let root = self.root.join("checks-v1");
         tokio::fs::create_dir_all(&root).await?;
-        let temporary = root.join(format!("{}.tmp", result.fnode));
+        let temporary = root.join(format!("{}.{}.tmp", result.fnode, uuid::Uuid::new_v4()));
         tokio::fs::write(&temporary, serde_json::to_vec(result)?).await?;
         tokio::fs::rename(temporary, root.join(format!("{}.json", result.fnode))).await?;
         Ok(())
@@ -558,12 +723,24 @@ impl LeanService {
             return Ok(result);
         }
         self.prepare_input(&mut manager, &input).await?;
-        let result = self.check_chain(&mut manager, &input, build).await;
+        let result = self.check_chain(&mut manager, &input).await;
         if result.is_err() {
             manager.lsp = None;
             manager.project_key.clear();
         }
         let mut result = result?;
+        if build && result.certified {
+            build_module(&manager.root, &target.module).await?;
+            let artifact = manager
+                .root
+                .join(".lake/build/lib/lean")
+                .join(crate::store::module_file(&target.module, "olean")?);
+            if !artifact.is_file() {
+                bail!("Lake succeeded without producing the target olean");
+            }
+            result.built = true;
+            self.persist_result(&result).await?;
+        }
         result.fnode = target_id;
         result.elapsed_ms = start.elapsed().as_millis();
         self.results
@@ -602,12 +779,14 @@ impl LeanService {
         }
         Ok(())
     }
-    async fn check_chain(
-        &self,
-        manager: &mut Manager,
-        input: &Input,
-        build: bool,
-    ) -> Result<CheckResult> {
+    async fn check_chain(&self, manager: &mut Manager, input: &Input) -> Result<CheckResult> {
+        let (target, key) = input.chain.last().context("no Lean target")?;
+        if let Some(result) = self
+            .cached_or_load(target, key, &input.project, false)
+            .await
+        {
+            return Ok(result);
+        }
         let known: BTreeMap<_, _> = input
             .chain
             .iter()
@@ -624,12 +803,8 @@ impl LeanService {
             .map(|(n, k)| (n.fnode.clone(), k.clone()))
             .collect();
         let mut final_result = None;
-        for (i, (node, key)) in input.chain.iter().enumerate() {
-            let is_target = i + 1 == input.chain.len();
-            if let Some(cached) = self
-                .cached_or_load(node, key, &input.project, build && is_target)
-                .await
-            {
+        for (node, key) in &input.chain {
+            if let Some(cached) = self.cached_or_load(node, key, &input.project, false).await {
                 final_result = Some(cached);
                 continue;
             }
@@ -673,36 +848,10 @@ impl LeanService {
                 .await?;
             verify_manifest(&manager.root, &input.project).await?;
             let passed = !diagnostics.iter().any(|d| d["severity"] == 1);
-            let mut errors = vec![];
-            let mut imported = BTreeSet::new();
-            for import in &imports {
-                let module = import["module"]["name"]
-                    .as_str()
-                    .context("Lean import omitted module name")?;
-                if module.starts_with("Lib.") {
-                    if let Some(id) = known.get(&crate::store::module_file(module, "lean")?) {
-                        imported.insert(id.clone());
-                    } else {
-                        errors.push(format!("managed import {module} is not declared in dep"));
-                    }
-                }
-            }
-            if imported != node.depens.iter().cloned().collect() {
-                errors.push("Lean workspace imports must exactly match direct dep entries".into());
-            }
-            for dep in &node.depens {
-                if !self
-                    .results
-                    .read()
-                    .unwrap()
-                    .get(dep)
-                    .is_some_and(|r| r.input_key == keys[dep] && r.certified)
-                {
-                    errors.push(format!("dependency {dep} is not verified for Lean"));
-                }
-            }
+            let errors =
+                dependency_errors(node, &imports, &known, &keys, &self.results.read().unwrap())?;
             let certified = passed && errors.is_empty();
-            let mut result = CheckResult {
+            let result = CheckResult {
                 fnode: node.fnode.clone(),
                 revision: node.revision(),
                 input_key: key.clone(),
@@ -715,17 +864,6 @@ impl LeanService {
                 dependency_errors: errors,
                 elapsed_ms: 0,
             };
-            if is_target && build && certified {
-                build_module(&manager.root, &node.module).await?;
-                let artifact = manager
-                    .root
-                    .join(".lake/build/lib/lean")
-                    .join(crate::store::module_file(&node.module, "olean")?);
-                if !artifact.is_file() {
-                    bail!("Lake succeeded without producing the target olean");
-                }
-                result.built = true;
-            }
             self.persist_result(&result).await?;
             self.results
                 .write()
@@ -906,6 +1044,81 @@ async fn verify_manifest(root: &Path, project: &LeanProject) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    #[ignore = "requires native Lean and Lake"]
+    async fn editor_evidence_certifies_imports_without_a_second_checker() {
+        let cache = tempfile::tempdir().unwrap();
+        let service = LeanService::new(cache.path().to_path_buf()).unwrap();
+        let mut dependency = Node::new("Editor dependency".into()).unwrap();
+        dependency.blocks.push(crate::store::Block {
+            srctype: "lean".into(),
+            content: "theorem depTruth : True := by trivial\n".into(),
+            ..Default::default()
+        });
+        let mut target = Node::new("Editor target".into()).unwrap();
+        target.depens.push(dependency.fnode.clone());
+        target.blocks.push(crate::store::Block {
+            srctype: "lean".into(),
+            content: format!(
+                "import {}\ntheorem targetTruth : True := depTruth\n",
+                dependency.module
+            ),
+            ..Default::default()
+        });
+        let input = Input {
+            project: LeanProject::default(),
+            chain: vec![
+                (dependency.clone(), "dep-key".into()),
+                (target.clone(), "target-key".into()),
+            ],
+        };
+        let draft = service.editor_project(&input).await.unwrap();
+        let mut editor = Lsp::start(draft.path()).await.unwrap();
+        let uri = file_uri(&module_path(draft.path(), &target.module).unwrap()).unwrap();
+        let (diagnostics, imports) = editor
+            .check(&uri, target.source("lean").unwrap(), "deps")
+            .await
+            .unwrap();
+        let result = service
+            .record_editor_check(draft.path(), &input, diagnostics, imports)
+            .await
+            .unwrap();
+        assert!(result.certified, "{result:?}");
+        assert!(
+            service
+                .cached(&dependency.fnode, "dep-key", &dependency.revision(), false)
+                .unwrap()
+                .certified
+        );
+        assert!(service.check(input.clone(), false).await.unwrap().cache_hit);
+        assert!(
+            service.manager.lock().await.lsp.is_none(),
+            "the CLI must reuse editor evidence without creating a checker"
+        );
+        assert!(service.check(input.clone(), true).await.unwrap().built);
+        assert!(
+            service.manager.lock().await.lsp.is_none(),
+            "building artifacts must not repeat an already certified LSP check"
+        );
+        let mut wrong = input.clone();
+        wrong.chain.last_mut().unwrap().0.depens.clear();
+        wrong.chain.last_mut().unwrap().1 = "wrong-deps".into();
+        let (diagnostics, imports) = editor
+            .check(&uri, target.source("lean").unwrap(), "deps")
+            .await
+            .unwrap();
+        let invalid = service
+            .record_editor_check(draft.path(), &wrong, diagnostics, imports)
+            .await
+            .unwrap();
+        assert!(
+            invalid.passed && !invalid.certified,
+            "native success cannot waive the graph/import check"
+        );
+        editor.server.shutdown().await;
+        service.shutdown().await;
+    }
+
     #[tokio::test]
     #[ignore = "requires native Lean and Lake"]
     async fn lake_reuses_editor_artifacts_after_the_draft_is_removed() {

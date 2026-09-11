@@ -1,4 +1,5 @@
 //! Local web service: every client uses the same versioned database transactions.
+use crate::lean::editor::{Message as EditorMessage, Observer};
 use crate::store::{Block, Database, LeanProject, Node, Snapshot, BLOCK_TYPES};
 use anyhow::{bail, Context, Result};
 use axum::{
@@ -751,11 +752,9 @@ fn editor_document(input: &crate::lean::Input) -> Result<Value> {
         "fnode": node.fnode,
         "filename": format!("/project/{}", crate::store::module_file(&node.module, "lean")?.display()),
         "source": node.source("lean").context("node has no Lean block")?,
+        "revision": node.revision(),
         // Source edits reuse the worker; changed imports/dependencies must reload its environment.
-        "environment_key": crate::store::digest(&serde_json::to_vec(&(
-            input.project.key(), &node.module,
-            input.chain[..input.chain.len() - 1].iter().map(|(_, key)| key).collect::<Vec<_>>()
-        ))?),
+        "environment_key": input.environment_key()?,
     }))
 }
 async fn lean_session(
@@ -913,10 +912,6 @@ fn rewrite_uris(text: &str, from: &str, to: &str) -> Result<String> {
 }
 
 #[derive(Deserialize)]
-struct EditorMessage {
-    method: Option<String>,
-}
-#[derive(Deserialize)]
 struct DocumentChange {
     params: DocumentChangeParams,
 }
@@ -943,6 +938,8 @@ async fn bridge_editor(
     let mut allowed = HashSet::from([crate::lean::file_uri(std::path::Path::new(
         document["filename"].as_str().unwrap(),
     ))?]);
+    let mut observer = Observer::default();
+    observer.prepare(allowed.iter().next().unwrap().clone(), input.clone());
     let mut server = crate::lean::Server::start(root)?;
     let (mut send, mut receive) = socket.split();
     let result:Result<()>=async{
@@ -953,7 +950,7 @@ async fn bridge_editor(
                     Message::Text(text)=>{
                         let message: EditorMessage = serde_json::from_str(&text)?;
                         let method = message.method.as_deref().unwrap_or("");
-                        if method == "mdc/selectNode" {
+                        if matches!(method, "mdc/selectNode" | "mdc/validationState" | "mdc/certify") {
                             let value: Value = serde_json::from_str(&text)?;
                             let selected: Result<Value> = async {
                                 let id = value["params"]["fnode"].as_str().context("node required")?;
@@ -965,9 +962,26 @@ async fn bridge_editor(
                                 };
                                 if next.project.key() != input.project.key() { bail!("Lean project changed; reload environment"); }
                                 let document = editor_document(&next)?;
-                                crate::lean::refresh_editor_sources(root, &next).await?;
-                                allowed.insert(crate::lean::file_uri(std::path::Path::new(document["filename"].as_str().unwrap()))?);
-                                Ok(document)
+                                let uri = crate::lean::file_uri(std::path::Path::new(document["filename"].as_str().unwrap()))?;
+                                if method == "mdc/selectNode" {
+                                    crate::lean::refresh_editor_sources(root, &next).await?;
+                                    allowed.insert(uri.clone());
+                                    observer.prepare(uri, next);
+                                    Ok(document)
+                                } else if method == "mdc/validationState" {
+                                    let version = observer.document(&uri, &next)?.version;
+                                    Ok(json!({"uri":uri,"version":version,"module":{"name":next.chain.last().unwrap().0.module,"uri":uri}}))
+                                } else {
+                                    let version = value["params"]["version"].as_u64().context("Lean version required")?;
+                                    let (diagnostics, imports) = observer.evidence(&uri, &next, version)?;
+                                    // Serialize publication with graph mutations. An older
+                                    // editor can never certify newly saved dependencies.
+                                    let snapshot = service.read().await?;
+                                    let target = next.chain.last().unwrap();
+                                    if snapshot.lean_keys.get(id) != Some(&target.1) { bail!("Lean inputs changed during checking"); }
+                                    let result = service.lean.record_editor_check(root, &next, diagnostics, imports).await?;
+                                    Ok(json!(result))
+                                }
                             }.await;
                             let reply = match selected {
                                 Ok(document) => json!({"jsonrpc":"2.0","id":value["id"],"result":document}),
@@ -980,6 +994,7 @@ async fn bridge_editor(
                             let change: DocumentChange = serde_json::from_str(&text)?;
                             if !allowed.contains(&change.params.document.uri){bail!("editor may only change its selected draft modules");}
                         }
+                        observer.client(&text, &message)?;
                         let text = rewrite_uris(&text, "file:///project", &actual)?;
                         server.send(text).await?;
                     },
@@ -987,8 +1002,9 @@ async fn bridge_editor(
                 }
             },
             message=server.receive()=>{
-                let text = message?;
-                send.send(Message::Text(rewrite_uris(&text, &actual, "file:///project")?)).await?;
+                let text = rewrite_uris(&message?, &actual, "file:///project")?;
+                let text = observer.server(&text)?.unwrap_or(text);
+                send.send(Message::Text(text)).await?;
             }
         }}Ok(())
     }.await;
