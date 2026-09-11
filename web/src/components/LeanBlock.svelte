@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, untrack } from "svelte";
-  import { ChevronDown, ChevronRight, Save, Trash2, Check, Hammer, RotateCcw } from "@lucide/svelte";
+  import { ChevronDown, ChevronRight, Save, Trash2, RotateCcw } from "@lucide/svelte";
   import type { NodeDetail, SrcBlock } from "../lib/types";
   import type { Theme } from "../lib/theme";
   import { api } from "../lib/api";
@@ -17,7 +17,8 @@
   let content = $state("");
   let baseline = $state("");
   let dirty = $derived(content !== baseline);
-  let action = $state<"save" | "check" | "build" | "delete" | null>(null);
+  let action = $state<"save" | "delete" | null>(null);
+  let validating = $state(false);
   let busy = $derived(action !== null);
   let error = $state<string | null>(null);
   let result = $state<Awaited<ReturnType<typeof api.checkLean>> | null>(null);
@@ -44,7 +45,7 @@
     untrack(() => frame?.contentWindow?.postMessage({ type: "lean-source", fnode: openedNode, value: baseline }, location.origin));
     openedNode = node; openedSelection = selection;
     untrack(() => {
-      generation++; ready = false; error = null; result = null; progress = "";
+      generation++; ready = false; error = null; result = null; progress = ""; validating = false;
       content = block?.content ?? ""; baseline = content;
       if (node) {
         if (!session && !opening) void open();
@@ -59,6 +60,9 @@
     if (next === baseline) return;
     if (!dirty) { content = next; frame?.contentWindow?.postMessage({ type: "lean-source", fnode, value: next }, location.origin); }
     baseline = next;
+  });
+  $effect(() => {
+    if (runtimeReady && block) frame?.contentWindow?.postMessage({ type: "lean-saved", fnode, revision, source: block.content }, location.origin);
   });
   function selectNode() {
     if (runtimeReady && block) frame?.contentWindow?.postMessage({ type: "lean-select", fnode, revision, generation, source: content }, location.origin);
@@ -91,10 +95,10 @@
     if (session) void api.closeLeanSession(session).catch(console.warn);
     session = null; runtimeReady = false;
   }
-  async function save(check = false, build = false) {
+  async function save() {
     if (busy) return;
     const current = generation, node = fnode, source = content;
-    action = build ? "build" : check ? "check" : "save"; error = null; result = null;
+    action = "save"; error = null; result = null;
     const release = trackMutation();
     try {
       let rev = revision;
@@ -103,12 +107,18 @@
         if (!alive || generation !== current) return;
         baseline = source; rev = updated.revision; onSaved?.(updated);
       }
-      if (check) {
-        const checked = await api.checkLean(node, rev, build);
-        if (alive && generation === current) { result = checked; onSaved?.((await api.nodeView(node)).node); }
-      }
+      frame?.contentWindow?.postMessage({ type: "lean-saved", fnode: node, revision: rev, source }, location.origin);
     } catch (e) { if (alive && generation === current) error = errMsg(e); }
     finally { release(); if (alive && generation === current) action = null; }
+  }
+  async function certified(checked: Awaited<ReturnType<typeof api.checkLean>>) {
+    const current = generation, node = fnode;
+    if (dirty || checked.revision !== revision) return;
+    result = checked; error = null;
+    try {
+      const view = await api.nodeView(node);
+      if (alive && generation === current && revision === checked.revision && !dirty) onSaved?.(view.node);
+    } catch (e) { if (alive && generation === current) error = errMsg(e); }
   }
   async function remove() {
     if (busy || !confirm("Delete the Lean block from this node?")) return;
@@ -126,7 +136,9 @@
     switch (event.data?.type) {
       case "lean-change": if (typeof event.data.value === "string") { content = event.data.value; result = null; } break;
       case "lean-save": void save(); break;
-      case "lean-check": void save(true); break;
+      case "lean-certified": void certified(event.data.value); break;
+      case "lean-validating": validating = !!event.data.value; break;
+      case "lean-validation-error": error = String(event.data.value); break;
       case "lean-ready": if (event.data.generation === generation) { ready = true; onReady?.(); } break;
       case "lean-progress": progress = String(event.data.value); break;
 
@@ -141,15 +153,14 @@
     <span class="srctype">lean</span><span class="spacer"></span>
     {#if dirty}<span class="dirty" title="Unsaved changes"><span class="dirty-dot"></span><span class="btn-label">Unsaved</span></span>{/if}
     <div class="block-actions">
-      <button class="preview-toggle" onclick={() => void save(true)} disabled={busy} aria-busy={action === "check"} aria-label="Save & check" title="Save & check (Ctrl/⌘+Enter)"><Check size={14} strokeWidth={1.8}/><span class="btn-label">Save & check</span></button>
-      <button class="preview-toggle" onclick={() => void save(true, true)} disabled={busy} aria-label="Save & build" title="Save & build"><Hammer size={14} strokeWidth={1.8}/><span class="btn-label">Save & build</span></button>
       <button class="icon-btn expand" onclick={reload} disabled={opening || busy} aria-label="Reload environment" title="Reload environment"><RotateCcw size={14} strokeWidth={1.8}/></button>
       <button class="icon-btn expand" onclick={() => expanded = !expanded} aria-expanded={expanded} aria-label={expanded ? "Collapse block" : "Expand block"} title={expanded ? "Collapse" : "Expand"}>{#if expanded}<ChevronDown size={15}/>{:else}<ChevronRight size={15}/>{/if}</button>
-      <button class="save" onclick={() => void save()} disabled={busy || !dirty} aria-label="Save" title="Save (Ctrl/⌘+S)"><Save size={13} strokeWidth={1.9}/><span class="btn-label">Save</span></button>
+      <button class="save" onclick={() => void save()} disabled={busy || !dirty} aria-busy={action === "save"} aria-label="Save" title="Save; validation updates automatically (Ctrl/⌘+S or Ctrl/⌘+Enter)"><Save size={13} strokeWidth={1.9}/><span class="btn-label">Save</span></button>
       <button class="delete" onclick={() => void remove()} disabled={busy} aria-label="Delete block" title="Delete block"><Trash2 size={14} strokeWidth={1.8}/></button>
     </div>
   </header>
-  {#if action}<div class="status activity" role="status" aria-live="polite">{{ save: "Saving…", check: "Checking…", build: "Building…", delete: "Deleting…" }[action]}</div>{/if}
+  {#if action}<div class="status activity" role="status" aria-live="polite">{{ save: "Saving…", delete: "Deleting…" }[action]}</div>{/if}
+  {#if validating && !dirty}<div class="status activity" role="status" aria-live="polite">Verifying saved version…</div>{/if}
   {#if !ready && !error}<div class="status" aria-busy="true">{session && runtimeReady ? "Opening Lean node…" : "Starting Lean editor…"}</div>{/if}
   {#if ready && progress}<div class="status" role="status">{progress}</div>{/if}
   <div class="editor-surface">

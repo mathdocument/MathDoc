@@ -739,6 +739,7 @@ impl LeanService {
                 bail!("Lake succeeded without producing the target olean");
             }
             result.built = true;
+            result.cache_hit = false;
             self.persist_result(&result).await?;
         }
         result.fnode = target_id;

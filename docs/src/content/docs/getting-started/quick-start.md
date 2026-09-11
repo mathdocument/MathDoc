@@ -12,4 +12,4 @@ mdc lean check Example --build
 mdc graph check
 ```
 
-`Save & check` validates the current database source and dependency versions. `Save & build` also produces Lake artifacts including `.olean`. CLI source edits read stdin. `sync` and `back` no longer exist. To retain an archive, run `mdc export > backup.json`.
+The Lean editor checks as you type. **Save** writes the source to the database; once that exact version finishes checking, its status and compiled dependencies update automatically. Editor results and Lake artifacts are shared with CLI checks. Use `mdc lean check NODE --build` only when you need the target `.olean` immediately; imports build it on demand. CLI source edits read stdin. To retain an archive, run `mdc export > backup.json`.

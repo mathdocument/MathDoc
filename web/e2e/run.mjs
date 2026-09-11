@@ -214,6 +214,8 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.equal(headers.length, 4);
         for (const style of headers) assert.deepEqual(style, headers[0]);
         const leanBlock = page.locator('article[data-srctype="lean"]');
+        let browserChecks = 0;
+        page.on("request", request => { if (request.url().endsWith("/lean/check")) browserChecks++; });
         const initializedBeforeCollapse = messages.filter(m => m.method === "initialize").length;
         await leanBlock.getByRole("button", { name: "Collapse block" }).click();
         assert.equal(await leanBlock.locator("iframe").isVisible(), false);
@@ -231,6 +233,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           await page.screenshot({ path: resolve(process.env.MDC_E2E_ARTIFACTS, "editors-narrow.png"), fullPage: true });
           await page.setViewportSize({ width: 1440, height: 900 });
         }
+        await page.getByText("Verified", { exact: true }).waitFor();
         await page.screenshot({ path: resolve(root, "lean-editor.png"), fullPage: true });
         await input.press("ControlOrMeta+A");
         await page.keyboard.insertText("theorem demo : True := by\n  exact 42\n");
@@ -249,29 +252,36 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         }
         assert.equal(sessions, 1, "layout changes must reuse the Lean session, including a loading or dirty editor");
         console.log("Lean editor layout switch durations (ms):", switchTimes.join(", "));
-        let finishCheck;
-        const checkGate = new Promise(resolve => { finishCheck = resolve; });
-        await page.route(/\/lean\/check$/, async route => { await checkGate; await route.continue(); });
+        let finishSave;
+        const saveGate = new Promise(resolve => { finishSave = resolve; });
+        await page.route(/\/block\/lean$/, async route => { await saveGate; await route.continue(); });
         await page.getByRole("button", { name: "Graph", exact: true }).click();
-        const checkButton = page.getByRole("button", { name: "Save & check", exact: true });
-        await checkButton.click();
-        const activity = page.getByRole("status").filter({ hasText: /^Checking…$/ });
+        const saveButton = leanBlock.getByRole("button", { name: "Save", exact: true });
+        await saveButton.click();
+        const activity = page.getByRole("status").filter({ hasText: /^Saving…$/ });
         await activity.waitFor();
-        assert.equal(await checkButton.textContent(), "Save & check");
-        const buttonBox = await checkButton.boundingBox(), activityBox = await activity.boundingBox();
-        assert.ok(activityBox.y >= buttonBox.y + buttonBox.height, "checking status must be below the toolbar, without overlapping button labels");
-        finishCheck();
-        await page.unroute(/\/lean\/check$/);
+        assert.equal(await saveButton.textContent(), "Save");
+        const buttonBox = await saveButton.boundingBox(), activityBox = await activity.boundingBox();
+        assert.ok(activityBox.y >= buttonBox.y + buttonBox.height, "saving status must stay below the toolbar");
+        finishSave();
+        await page.unroute(/\/block\/lean$/);
         await page.getByRole("button", { name: "Knowledge", exact: true }).click();
         await page.getByText("Lean errors", { exact: false }).waitFor();
         assert.match(JSON.parse((await cli("show", a.fnode)).stdout).blocks[0].content, /exact 42/);
         await input.press("ControlOrMeta+A"); await page.keyboard.insertText("theorem demo : True ∧ True := by constructor <;> trivial\n");
         await page.getByText("Unsaved", { exact: true }).waitFor();
-        const buildResponse=page.waitForResponse(r => r.url().endsWith("/lean/check") && r.request().method()==="POST");
-        await page.getByRole("button", { name: "Save & build", exact: true }).click();
-        const built=await (await buildResponse).json();
-        assert.equal(built.certified,true,JSON.stringify(built));
-        await page.getByText("olean ready", { exact: false }).waitFor();
+        const savedAt = performance.now();
+        await saveButton.click();
+        await page.getByText("Verified", { exact: true }).waitFor();
+        console.log("Save to automatic Verified (ms):", Math.round(performance.now()-savedAt));
+        const current = JSON.parse((await cli("show", a.fnode)).stdout);
+        const cached = await (await fetch(`${url}/api/node/${a.fnode}/lean/check`, {
+          method: "POST", headers: { "content-type": "application/json", "if-match": `"${current.revision}"` }, body: JSON.stringify({ build: false }),
+        })).json();
+        assert.equal(cached.certified, true, JSON.stringify(cached));
+        assert.equal(cached.cache_hit, true, "CLI/API checks must reuse editor certification");
+        assert.equal(browserChecks, 0, "saving must reuse the editor instead of starting a second checker");
+        assert.equal(await leanBlock.getByRole("button", { name: /Save & (check|build)/ }).count(), 0);
         const select = async name => {
           await page.getByRole("button", { name: /Search nodes/ }).click();
           await page.getByPlaceholder("Search by title or fnode…").fill(name);
@@ -439,12 +449,19 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         };
         await select("Lean Dependent");
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
+        await page.getByText("Verified", { exact: true }).waitFor();
+        const leanStatus = async id => (await (await fetch(`${url}/api/node/${id}/view`)).json()).node.formalization.lean;
+        assert.equal(await leanStatus(dep.fnode), "verified", "the editor's compiled imports must certify dependencies too");
         const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
         assert.equal(await frame.locator(".squiggly-error").count(), 0);
         await put(dep.fnode, "def anchor : Nat := 2\n");
+        assert.equal(await leanStatus(target.fnode), "unverified", "changing an import must invalidate the dependent certificate");
         await select("Alpha");
         await select("Lean Dependent");
         await frame.locator(".squiggly-error").first().waitFor();
+        await page.getByText("Lean errors", { exact: false }).waitFor();
+        assert.equal(await page.getByText("Verified", { exact: true }).count(), 0);
+        assert.equal(await leanStatus(target.fnode), "unverified");
         assert.equal(sent.filter(m => m.method === "initialize").length, 1);
         assert.ok(sent.some(m => m.method === "textDocument/didClose"), "a changed dependency must invalidate the worker environment");
       }));

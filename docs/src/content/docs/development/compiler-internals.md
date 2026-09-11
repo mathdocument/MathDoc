@@ -30,4 +30,18 @@ also preserves the draft.
 
 Managed direct imports come from `$/lean/prepareModuleHierarchy` and `$/lean/moduleHierarchy/imports`. The graph dependency set is compared with this native information. `$/lean/plainGoal` powers CLI goal queries; the browser forwards the full native protocol for Infoview, completion, hover and widgets.
 
+Saved editor documents publish certification through the same connection. The
+bridge observes native diagnostics, `waitForDiagnostics` completion and module
+imports; it binds them to the exact saved source, LSP document version and
+dependency environment. Full document synchronization keeps that source binding
+exact without a second text-editing engine. Replies from closed workers cannot
+certify reopened documents. The browser cannot supply its own success verdict.
+
+Successfully imported managed dependencies provide `.olean` and `.ilean`
+compiler metadata. Their direct imports undergo the same graph dependency checks
+as CLI diagnostics. Only observed, compiled dependencies are certified; a graph
+edge alone is insufficient. These certificates share the CLI's versioned memory
+and disk cache, so a subsequent check needs no second elaboration. Save does not
+force a target artifact build; native Lake restores or builds it when required.
+
 Dependency changes reopen the importing document so Lean reloads its import environment. Proof edits preserve the live worker and its elaboration snapshots. Native `lake build +MODULE` generates target artifacts on an explicit build request. On disconnect, the shared CLI/browser transport sends LSP `shutdown` and `exit`, draining stdout until Lean has reaped its workers (which use separate process groups). A two-second timeout retains forced termination for an unresponsive server. Service shutdown waits for editor and CLI cleanup before stopping the async runtime.

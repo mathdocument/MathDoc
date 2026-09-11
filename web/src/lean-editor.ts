@@ -15,12 +15,14 @@ class BrowserLean extends LeanMonaco {
     return { ...super.getExtensionManifest(), main: undefined, browser: undefined, activationEvents: [] };
   }
 }
-interface Document { fnode: string; filename: string; source: string; environment_key: string }
+interface Document { fnode: string; filename: string; source: string; revision: string; environment_key: string }
 interface OpenDocument {
   document: Document;
   reference: LeanMonacoEditor["modelRef"];
   view: MonacoEditor.ICodeEditorViewState | null;
   progress: string;
+  validating?: boolean;
+  validated?: string;
 }
 const runtime = new BrowserLean();
 const editor = new LeanMonacoEditor();
@@ -35,6 +37,34 @@ let resolveClient: (client: LeanClient) => void;
 const clientReady = new Promise<LeanClient>(resolve => { resolveClient = resolve; });
 const send = (type: string, value?: unknown, generation?: number) => parent.postMessage({ type, value, fnode: shownFnode, generation }, location.origin);
 function showProgress() { send("lean-progress", preview ? "Preparing Lean environment…" : selected?.progress ?? ""); }
+async function validate(entry: OpenDocument) {
+  const key = () => `${entry.document.revision}:${entry.document.environment_key}:${entry.reference.object.textEditorModel?.getVersionId()}`;
+  if (documents.get(entry.document.filename) !== entry || entry.validating || entry.validated === key() || entry.progress !== "Lean editor ready" ||
+      entry.reference.object.textEditorModel?.getValue() !== entry.document.source) return;
+  const requested = key(), { fnode, revision } = entry.document;
+  const post = (type: string, value?: unknown) => parent.postMessage({ type, value, fnode }, location.origin);
+  entry.validating = true; post("lean-validating", true);
+  try {
+    const client = await clientReady;
+    // The bridge obtains the exact LSP version from native document notifications.
+    const state: { uri: string; version: number; module: unknown } = await client.sendRequest("mdc/validationState", { fnode, revision });
+    await client.sendRequest("textDocument/waitForDiagnostics", { uri: state.uri, version: state.version });
+    if (key() !== requested) return;
+    await client.sendRequest("$/lean/moduleHierarchy/imports", { module: state.module });
+    if (key() !== requested) return;
+    const result = await client.sendRequest("mdc/certify", { fnode, revision, version: state.version });
+    if (key() === requested) { entry.validated = requested; post("lean-certified", result); }
+  } catch (e) {
+    // Changes can overtake a validation request. The next native progress event
+    // retries the latest saved version; stale evidence is never published.
+    if (key() === requested && !/draft differs|not open yet|not complete|node changed/.test(String(e))) {
+      post("lean-validation-error", String(e));
+    }
+  } finally {
+    entry.validating = false; post("lean-validating", false);
+    if (key() !== requested) void validate(entry);
+  }
+}
 function showNode(fnode: string, source: string, generation: number) {
   if (selected && !preview) selected.view = editor.editor.saveViewState();
   const oldPreview = preview;
@@ -112,6 +142,7 @@ async function selectNode(fnode: string, revision: string, generation: number, r
   if (restart) { entry.progress = "Reloading changed Lean dependencies…"; runtime.clientProvider!.restartActiveFile(); }
   showProgress();
   send("lean-ready", undefined, generation);
+  void validate(entry);
 }
 async function start() {
   if (!id) throw new Error("Missing Lean session");
@@ -145,6 +176,7 @@ async function start() {
       entry.progress = processing.length === 0 ? "Lean editor ready" :
         processing.some(item => item.range.start.line === 0) ? "Loading Lean imports…" : "Lean is checking edits…";
       if (entry === selected) showProgress();
+      if (processing.length === 0) void validate(entry);
     });
   });
   applyTheme(params.get("theme") ?? "light");
@@ -154,10 +186,17 @@ async function start() {
   documents.set(session.filename, selected);
   editor.editor.onDidChangeModelContent(() => { if (!updating) send("lean-change", editor.editor.getValue()); });
   editor.editor.addCommand(KeyMod.CtrlCmd | KeyCode.KeyS, () => send("lean-save"));
-  editor.editor.addCommand(KeyMod.CtrlCmd | KeyCode.Enter, () => send("lean-check"));
+  editor.editor.addCommand(KeyMod.CtrlCmd | KeyCode.Enter, () => send("lean-save"));
   window.addEventListener("message", (event) => {
     if (event.origin !== location.origin || event.source !== parent) return;
     if (event.data?.type === "lean-theme") applyTheme(event.data.value);
+    if (event.data?.type === "lean-saved") {
+      const entry = [...documents.values()].find(e => e.document.fnode === event.data.fnode);
+      if (entry) {
+        entry.document = { ...entry.document, source: event.data.source, revision: event.data.revision };
+        void validate(entry);
+      }
+    }
     if (event.data?.type === "lean-select") {
       const { fnode, revision, generation, source } = event.data;
       const request = ++selection;

@@ -111,7 +111,7 @@ export const api = {
   closeLeanSession: (id: string) => req<void>(`/api/lean/session/${encodeURIComponent(id)}`, {
     method: "DELETE", keepalive: true,
   }),
-  checkLean: (fnode: string, revision: string, build = false) => req<{ passed: boolean; certified: boolean; built: boolean; cache_hit: boolean; elapsed_ms: number; diagnostics: unknown[]; dependency_errors: string[] }>(`/api/node/${encodeURIComponent(fnode)}/lean/check`, {
+  checkLean: (fnode: string, revision: string, build = false) => req<{ fnode: string; revision: string; passed: boolean; certified: boolean; built: boolean; cache_hit: boolean; elapsed_ms: number; diagnostics: unknown[]; dependency_errors: string[] }>(`/api/node/${encodeURIComponent(fnode)}/lean/check`, {
     method: "POST", headers: { "content-type": "application/json", "if-match": `"${revision}"` }, body: JSON.stringify({ build }),
   }),
   roots: () => req<GraphRootItem[]>("/api/graph/roots"),

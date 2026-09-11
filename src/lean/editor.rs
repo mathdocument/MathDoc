@@ -100,6 +100,13 @@ impl Observer {
         let value: Value = serde_json::from_str(text)?;
         let p = &value["params"];
         let uri = p["textDocument"]["uri"].as_str().unwrap_or("");
+        if matches!(method, "textDocument/didOpen" | "textDocument/didClose") {
+            // A reopened worker can reuse version numbers; its predecessor's
+            // late replies must not become evidence for the new document.
+            self.pending.retain(|_, pending| {
+                !matches!(pending, Pending::Diagnostics(u, _) | Pending::Imports(u, _) if u == uri)
+            });
+        }
         let pending = match method {
             "initialize" => Some(Pending::Initialize),
             "textDocument/didOpen" => {
@@ -337,6 +344,25 @@ mod tests {
             .lakefile
             .push_str("\n# changed environment\n");
         assert!(observer.document(uri, &changed).is_err());
+        client(
+            &mut observer,
+            json!({"id":4,"method":"textDocument/waitForDiagnostics","params":{"uri":uri,"version":2}}),
+        );
+        client(
+            &mut observer,
+            json!({"method":"textDocument/didClose","params":{"textDocument":{"uri":uri}}}),
+        );
+        client(
+            &mut observer,
+            json!({"method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"version":2,"text":node.source("lean")}}}),
+        );
+        observer.server(r#"{"id":4,"result":{}}"#).unwrap();
+        client(
+            &mut observer,
+            json!({"id":5,"method":"$/lean/moduleHierarchy/imports","params":{"module":{"uri":uri,"name":node.module}}}),
+        );
+        observer.server(r#"{"id":5,"result":[]}"#).unwrap();
+        assert!(observer.evidence(uri, &input, 2).is_err());
         let deep = format!(
             r#"{{"id":99,"result":{}0{}}}"#,
             "[".repeat(2048),
