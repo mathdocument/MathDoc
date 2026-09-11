@@ -374,7 +374,7 @@ pub(crate) async fn delete_branch(project: &str) -> Result<Value> {
 
 pub(crate) async fn start(project: &str, port: u16) -> Result<Option<Value>> {
     use std::{
-        io::Write,
+        io::{Read, Write},
         os::{
             fd::AsFd,
             unix::{fs::OpenOptionsExt, net::UnixStream},
@@ -382,34 +382,34 @@ pub(crate) async fn start(project: &str, port: u16) -> Result<Option<Value>> {
         process::Stdio,
         time::Duration,
     };
-    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-    // Only a child launched below inherits an anonymous Unix socket on stdin.
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    // Node.js also uses anonymous sockets for ordinary child stdin. Only the
+    // marker queued before spawn identifies our child; never wait for user stdin.
     // Re-exec keeps Tokio initialization out of the post-fork child.
     if let Ok(fd) = std::io::stdin().as_fd().try_clone_to_owned() {
-        let channel = UnixStream::from(fd);
+        let mut channel = UnixStream::from(fd);
         if channel
             .local_addr()
             .is_ok_and(|address| address.is_unnamed())
         {
             channel.set_nonblocking(true)?;
-            let mut channel = tokio::net::UnixStream::from_std(channel)?;
             let mut marker = [0; 9];
-            tokio::time::timeout(Duration::from_secs(5), channel.read_exact(&mut marker)).await??;
-            anyhow::ensure!(&marker == b"mdc-start", "invalid service startup handshake");
-            drop(channel);
-            let result = async {
-                let (database, branch) = crate::config::project_parts(project)?;
-                serve(Database::from_env(database.into(), branch.into())?, port).await
+            if channel.read_exact(&mut marker).is_ok() && &marker == b"mdc-start" {
+                drop(channel);
+                let result = async {
+                    let (database, branch) = crate::config::project_parts(project)?;
+                    serve(Database::from_env(database.into(), branch.into())?, port).await
+                }
+                .await;
+                if let Err(error) = &result {
+                    let _ = writeln!(
+                        std::io::stdout(),
+                        "{}",
+                        json!({"error":format!("{error:#}")})
+                    );
+                }
+                return result.map(|_| None);
             }
-            .await;
-            if let Err(error) = &result {
-                let _ = writeln!(
-                    std::io::stdout(),
-                    "{}",
-                    json!({"error":format!("{error:#}")})
-                );
-            }
-            return result.map(|_| None);
         }
     }
     let root = crate::config::Settings::load()?.project_cache(project)?;
@@ -425,6 +425,7 @@ pub(crate) async fn start(project: &str, port: u16) -> Result<Option<Value>> {
         .open(&log_path)?;
     let mut command = tokio::process::Command::new(std::env::current_exe()?);
     let (mut bootstrap, child_bootstrap) = UnixStream::pair()?;
+    bootstrap.write_all(b"mdc-start")?;
     let child_bootstrap: std::os::fd::OwnedFd = child_bootstrap.into();
     command
         .args(["start", project])
@@ -449,7 +450,6 @@ pub(crate) async fn start(project: &str, port: u16) -> Result<Option<Value>> {
     }
     let mut child = command.spawn().context("start mdc service process")?;
     let ready: Result<RunningService> = async {
-        bootstrap.write_all(b"mdc-start")?;
         let mut output = BufReader::new(child.stdout.take().context("service startup pipe")?);
         let mut line = String::new();
         tokio::select! {

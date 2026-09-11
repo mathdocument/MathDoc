@@ -92,12 +92,17 @@ impl Started {
         }
         // The background child changes cwd; explicit relative config paths must still work.
         std::fs::write(root.join("client.toml"), "").unwrap();
+        // Node.js uses a socket pair for piped stdin; it is not our bootstrap.
+        let (input, child_input) = std::os::unix::net::UnixStream::pair().unwrap();
+        let child_input: std::os::fd::OwnedFd = child_input.into();
         let output = command(root)
             .env("MDC_CONFIG", "client.toml")
+            .stdin(Stdio::from(child_input))
             .args(&args)
             .output()
             .await
             .unwrap();
+        drop(input);
         assert!(
             output.status.success(),
             "{}",
@@ -133,21 +138,28 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
     first.db.create_branch("agent").await.unwrap();
     let cache = tempfile::tempdir().unwrap();
     let root = cache.path();
+    let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     // A closed bootstrap peer must still be recognized; never recursively launch start.
     let (mut bootstrap, child_input) = std::os::unix::net::UnixStream::pair().unwrap();
+    std::io::Write::write_all(&mut bootstrap, b"mdc-start").unwrap();
     let child_input: std::os::fd::OwnedFd = child_input.into();
     let child = command(root)
-        .args(["start", "mdcbootstrapmissing/main"])
+        .args([
+            "start",
+            "mdcbootstrapmissing/main",
+            "--port",
+            &occupied.local_addr().unwrap().port().to_string(),
+        ])
         .stdin(Stdio::from(child_input))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    std::io::Write::write_all(&mut bootstrap, b"bad-start").unwrap();
     drop(bootstrap);
     let failed = child.wait_with_output().await.unwrap();
     assert!(!failed.status.success());
-    assert!(String::from_utf8_lossy(&failed.stderr).contains("invalid service startup handshake"));
+    let failed: Value = serde_json::from_slice(&failed.stdout).unwrap();
+    assert!(failed["error"].as_str().unwrap().contains("cannot bind port"));
     let main = format!("{}/main", first.db.database);
     let agent = format!("{}/agent", first.db.database);
     let unused = format!("{}/main", second.db.database);
@@ -162,7 +174,6 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
         "status must not create compiler workspaces"
     );
 
-    let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     reject(
         root,
         &[
