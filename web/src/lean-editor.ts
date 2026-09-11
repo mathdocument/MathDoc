@@ -1,5 +1,5 @@
 import { LeanMonaco, LeanMonacoEditor, type LeanClient } from "lean4monaco";
-import { Uri, KeyCode, KeyMod, editor as MonacoEditor } from "monaco-editor";
+import { CancellationTokenSource, Uri, KeyCode, KeyMod, editor as MonacoEditor } from "monaco-editor";
 import { createModelReference } from "vscode/monaco";
 import { FileUri } from "lean4monaco/dist/vscode-lean4/vscode-lean4/src/utils/exturi";
 
@@ -31,8 +31,7 @@ let selected: OpenDocument | undefined;
 let shownFnode = "";
 let preview: MonacoEditor.ITextModel | undefined;
 let updating = false;
-let selection = 0;
-let selecting = Promise.resolve();
+let selection = new AbortController();
 let resolveClient: (client: LeanClient) => void;
 const clientReady = new Promise<LeanClient>(resolve => { resolveClient = resolve; });
 const send = (type: string, value?: unknown, generation?: number) => parent.postMessage({ type, value, fnode: shownFnode, generation }, location.origin);
@@ -96,11 +95,28 @@ async function evict(filename: string) {
   await old.reference.object.revert({ soft: true });
   old.reference.dispose();
 }
-async function selectNode(fnode: string, revision: string, generation: number, request: number) {
-  const client = await clientReady;
-  if (request !== selection) return;
-  const next: Document = await client.sendRequest("mdc/selectNode", { fnode, revision });
-  if (request !== selection) return;
+// Cancellation must settle locally even if an LSP peer never answers its request.
+async function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  let cancel!: () => void;
+  try {
+    return await Promise.race([work, new Promise<never>((_, reject) => {
+      cancel = () => reject(signal.reason);
+      signal.addEventListener("abort", cancel, { once: true });
+      if (signal.aborted) cancel();
+    })]);
+  } finally { signal.removeEventListener("abort", cancel); }
+}
+async function selectNode(fnode: string, revision: string, generation: number, signal: AbortSignal) {
+  const client = await abortable(clientReady, signal);
+  signal.throwIfAborted();
+  const token = new CancellationTokenSource();
+  const cancel = () => token.cancel();
+  signal.addEventListener("abort", cancel, { once: true });
+  let next: Document;
+  try {
+    next = await abortable(client.sendRequest("mdc/selectNode", { fnode, revision }, token.token), signal);
+  } finally { signal.removeEventListener("abort", cancel); token.dispose(); }
+  if (signal.aborted) return;
   document.getElementById("error")!.textContent = "";
 
   let entry = documents.get(next.filename);
@@ -111,10 +127,10 @@ async function selectNode(fnode: string, revision: string, generation: number, r
     if (documents.size >= 2) {
       const oldest = documents.keys().next().value!;
       await evict(oldest);
-      if (request !== selection) return;
+      if (signal.aborted) return;
     }
     const reference = await createModelReference(Uri.file(next.filename), next.source);
-    if (request !== selection) {
+    if (signal.aborted) {
       await reference.object.revert({ soft: true }); reference.dispose(); return;
     }
     entry = { document: next, reference, view: null, progress: "Loading Lean imports…" };
@@ -181,6 +197,7 @@ async function start() {
   });
   applyTheme(params.get("theme") ?? "light");
   await editor.start(document.getElementById("editor")!, session.filename, session.source);
+  editor.editor.updateOptions({ automaticLayout: false });
   shownFnode = session.fnode;
   selected = { document: session, reference: editor.modelRef, view: null, progress: "Loading Lean imports…" };
   documents.set(session.filename, selected);
@@ -199,21 +216,32 @@ async function start() {
     }
     if (event.data?.type === "lean-select") {
       const { fnode, revision, generation, source } = event.data;
-      const request = ++selection;
+      selection.abort();
+      const current = selection = new AbortController();
       showNode(fnode, source, generation);
-      selecting = selecting.then(() => selectNode(fnode, revision, generation, request)).catch(e => {
-        if (request === selection) error(e);
-      });
+      const timer = setTimeout(() => current.abort(new DOMException("Lean node preparation timed out", "TimeoutError")), 30000);
+      // Superseded requests cannot hold up the latest selection or replace its model.
+      void abortable(selectNode(fnode, revision, generation, current.signal), current.signal).catch(e => {
+        if (current !== selection) return;
+        if (e?.name === "TimeoutError") send("lean-disconnected", e.message);
+        else if (!current.signal.aborted) error(e);
+      }).finally(() => clearTimeout(timer));
     }
+    if (event.data?.type === "lean-cancel") selection.abort();
     if (event.data?.type === "lean-source" && event.data.fnode === shownFnode && typeof event.data.value === "string" && editor.editor.getValue() !== event.data.value) {
       editor.editor.setValue(event.data.value);
     }
   });
-  new ResizeObserver(() => editor.editor.layout()).observe(document.getElementById("editor")!);
+  new ResizeObserver(([entry]) => {
+    // Hidden blocks have a zero viewport. Laying out there corrupts the saved
+    // scroll position and can leave line-one diagnostics outside the visible area.
+    if (entry.contentRect.width && entry.contentRect.height) editor.editor.layout();
+  }).observe(document.getElementById("editor")!);
   send("lean-runtime-ready");
 }
 void start().catch(error);
 window.addEventListener("pagehide", () => {
+  selection.abort();
   if (id) void fetch(`/api/lean/session/${encodeURIComponent(id)}`, { method: "DELETE", keepalive: true }).catch(console.warn);
   preview?.dispose();
   for (const entry of documents.values()) entry.reference.dispose();

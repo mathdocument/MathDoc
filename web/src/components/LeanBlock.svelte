@@ -50,7 +50,7 @@
       if (node) {
         if (!session && !opening) void open();
         else selectNode();
-      }
+      } else frame?.contentWindow?.postMessage({ type: "lean-cancel" }, location.origin);
     });
   });
   $effect(() => { frame?.contentWindow?.postMessage({ type: "lean-theme", value: theme }, location.origin); });
@@ -82,7 +82,7 @@
   }
   function reload() { reconnects = 0; void open(); }
   function disconnected(reason: string) {
-    error = reason;
+    error = reason; progress = "";
     // One automatic attempt per editor lifetime; repeated crashes need an explicit
     // retry. The parent owns unsaved text and restores it into the new runtime.
     if (!reconnectTimer && reconnects < 1 && block) {

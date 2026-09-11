@@ -349,6 +349,8 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.equal(messages.filter(m => m.method === "textDocument/didOpen").length, opened, "warm navigation must retain the native worker");
         console.log("Warm Lean node navigation (ms):", Math.round(performance.now() - warmed));
         await select("Alpha"); // A node without Lean must not tear down the runtime.
+        // Let ResizeObserver see the fully hidden iframe before restoring it.
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
         await select("Lean Example");
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
         assert.equal(sessions, 1);
@@ -373,10 +375,11 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         }
       }, [a]);
     });
-    await suite.test("Lean stays editable during delayed startup and selection, and reconnects without losing drafts", () =>
+    await suite.test("Lean cancels stale selections and recovers from preparation timeouts without losing drafts", () =>
       fixture(browser, async ({ root, cli, page, url, serverOutput }) => {
         const ids = {};
-        for (const name of ["Alpha", "Gamma"]) {
+        await cli("new", "-t", "Delta");
+        for (const name of ["Alpha", "Gamma", "Delta"]) {
           const node = JSON.parse((await cli("show", name)).stdout);
           ids[name] = node.fnode;
           const response = await fetch(`${url}/api/node/${node.fnode}/block/lean`, {
@@ -385,7 +388,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           });
           assert.equal(response.status, 200);
         }
-        let releaseInit, releaseSelect, initSeen;
+        let releaseInit, releaseSelect, initSeen, selectionHeld;
         const initializeGate = new Promise(resolve => { releaseInit = resolve; });
         const initializeSeen = new Promise(resolve => { initSeen = resolve; });
         let selectionGate = Promise.resolve();
@@ -397,7 +400,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           server.onMessage(async message => {
             const value = JSON.parse(String(message));
             if (value.result?.capabilities) { initSeen(); await initializeGate; }
-            if (value.result?.fnode && blockSelect) await selectionGate;
+            if (value.result?.filename && blockSelect) { selectionHeld?.(); await selectionGate; }
             ws.send(message);
           });
         });
@@ -434,13 +437,30 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await frame.getByText("-- typed while preparing node", { exact: true }).waitFor();
         // Delay an older selection, then navigate away before its response arrives.
         blockSelect = true;
+        const held = new Promise(resolve => { selectionHeld = resolve; });
         selectionGate = new Promise(resolve => { releaseSelect = resolve; });
         await select("Alpha");
         await frame.getByText("alpha", { exact: true }).waitFor({ timeout: 1000 });
+        await held;
+        const stale = sent.filter(m => m.method === "mdc/selectNode").at(-1).id;
+        // Leave Alpha's response blocked while a cold node becomes fully ready.
+        // A serial promise chain would leave Delta preparing forever here.
+        blockSelect = false;
+        await select("Delta");
+        await frame.getByText("delta", { exact: true }).waitFor();
+        await page.getByText("Lean editor ready", { exact: true }).waitFor({ timeout: 5000 });
+        assert.ok(sent.some(m => m.method === "$/cancelRequest" && m.params.id === stale), "superseded selections must cancel their LSP request");
+        releaseSelect();
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await frame.getByText("delta", { exact: true }).waitFor();
         await select("Gamma");
-        blockSelect = false; releaseSelect();
-        await frame.getByText("gamma", { exact: true }).waitFor();
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
+        await select("Alpha");
+        await page.getByText("Lean editor ready", { exact: true }).waitFor();
+        blockSelect = true;
+        selectionGate = new Promise(resolve => { releaseSelect = resolve; });
+        await select("Gamma");
+        await frame.getByText("gamma", { exact: true }).waitFor();
         await input.press("ControlOrMeta+End");
         await page.keyboard.insertText("-- draft must survive a disconnect\n");
         await page.getByText("Unsaved", { exact: true }).waitFor();
@@ -451,8 +471,11 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           .filter(line => line.includes("--worker ") && line.includes(root)).map(line => Number(line.trim().split(/\s+/)[0]));
         const oldWorkers = await workers();
         assert.ok(oldWorkers.length > 0, "the session must have native file workers");
-        assert.equal((await fetch(`${url}/api/lean/session/${oldId}`, { method: "DELETE" })).status, 204);
-        await page.waitForFunction(old => document.querySelector('iframe[title="Lean source and Infoview"]')?.getAttribute("src") !== old, oldPath);
+        // Keep the current selection unanswered. Its 30-second deadline must
+        // reconnect, retire native workers, and restore the parent-owned draft.
+        await page.waitForFunction(old => document.querySelector('iframe[title="Lean source and Infoview"]')?.getAttribute("src") !== old, oldPath, { timeout: 35000 });
+        blockSelect = false; releaseSelect();
+        assert.equal((await fetch(`${url}/api/lean/session/${oldId}`)).status, 404);
         await frame.getByText("-- draft must survive a disconnect", { exact: true }).waitFor();
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
         await page.getByText("Unsaved", { exact: true }).waitFor();

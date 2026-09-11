@@ -1199,7 +1199,7 @@ async fn bridge_editor(
                             "mdc/selectNode" | "mdc/validationState" | "mdc/certify"
                         ) {
                             let value: Value = serde_json::from_str(&text)?;
-                            let selected: Result<Value> = async {
+                            let selected: Result<Value> = tokio::time::timeout(std::time::Duration::from_secs(30), async {
                                 let id = value["params"]["fnode"].as_str().context("node required")?;
                                 let revision = value["params"]["revision"].as_str().context("revision required")?;
                                 let next = {
@@ -1229,7 +1229,7 @@ async fn bridge_editor(
                                     let result = service.lean.record_editor_check(root, &next, diagnostics, imports).await?;
                                     Ok(json!(result))
                                 }
-                            }.await;
+                            }).await.context("Lean editor request timed out")?;
                             let reply = match selected {
                                 Ok(document) => {
                                     json!({"jsonrpc":"2.0","id":value["id"],"result":document})
