@@ -346,6 +346,32 @@ impl RunningService {
     }
 }
 
+pub(crate) async fn delete_branch(project: &str) -> Result<Value> {
+    let (database, branch) = crate::config::project_parts(project)?;
+    let db = Database::from_env(database.into(), branch.into())?;
+    let root = db.cache_path()?;
+    // Use the service's exclusive lease, including during startup before a port is recorded.
+    let _lease = crate::lean::LeanService::new(root.clone()).map_err(|error| {
+        anyhow::anyhow!("cannot lock {project}: {error}; run mdc stop {project} before deleting")
+    })?;
+    db.version().await?;
+    // Clean disposable files first so a filesystem error leaves branch data intact.
+    // Keep the lock inode: unlinking it would let a concurrent start bypass our lease.
+    for entry in std::fs::read_dir(&root)? {
+        let entry = entry?;
+        if entry.file_name() == "service.lock" {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            std::fs::remove_dir_all(entry.path())?;
+        } else {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
+    db.delete_branch().await?;
+    Ok(json!({"project":project,"deleted":true}))
+}
+
 pub(crate) async fn start(project: &str, port: u16) -> Result<Value> {
     use std::{os::unix::fs::OpenOptionsExt, process::Stdio, time::Duration};
     use tokio::io::{AsyncBufReadExt, BufReader};

@@ -78,7 +78,7 @@ init takes a database name, and status lists all projects.
 ```sh
 mdc start other/main --port 7600
 mdc graph check --proj other/main
-mdc branch create --proj myproject/main agent
+mdc branch new --proj myproject/main agent
 mdc start myproject/agent
 mdc stop myproject/agent
 ```

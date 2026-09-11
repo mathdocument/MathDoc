@@ -33,8 +33,8 @@ lines: project/service management, whole-branch operations, and single-node
 operations. `metric ior` belongs to the single-node group. Every command and
 subcommand includes a short description.
 
-All client commands require `--proj DATABASE/BRANCH`. They discover the service
-port locally; no URL option or default project is used. The selector can appear
+Branch and node commands require `--proj DATABASE/BRANCH`. Except for `branch del`,
+they discover the running service port locally; no URL option or default project is used. The selector can appear
 after a client command, such as `mdc graph --proj myproject/main check` or
 `mdc graph check --proj myproject/main`. The CLI root and init/start/stop/status
 do not accept `--proj`. Global `--prof` prints command timing measurements to stderr
@@ -47,13 +47,23 @@ mdc rename --proj myproject/main 'A theorem' 'Renamed theorem'
 mdc search --proj myproject/main theorem
 mdc export --proj myproject/main > backup.json
 mdc import --proj other/main backup.json
-mdc branch create --proj myproject/main agent
+mdc branch new --proj myproject/main agent
 mdc start myproject/agent
 mdc history --proj myproject/agent
+mdc stop myproject/agent
+mdc branch del --proj myproject/agent
 ```
 
 Branch creation forks the selected service's current branch head without changing
 that service's branch. History returns the latest 50 TerminusDB commits as JSON.
+
+`mdc branch del --proj DATABASE/BRANCH` deletes the selected branch directly in
+TerminusDB. Its service must already be stopped; a running or starting service
+causes an error that asks you to run `mdc stop DATABASE/BRANCH` first. Deletion
+removes all files in that branch's cache directory, including Lean artifacts,
+checks, editor workspaces, libraries and logs. Only the empty service lock is kept
+for coordination. Other branches and their caches are untouched. TerminusDB's
+immutable commits remain in the database; deleting a branch removes its reference.
 
 `mdc edit --proj myproject/main NAME --type TYPE [--revision REV]` reads the complete
 block source from stdin. References accept exact names or full UUIDs. Use

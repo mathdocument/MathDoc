@@ -573,6 +573,18 @@ impl Database {
             .json()
             .await?)
     }
+    pub(crate) async fn delete_branch(&self) -> Result<()> {
+        self.server
+            .request(
+                Method::DELETE,
+                &format!("branch/{}", self.path()),
+                &[],
+                None,
+                None,
+            )
+            .await?;
+        Ok(())
+    }
     pub fn with_cache_root(mut self, root: PathBuf) -> Self {
         self.server.cache_root = root;
         self

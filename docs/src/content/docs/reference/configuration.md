@@ -14,7 +14,7 @@ terminus_password = "the-existing-database-password"
 
 Environment overrides are `MDC_TERMINUS_URL`, `MDC_TERMINUS_USER`, `MDC_TERMINUS_PASSWORD`, `MDC_CACHE_DIR` and `MDC_LEAN_TIMEOUT_SECONDS`. `MDC_URL` and the TOML `url` setting are removed; delete an old `url` entry when upgrading. Client commands require `--proj DATABASE/BRANCH` after the command name (for example `mdc graph check --proj myproject/main`) and discover the running service through its local cache record. No default port or implicit project is used.
 
-`init`, `start` and `status` need TerminusDB credentials. Clients and `stop` need only the same TerminusDB endpoint setting and local cache root as the running service; they do not query the database directly or require its password.
+`init`, `start`, `status` and `branch del` need TerminusDB credentials. Other clients and `stop` need only the same TerminusDB endpoint setting and local cache root as the running service; they do not query the database directly or require its password.
 
 Caches default to `$XDG_CACHE_HOME/mdc` or `~/.cache/mdc`. The service appends the database endpoint hash, database name and branch. Cache overrides must be absolute paths, so moving the working directory cannot select a different cache.
 

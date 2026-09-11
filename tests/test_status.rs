@@ -264,3 +264,80 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
     assert_eq!(status(root).await[&agent], None);
     drop(c);
 }
+
+#[tokio::test]
+#[ignore = "requires local TerminusDB and MDC_TERMINUS_PASSWORD"]
+async fn branch_deletion_requires_stopped_service_and_cleans_only_its_cache() {
+    let fixture = common::TestDatabase::new("mdcbranch").await;
+    let cache = tempfile::tempdir().unwrap();
+    let root = cache.path();
+    let main = format!("{}/main", fixture.db.database);
+    let copy = format!("{}/copy", fixture.db.database);
+    let _source = Started::start(root, &main, None).await;
+    run(root, &["new", "--proj", &main, "-t", "Original"]).await;
+    let original = run(root, &["export", "--proj", &main]).await;
+    run(root, &["branch", "new", "copy", "--proj", &main]).await;
+    let copied = mathdoc::store::Database::from_env(fixture.db.database.clone(), "copy".into())
+        .unwrap()
+        .with_cache_root(root.into());
+    let copy_root = copied.cache_path().unwrap();
+    let cache_file = copy_root.join("projects/toolchain/.lake/build/Lib.olean");
+    std::fs::create_dir_all(cache_file.parent().unwrap()).unwrap();
+    std::fs::write(&cache_file, "cached olean").unwrap();
+    let outside = root.join("shared-library");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("keep.olean"), "shared").unwrap();
+    std::os::unix::fs::symlink(&outside, copy_root.join("library-link")).unwrap();
+
+    // Startup also holds the lease before it records a listening port.
+    let starting = mathdoc::lean::LeanService::new(copy_root.clone()).unwrap();
+    reject(
+        root,
+        &["branch", "del", "--proj", &copy],
+        &format!("mdc stop {copy}"),
+    )
+    .await;
+    assert!(cache_file.exists());
+    drop(starting);
+
+    let target = Started::start(root, &copy, None).await;
+    assert_eq!(run(root, &["export", "--proj", &copy]).await, original);
+    reject(
+        root,
+        &["branch", "del", "--proj", &copy],
+        &format!("mdc stop {copy}"),
+    )
+    .await;
+    assert!(cache_file.exists());
+    assert!(copied.version().await.is_ok());
+    run(root, &["stop", &copy]).await;
+    drop(target);
+    assert_eq!(
+        run(root, &["branch", "del", "--proj", &copy]).await,
+        serde_json::json!({"project":copy,"deleted":true})
+    );
+    assert!(copied.version().await.is_err());
+    assert!(!status(root).await.contains_key(&copy));
+    let remaining: Vec<_> = std::fs::read_dir(&copy_root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(remaining, vec![std::ffi::OsString::from("service.lock")]);
+    assert_eq!(
+        std::fs::metadata(copy_root.join("service.lock"))
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(
+        std::fs::read_to_string(outside.join("keep.olean")).unwrap(),
+        "shared"
+    );
+    assert_eq!(run(root, &["export", "--proj", &main]).await, original);
+    reject(root, &["branch", "del", "--proj", &copy], "TerminusDB").await;
+
+    run(root, &["branch", "new", "copy", "--proj", &main]).await;
+    let _recreated = Started::start(root, &copy, None).await;
+    assert!(!cache_file.exists());
+    assert_eq!(run(root, &["export", "--proj", &copy]).await, original);
+}

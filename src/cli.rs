@@ -64,7 +64,7 @@ enum Commands {
     },
     /// Show the latest 50 commits in the branch's history.
     History,
-    /// Create a branch from the selected branch head.
+    /// Create a branch or delete a stopped branch and its Lean caches.
     Branch {
         #[command(subcommand)]
         command: Branch,
@@ -179,7 +179,9 @@ enum Project {
 #[derive(Subcommand)]
 enum Branch {
     /// Fork a new branch from the selected branch head.
-    Create { name: String },
+    New { name: String },
+    /// Delete the selected branch and its Lean caches; stop its service first.
+    Del,
 }
 
 struct Api {
@@ -284,7 +286,7 @@ fn grouped_command() -> clap::Command {
                 .global(true)
                 .value_name("DATABASE/BRANCH")
                 .value_parser(parse_project)
-                .help("Select a running project branch (required)"),
+                .help("Select a project branch (required)"),
         )
     });
     let header = command.get_styles().get_header();
@@ -379,6 +381,16 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
     }
     let project = project
         .context("select a project with --proj DATABASE/BRANCH; use mdc status to list projects")?;
+    if matches!(
+        cli.command,
+        Commands::Branch {
+            command: Branch::Del
+        }
+    ) {
+        let value = crate::service::delete_branch(&project).await?;
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(0);
+    }
     let root = crate::config::Settings::load()?.project_cache(&project)?;
     let service = crate::service::running_service(&root)?
         .with_context(|| format!("{project} is not running; run mdc start {project}"))?;
@@ -395,7 +407,10 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
         | Commands::Init { .. }
         | Commands::Start { .. }
         | Commands::Stop { .. }
-        | Commands::Run { .. } => unreachable!(),
+        | Commands::Run { .. }
+        | Commands::Branch {
+            command: Branch::Del,
+        } => unreachable!(),
         Commands::New { title } => {
             api.request(
                 Method::POST,
@@ -533,7 +548,7 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
         }
         Commands::History => api.get("/history").await?,
         Commands::Branch {
-            command: Branch::Create { name },
+            command: Branch::New { name },
         } => {
             api.request(
                 Method::POST,
@@ -736,7 +751,8 @@ mod tests {
             vec!["graph", "check"],
             vec!["project", "show"],
             vec!["history"],
-            vec!["branch", "create"],
+            vec!["branch", "new"],
+            vec!["branch", "del"],
         ] {
             let mut args = vec!["mdc"];
             args.extend(path);
@@ -746,6 +762,15 @@ mod tests {
         }
         assert!(grouped_command()
             .try_get_matches_from(["mdc", "work", "node"])
+            .is_err());
+        assert!(grouped_command()
+            .try_get_matches_from(["mdc", "branch", "create", "agent", "--proj", "db/main"])
+            .is_err());
+        assert!(grouped_command()
+            .try_get_matches_from(["mdc", "branch", "del", "--proj", "db/agent"])
+            .is_ok());
+        assert!(grouped_command()
+            .try_get_matches_from(["mdc", "branch", "del", "agent", "--proj", "db/main"])
             .is_err());
     }
 }
