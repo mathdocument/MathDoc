@@ -1180,17 +1180,24 @@ async fn bridge_editor(
     ))?]);
     let mut observer = Observer::default();
     observer.prepare(allowed.iter().next().unwrap().clone(), input.clone());
+    let observer = std::sync::Mutex::new(observer);
     let mut server = crate::lean::Server::start(root)?;
     let (mut send, mut receive) = socket.split();
-    let result:Result<()>=async{
-        loop{tokio::select!{
-            _=cancelled.changed()=>break,
-            message=receive.next()=>{
-                let Some(message)=message else{break;};match message?{
-                    Message::Text(text)=>{
+    let result = {
+        let native_input = server.sender();
+        let (replies, mut outgoing) = tokio::sync::mpsc::channel(32);
+        // Neither direction may wait for the other to drain its bounded queue.
+        // Native output also keeps flowing while a custom request prepares files.
+        let from_client = async {
+            while let Some(message) = receive.next().await {
+                match message? {
+                    Message::Text(text) => {
                         let message: EditorMessage = serde_json::from_str(&text)?;
                         let method = message.method.as_deref().unwrap_or("");
-                        if matches!(method, "mdc/selectNode" | "mdc/validationState" | "mdc/certify") {
+                        if matches!(
+                            method,
+                            "mdc/selectNode" | "mdc/validationState" | "mdc/certify"
+                        ) {
                             let value: Value = serde_json::from_str(&text)?;
                             let selected: Result<Value> = async {
                                 let id = value["params"]["fnode"].as_str().context("node required")?;
@@ -1206,14 +1213,14 @@ async fn bridge_editor(
                                 if method == "mdc/selectNode" {
                                     crate::lean::refresh_editor_sources(root, &next).await?;
                                     allowed.insert(uri.clone());
-                                    observer.prepare(uri, next);
+                                    observer.lock().unwrap().prepare(uri, next);
                                     Ok(document)
                                 } else if method == "mdc/validationState" {
-                                    let version = observer.document(&uri, &next)?.version;
+                                    let version = observer.lock().unwrap().document(&uri, &next)?.version;
                                     Ok(json!({"uri":uri,"version":version,"module":{"name":next.chain.last().unwrap().0.module,"uri":uri}}))
                                 } else {
                                     let version = value["params"]["version"].as_u64().context("Lean version required")?;
-                                    let (diagnostics, imports) = observer.evidence(&uri, &next, version)?;
+                                    let (diagnostics, imports) = observer.lock().unwrap().evidence(&uri, &next, version)?;
                                     // Serialize publication with graph mutations. An older
                                     // editor can never certify newly saved dependencies.
                                     let snapshot = service.read().await?;
@@ -1224,30 +1231,67 @@ async fn bridge_editor(
                                 }
                             }.await;
                             let reply = match selected {
-                                Ok(document) => json!({"jsonrpc":"2.0","id":value["id"],"result":document}),
-                                Err(error) => json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":-32000,"message":error.to_string()}}),
+                                Ok(document) => {
+                                    json!({"jsonrpc":"2.0","id":value["id"],"result":document})
+                                }
+                                Err(error) => {
+                                    json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":-32000,"message":error.to_string()}})
+                                }
                             };
-                            send.send(Message::Text(serde_json::to_string(&reply)?)).await?;
+                            replies
+                                .send(Message::Text(serde_json::to_string(&reply)?))
+                                .await?;
                             continue;
                         }
-                        if matches!(method,"textDocument/didOpen"|"textDocument/didChange"|"textDocument/didSave"){
+                        if matches!(
+                            method,
+                            "textDocument/didOpen"
+                                | "textDocument/didChange"
+                                | "textDocument/didSave"
+                        ) {
                             let change: DocumentChange = serde_json::from_str(&text)?;
-                            if !allowed.contains(&change.params.document.uri){bail!("editor may only change its selected draft modules");}
+                            if !allowed.contains(&change.params.document.uri) {
+                                bail!("editor may only change its selected draft modules");
+                            }
                         }
-                        observer.client(&text, &message)?;
+                        observer.lock().unwrap().client(&text, &message)?;
                         let text = rewrite_uris(&text, "file:///project", &actual)?;
-                        server.send(text).await?;
-                    },
-                    Message::Close(_)=>break,Message::Ping(data)=>send.send(Message::Pong(data)).await?,_=>{}
+                        native_input
+                            .send(text)
+                            .await
+                            .context("Lean server closed its input")?;
+                    }
+                    Message::Close(_) => break,
+                    Message::Ping(data) => replies.send(Message::Pong(data)).await?,
+                    _ => {}
                 }
-            },
-            message=server.receive()=>{
-                let text = rewrite_uris(&message?, &actual, "file:///project")?;
-                let text = observer.server(&text)?.unwrap_or(text);
-                send.send(Message::Text(text)).await?;
             }
-        }}Ok(())
-    }.await;
+            Ok::<_, anyhow::Error>(())
+        };
+        let to_client = async {
+            loop {
+                let message = tokio::select! {
+                    message = outgoing.recv() => match message {
+                        Some(message) => message,
+                        None => return Ok::<_, anyhow::Error>(()),
+                    },
+                    message = server.receive() => {
+                        let text = rewrite_uris(&message?, &actual, "file:///project")?;
+                        let text = observer.lock().unwrap().server(&text)?.unwrap_or(text);
+                        Message::Text(text)
+                    }
+                };
+                tokio::time::timeout(std::time::Duration::from_secs(30), send.send(message))
+                    .await
+                    .context("Lean editor client stopped reading messages")??;
+            }
+        };
+        tokio::select! {
+            _ = cancelled.changed() => Ok(()),
+            result = from_client => result,
+            result = to_client => result,
+        }
+    };
     server.shutdown().await;
     result
 }

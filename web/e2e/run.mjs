@@ -163,6 +163,55 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.deepEqual(report.cycles, []);
         assert.equal(report.edges, 2);
       }));
+    await suite.test("native Lean bridge drains bidirectional backpressure and cancels a busy session", () => {
+      const node = { fnode: randomUUID(), title: "Transport", module: "Lib.Transport", depens: [], blocks: [{ srctype: "lean", content: "#check Nat\n" }] };
+      return fixture(browser, async ({ cli, url }) => {
+        const current = JSON.parse((await cli("show", node.fnode)).stdout);
+        const response = await fetch(`${url}/api/node/${node.fnode}/lean/session`, {
+          method: "POST", headers: { "if-match": `"${current.revision}"` },
+        });
+        assert.equal(response.status, 200);
+        const session = await response.json();
+        const path = `${url}/api/lean/session/${session.id}`;
+        const ws = new WebSocket(`${path.replace("http:", "ws:")}/ws`);
+        const closed = new Promise(resolve => ws.addEventListener("close", resolve, { once: true }));
+        const initialized = Promise.withResolvers(), drained = Promise.withResolvers();
+        const replies = new Set();
+        const send = message => ws.send(JSON.stringify({ jsonrpc: "2.0", ...message }));
+        ws.addEventListener("error", e => { initialized.reject(e); drained.reject(e); });
+        ws.addEventListener("open", () => send({ id: 0, method: "initialize", params: { processId: null, rootUri: "file:///project", capabilities: {} } }));
+        ws.addEventListener("message", ({ data }) => {
+          const message = JSON.parse(data);
+          if (message.method && message.id !== undefined) send({ id: message.id, result: null });
+          if (message.id === 0) {
+            send({ method: "initialized", params: {} }); initialized.resolve();
+          } else if (!message.method && Number.isInteger(message.id)) {
+            replies.add(message.id);
+            if (replies.size === 2000) drained.resolve();
+          }
+        });
+        const burst = () => {
+          // Lean echoes the closed URI in its error. Both pipe directions exceed
+          // the bounded queues; a single-loop bridge deadlocks on this traffic.
+          const uri = `file:///${"x".repeat(65536)}`;
+          for (let id = 1; id <= 2000; id++) send({ id, method: "$/lean/rpc/connect", params: { uri } });
+        };
+        let timer;
+        try {
+          await Promise.race([
+            (async () => { await initialized.promise; burst(); await drained.promise; })(),
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Lean transport stalled: ${replies.size}/2000 replies`)), 20000); }),
+          ]);
+          console.log("Native Lean backpressure replies:", replies.size);
+          burst();
+          assert.equal((await fetch(path, { method: "DELETE", signal: AbortSignal.timeout(5000) })).status, 204);
+          await Promise.race([closed, new Promise((_, reject) => { clearTimeout(timer); timer = setTimeout(() => reject(new Error("busy Lean session did not close")), 5000); })]);
+        } finally {
+          clearTimeout(timer); ws.close();
+          await fetch(path, { method: "DELETE" });
+        }
+      }, [node]);
+    });
     await suite.test("native Lean editor renders goals, diagnostics and saves to the database", () => {
       const source = "theorem demo : True ∧ True := by\n  constructor\n  · trivial\n  · trivial\n";
       // Imported modules can be nested and quoted; later nodes use the flat Lib directory.

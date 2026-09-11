@@ -119,16 +119,27 @@ impl Server {
             }
         });
         let task = tokio::spawn(async move {
-            tokio::select! {
-                _ = errors.closed() => {},
-                _ = async {
+            let result = {
+                let forward = async {
                     while let Some(text) = incoming.recv().await {
-                        if let Err(error) = write_frame(&mut writer, &text).await {
-                            let _ = errors.send(Err(error)).await;
-                            break;
-                        }
+                        write_frame(&mut writer, &text).await?;
                     }
-                } => {},
+                    Ok::<_, anyhow::Error>(())
+                };
+                tokio::pin!(forward);
+                tokio::select! {
+                    result = &mut forward => result,
+                    _ = errors.closed() => {
+                        // Finish queued frames before appending shutdown. Cancelling
+                        // write_frame midway corrupts the stream seen by Lean.
+                        tokio::time::timeout(Duration::from_secs(1), &mut forward)
+                            .await.unwrap_or_else(|_| Err(anyhow::anyhow!("Lean input stalled during shutdown")))
+                    },
+                }
+            };
+            if let Err(error) = result {
+                let _ = errors.try_send(Err(error));
+                return; // Kill a broken/stalled transport without appending bytes.
             }
             // Lean processes these in order. Keep both pipes alive until it has
             // killed and reaped the file workers; dropping stdout first causes EPIPE.
@@ -156,6 +167,10 @@ impl Server {
             .send(text)
             .await
             .context("Lean server closed its input")
+    }
+    /// Stream clients must drive this sender independently of receive().
+    pub(crate) fn sender(&self) -> mpsc::Sender<String> {
+        self.input.clone()
     }
     pub async fn receive(&mut self) -> Result<String> {
         self.output
