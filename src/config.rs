@@ -6,7 +6,6 @@ use std::path::PathBuf;
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
-    pub url: Option<String>,
     pub terminus_url: Option<String>,
     pub terminus_user: Option<String>,
     pub terminus_password: Option<String>,
@@ -26,6 +25,24 @@ fn user_dir(variable: &str, fallback: &str) -> Result<PathBuf> {
 }
 
 impl Settings {
+    pub fn terminus_url(&self) -> String {
+        std::env::var("MDC_TERMINUS_URL")
+            .ok()
+            .or_else(|| self.terminus_url.clone())
+            .unwrap_or_else(|| "http://127.0.0.1:6363".into())
+            .trim_end_matches('/')
+            .into()
+    }
+
+    pub fn project_cache(&self, project: &str) -> Result<PathBuf> {
+        let (database, branch) = project_parts(project)?;
+        Ok(self
+            .cache_root()?
+            .join(&crate::store::digest(self.terminus_url().as_bytes())[..12])
+            .join(database)
+            .join(branch))
+    }
+
     pub fn load() -> Result<Self> {
         let explicit = std::env::var_os("MDC_CONFIG");
         let path = explicit
@@ -55,6 +72,26 @@ impl Settings {
     }
 }
 
+pub(crate) fn validate_name(name: &str) -> Result<()> {
+    anyhow::ensure!(
+        !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+        "database and branch names allow letters, digits, hyphens and underscores"
+    );
+    Ok(())
+}
+
+pub(crate) fn project_parts(project: &str) -> Result<(&str, &str)> {
+    let (database, branch) = project
+        .split_once('/')
+        .context("use DATABASE/BRANCH, for example etp/main")?;
+    validate_name(database)?;
+    validate_name(branch)?;
+    Ok((database, branch))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,5 +101,6 @@ mod tests {
             toml::from_str("terminus_password = 'private'\nlean_timeout_seconds = 600").unwrap();
         assert_eq!(settings.lean_timeout_seconds, Some(600));
         assert!(toml::from_str::<Settings>("database = 'accidental-shared-project'").is_err());
+        assert!(toml::from_str::<Settings>("url = 'http://127.0.0.1:7599'").is_err());
     }
 }

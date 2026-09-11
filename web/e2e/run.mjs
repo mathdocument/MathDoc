@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { once } from "node:events";
+import { readFileSync } from "node:fs";
 import { chromium } from "playwright";
 
 const run = promisify(execFile);
@@ -16,21 +16,11 @@ const binary = resolve(process.env.MDC_BIN ?? resolve(webRoot, "../target/debug/
 
 const env = { ...process.env };
 async function startServer(cwd, database) {
-  const child = spawn(binary, ["serve", database, "--bind", "127.0.0.1:0"], {
-    cwd, env: { ...env, MDC_CACHE_DIR: resolve(cwd, "cache") }, stdio: ["ignore", "pipe", "pipe"],
+  const { stdout } = await run(binary, ["start", `${database}/main`], {
+    cwd, env: { ...env, MDC_CACHE_DIR: resolve(cwd, "cache") }, timeout: 30000,
   });
-  let output = "";
-  const url = await new Promise((resolveURL, reject) => {
-    const timeout = setTimeout(() => reject(new Error(`server startup timeout: ${output}`)), 15000);
-    child.once("error", (error) => { clearTimeout(timeout); reject(error); });
-    child.once("exit", (code) => { clearTimeout(timeout); reject(new Error(`server exited ${code}: ${output}`)); });
-    child.stderr.on("data", (data) => {
-      output = (output + data).slice(-16000);
-      const match = output.match(/http:\/\/127\.0\.0\.1:\d+/);
-      if (match) { clearTimeout(timeout); resolveURL(match[0]); }
-    });
-  }).catch((error) => { child.kill("SIGKILL"); throw error; });
-  return { child, url, output: () => output };
+  const info = JSON.parse(stdout);
+  return { ...info, output: () => readFileSync(info.log, "utf8").slice(-16000) };
 }
 
 async function fixture(browser, body) {
@@ -38,7 +28,7 @@ async function fixture(browser, body) {
   let server;
   let context;
   const database = `mdce2e${randomUUID().replaceAll("-", "")}`;
-  const cli = (...args) => run(binary, (args[0] === "init" ? ["init", database] : args), { cwd: root, env: { ...env, ...(server ? { MDC_URL: server.url } : {}) }, timeout: 30000 });
+  const cli = (...args) => run(binary, (args[0] === "init" ? ["init", database] : ["--proj", `${database}/main`, ...args]), { cwd: root, env: { ...env, MDC_CACHE_DIR: resolve(root, "cache") }, timeout: 30000 });
   try {
     await cli("init");
     server = await startServer(root, database);
@@ -69,13 +59,12 @@ async function fixture(browser, body) {
     assert.deepEqual(errors, []);
   } finally {
     await context?.close();
-    if (server && server.child.exitCode === null && server.child.signalCode === null) {
-      const exited = once(server.child, "exit");
-      const timeout = setTimeout(() => server.child.kill("SIGKILL"), 5000);
-      server.child.kill("SIGTERM");
-      await exited;
-      clearTimeout(timeout);
+    if (server) {
+      await run(binary, ["stop", `${database}/main`], {
+        cwd: root, env: { ...env, MDC_CACHE_DIR: resolve(root, "cache") }, timeout: 35000,
+      });
     }
+    const serverOutput = server?.output() ?? "";
     if (env.MDC_TERMINUS_PASSWORD) {
       const response = await fetch(`${env.MDC_TERMINUS_URL ?? "http://127.0.0.1:6363"}/api/db/admin/${database}`, {
         method: "DELETE",
@@ -84,7 +73,7 @@ async function fixture(browser, body) {
       assert.ok(response.ok || response.status === 404, `test database cleanup failed: ${response.status}`);
     }
     await rm(root, { recursive: true, force: true });
-    assert.doesNotMatch(server?.output() ?? "", /broken pipe|recursion limit exceeded/, "service shutdown must finish native cleanup before closing the runtime");
+    assert.doesNotMatch(serverOutput, /broken pipe|recursion limit exceeded/, "service shutdown must finish native cleanup before closing the runtime");
   }
 }
 

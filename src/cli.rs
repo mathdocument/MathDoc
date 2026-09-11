@@ -9,8 +9,9 @@ use std::io::Read;
 #[derive(Parser)]
 #[command(name = "mdc", about = "MathDoc local web service and API client")]
 struct Cli {
-    #[arg(long, global = true)]
-    url: Option<String>,
+    /// Select the running local project branch for client commands.
+    #[arg(long, global = true, value_name = "DATABASE/BRANCH", value_parser = parse_project)]
+    proj: Option<String>,
     #[arg(long, global = true)]
     prof: bool,
     #[command(subcommand)]
@@ -20,20 +21,32 @@ struct Cli {
 enum Commands {
     /// List all project branches and their local service ports, including stopped projects.
     #[command(
-        after_help = "Reads the configured TerminusDB and local cache directory directly; no running mdc service is required. Project is DATABASE/BRANCH. Port is blank for stopped services. Uses terminus_url / MDC_TERMINUS_URL; --url is not applicable."
+        after_help = "Reads the configured TerminusDB and local cache directory directly; no running mdc service is required. Project is DATABASE/BRANCH. Port is blank for stopped services."
     )]
     Status,
     /// Create a new project database on the configured TerminusDB instance.
     Init {
         database: String,
     },
-    /// Serve one project database branch from any directory.
-    Serve {
-        database: String,
-        #[arg(long, default_value = "main")]
-        branch: String,
-        #[arg(long, default_value = "127.0.0.1:7599")]
-        bind: String,
+    /// Start a project branch in the background and print its browser URL.
+    Start {
+        #[arg(value_name = "DATABASE/BRANCH", value_parser = parse_project)]
+        project: String,
+        /// Use this port; omitted means an available port chosen by the OS.
+        #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
+        port: Option<u16>,
+    },
+    /// Stop a project service and wait for Lean workers to shut down.
+    Stop {
+        #[arg(value_name = "DATABASE/BRANCH", value_parser = parse_project)]
+        project: String,
+    },
+    #[command(name = "__run", hide = true)]
+    Run {
+        #[arg(value_parser = parse_project)]
+        project: String,
+        #[arg(long)]
+        port: u16,
     },
     /// Create a node in the database.
     New {
@@ -162,6 +175,7 @@ enum Branch {
 struct Api {
     client: Client,
     url: String,
+    token: String,
 }
 impl Api {
     async fn request(
@@ -175,6 +189,7 @@ impl Api {
         let mut req = self
             .client
             .request(method, format!("{}/api{path}", self.url))
+            .header("x-mdc-service", &self.token)
             .query(query);
         if let Some(body) = body {
             req = req.json(&body);
@@ -182,10 +197,12 @@ impl Api {
         if let Some(rev) = revision {
             req = req.header("if-match", format!("\"{rev}\""));
         }
-        let response = req
-            .send()
-            .await
-            .context("connect to mdc serve (default http://127.0.0.1:7599)")?;
+        let response = req.send().await.with_context(|| {
+            format!(
+                "connect to the selected project at {}; check mdc status",
+                self.url
+            )
+        })?;
         let status = response.status();
         let text = response.text().await?;
         let value: Value = serde_json::from_str(&text).unwrap_or(json!({"error":text}));
@@ -253,19 +270,61 @@ pub fn run() -> i32 {
 }
 async fn dispatch(cli: Cli) -> Result<i32> {
     let _profile = crate::profile::scope("service.request");
-    if matches!(cli.command, Commands::Status) {
-        if cli.url.is_some() {
-            bail!(
-                "status reads TerminusDB directly; use MDC_TERMINUS_URL or terminus_url, not --url"
-            );
+    if matches!(
+        cli.command,
+        Commands::Status
+            | Commands::Init { .. }
+            | Commands::Start { .. }
+            | Commands::Stop { .. }
+            | Commands::Run { .. }
+    ) && cli.proj.is_some()
+    {
+        bail!("--proj selects a client target; start/stop take DATABASE/BRANCH directly, init takes DATABASE, and status lists all projects");
+    }
+    let local = match &cli.command {
+        Commands::Init { database } => {
+            Database::from_env(database.clone(), "main".into())?
+                .initialize()
+                .await?;
+            Some(json!({"initialized":true}))
         }
+        Commands::Start { project, port } => {
+            Some(crate::service::start(project, port.unwrap_or(0)).await?)
+        }
+        Commands::Stop { project } => Some(crate::service::stop(project).await?),
+        Commands::Run { project, port } => {
+            let result = async {
+                let (database, branch) = crate::config::project_parts(project)?;
+                crate::service::serve(Database::from_env(database.into(), branch.into())?, *port)
+                    .await
+            }
+            .await;
+            if let Err(error) = result {
+                use std::io::Write;
+                let _ = writeln!(
+                    std::io::stdout(),
+                    "{}",
+                    json!({"error":format!("{error:#}")})
+                );
+                eprintln!("error: {error:#}");
+                return Ok(1);
+            }
+            return Ok(0);
+        }
+        _ => None,
+    };
+    if let Some(value) = local {
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(0);
+    }
+    if matches!(cli.command, Commands::Status) {
         let projects = crate::store::Terminus::from_env()?.projects().await?;
         let rows = projects
             .iter()
             .map(|db| {
                 Ok((
                     format!("{}/{}", db.database, db.branch),
-                    crate::service::running_port(&db.cache_path()?)?,
+                    crate::service::running_service(&db.cache_path()?)?.map(|s| s.port),
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -273,33 +332,26 @@ async fn dispatch(cli: Cli) -> Result<i32> {
         print!("{}", status_table(&rows, std::io::stdout().is_terminal()));
         return Ok(0);
     }
-    let url = cli
-        .url
-        .or_else(|| std::env::var("MDC_URL").ok())
-        .or(crate::config::Settings::load()?.url)
-        .unwrap_or("http://127.0.0.1:7599".into());
+    let project = cli
+        .proj
+        .context("select a project with --proj DATABASE/BRANCH; use mdc status to list projects")?;
+    let root = crate::config::Settings::load()?.project_cache(&project)?;
+    let service = crate::service::running_service(&root)?
+        .with_context(|| format!("{project} is not running; run mdc start {project}"))?;
     let api = Api {
         client: Client::builder()
+            .no_proxy()
             .timeout(std::time::Duration::from_secs(1800))
             .build()?,
-        url: url.trim_end_matches('/').into(),
+        url: service.url(),
+        token: service.token,
     };
     let value = match cli.command {
-        Commands::Status => unreachable!(),
-        Commands::Init { database } => {
-            Database::from_env(database, "main".into())?
-                .initialize()
-                .await?;
-            json!({"initialized":true})
-        }
-        Commands::Serve {
-            database,
-            branch,
-            bind,
-        } => {
-            crate::service::serve(Database::from_env(database, branch)?, &bind).await?;
-            return Ok(0);
-        }
+        Commands::Status
+        | Commands::Init { .. }
+        | Commands::Start { .. }
+        | Commands::Stop { .. }
+        | Commands::Run { .. } => unreachable!(),
         Commands::New { title } => {
             api.request(
                 Method::POST,
@@ -461,6 +513,11 @@ async fn dispatch(cli: Cli) -> Result<i32> {
     )
 }
 
+fn parse_project(value: &str) -> Result<String, String> {
+    crate::config::project_parts(value).map_err(|e| e.to_string())?;
+    Ok(value.into())
+}
+
 fn status_table(rows: &[(String, Option<u16>)], bold: bool) -> String {
     use std::fmt::Write;
     let width = rows
@@ -537,12 +594,28 @@ mod tests {
     #[test]
     fn project_selection_belongs_to_service_commands() {
         assert!(Cli::try_parse_from(["mdc", "init"]).is_err());
-        assert!(Cli::try_parse_from(["mdc", "serve", "mdocs", "--branch", "agent"]).is_ok());
+        assert!(Cli::try_parse_from(["mdc", "start", "mdocs/agent"]).is_ok());
+        assert!(Cli::try_parse_from(["mdc", "stop", "mdocs/agent"]).is_ok());
+        for project in [
+            "mdocs",
+            "/main",
+            "mdocs/",
+            "mdocs/../main",
+            "../main",
+            "mdocs/main/extra",
+        ] {
+            assert!(Cli::try_parse_from(["mdc", "start", project]).is_err());
+        }
+        for port in ["0", "65536", "-1", "abc"] {
+            assert!(Cli::try_parse_from(["mdc", "start", "mdocs/main", "--port", port]).is_err());
+        }
+        assert!(Cli::try_parse_from(["mdc", "serve", "mdocs"]).is_err());
         assert!(Cli::try_parse_from(["mdc", "--database", "other", "graph", "check"]).is_err());
         assert!(
             Cli::try_parse_from(["mdc", "--url", "http://localhost:7600", "graph", "check"])
-                .is_ok()
+                .is_err()
         );
+        assert!(Cli::try_parse_from(["mdc", "graph", "check", "--proj", "mdocs/main"]).is_ok());
         assert!(Cli::try_parse_from(["mdc", "work", "node"]).is_err());
     }
 }

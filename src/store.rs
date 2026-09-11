@@ -285,10 +285,7 @@ impl Terminus {
     pub fn from_env() -> Result<Self> {
         let settings = crate::config::Settings::load()?;
         let cache_root = settings.cache_root()?;
-        let url = std::env::var("MDC_TERMINUS_URL")
-            .ok()
-            .or(settings.terminus_url)
-            .unwrap_or("http://127.0.0.1:6363".into());
+        let url = settings.terminus_url();
         let parsed = reqwest::Url::parse(&url)?;
         if !["http", "https"].contains(&parsed.scheme()) {
             bail!("invalid database URL");
@@ -390,13 +387,7 @@ impl Database {
     }
     fn new(server: Terminus, database: String, branch: String) -> Result<Self> {
         for part in [&database, &branch] {
-            if part.is_empty()
-                || !part
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-            {
-                bail!("database and branch names allow letters, digits, hyphens and underscores");
-            }
+            crate::config::validate_name(part)?;
         }
         Ok(Self {
             server,

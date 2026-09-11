@@ -9,7 +9,7 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
@@ -23,17 +23,21 @@ pub struct Service {
     pub lean: crate::lean::LeanService,
     editors: Mutex<HashMap<String, EditorSession>>,
     editor_slots: Arc<tokio::sync::Semaphore>,
+    token: String,
+    stop: tokio::sync::Notify,
 }
 impl Service {
     pub async fn open(db: Database) -> Result<Arc<Self>> {
-        let snapshot = db.load().await?;
         let lean = crate::lean::LeanService::new(db.cache_path()?)?;
+        let snapshot = db.load().await?;
         Ok(Arc::new(Self {
             db,
             snapshot: Mutex::new(snapshot),
             lean,
             editors: Mutex::new(HashMap::new()),
             editor_slots: Arc::new(tokio::sync::Semaphore::new(8)),
+            token: uuid::Uuid::new_v4().to_string(),
+            stop: tokio::sync::Notify::new(),
         }))
     }
     pub async fn read(&self) -> Result<MutexGuard<'_, Snapshot>> {
@@ -139,6 +143,7 @@ pub fn graph_report(snapshot: &Snapshot) -> Value {
 
 pub fn router(service: Arc<Service>) -> Router {
     let api = Router::new()
+        .route("/service/stop", post(stop_service))
         .route("/graph/check", get(graph_check))
         .route("/graph/roots", get(roots))
         .route("/graph/full", get(full))
@@ -171,15 +176,43 @@ pub fn router(service: Arc<Service>) -> Router {
         });
     Router::new()
         .nest("/api", api)
-        .with_state(service)
+        .with_state(service.clone())
         .fallback(get(|uri: axum::http::Uri| async move {
             crate::web::assets::serve_asset(uri)
         }))
         .layer(DefaultBodyLimit::max(256 * 1024 * 1024))
-        .layer(axum::middleware::from_fn(local_origin))
+        .layer(axum::middleware::from_fn_with_state(service, local_origin))
 }
 
-async fn local_origin(request: Request, next: axum::middleware::Next) -> Response {
+async fn stop_service(State(service): State<Arc<Service>>, headers: HeaderMap) -> Response {
+    if headers.get("x-mdc-service").and_then(|h| h.to_str().ok()) != Some(&service.token) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"use mdc stop DATABASE/BRANCH"})),
+        )
+            .into_response();
+    }
+    service.stop.notify_one();
+    Json(json!({"stopping":true})).into_response()
+}
+
+async fn local_origin(
+    State(service): State<Arc<Service>>,
+    request: Request,
+    next: axum::middleware::Next,
+) -> Response {
+    // A port can be reused after a restart. Never send a CLI write to its new owner.
+    if request
+        .headers()
+        .get("x-mdc-service")
+        .is_some_and(|token| token != service.token.as_str())
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error":"service changed; retry the command"})),
+        )
+            .into_response();
+    }
     let host = request
         .headers()
         .get("host")
@@ -231,25 +264,29 @@ async fn local_origin(request: Request, next: axum::middleware::Next) -> Respons
     response
 }
 
-pub async fn serve(db: Database, bind: &str) -> Result<()> {
-    let address: std::net::SocketAddr = bind.parse().context("use a numeric loopback address")?;
-    if !address.ip().is_loopback() {
-        bail!("self-hosted service must bind to loopback");
-    }
+pub(crate) async fn serve(db: Database, port: u16) -> Result<()> {
+    // Bind the requested port itself: probing then rebinding races other processes.
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
+        .await
+        .with_context(|| format!("cannot bind port {port} (it may already be in use)"))?;
     let service = Service::open(db).await?;
-    let listener = tokio::net::TcpListener::bind(address).await?;
+    let info = RunningService {
+        port: listener.local_addr()?.port(),
+        pid: std::process::id(),
+        token: service.token.clone(),
+    };
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     std::fs::write(
         service.db.cache_path()?.join("service.lock"),
-        listener.local_addr()?.to_string(),
+        serde_json::to_vec(&info)?,
     )?;
-    eprintln!("MathDoc → http://{}", listener.local_addr()?);
+    // The parent returns only after the branch, lease and listener are ready.
+    use std::io::Write;
+    writeln!(std::io::stdout(), "{}", serde_json::to_string(&info)?)?;
     let stopping = service.clone();
     axum::serve(listener, router(service.clone()))
         .with_graceful_shutdown(async move {
-            let mut terminate =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                    .expect("install SIGTERM handler");
-            tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{}}
+            tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{},_=stopping.stop.notified()=>{}}
             stopping.editor_slots.close();
             let closing = std::mem::take(&mut *stopping.editors.lock().await);
             for session in closing.values() {
@@ -270,7 +307,7 @@ pub async fn serve(db: Database, bind: &str) -> Result<()> {
 
 /// A leftover address alone is not evidence of a live service. The existing
 /// branch lease is held for the service lifetime and released by the OS on crash.
-pub(crate) fn running_port(root: &std::path::Path) -> Result<Option<u16>> {
+pub(crate) fn running_service(root: &std::path::Path) -> Result<Option<RunningService>> {
     use std::{
         io::{ErrorKind, Read},
         os::fd::AsRawFd,
@@ -292,10 +329,110 @@ pub(crate) fn running_port(root: &std::path::Path) -> Result<Option<u16>> {
     if address.is_empty() {
         return Ok(None);
     }
-    let address: std::net::SocketAddr = address
-        .parse()
-        .context("invalid service address in branch lease")?;
-    Ok(Some(address.port()))
+    Ok(Some(serde_json::from_str(&address).context(
+        "invalid service record; restart the service after upgrading mdc",
+    )?))
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct RunningService {
+    pub port: u16,
+    pub pid: u32,
+    pub token: String,
+}
+impl RunningService {
+    pub fn url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+}
+
+pub(crate) async fn start(project: &str, port: u16) -> Result<Value> {
+    use std::{os::unix::fs::OpenOptionsExt, process::Stdio, time::Duration};
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let root = crate::config::Settings::load()?.project_cache(project)?;
+    if running_service(&root)?.is_some() {
+        bail!("{project} is already running");
+    }
+    std::fs::create_dir_all(&root)?;
+    let log_path = root.join("service.log");
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(&log_path)?;
+    let mut command = tokio::process::Command::new(std::env::current_exe()?);
+    command
+        .args(["__run", project, "--port", &port.to_string()])
+        .current_dir(&root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(log);
+    if let Some(path) = std::env::var_os("MDC_CONFIG") {
+        command.env("MDC_CONFIG", std::fs::canonicalize(path)?);
+    }
+    // setsid detaches the child from the launching terminal; no shell or wrapper.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().context("start mdc service process")?;
+    let ready: Result<RunningService> = async {
+        let mut output = BufReader::new(child.stdout.take().context("service startup pipe")?);
+        let mut line = String::new();
+        tokio::select! {
+            read = tokio::time::timeout(Duration::from_secs(180), output.read_line(&mut line)) => {
+                read.context("service startup timed out")??;
+            }
+            _ = tokio::signal::ctrl_c() => { bail!("service startup interrupted"); }
+        }
+        if line.is_empty() {
+            bail!("service exited before startup; see {}", log_path.display());
+        }
+        let ready: Value = serde_json::from_str(&line)?;
+        if let Some(error) = ready["error"].as_str() {
+            bail!("{error}");
+        }
+        Ok(serde_json::from_value(ready)?)
+    }
+    .await;
+    let info = match ready {
+        Ok(info) => info,
+        Err(error) => {
+            let _ = child.kill().await;
+            return Err(error);
+        }
+    };
+    Ok(json!({"project":project,"port":info.port,"pid":info.pid,"url":info.url(),"log":log_path}))
+}
+
+pub(crate) async fn stop(project: &str) -> Result<Value> {
+    use std::time::Duration;
+    let root = crate::config::Settings::load()?.project_cache(project)?;
+    let info = running_service(&root)?.with_context(|| format!("{project} is not running"))?;
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(10))
+        .build()?
+        .post(format!("{}/api/service/stop", info.url()))
+        .header("x-mdc-service", &info.token)
+        .send()
+        .await?
+        .error_for_status()?;
+    response.bytes().await?;
+    // Wait for this lease to end, not for a PID that the OS could recycle.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while running_service(&root)?.is_some_and(|current| current.token == info.token) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("service is still shutting down; inspect service.log")??;
+    Ok(json!({"project":project,"stopped":true}))
 }
 
 async fn graph_check(State(s): State<Arc<Service>>) -> ApiResult<Json<Value>> {

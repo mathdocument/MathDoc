@@ -81,7 +81,7 @@ jobs:
       - name: Test database and native Lean integration
         env:
           MDC_TERMINUS_PASSWORD: local-ci-mathdoc
-        run: cargo test --locked --test test_database --test test_service --test test_lean_service -- --ignored --nocapture
+        run: cargo test --locked --test test_database --test test_service --test test_lean_service --test test_status -- --ignored --nocapture
 
       - name: Install browser for integration tests
         run: npx playwright install --with-deps --no-shell chromium

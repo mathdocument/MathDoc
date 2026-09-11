@@ -53,8 +53,11 @@ def main():
     parser.add_argument("--output", required=True)
     parser.add_argument("--samples", type=int, default=20)
     parser.add_argument("--cli", help="Installed mdc executable for fresh-process measurements")
+    parser.add_argument("--proj", help="DATABASE/BRANCH served at --url; required with --cli")
     parser.add_argument("--writes", action="store_true", help="Adds nodes: use ONLY on a disposable database branch")
     args = parser.parse_args()
+    if args.cli and not args.proj:
+        parser.error("--cli requires --proj DATABASE/BRANCH")
     if args.samples < 1:
         parser.error("samples must be positive")
     report = {"platform": platform.platform(), "url": args.url, "reads": {}, "cli": {}, "writes": {}}
@@ -117,7 +120,7 @@ def main():
             samples = []
             for _ in range(args.samples):
                 started = time.perf_counter()
-                result = subprocess.run([args.cli, "--url", args.url, *command], capture_output=True, check=True, timeout=180)
+                result = subprocess.run([args.cli, "--proj", args.proj, *command], capture_output=True, check=True, timeout=180)
                 json.loads(result.stdout)
                 samples.append((time.perf_counter() - started) * 1000)
             report["cli"][label] = statistics_ms(samples)
