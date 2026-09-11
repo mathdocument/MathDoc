@@ -238,6 +238,10 @@ pub async fn serve(db: Database, bind: &str) -> Result<()> {
     }
     let service = Service::open(db).await?;
     let listener = tokio::net::TcpListener::bind(address).await?;
+    std::fs::write(
+        service.db.cache_path()?.join("service.lock"),
+        listener.local_addr()?.to_string(),
+    )?;
     eprintln!("MathDoc → http://{}", listener.local_addr()?);
     let stopping = service.clone();
     axum::serve(listener, router(service.clone()))
@@ -262,6 +266,36 @@ pub async fn serve(db: Database, bind: &str) -> Result<()> {
         .await?;
     service.lean.shutdown().await;
     Ok(())
+}
+
+/// A leftover address alone is not evidence of a live service. The existing
+/// branch lease is held for the service lifetime and released by the OS on crash.
+pub(crate) fn running_port(root: &std::path::Path) -> Result<Option<u16>> {
+    use std::{
+        io::{ErrorKind, Read},
+        os::fd::AsRawFd,
+    };
+    let mut file = match std::fs::File::open(root.join("service.lock")) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == 0 {
+        return Ok(None);
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() != ErrorKind::WouldBlock {
+        return Err(error.into());
+    }
+    let mut address = String::new();
+    file.read_to_string(&mut address)?;
+    if address.is_empty() {
+        return Ok(None);
+    }
+    let address: std::net::SocketAddr = address
+        .parse()
+        .context("invalid service address in branch lease")?;
+    Ok(Some(address.port()))
 }
 
 async fn graph_check(State(s): State<Arc<Service>>) -> ApiResult<Json<Value>> {

@@ -50,6 +50,20 @@ restrict the HTTP service to the local machine.
 
 ## Projects, branches and storage
 
+`mdc status` lists all MathDoc project branches in the configured TerminusDB:
+
+```text
+Project     Port
+etp/main    7600
+mdocs/main
+```
+
+Column headings are bold in a terminal. A blank port means no service owns the
+branch's cache with a registered listener. Status works without `mdc serve`, uses
+the configured database credentials and cache directory, and rejects the client
+`--url` option. Services record their actual port, including with `--bind …:0`;
+stopped or crashed services do not leave a stale running port in the table.
+
 Each project uses a separate database in the shared TerminusDB instance. Each
 HTTP service serves one branch. For example, `mdc serve other --bind 127.0.0.1:7600`
 serves another project; `mdc --url http://127.0.0.1:7600 graph check` selects it as

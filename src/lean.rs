@@ -628,6 +628,8 @@ impl LeanService {
         if unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             bail!("this database branch cache is already owned by another service");
         }
+        // A new owner is not serving until its HTTP listener has been bound.
+        lease.set_len(0)?;
         Ok(Self {
             manager: Mutex::new(Manager {
                 project_key: String::new(),

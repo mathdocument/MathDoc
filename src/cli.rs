@@ -18,6 +18,11 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// List all project branches and their local service ports, including stopped projects.
+    #[command(
+        after_help = "Reads the configured TerminusDB and local cache directory directly; no running mdc service is required. Project is DATABASE/BRANCH. Port is blank for stopped services. Uses terminus_url / MDC_TERMINUS_URL; --url is not applicable."
+    )]
+    Status,
     /// Create a new project database on the configured TerminusDB instance.
     Init {
         database: String,
@@ -248,6 +253,26 @@ pub fn run() -> i32 {
 }
 async fn dispatch(cli: Cli) -> Result<i32> {
     let _profile = crate::profile::scope("service.request");
+    if matches!(cli.command, Commands::Status) {
+        if cli.url.is_some() {
+            bail!(
+                "status reads TerminusDB directly; use MDC_TERMINUS_URL or terminus_url, not --url"
+            );
+        }
+        let projects = crate::store::Terminus::from_env()?.projects().await?;
+        let rows = projects
+            .iter()
+            .map(|db| {
+                Ok((
+                    format!("{}/{}", db.database, db.branch),
+                    crate::service::running_port(&db.cache_path()?)?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        use std::io::IsTerminal;
+        print!("{}", status_table(&rows, std::io::stdout().is_terminal()));
+        return Ok(0);
+    }
     let url = cli
         .url
         .or_else(|| std::env::var("MDC_URL").ok())
@@ -260,6 +285,7 @@ async fn dispatch(cli: Cli) -> Result<i32> {
         url: url.trim_end_matches('/').into(),
     };
     let value = match cli.command {
+        Commands::Status => unreachable!(),
         Commands::Init { database } => {
             Database::from_env(database, "main".into())?
                 .initialize()
@@ -434,6 +460,31 @@ async fn dispatch(cli: Cli) -> Result<i32> {
         },
     )
 }
+
+fn status_table(rows: &[(String, Option<u16>)], bold: bool) -> String {
+    use std::fmt::Write;
+    let width = rows
+        .iter()
+        .map(|(project, _)| project.len())
+        .max()
+        .unwrap_or(0)
+        .max(7);
+    let (start, end) = if bold {
+        ("\x1b[1m", "\x1b[0m")
+    } else {
+        ("", "")
+    };
+    let mut table = format!("{start}{:<width$}  Port{end}\n", "Project");
+    for (project, port) in rows {
+        writeln!(
+            table,
+            "{project:<width$}  {}",
+            port.map(|p| p.to_string()).unwrap_or_default()
+        )
+        .unwrap();
+    }
+    table
+}
 async fn traverse(api: &Api, source: &str, mode: &str, depth: i32) -> Result<Value> {
     let n = api.node(source).await?;
     api.request(
@@ -470,6 +521,19 @@ async fn mutate_dep(api: &Api, source: &str, target: &str, add: bool) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn status_headers_are_bold_only_in_a_terminal_and_stopped_ports_are_blank() {
+        let rows = vec![("etp/main".into(), Some(7600)), ("mdocs/main".into(), None)];
+        assert_eq!(
+            status_table(&rows, false),
+            "Project     Port\netp/main    7600\nmdocs/main  \n"
+        );
+        assert_eq!(
+            status_table(&rows, true),
+            "\x1b[1mProject     Port\x1b[0m\netp/main    7600\nmdocs/main  \n"
+        );
+        assert_eq!(status_table(&[], false), "Project  Port\n");
+    }
     #[test]
     fn project_selection_belongs_to_service_commands() {
         assert!(Cli::try_parse_from(["mdc", "init"]).is_err());

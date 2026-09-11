@@ -274,26 +274,15 @@ impl LeanProject {
 }
 
 #[derive(Clone)]
-pub struct Database {
+pub(crate) struct Terminus {
     client: Client,
     url: String,
     user: String,
     password: String,
     cache_root: PathBuf,
-    pub database: String,
-    pub branch: String,
 }
-impl Database {
-    pub fn from_env(database: String, branch: String) -> Result<Self> {
-        for part in [&database, &branch] {
-            if part.is_empty()
-                || !part
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-            {
-                bail!("database and branch names allow letters, digits, hyphens and underscores");
-            }
-        }
+impl Terminus {
+    pub fn from_env() -> Result<Self> {
         let settings = crate::config::Settings::load()?;
         let cache_root = settings.cache_root()?;
         let url = std::env::var("MDC_TERMINUS_URL")
@@ -319,12 +308,40 @@ impl Database {
                 .or(settings.terminus_password)
                 .context("set terminus_password in the user config or MDC_TERMINUS_PASSWORD")?,
             cache_root,
-            database,
-            branch,
         })
     }
-    fn path(&self) -> String {
-        format!("admin/{}/local/branch/{}", self.database, self.branch)
+    pub async fn projects(&self) -> Result<Vec<Database>> {
+        #[derive(Deserialize)]
+        struct Info {
+            path: String,
+            label: Option<String>,
+            branches: Vec<String>,
+        }
+        let inventory: Vec<Info> = self
+            .request(
+                Method::GET,
+                "db",
+                &[("verbose", "true"), ("branches", "true")],
+                None,
+                None,
+            )
+            .await?
+            .json()
+            .await?;
+        let mut projects = vec![];
+        for info in inventory {
+            if info.label.as_deref() != Some("MathDoc") {
+                continue;
+            }
+            let Some(name) = info.path.strip_prefix("admin/") else {
+                continue;
+            };
+            for branch in info.branches {
+                projects.push(Database::new(self.clone(), name.into(), branch)?);
+            }
+        }
+        projects.sort_by(|a, b| (&a.database, &a.branch).cmp(&(&b.database, &b.branch)));
+        Ok(projects)
     }
     async fn request(
         &self,
@@ -359,6 +376,37 @@ impl Database {
         }
         Ok(response)
     }
+}
+
+#[derive(Clone)]
+pub struct Database {
+    server: Terminus,
+    pub database: String,
+    pub branch: String,
+}
+impl Database {
+    pub fn from_env(database: String, branch: String) -> Result<Self> {
+        Self::new(Terminus::from_env()?, database, branch)
+    }
+    fn new(server: Terminus, database: String, branch: String) -> Result<Self> {
+        for part in [&database, &branch] {
+            if part.is_empty()
+                || !part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            {
+                bail!("database and branch names allow letters, digits, hyphens and underscores");
+            }
+        }
+        Ok(Self {
+            server,
+            database,
+            branch,
+        })
+    }
+    fn path(&self) -> String {
+        format!("admin/{}/local/branch/{}", self.database, self.branch)
+    }
     fn response_version(response: &Response) -> Result<String> {
         response
             .headers()
@@ -369,14 +417,15 @@ impl Database {
             .map_err(Into::into)
     }
     pub async fn initialize(&self) -> Result<()> {
-        self.request(
-            Method::POST,
-            &format!("db/admin/{}", self.database),
-            &[],
-            Some(json!({"label":"MathDoc", "comment":"Versioned MathDoc nodes"})),
-            None,
-        )
-        .await?;
+        self.server
+            .request(
+                Method::POST,
+                &format!("db/admin/{}", self.database),
+                &[],
+                Some(json!({"label":"MathDoc", "comment":"Versioned MathDoc nodes"})),
+                None,
+            )
+            .await?;
         let schema = json!([
             {"@type":"Class", "@id":"Node", "@key":{"@type":"Lexical","@fields":["fnode"]},
              "fnode":"xsd:string", "title":"xsd:string", "module":"xsd:string", "blocks":"xsd:string",
@@ -384,25 +433,27 @@ impl Database {
             {"@type":"Class", "@id":"Project", "@key":{"@type":"Lexical","@fields":["name"]},
              "name":"xsd:string", "config":"xsd:string"}
         ]);
-        self.request(
-            Method::POST,
-            &format!("document/{}", self.path()),
-            &[
-                ("graph_type", "schema"),
-                ("author", "mdc"),
-                ("message", "Initialize MathDoc schema"),
-            ],
-            Some(schema),
-            None,
-        )
-        .await?;
-        self.request(Method::POST, &format!("document/{}",self.path()), &[("author","mdc"),("message","Initialize Lean project")],
+        self.server
+            .request(
+                Method::POST,
+                &format!("document/{}", self.path()),
+                &[
+                    ("graph_type", "schema"),
+                    ("author", "mdc"),
+                    ("message", "Initialize MathDoc schema"),
+                ],
+                Some(schema),
+                None,
+            )
+            .await?;
+        self.server.request(Method::POST, &format!("document/{}",self.path()), &[("author","mdc"),("message","Initialize Lean project")],
             Some(json!({"@type":"Project","name":"lean","config":serde_json::to_string(&LeanProject::default())?})),None).await?;
         Ok(())
     }
     pub async fn version(&self) -> Result<String> {
         Self::response_version(
             &self
+                .server
                 .request(
                     Method::GET,
                     &format!("document/{}", self.path()),
@@ -415,6 +466,7 @@ impl Database {
     }
     pub async fn load(&self) -> Result<Snapshot> {
         let response = self
+            .server
             .request(
                 Method::GET,
                 &format!("document/{}", self.path()),
@@ -478,6 +530,7 @@ impl Database {
             documents.push(json!({"@id":"Project/lean","@type":"Project","name":"lean","config":serde_json::to_string(project)?}));
         }
         let response = self
+            .server
             .request(
                 Method::PUT,
                 &format!("document/{}", self.path()),
@@ -490,12 +543,13 @@ impl Database {
     }
     pub async fn put_project(&self, project: &LeanProject, version: &str) -> Result<String> {
         project.validate()?;
-        let response = self.request(Method::PUT,&format!("document/{}",self.path()),&[("author","mdc"),("message","Update Lean environment")],
+        let response = self.server.request(Method::PUT,&format!("document/{}",self.path()),&[("author","mdc"),("message","Update Lean environment")],
             Some(json!({"@id":"Project/lean","@type":"Project","name":"lean","config":serde_json::to_string(project)?})),Some(version)).await?;
         Self::response_version(&response)
     }
     pub async fn history(&self) -> Result<Value> {
         Ok(self
+            .server
             .request(
                 Method::GET,
                 &format!("log/{}", self.path()),
@@ -516,6 +570,7 @@ impl Database {
             bail!("invalid branch name");
         }
         Ok(self
+            .server
             .request(
                 Method::POST,
                 &format!("branch/admin/{}/local/branch/{name}", self.database),
@@ -528,13 +583,14 @@ impl Database {
             .await?)
     }
     pub fn with_cache_root(mut self, root: PathBuf) -> Self {
-        self.cache_root = root;
+        self.server.cache_root = root;
         self
     }
     pub fn cache_path(&self) -> Result<PathBuf> {
         Ok(self
+            .server
             .cache_root
-            .join(&digest(self.url.as_bytes())[..12])
+            .join(&digest(self.server.url.as_bytes())[..12])
             .join(&self.database)
             .join(&self.branch))
     }
