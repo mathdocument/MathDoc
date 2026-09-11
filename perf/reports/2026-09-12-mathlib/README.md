@@ -43,7 +43,8 @@ mdc start mathlib4/main
 mdc import /tmp/mdc-mathlib/mathlib.json -p mathlib4/main
 MDC_BENCH_BUNDLE=/tmp/mdc-mathlib/mathlib.json \
 MDC_BENCH_REPORT=/tmp/mdc-mathlib/preparation.json \
-  cargo test --release --locked --test test_mathlib_bench -- --ignored --nocapture
+  cargo test --release --locked --test test_mathlib_bench \
+  mathlib_snapshot_and_editor_preparation -- --ignored --nocapture
 python3 perf/graph-service.py --url SERVICE_URL --proj mathlib4/main --cli /path/to/mdc \
   --samples 5 --output /tmp/mdc-mathlib/graph.json
 ```
@@ -101,3 +102,53 @@ rebuild; the real database API/import tests and ordinary Rust tests pass.
 `graph-final.json` contains all read/write samples. Startup/import/config changes
 still rebuild the full projection; concurrent reads still serialize through the
 service snapshot lock. No claim of eliminating those costs is made.
+
+## Compiler comparison without official caches
+
+The identical Lean `v4.34.0-rc2` succeeds in Linux aarch64. The disposable Docker
+container used `rust:slim` at digest
+`sha256:bce1476d4be4d78b83705bc5f428b86d640eeeea33e9dadafbc037b5703a53bf`,
+limited to one CPU and 2 GiB RAM with `LEAN_NUM_THREADS=2`. The Docker VM has two
+CPUs and 4 GiB RAM and also hosts TerminusDB. No OOM kills occurred. These timings
+must not be compared numerically with the native macOS preparation/graph timings.
+
+The target was `Mathlib.Data.Nat.Log`: 143 managed modules, with additional pinned
+external-library dependencies (712 `.olean` files under each completed workspace,
+including Lake configuration files). Both sides started with separate empty
+artifact caches and the complete original source tree. Toolchain installation,
+source materialization and Git source downloads were untimed; compiler startup,
+dependency compilation and generation of the target artifact were timed.
+
+| Scenario (one sample each) | Native Lake build | mdc check/build |
+| --- | ---: | ---: |
+| Cold | 174.46 s | 189.66 s |
+| Unchanged | 976.52 ms | 3.55 ms |
+| Append a comment to target | 2,692.69 ms | 2,798.10 ms |
+| Append a comment to `Mathlib.Init` | 960.94 ms | 3,251.11 ms |
+
+All four mdc results passed compilation, dependency matching and target-artifact
+checks, with no sorry warning on the target. `linux-compile.json` retains the raw
+results. These edit cases change comments, not theorem statements or proofs;
+they are not measurements of a semantically significant dependency change.
+
+The warm unchanged result benefits from mdc's exact-input certificate. Cold builds
+and comment edits are **not faster than Lake** in this run. A build request still
+uses LSP validation followed by Lake artifact generation; dependency changes also
+reopen the LSP document environment. Lake can retain downstream artifacts when a
+comment edit leaves compiled dependency outputs unchanged, while mdc conservatively
+invalidates source-based keys. Those are remaining costs, separate from the graph
+and source-refresh improvements above. There is no claim of accelerating Lean's
+kernel or having verified every Mathlib module.
+
+Run `mathlib_lake_and_mdc_incremental_builds` as documented in the performance guide
+to reproduce with a fresh external directory. The imported `mathlib4/main` is
+available for browsing with the updated global CLI. Native editing on this macOS
+machine still requires resolving the upstream/toolchain crash; the successful
+Linux run does not fix the installed macOS toolchain.
+
+Cleanup: the mutation-test branch `mathlib4/bench`, its service/cache, the temporary
+Linux container and its generated source/build directories were removed after
+saving results. `mathlib4/main` retains the exact imported graph, served at
+`http://127.0.0.1:57939` in this run. The pre-existing Mdocs service was not restarted.
+The pinned source checkout remains clean. macOS Lean toolchains remain installed;
+no compiler patch or global toolchain workaround was applied.

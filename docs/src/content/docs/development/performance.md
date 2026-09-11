@@ -18,7 +18,8 @@ or opens a Lean editor.
 
 ```sh
 python3 perf/graph-service.py --url http://127.0.0.1:7600 \
-  --cli "$(command -v mdc)" --proj etp/main --samples 20 --output /tmp/graph-baseline.json
+  --cli "$(command -v mdc)" --proj mathlib4/main --query Algebra \
+  --samples 20 --output /tmp/graph-baseline.json
 ```
 
 The benchmark's `--url` selects the HTTP measurement endpoint; `--proj` is required
@@ -36,6 +37,56 @@ decoding. CLI measurements additionally include a fresh client process and outpu
 decoding. Both require an already running service; record process startup separately.
 No OS/database caches are flushed. These local sample percentiles are observations,
 not production latency guarantees. Browser rendering is excluded.
+
+### Original Mathlib sources
+
+`perf/mathlib-import.py` converts a pinned checkout into an import bundle. It keeps
+`Mathlib/**/*.lean` and the root `Mathlib.lean` as nodes, preserving module names,
+source bytes and file paths in metadata. Lean's native header parser supplies
+direct imports. Other non-hidden UTF-8 tracked files remain supporting project
+files; the report lists excluded files. This includes Mathlib's tactics and other
+metaprogramming needed by mathematical modules. It does not invent LaTeX or split
+theorems. The checkout remains read-only.
+
+```sh
+python3 perf/mathlib-import.py --source .external/mathlib4 --output /tmp/mdc-mathlib/mathlib.json
+mdc init mathlib4
+mdc start mathlib4/main
+mdc import /tmp/mdc-mathlib/mathlib.json -p mathlib4/main
+MDC_BENCH_BUNDLE=/tmp/mdc-mathlib/mathlib.json \
+MDC_BENCH_REPORT=/tmp/mdc-mathlib/preparation.json \
+  cargo test --release --locked --test test_mathlib_bench \
+  mathlib_snapshot_and_editor_preparation -- --ignored --nocapture
+```
+
+The preparation test measures snapshot capture, initial source materialization,
+unchanged editor refresh and invalidation. It does not compile Lean. Import only
+into an empty branch; mutation benchmarks belong on a disposable fork.
+
+For compiler comparison, install the source's exact toolchain and use an unused
+external run directory:
+
+```sh
+MDC_BENCH_BUNDLE=/tmp/mdc-mathlib/mathlib.json \
+MDC_BENCH_RUN_DIR=/tmp/mdc-mathlib/compile-run \
+MDC_BENCH_MODULE=Mathlib.Data.Nat.Log MDC_LEAN_TIMEOUT_SECONDS=1800 \
+  cargo test --release --locked --test test_mathlib_bench \
+  mathlib_lake_and_mdc_incremental_builds -- --ignored --nocapture
+```
+
+This runs native `lake build +MODULE` and mdc check/build with separate local
+artifact caches. Toolchain installation, project materialization and pinned Git
+dependency downloads are outside the timed interval. Cold builds, unchanged
+builds, target edits and a `Mathlib.Init` dependency edit use identical sources;
+both sides must produce artifacts successfully. Remote artifact downloads are
+disabled with `LAKE_NO_CACHE=true` and `MATHLIB_NO_CACHE_ON_UPDATE=1`. The default
+target has 143 managed modules in this pinned revision, not the whole library.
+Results are saved in `MDC_BENCH_RUN_DIR/result.json`. Cold build times include
+compilation of required external libraries, and are distinct from graph latency
+or interactive editor latency.
+
+The [Mathlib benchmark report](https://github.com/mathdocument/MathDoc/tree/main/perf/reports/2026-09-12-mathlib)
+records the source commit, counts, measurements, and observed toolchain limitations.
 
 ### Synthetic graph regression
 

@@ -1,0 +1,357 @@
+{
+  "closure_nodes": 143,
+  "lake": {
+    "cold": {
+      "elapsed_ms": 174457.657417
+    },
+    "dependency_edit": {
+      "elapsed_ms": 960.935477
+    },
+    "target_edit": {
+      "elapsed_ms": 2692.6905570000004
+    },
+    "unchanged": {
+      "elapsed_ms": 976.518516
+    }
+  },
+  "mdc": {
+    "cold": {
+      "elapsed_ms": 189660.68845999998,
+      "result": {
+        "built": true,
+        "cache_hit": false,
+        "certified": true,
+        "dependency_errors": [],
+        "diagnostics": [],
+        "elapsed_ms": 189658,
+        "fnode": "4a86f242-ad0b-5dbc-bbd6-1f61ed7dea8c",
+        "has_sorry": false,
+        "imports": [
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Data.Nat.BinaryRec",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Data/Nat/BinaryRec.lean"
+            }
+          },
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Order.Interval.Set.Defs",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Order/Interval/Set/Defs.lean"
+            }
+          },
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Order.Monotone.Basic",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Order/Monotone/Basic.lean"
+            }
+          },
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Tactic.Bound.Attribute",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Tactic/Bound/Attribute.lean"
+            }
+          },
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Tactic.Contrapose",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Tactic/Contrapose.lean"
+            }
+          },
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Tactic.Monotonicity.Attr",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Tactic/Monotonicity/Attr.lean"
+            }
+          }
+        ],
+        "input_key": "db2e88194ed6515fae9393b526ce7d65b1ab989741cd0c2711d90d0c2b83fd5a",
+        "passed": true,
+        "revision": "a18e32c37ba416b846221e3d66a4884c216092ec28c658fd119c2066c99f78d3"
+      }
+    },
+    "dependency_edit": {
+      "elapsed_ms": 3251.107637,
+      "result": {
+        "built": true,
+        "cache_hit": false,
+        "certified": true,
+        "dependency_errors": [],
+        "diagnostics": [],
+        "elapsed_ms": 3250,
+        "fnode": "4a86f242-ad0b-5dbc-bbd6-1f61ed7dea8c",
+        "has_sorry": false,
+        "imports": [
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Data.Nat.BinaryRec",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Data/Nat/BinaryRec.lean"
+            }
+          },
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Order.Interval.Set.Defs",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Order/Interval/Set/Defs.lean"
+            }
+          },
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Order.Monotone.Basic",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Order/Monotone/Basic.lean"
+            }
+          },
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Tactic.Bound.Attribute",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Tactic/Bound/Attribute.lean"
+            }
+          },
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Tactic.Contrapose",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Tactic/Contrapose.lean"
+            }
+          },
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Tactic.Monotonicity.Attr",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Tactic/Monotonicity/Attr.lean"
+            }
+          }
+        ],
+        "input_key": "ae9ccc7cce4f586d3cd227c8630953bc1a9970196fcab4840899cfe9c81f53f4",
+        "passed": true,
+        "revision": "b5e11d2d9c5f8410347c95149f2f67d84705ad5587d0e191eaeca944e82b9519"
+      }
+    },
+    "target_edit": {
+      "elapsed_ms": 2798.0984599999997,
+      "result": {
+        "built": true,
+        "cache_hit": false,
+        "certified": true,
+        "dependency_errors": [],
+        "diagnostics": [],
+        "elapsed_ms": 2796,
+        "fnode": "4a86f242-ad0b-5dbc-bbd6-1f61ed7dea8c",
+        "has_sorry": false,
+        "imports": [
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Data.Nat.BinaryRec",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Data/Nat/BinaryRec.lean"
+            }
+          },
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Order.Interval.Set.Defs",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Order/Interval/Set/Defs.lean"
+            }
+          },
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Order.Monotone.Basic",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Order/Monotone/Basic.lean"
+            }
+          },
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Tactic.Bound.Attribute",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Tactic/Bound/Attribute.lean"
+            }
+          },
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Tactic.Contrapose",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Tactic/Contrapose.lean"
+            }
+          },
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Tactic.Monotonicity.Attr",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Tactic/Monotonicity/Attr.lean"
+            }
+          }
+        ],
+        "input_key": "c1fc6ed7d13c4aca724ed35982172447b1217af952ce416fd23d87456dbdd090",
+        "passed": true,
+        "revision": "b5e11d2d9c5f8410347c95149f2f67d84705ad5587d0e191eaeca944e82b9519"
+      }
+    },
+    "unchanged": {
+      "elapsed_ms": 3.546895,
+      "result": {
+        "built": true,
+        "cache_hit": true,
+        "certified": true,
+        "dependency_errors": [],
+        "diagnostics": [],
+        "elapsed_ms": 0,
+        "fnode": "4a86f242-ad0b-5dbc-bbd6-1f61ed7dea8c",
+        "has_sorry": false,
+        "imports": [
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Data.Nat.BinaryRec",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Data/Nat/BinaryRec.lean"
+            }
+          },
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Order.Interval.Set.Defs",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Order/Interval/Set/Defs.lean"
+            }
+          },
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Order.Monotone.Basic",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Order/Monotone/Basic.lean"
+            }
+          },
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Tactic.Bound.Attribute",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Tactic/Bound/Attribute.lean"
+            }
+          },
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Tactic.Contrapose",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Tactic/Contrapose.lean"
+            }
+          },
+          {
+            "kind": {
+              "isAll": false,
+              "isPrivate": false,
+              "metaKind": "nonMeta"
+            },
+            "module": {
+              "name": "Mathlib.Tactic.Monotonicity.Attr",
+              "uri": "file:///bench/linux-nat-log-v2/mdc/projects/c67bdfa25e22eea1df94b33a6f8f1b01748305de5478ec1eb9098c920483ace5/Mathlib/Tactic/Monotonicity/Attr.lean"
+            }
+          }
+        ],
+        "input_key": "db2e88194ed6515fae9393b526ce7d65b1ab989741cd0c2711d90d0c2b83fd5a",
+        "passed": true,
+        "revision": "a18e32c37ba416b846221e3d66a4884c216092ec28c658fd119c2066c99f78d3"
+      }
+    }
+  },
+  "module": "Mathlib.Data.Nat.Log",
+  "official_cache": false
+}
