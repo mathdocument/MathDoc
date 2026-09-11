@@ -38,8 +38,9 @@ enum Commands {
     /// Search branch nodes by title or UUID.
     Search {
         query: String,
-        #[arg(short = 'n', long, default_value = "200")]
-        max_results: usize,
+        /// Maximum number of results (0–200).
+        #[arg(short = 'n', long, default_value = "200", value_parser = clap::value_parser!(u16).range(0..=200))]
+        max_results: u16,
     },
     /// Inspect or validate the dependency graph of the branch.
     Graph {
@@ -66,6 +67,12 @@ enum Commands {
     New {
         #[arg(short, long)]
         title: String,
+        /// Atomically add the new node as a dependency of this parent.
+        #[arg(long)]
+        parent: Option<String>,
+        /// Require this parent revision, returned by show.
+        #[arg(long, requires = "parent")]
+        revision: Option<String>,
     },
     /// Manage or traverse dependencies and referrers of a node.
     Dep {
@@ -74,7 +81,7 @@ enum Commands {
     },
     /// Read a node by exact name or complete UUID.
     Show { source: String },
-    /// Replace one source block of a node with text from stdin.
+    /// Replace a source block from stdin, or delete it with --delete.
     Edit {
         source: String,
         #[arg(long="type",default_value="lean",value_parser=["text","lean","rocq","latex"])]
@@ -82,9 +89,18 @@ enum Commands {
         /// Require the node revision returned by show.
         #[arg(long)]
         revision: Option<String>,
+        /// Delete this source block without reading stdin.
+        #[arg(long)]
+        delete: bool,
     },
     /// Rename a node using an optimistic revision guard.
-    Rename { source: String, title: String },
+    Rename {
+        source: String,
+        title: String,
+        /// Require the node revision returned by show.
+        #[arg(long)]
+        revision: Option<String>,
+    },
     /// Compute graph metrics for a node.
     Metric {
         #[command(subcommand)]
@@ -117,27 +133,43 @@ enum Dep {
         source: String,
         #[arg(short, long)]
         target: String,
+        /// Require the source node revision returned by show.
+        #[arg(long)]
+        revision: Option<String>,
     },
-    /// Remove a dependency from a node.
+    /// Remove one or more dependencies from a node in one transaction.
     Rm {
         source: String,
-        #[arg(short, long)]
-        target: String,
+        /// Remove these dependencies in one transaction.
+        #[arg(short, long, required = true, num_args = 1..)]
+        target: Vec<String>,
+        /// Require the source node revision returned by show.
+        #[arg(long)]
+        revision: Option<String>,
     },
     /// List dependencies reachable from a node at the requested depth.
     Show {
         source: String,
-        #[arg(short, long, default_value = "1", allow_hyphen_values = true)]
+        #[arg(short, long, default_value = "1", allow_hyphen_values = true, value_parser = clap::value_parser!(i32).range(-1..))]
         depth: i32,
     },
     /// List nodes that depend on the target at the requested depth.
     Refs {
         target: String,
-        #[arg(short, long, default_value = "1", allow_hyphen_values = true)]
+        #[arg(short, long, default_value = "1", allow_hyphen_values = true, value_parser = clap::value_parser!(i32).range(-1..))]
         depth: i32,
     },
     /// List dependency leaves reachable from a node.
     Leaf { source: String },
+    /// Search nodes not already linked as direct dependencies of the source.
+    Candidates {
+        source: String,
+        #[arg(default_value = "")]
+        query: String,
+        /// Maximum number of results (0–200).
+        #[arg(short = 'n', long, default_value = "200", value_parser = clap::value_parser!(u16).range(0..=200))]
+        max_results: u16,
+    },
 }
 #[derive(Subcommand)]
 enum Lean {
@@ -160,6 +192,9 @@ enum Lean {
         /// Zero-based character offset within the line.
         #[arg(long, default_value = "0")]
         column: u32,
+        /// Require the node revision returned by show.
+        #[arg(long)]
+        revision: Option<String>,
     },
 }
 #[derive(Subcommand)]
@@ -167,7 +202,11 @@ enum Project {
     /// Read the branch's Lean toolchain, Lake configuration and dependency lockfile.
     Show,
     /// Replace the branch's Lean toolchain, Lake configuration and lockfile from stdin JSON.
-    Set,
+    Set {
+        /// Require the branch revision returned by project show.
+        #[arg(long)]
+        revision: Option<String>,
+    },
 }
 #[derive(Subcommand)]
 enum Branch {
@@ -430,29 +469,62 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
         | Commands::Branch {
             command: Branch::Del,
         } => unreachable!(),
-        Commands::New { title } => {
-            api.request(
-                Method::POST,
-                "/node/new",
-                &[],
-                Some(json!({"title":title})),
-                None,
-            )
-            .await?
+        Commands::New {
+            title,
+            parent,
+            revision,
+        } => {
+            let parent = match parent {
+                Some(reference) => Some(api.node(&reference).await?),
+                None => None,
+            };
+            let mut body = json!({"title":title});
+            if let Some(parent) = &parent {
+                body["parent_fnode"] = parent["fnode"].clone();
+            }
+            let response = api
+                .request(
+                    Method::POST,
+                    "/node/new",
+                    &[],
+                    Some(body),
+                    revision
+                        .as_deref()
+                        .or_else(|| parent.as_ref().and_then(|p| p["revision"].as_str())),
+                )
+                .await?;
+            if let Some(parent) = parent {
+                // The browser endpoint returns the updated parent; CLI new returns the new node.
+                let id = response["depens"]
+                    .as_array()
+                    .context("invalid linked node response")?
+                    .iter()
+                    .find(|id| !parent["depens"].as_array().unwrap().contains(id))
+                    .and_then(Value::as_str)
+                    .context("new dependency missing from response")?;
+                api.node(id).await?
+            } else {
+                response
+            }
         }
         Commands::Show { source } => api.node(&source).await?,
         Commands::Edit {
             source,
             language,
             revision,
+            delete,
         } => {
-            let content = stdin()?;
+            let body = if delete {
+                None
+            } else {
+                Some(json!({"content":stdin()?}))
+            };
             let node = api.node(&source).await?;
             api.request(
-                Method::PUT,
+                if delete { Method::DELETE } else { Method::PUT },
                 &format!("/node/{}/block/{language}", node["fnode"].as_str().unwrap()),
                 &[],
-                Some(json!({"content":content})),
+                body,
                 Some(
                     revision
                         .as_deref()
@@ -461,14 +533,18 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
             )
             .await?
         }
-        Commands::Rename { source, title } => {
+        Commands::Rename {
+            source,
+            title,
+            revision,
+        } => {
             let n = api.node(&source).await?;
             api.request(
                 Method::PUT,
                 &format!("/node/{}/title", n["fnode"].as_str().unwrap()),
                 &[],
                 Some(json!({"title":title})),
-                n["revision"].as_str(),
+                revision.as_deref().or(n["revision"].as_str()),
             )
             .await?
         }
@@ -491,11 +567,34 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
             .await?
         }
         Commands::Dep { command } => match command {
-            Dep::Add { source, target } => mutate_dep(&api, &source, &target, true).await?,
-            Dep::Rm { source, target } => mutate_dep(&api, &source, &target, false).await?,
+            Dep::Add {
+                source,
+                target,
+                revision,
+            } => mutate_dep(&api, &source, &[target], true, revision).await?,
+            Dep::Rm {
+                source,
+                target,
+                revision,
+            } => mutate_dep(&api, &source, &target, false, revision).await?,
             Dep::Show { source, depth } => traverse(&api, &source, "show", depth).await?,
             Dep::Refs { target, depth } => traverse(&api, &target, "refs", depth).await?,
             Dep::Leaf { source } => traverse(&api, &source, "leaf", -1).await?,
+            Dep::Candidates {
+                source,
+                query,
+                max_results,
+            } => {
+                let n = api.node(&source).await?;
+                api.request(
+                    Method::GET,
+                    &format!("/node/{}/dep/candidates", n["fnode"].as_str().unwrap()),
+                    &[("q", query), ("n", max_results.to_string())],
+                    None,
+                    None,
+                )
+                .await?
+            }
         },
         Commands::Metric {
             command: Metric::Ior { source },
@@ -517,6 +616,7 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
                 source,
                 line,
                 column,
+                revision,
             } => {
                 let n = api.node(&source).await?;
                 api.request(
@@ -524,7 +624,7 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
                     &format!("/node/{}/lean/goals", n["fnode"].as_str().unwrap()),
                     &[],
                     Some(json!({"line":line,"character":column})),
-                    n["revision"].as_str(),
+                    revision.as_deref().or(n["revision"].as_str()),
                 )
                 .await?
             }
@@ -542,7 +642,7 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
             command: Project::Show,
         } => api.get("/project/lean").await?,
         Commands::Project {
-            command: Project::Set,
+            command: Project::Set { revision },
         } => {
             let project: Value = serde_json::from_str(&stdin()?)?;
             let p = api.get("/project/lean").await?;
@@ -551,7 +651,7 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
                 "/project/lean",
                 &[],
                 Some(project),
-                p["revision"].as_str(),
+                revision.as_deref().or(p["revision"].as_str()),
             )
             .await?
         }
@@ -597,13 +697,22 @@ async fn traverse(api: &Api, source: &str, mode: &str, depth: i32) -> Result<Val
     )
     .await
 }
-async fn mutate_dep(api: &Api, source: &str, target: &str, add: bool) -> Result<Value> {
+async fn mutate_dep(
+    api: &Api,
+    source: &str,
+    targets: &[String],
+    add: bool,
+    revision: Option<String>,
+) -> Result<Value> {
     let n = api.node(source).await?;
-    let t = api.node(target).await?;
+    let mut ids = Vec::with_capacity(targets.len());
+    for target in targets {
+        ids.push(api.node(target).await?["fnode"].clone());
+    }
     let body = if add {
-        json!({"dep_fnode":t["fnode"]})
+        json!({"dep_fnode":ids[0]})
     } else {
-        json!({"dep_fnodes":[t["fnode"]]})
+        json!({"dep_fnodes":ids})
     };
     api.request(
         Method::POST,
@@ -614,7 +723,7 @@ async fn mutate_dep(api: &Api, source: &str, target: &str, add: bool) -> Result<
         ),
         &[],
         Some(body),
-        n["revision"].as_str(),
+        revision.as_deref().or(n["revision"].as_str()),
     )
     .await
 }

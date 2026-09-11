@@ -683,6 +683,12 @@ async fn delete_block(
     let mut snapshot = s.read().await?;
     let mut node = snapshot.resolve(&id)?.clone();
     check_revision(&headers, &node)?;
+    if !BLOCK_TYPES.contains(&language.as_str()) {
+        return Err(ApiError(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "supported types: text, lean, rocq, latex".into(),
+        ));
+    }
     node.blocks.retain(|b| b.srctype != language);
     s.save(&mut snapshot, vec![node.clone()], "Delete source block")
         .await?;
@@ -724,7 +730,12 @@ async fn rm_deps(
     let mut snapshot = s.read().await?;
     let mut node = snapshot.resolve(&id)?.clone();
     check_revision(&headers, &node)?;
-    node.depens.retain(|id| !body.dep_fnodes.contains(id));
+    let removed: BTreeSet<_> = body
+        .dep_fnodes
+        .iter()
+        .map(|reference| snapshot.resolve(reference).map(|node| node.fnode.clone()))
+        .collect::<Result<_>>()?;
+    node.depens.retain(|id| !removed.contains(id));
     s.save(&mut snapshot, vec![node.clone()], "Remove dependencies")
         .await?;
     Ok(revision_response(&snapshot, &node, &s.lean))

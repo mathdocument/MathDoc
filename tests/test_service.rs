@@ -154,6 +154,32 @@ async fn api_mutations_use_database_revisions_without_workspace_files() {
     )
     .await;
     assert_eq!(child_view["referrers"][0]["fnode"], id);
+    let before = db.version().await.unwrap();
+    assert_eq!(
+        call(
+            &app,
+            "DELETE",
+            &format!("/api/node/{child}/block/python"),
+            Value::Null,
+            child_view["node"]["revision"].as_str()
+        )
+        .await
+        .0,
+        422
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("/api/node/{child}/dep/rm"),
+            json!({"dep_fnodes":[uuid::Uuid::new_v4().to_string()]}),
+            child_view["node"]["revision"].as_str()
+        )
+        .await
+        .0,
+        404
+    );
+    assert_eq!(db.version().await.unwrap(), before);
     let (_, child_saved) = call(
         &app,
         "PUT",

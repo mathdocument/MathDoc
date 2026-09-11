@@ -33,6 +33,25 @@ async fn run(root: &Path, args: &[&str]) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+async fn input(root: &Path, args: &[&str], content: &str) -> std::process::Output {
+    use tokio::io::AsyncWriteExt;
+    let mut child = command(root)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(content.as_bytes())
+        .await
+        .unwrap();
+    child.wait_with_output().await.unwrap()
+}
+
 async fn reject(root: &Path, args: &[&str], message: &str) {
     let output = command(root).args(args).output().await.unwrap();
     assert!(!output.status.success(), "{args:?}");
@@ -365,4 +384,265 @@ async fn branch_deletion_requires_stopped_service_and_cleans_only_its_cache() {
     let _recreated = Started::start(root, &copy, None).await;
     assert!(!cache_file.exists());
     assert_eq!(run(root, &["export", "--proj", &copy]).await, original);
+}
+
+#[tokio::test]
+#[ignore = "requires local TerminusDB and MDC_TERMINUS_PASSWORD"]
+async fn cli_editing_matches_backend_transactions_and_revision_guards() {
+    let fixture = common::TestDatabase::new("mdccli").await;
+    let cache = tempfile::tempdir().unwrap();
+    let root = cache.path();
+    let project = format!("{}/main", fixture.db.database);
+    let _service = Started::start(root, &project, None).await;
+    let parent = run(root, &["new", "-p", &project, "-t", "Parent"]).await;
+    let original_rev = parent["revision"].as_str().unwrap();
+    let child = run(
+        root,
+        &[
+            "new",
+            "-p",
+            &project,
+            "-t",
+            "Child",
+            "--parent",
+            "Parent",
+            "--revision",
+            original_rev,
+        ],
+    )
+    .await;
+    assert_eq!(child["title"], "Child");
+    let linked = run(root, &["show", "Parent", "-p", &project]).await;
+    assert_eq!(linked["depens"], serde_json::json!([child["fnode"]]));
+    reject(
+        root,
+        &[
+            "new",
+            "-p",
+            &project,
+            "-t",
+            "Stale",
+            "--parent",
+            "Parent",
+            "--revision",
+            original_rev,
+        ],
+        "HTTP 412",
+    )
+    .await;
+    reject(
+        root,
+        &[
+            "rename",
+            "Parent",
+            "Renamed",
+            "-p",
+            &project,
+            "--revision",
+            original_rev,
+        ],
+        "HTTP 412",
+    )
+    .await;
+    let renamed = run(
+        root,
+        &[
+            "rename",
+            "Parent",
+            "Renamed",
+            "-p",
+            &project,
+            "--revision",
+            linked["revision"].as_str().unwrap(),
+        ],
+    )
+    .await;
+    run(root, &["new", "-p", &project, "-t", "Other"]).await;
+    reject(
+        root,
+        &[
+            "dep",
+            "add",
+            "Renamed",
+            "-t",
+            "Other",
+            "-p",
+            &project,
+            "--revision",
+            original_rev,
+        ],
+        "HTTP 412",
+    )
+    .await;
+    let added = run(
+        root,
+        &[
+            "dep",
+            "add",
+            "Renamed",
+            "-t",
+            "Other",
+            "-p",
+            &project,
+            "--revision",
+            renamed["revision"].as_str().unwrap(),
+        ],
+    )
+    .await;
+    let candidates = run(root, &["dep", "candidates", "Renamed", "-p", &project]).await;
+    assert_eq!(candidates["nodes"], serde_json::json!([]));
+    reject(
+        root,
+        &[
+            "dep", "rm", "Renamed", "-t", "Child", "Missing", "-p", &project,
+        ],
+        "node not found",
+    )
+    .await;
+    assert_eq!(
+        run(root, &["show", "Renamed", "-p", &project]).await["revision"],
+        added["revision"]
+    );
+    reject(
+        root,
+        &[
+            "dep",
+            "rm",
+            "Renamed",
+            "-t",
+            "Child",
+            "Other",
+            "-p",
+            &project,
+            "--revision",
+            original_rev,
+        ],
+        "HTTP 412",
+    )
+    .await;
+    let removed = run(
+        root,
+        &[
+            "dep",
+            "rm",
+            "Renamed",
+            "-t",
+            "Child",
+            "Other",
+            "-p",
+            &project,
+            "--revision",
+            added["revision"].as_str().unwrap(),
+        ],
+    )
+    .await;
+    assert_eq!(removed["depens"], serde_json::json!([]));
+    assert_eq!(
+        run(
+            root,
+            &[
+                "dep",
+                "candidates",
+                "Renamed",
+                "Child",
+                "-p",
+                &project,
+                "-n",
+                "1"
+            ]
+        )
+        .await["nodes"][0]["fnode"],
+        child["fnode"]
+    );
+    let output = input(
+        root,
+        &["edit", "Child", "--type", "text", "-p", &project],
+        "saved text",
+    )
+    .await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let saved: Value = serde_json::from_slice(&output.stdout).unwrap();
+    reject(
+        root,
+        &[
+            "edit",
+            "Child",
+            "--type",
+            "text",
+            "--delete",
+            "-p",
+            &project,
+            "--revision",
+            child["revision"].as_str().unwrap(),
+        ],
+        "HTTP 412",
+    )
+    .await;
+    let deleted = run(
+        root,
+        &[
+            "edit",
+            "Child",
+            "--type",
+            "text",
+            "--delete",
+            "-p",
+            &project,
+            "--revision",
+            saved["revision"].as_str().unwrap(),
+        ],
+    )
+    .await;
+    assert_eq!(deleted["blocks"], serde_json::json!([]));
+    reject(
+        root,
+        &[
+            "lean",
+            "goals",
+            "Child",
+            "--line",
+            "0",
+            "-p",
+            &project,
+            "--revision",
+            saved["revision"].as_str().unwrap(),
+        ],
+        "HTTP 412",
+    )
+    .await;
+    let config = run(root, &["project", "show", "-p", &project]).await;
+    let mut changed = config["project"].clone();
+    changed["lakefile"] = serde_json::json!(format!(
+        "{}\n# updated\n",
+        changed["lakefile"].as_str().unwrap()
+    ));
+    let args = [
+        "project",
+        "set",
+        "-p",
+        &project,
+        "--revision",
+        config["revision"].as_str().unwrap(),
+    ];
+    let output = input(root, &args, &changed.to_string()).await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stale = input(root, &args, &config["project"].to_string()).await;
+    assert!(!stale.status.success());
+    assert!(String::from_utf8_lossy(&stale.stderr).contains("HTTP 412"));
+    assert_eq!(
+        run(root, &["project", "show", "-p", &project]).await["project"],
+        changed
+    );
+    assert_eq!(
+        run(root, &["graph", "check", "-p", &project]).await["nodes"],
+        3
+    );
 }
