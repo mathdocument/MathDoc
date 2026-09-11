@@ -2,7 +2,7 @@
 title: JSON export and restore
 ---
 
-`mdc export -p myproject/main` produces a JSON bundle with `nodes` and `project`. Nodes retain their UUID, title, stable Lean module, direct dependencies and source blocks. `project` contains the toolchain, Lake configuration and lock manifest.
+`mdc export -p myproject/main` produces a JSON bundle with `nodes` and `project`. Nodes retain their UUID, title, stable Lean module, direct dependencies and source blocks. `project` contains the toolchain, original Lake configuration, lock manifest and optional supporting text files. Imported modules retain their original namespace and directory structure.
 
 Import and export always operate on the entire selected branch graph. There is no
 single-node mode. Bundles contain no compiler caches or `.olean` files.

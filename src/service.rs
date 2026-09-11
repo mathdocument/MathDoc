@@ -605,7 +605,12 @@ async fn new_node(
     Json(body): Json<NewNode>,
 ) -> ApiResult<Response> {
     let mut snapshot = s.read().await?;
-    let node = Node::new(body.title)?;
+    let mut node = Node::new(body.title)?;
+    node.module = format!(
+        "{}.N_{}",
+        snapshot.project.module_root(),
+        node.fnode.replace('-', "")
+    );
     let mut changes = vec![node.clone()];
     if let Some(parent) = body.parent_fnode {
         let mut parent = snapshot.resolve(&parent)?.clone();
@@ -849,6 +854,7 @@ async fn put_project(
             "project changed; reload and retry".into(),
         ));
     }
+    project.validate_modules(snapshot.nodes.values())?;
     let version = s.db.put_project(&project, &snapshot.version).await?;
     snapshot.version = version;
     snapshot.project = project;
@@ -879,6 +885,7 @@ async fn import(State(s): State<Arc<Service>>, Json(body): Json<Import>) -> ApiR
     }
     // Project configuration is validated before any data is imported.
     body.project.validate()?;
+    body.project.validate_modules(body.nodes.iter())?;
     snapshot.validate_changes(&body.nodes)?;
     let version =
         s.db.put_bundle(
@@ -888,9 +895,8 @@ async fn import(State(s): State<Arc<Service>>, Json(body): Json<Import>) -> ApiR
             "Import graph",
         )
         .await?;
-    snapshot.apply(body.nodes, version);
     snapshot.project = body.project;
-    snapshot.recompute();
+    snapshot.apply(body.nodes, version);
     Ok(Json(graph_report(&snapshot)))
 }
 async fn history(State(s): State<Arc<Service>>) -> ApiResult<Json<Value>> {

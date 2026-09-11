@@ -20,4 +20,4 @@ more than 30 seconds triggers one automatic reconnect with the unsaved draft
 retained. If recovery fails again, use **Reload environment**. Cold imports can
 still take longer and appear separately as “Loading Lean imports…”.
 
-The Lean project toolbar button edits the pinned toolchain, Lake TOML and lock manifest. All block types share a header, save/delete controls, collapse behavior and status styling. Text, Rocq and LaTeX use CodeMirror; Lean retains Monaco and Infoview. Only Lean has a language server in this release.
+The Lean project toolbar button edits the pinned toolchain, Lake configuration (TOML or Lean) and lock manifest, preserving supporting project files and the module namespace. All block types share a header, save/delete controls, collapse behavior and status styling. Text, Rocq and LaTeX use CodeMirror; Lean retains Monaco and Infoview. Only Lean has a language server in this release.

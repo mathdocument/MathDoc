@@ -5,6 +5,67 @@ use mathdoc::{
 use std::collections::HashMap;
 
 #[tokio::test]
+#[ignore = "requires native Lean and Lake"]
+async fn native_project_keeps_module_names_configuration_and_dependency_guards() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = LeanProject {
+        lakefile_name: Some("lakefile.lean".into()),
+        module_root: Some("Mathlib".into()),
+        lakefile: "import Lake\nopen Lake DSL\npackage fixture where\n  restoreAllArtifacts := true\nlean_lib Mathlib\nlean_lib Support\n".into(),
+        manifest: Some("{\"version\":\"1.1.0\",\"name\":\"fixture\",\"lakeDir\":\".lake\",\"packagesDir\":\".lake/packages\",\"packages\":[]}".into()),
+        files: [("Support.lean".into(), "def supportValue : Nat := 7\n".into())].into(),
+        ..Default::default()
+    };
+    let mut a = Node::new("A".into()).unwrap();
+    a.module = "Mathlib.A".into();
+    a.blocks.push(Block {
+        srctype: "lean".into(),
+        content: "import Support\ntheorem base : supportValue = 7 := rfl\n".into(),
+        ..Default::default()
+    });
+    let mut b = Node::new("B".into()).unwrap();
+    b.module = "Mathlib.B".into();
+    b.depens.push(a.fnode.clone());
+    b.blocks.push(Block {
+        srctype: "lean".into(),
+        content: "import Mathlib.A\ntheorem derived : supportValue = 7 := base\n".into(),
+        ..Default::default()
+    });
+    let mut snapshot = Snapshot {
+        version: "native".into(),
+        nodes: [a, b.clone()]
+            .into_iter()
+            .map(|n| (n.fnode.clone(), n))
+            .collect(),
+        project,
+        depths: HashMap::new(),
+        lean_keys: HashMap::new(),
+        referrers: HashMap::new(),
+    };
+    snapshot.recompute();
+    let service = LeanService::new(temp.path().to_path_buf()).unwrap();
+    let checked = service
+        .check(Input::capture(&snapshot, &b.fnode).unwrap(), true)
+        .await
+        .unwrap();
+    assert!(checked.certified && checked.built, "{checked:?}");
+    let root = temp.path().join("projects").join(snapshot.project.key());
+    assert_eq!(
+        std::fs::read_to_string(root.join("lakefile.lean")).unwrap(),
+        snapshot.project.lakefile
+    );
+    assert!(!root.join("lakefile.toml").exists());
+    b.depens.clear();
+    snapshot.apply(vec![b.clone()], "missing edge".into());
+    let checked = service
+        .check(Input::capture(&snapshot, &b.fnode).unwrap(), false)
+        .await
+        .unwrap();
+    assert!(checked.passed && !checked.certified, "missing managed edge must be detected even when a previous build left the imported module on disk: {checked:?}");
+    service.shutdown().await;
+}
+
+#[tokio::test]
 #[ignore = "requires native Lean and Git; uses a local pinned external library"]
 async fn pinned_external_library_builds_and_reuses_artifacts() {
     let temp = tempfile::tempdir().unwrap();

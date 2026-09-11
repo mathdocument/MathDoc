@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { api } from "../lib/api";
+  import { api, type LeanProject } from "../lib/api";
   import { modal } from "../lib/modal";
   import { errMsg } from "../lib/format";
   import { confirmDiscardDraft, removeDraft, setDraftDirty, trackMutation } from "../lib/unsaved";
@@ -8,13 +8,15 @@
   let toolchain = $state(""), lakefile = $state(""), manifest = $state("");
   let baseline = $state(""), revision = $state("");
   let busy = $state(true), error = $state<string | null>(null);
+  let original = $state<LeanProject | null>(null);
   const draft = Symbol("Lean project");
-  const value = () => ({ toolchain, lakefile, manifest: manifest.trim() || null });
+  const value = () => ({ ...original, toolchain, lakefile, manifest: manifest.trim() || null });
   $effect(() => setDraftDirty(draft, baseline !== "" && JSON.stringify(value()) !== baseline));
   onDestroy(() => removeDraft(draft));
   onMount(async () => {
     try {
       const result = await api.project();
+      original = result.project;
       ({ toolchain, lakefile } = result.project); manifest = result.project.manifest ?? "";
       revision = result.revision; baseline = JSON.stringify(value());
     } catch (e) { error = errMsg(e); }
@@ -34,7 +36,7 @@
   <div class="body">
     <p>Pin the toolchain and libraries here. Each environment keeps its own build cache. Reload open Lean editors after changing it.</p>
     <label>Lean toolchain<input bind:value={toolchain} disabled={busy} /></label>
-    <label>lakefile.toml<textarea bind:value={lakefile} rows="9" spellcheck="false" disabled={busy}></textarea></label>
+    <label>{original?.lakefile_name ?? "lakefile.toml"}<textarea bind:value={lakefile} rows="9" spellcheck="false" disabled={busy}></textarea></label>
     <label>lake-manifest.json<textarea bind:value={manifest} rows="7" spellcheck="false" disabled={busy} placeholder="Required for external libraries; paste the manifest produced by Lake."></textarea></label>
     {#if error}<p class="error" role="alert">{error}</p>{/if}
   </div>

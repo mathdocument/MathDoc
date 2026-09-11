@@ -287,6 +287,11 @@ mod tests {
         });
         let input = Input {
             project: LeanProject::default(),
+            modules: [(
+                crate::store::module_file(&node.module, "lean").unwrap(),
+                node.fnode.clone(),
+            )]
+            .into(),
             chain: vec![(node.clone(), "key".into())],
         };
         let uri = "file:///project/Lib/Test.lean";

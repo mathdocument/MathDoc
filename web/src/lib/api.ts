@@ -99,7 +99,12 @@ function newNode(params: NewNodeBody, expectedRevision?: string): Promise<NodeDe
   return create();
 }
 
-export interface LeanProject { toolchain: string; lakefile: string; manifest: string | null }
+export interface LeanProject {
+  toolchain: string; lakefile: string; manifest: string | null;
+  lakefile_name?: "lakefile.toml" | "lakefile.lean";
+  module_root?: string;
+  files?: Record<string, string>;
+}
 export const api = {
   project: () => req<{ revision: string; project: LeanProject }>("/api/project/lean"),
   putProject: (project: LeanProject, revision: string) => req<{ revision: string; project: LeanProject }>("/api/project/lean", {

@@ -53,8 +53,9 @@ pub fn module_parts(mut module: &str) -> Result<Vec<&str>> {
             .filter(|s| !s.is_empty())
             .context("invalid Lean module separator")?;
     }
-    if parts.len() < 2 || parts[0] != "Lib" {
-        bail!("managed Lean module must start with Lib.");
+    if parts.is_empty() || parts.iter().any(|part| part.starts_with('.')) || parts[0] == "lakefile"
+    {
+        bail!("unsafe or empty Lean module name");
     }
     Ok(parts)
 }
@@ -191,6 +192,15 @@ pub struct LeanProject {
     pub lakefile: String,
     #[serde(default)]
     pub manifest: Option<String>,
+    /// Omitted for existing TOML projects; native Lean configuration stays byte-exact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lakefile_name: Option<String>,
+    /// Namespace for newly created nodes. Existing module identities are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_root: Option<String>,
+    /// Versioned supporting text files, separate from graph-managed Lean modules.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub files: BTreeMap<String, String>,
 }
 impl Default for LeanProject {
     fn default() -> Self {
@@ -199,10 +209,34 @@ impl Default for LeanProject {
             lakefile: "name = \"MathDoc\"\nversion = \"0.1.0\"\n\n[[lean_lib]]\nname = \"Lib\"\n"
                 .into(),
             manifest: None,
+            lakefile_name: None,
+            module_root: None,
+            files: BTreeMap::new(),
         }
     }
 }
 impl LeanProject {
+    pub fn lakefile_name(&self) -> &str {
+        self.lakefile_name.as_deref().unwrap_or("lakefile.toml")
+    }
+    pub fn module_root(&self) -> &str {
+        self.module_root.as_deref().unwrap_or("Lib")
+    }
+    pub fn validate_modules<'a>(&self, nodes: impl Iterator<Item = &'a Node>) -> Result<()> {
+        for node in nodes {
+            let path = module_file(&node.module, "lean")?;
+            if self
+                .files
+                .contains_key(&path.to_string_lossy().into_owned())
+            {
+                bail!(
+                    "managed module {} collides with a project file",
+                    node.module
+                );
+            }
+        }
+        Ok(())
+    }
     pub fn key(&self) -> String {
         digest(&serde_json::to_vec(self).expect("serializable project"))
     }
@@ -212,20 +246,50 @@ impl LeanProject {
         {
             bail!("pin a Lean toolchain release, such as leanprover/lean4:v4.33.1");
         }
-        let config: toml::Value = toml::from_str(&self.lakefile)?;
-        if !config
-            .get("lean_lib")
-            .and_then(toml::Value::as_array)
-            .is_some_and(|libs| {
-                libs.iter()
-                    .any(|l| l.get("name").and_then(toml::Value::as_str) == Some("Lib"))
-            })
+        module_parts(self.module_root())?;
+        let config: toml::Value = match self.lakefile_name() {
+            "lakefile.toml" => toml::from_str(&self.lakefile)?,
+            "lakefile.lean" => {
+                if self.manifest.is_none() {
+                    bail!("native Lean projects require a pinned Lake manifest");
+                }
+                toml::Value::Table(Default::default())
+            }
+            _ => bail!("lakefile_name must be lakefile.toml or lakefile.lean"),
+        };
+        if self.lakefile_name() == "lakefile.toml"
+            && !config
+                .get("lean_lib")
+                .and_then(toml::Value::as_array)
+                .is_some_and(|libs| {
+                    libs.iter().any(|l| {
+                        l.get("name").and_then(toml::Value::as_str) == Some(self.module_root())
+                    })
+                })
         {
-            bail!("Lake project must declare the Lib lean_lib");
+            bail!(
+                "Lake project must declare the {} lean_lib",
+                self.module_root()
+            );
         }
         for key in ["srcDir", "buildDir", "leanLibDir"] {
             if config.get(key).is_some() {
                 bail!("custom {key} is not supported in managed projects");
+            }
+        }
+        for path in self.files.keys() {
+            if path.is_empty()
+                || path.split('/').any(|part| {
+                    part.is_empty()
+                        || part.starts_with('.')
+                        || part.chars().any(|c| c.is_control() || c == '\\')
+                })
+                || matches!(
+                    path.as_str(),
+                    "lean-toolchain" | "lakefile.toml" | "lakefile.lean" | "lake-manifest.json"
+                )
+            {
+                bail!("unsafe or reserved project file path: {path}");
             }
         }
         let required = config.get("require").and_then(toml::Value::as_array);
@@ -668,6 +732,7 @@ impl Snapshot {
         Ok(node)
     }
     pub fn validate_changes(&self, changes: &[Node]) -> Result<()> {
+        self.project.validate_modules(changes.iter())?;
         let mut ids = BTreeSet::new();
         for node in changes {
             node.validate()?;
@@ -763,10 +828,20 @@ mod tests {
             "Lib.a.",
             "Lib..a",
             "Lib.«a».",
-            "Other.a",
+            "",
+            "«.lake».a",
+            "lakefile",
         ] {
             assert!(module_file(invalid, "lean").is_err(), "{invalid}");
         }
+        assert_eq!(
+            module_file("Mathlib.Data.Nat.Basic", "lean").unwrap(),
+            PathBuf::from("Mathlib/Data/Nat/Basic.lean")
+        );
+        assert_eq!(
+            module_file("Mathlib", "lean").unwrap(),
+            PathBuf::from("Mathlib.lean")
+        );
     }
     #[test]
     fn project_requires_immutable_libraries() {
@@ -780,6 +855,43 @@ mod tests {
         assert!(p.validate().is_err());
         p.manifest=Some(json!({"packages":[{"name":"example","type":"git","rev":"0123456789012345678901234567890123456789"}]}).to_string());
         assert!(p.validate().is_ok());
+    }
+    #[test]
+    fn native_project_preserves_configuration_and_rejects_file_collisions() {
+        let mut project = LeanProject {
+            lakefile_name: Some("lakefile.lean".into()),
+            module_root: Some("Mathlib".into()),
+            lakefile: "import Lake\nopen Lake DSL\npackage mathlib\nlean_lib Mathlib\n".into(),
+            manifest: Some("{\"packages\":[]}".into()),
+            files: [(
+                "Cache/Main.lean".into(),
+                "def main : IO Unit := pure ()\n".into(),
+            )]
+            .into(),
+            ..Default::default()
+        };
+        project.validate().unwrap();
+        let encoded = serde_json::to_string(&project).unwrap();
+        assert_eq!(
+            serde_json::from_str::<LeanProject>(&encoded).unwrap(),
+            project
+        );
+        let mut node = Node::new("Cache".into()).unwrap();
+        node.module = "Cache.Main".into();
+        assert!(project.validate_modules([&node].into_iter()).is_err());
+        for path in [
+            "../outside",
+            "/absolute",
+            "a//b",
+            "a/./b",
+            "a/../b",
+            ".lake/cache/x",
+            "lakefile.lean",
+            "a\\b",
+        ] {
+            project.files = [(path.into(), String::new())].into();
+            assert!(project.validate().is_err(), "{path}");
+        }
     }
     #[test]
     fn references_and_cycles_are_explicit() {

@@ -452,6 +452,7 @@ async fn artifact_has_sorry(base: &Path, module: &str) -> Option<bool> {
 pub struct Input {
     pub project: LeanProject,
     pub chain: Vec<(Node, String)>,
+    pub modules: BTreeMap<PathBuf, String>,
 }
 impl Input {
     pub fn environment_key(&self) -> Result<String> {
@@ -479,6 +480,16 @@ impl Input {
         ids.sort_by_key(|id| snapshot.depths[id]);
         Ok(Self {
             project: snapshot.project.clone(),
+            modules: snapshot
+                .nodes
+                .values()
+                .map(|n| {
+                    Ok((
+                        crate::store::module_file(&n.module, "lean")?,
+                        n.fnode.clone(),
+                    ))
+                })
+                .collect::<Result<_>>()?,
             chain: ids
                 .into_iter()
                 .map(|id| (snapshot.nodes[&id].clone(), snapshot.lean_keys[&id].clone()))
@@ -505,12 +516,8 @@ fn dependency_errors(
         let module = import["module"]["name"]
             .as_str()
             .context("Lean import omitted module name")?;
-        if module.starts_with("Lib.") {
-            if let Some(id) = known.get(&crate::store::module_file(module, "lean")?) {
-                imported.insert(id.clone());
-            } else {
-                errors.push(format!("managed import {module} is not declared in dep"));
-            }
+        if let Some(id) = known.get(&crate::store::module_file(module, "lean")?) {
+            imported.insert(id.clone());
         }
     }
     if imported != node.depens.iter().cloned().collect() {
@@ -547,16 +554,7 @@ impl LeanService {
         let started = Instant::now();
         verify_manifest(root, &input.project).await?;
         let target = &input.chain.last().context("no Lean target")?.0;
-        let known: BTreeMap<_, _> = input
-            .chain
-            .iter()
-            .map(|(n, _)| {
-                Ok((
-                    crate::store::module_file(&n.module, "lean")?,
-                    n.fnode.clone(),
-                ))
-            })
-            .collect::<Result<_>>()?;
+        let known = &input.modules;
         let keys: BTreeMap<_, _> = input
             .chain
             .iter()
@@ -580,16 +578,15 @@ impl LeanService {
             let module = import["module"]["name"]
                 .as_str()
                 .context("Lean import omitted module name")?;
-            if !module.starts_with("Lib.") {
-                continue;
-            }
             let Some(id) = known.get(&crate::store::module_file(module, "lean")?) else {
                 continue;
             };
             if observed.contains_key(id) {
                 continue;
             }
-            let node = nodes[id];
+            let Some(node) = nodes.get(id) else {
+                continue;
+            };
             let Some(source) = node.source("lean") else {
                 continue;
             };
@@ -893,16 +890,7 @@ impl LeanService {
         {
             return Ok(result);
         }
-        let known: BTreeMap<_, _> = input
-            .chain
-            .iter()
-            .map(|(n, _)| {
-                Ok((
-                    crate::store::module_file(&n.module, "lean")?,
-                    n.fnode.clone(),
-                ))
-            })
-            .collect::<Result<_>>()?;
+        let known = &input.modules;
         let keys: BTreeMap<_, _> = input
             .chain
             .iter()
@@ -1108,19 +1096,20 @@ async fn write_source(root: &Path, node: &Node, source: &str) -> Result<()> {
 }
 pub async fn prepare_project(root: &Path, project: &LeanProject) -> Result<()> {
     project.validate()?;
-    tokio::fs::create_dir_all(root.join("Lib")).await?;
+    tokio::fs::create_dir_all(root).await?;
     tokio::fs::write(
         root.join("lean-toolchain"),
         format!("{}\n", project.toolchain),
     )
     .await?;
-    let mut config: toml::Table = toml::from_str(&project.lakefile)?;
-    // Older pinned Lake releases do not read LAKE_RESTORE_ARTIFACTS. Keep
-    // standard artifact paths for metadata consumers without changing user data.
-    config.insert("restoreAllArtifacts".into(), toml::Value::Boolean(true));
-    tokio::fs::write(root.join("lakefile.toml"), toml::to_string(&config)?).await?;
+    tokio::fs::write(root.join(project.lakefile_name()), &project.lakefile).await?;
     if let Some(manifest) = &project.manifest {
         tokio::fs::write(root.join("lake-manifest.json"), manifest).await?;
+    }
+    for (name, content) in &project.files {
+        let path = root.join(name);
+        tokio::fs::create_dir_all(path.parent().unwrap()).await?;
+        tokio::fs::write(path, content).await?;
     }
     Ok(())
 }
@@ -1175,6 +1164,15 @@ mod tests {
         });
         let input = Input {
             project: LeanProject::default(),
+            modules: [&dependency, &target]
+                .into_iter()
+                .map(|n| {
+                    (
+                        crate::store::module_file(&n.module, "lean").unwrap(),
+                        n.fnode.clone(),
+                    )
+                })
+                .collect(),
             chain: vec![
                 (dependency.clone(), "dep-key".into()),
                 (target.clone(), "target-key".into()),
@@ -1260,6 +1258,11 @@ mod tests {
         });
         let input = Input {
             project: LeanProject::default(),
+            modules: [(
+                crate::store::module_file(&node.module, "lean").unwrap(),
+                node.fnode.clone(),
+            )]
+            .into(),
             chain: vec![(node.clone(), "input".into())],
         };
         let first = service.editor_project(&input).await.unwrap();
@@ -1314,6 +1317,7 @@ mod tests {
         let service = LeanService::new(cache.path().to_path_buf()).unwrap();
         let input = Input {
             project: LeanProject::default(),
+            modules: BTreeMap::new(),
             chain: vec![],
         };
         let canonical = cache.path().join("projects").join(input.project.key());

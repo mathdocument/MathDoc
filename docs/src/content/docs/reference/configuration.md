@@ -63,19 +63,29 @@ A minimal complete input object is:
 }
 ```
 
-`lakefile` is the text of a Lake TOML configuration, not a filename or Lean script.
+`lakefile` contains the original configuration text. `lakefile_name` defaults to
+`lakefile.toml`; set it to `lakefile.lean` for a native Lean configuration. Both
+formats are materialized unchanged. `module_root` defaults to `Lib` and selects
+the namespace for newly created nodes, for example `Mathlib.N_<uuid>`.
+Optional `files` maps relative paths to supporting UTF-8 source/configuration
+text. These files are versioned and exported but are not graph nodes. Hidden,
+absolute, traversal and reserved configuration paths are rejected, as are
+collisions with graph modules. Compiler artifacts do not belong in `files`.
 `manifest` is either null/omitted or the JSON text of a complete
 `lake-manifest.json`, encoded as a string. `project show` wraps this object in
 `{revision, project}`; pass only `project` back to `set`. To reject concurrent
 branch changes, supply `--revision` from that response.
 
-Pin a Lean release and declare the `Lib` library. External libraries are not
+Pin a Lean release and declare the library selected by `module_root`. External libraries are not
 limited to mathlib: declare them in Lake and supply a complete manifest with all
 Git dependencies locked to full 40-character commits. Mutable path dependencies,
 custom top-level `srcDir`, `buildDir`, `leanLibDir`, and a nonstandard
 `packagesDir` are unsupported. First preparation may download missing libraries
 and build imports. Changing the environment invalidates matching Lean input keys;
-reload an open editor environment after changing it.
+reload an open editor environment after changing it. Native Lean configurations
+require a manifest even without dependencies. They execute as the trusted local
+author; their library declarations and paths are evaluated by Lake, not a TOML
+validator. Keep the standard source and artifact directories for mdc checks.
 
 ## Timing measurements
 
