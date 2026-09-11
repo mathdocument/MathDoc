@@ -1,0 +1,490 @@
+{
+  "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+  "url": "http://127.0.0.1:58098",
+  "query": "Algebra",
+  "reads": {
+    "graph_check": {
+      "samples_ms": [
+        6.608,
+        5.625,
+        8.795,
+        7.742,
+        7.864
+      ],
+      "median_ms": 7.742,
+      "p95_ms": 8.795,
+      "response_bytes": 66,
+      "returned_items": null
+    },
+    "graph_roots": {
+      "samples_ms": [
+        25.874,
+        25.663,
+        26.861,
+        23.961,
+        23.834
+      ],
+      "median_ms": 25.663,
+      "p95_ms": 26.861,
+      "response_bytes": 134,
+      "returned_items": 1
+    },
+    "graph_full": {
+      "samples_ms": [
+        29.781,
+        30.817,
+        30.874,
+        29.916,
+        31.881
+      ],
+      "median_ms": 30.817,
+      "p95_ms": 31.881,
+      "response_bytes": 1657233,
+      "returned_items": null
+    },
+    "search_common": {
+      "samples_ms": [
+        10.945,
+        9.803,
+        9.088,
+        7.653,
+        7.205
+      ],
+      "median_ms": 9.088,
+      "p95_ms": 10.945,
+      "response_bytes": 2600,
+      "returned_items": 20
+    },
+    "search_missing": {
+      "samples_ms": [
+        7.273,
+        6.808,
+        7.411,
+        6.523,
+        7.181
+      ],
+      "median_ms": 7.181,
+      "p95_ms": 7.411,
+      "response_bytes": 2,
+      "returned_items": 0
+    },
+    "resolve_uuid": {
+      "samples_ms": [
+        5.934,
+        5.167,
+        5.518,
+        4.912,
+        4.905
+      ],
+      "median_ms": 5.167,
+      "p95_ms": 5.934,
+      "response_bytes": 66,
+      "returned_items": null
+    },
+    "resolve_name": {
+      "samples_ms": [
+        5.136,
+        4.605,
+        4.802,
+        4.229,
+        4.861
+      ],
+      "median_ms": 4.802,
+      "p95_ms": 5.136,
+      "response_bytes": 94,
+      "returned_items": null
+    },
+    "view_high_out_degree": {
+      "samples_ms": [
+        28.606,
+        25.339,
+        24.929,
+        23.639,
+        24.67
+      ],
+      "median_ms": 24.929,
+      "p95_ms": 28.606,
+      "response_bytes": 1879917,
+      "returned_items": null
+    },
+    "view_high_in_degree": {
+      "samples_ms": [
+        7.911,
+        6.693,
+        7.678,
+        6.434,
+        8.228
+      ],
+      "median_ms": 7.678,
+      "p95_ms": 8.228,
+      "response_bytes": 35079,
+      "returned_items": null
+    },
+    "deps_direct": {
+      "samples_ms": [
+        20.163,
+        16.361,
+        16.056,
+        16.468,
+        16.971
+      ],
+      "median_ms": 16.468,
+      "p95_ms": 20.163,
+      "response_bytes": 1062469,
+      "returned_items": 8524
+    },
+    "deps_transitive": {
+      "samples_ms": [
+        21.453,
+        21.017,
+        21.733,
+        20.592,
+        21.354
+      ],
+      "median_ms": 21.354,
+      "p95_ms": 21.733,
+      "response_bytes": 1062469,
+      "returned_items": 8524
+    },
+    "refs_direct": {
+      "samples_ms": [
+        7.556,
+        7.644,
+        7.983,
+        6.063,
+        7.129
+      ],
+      "median_ms": 7.556,
+      "p95_ms": 7.983,
+      "response_bytes": 22603,
+      "returned_items": 202
+    },
+    "refs_transitive": {
+      "samples_ms": [
+        23.554,
+        22.562,
+        22.627,
+        22.772,
+        24.104
+      ],
+      "median_ms": 22.772,
+      "p95_ms": 24.104,
+      "response_bytes": 1057235,
+      "returned_items": 8479
+    },
+    "leaves": {
+      "samples_ms": [
+        11.53,
+        10.134,
+        11.569,
+        10.347,
+        10.517
+      ],
+      "median_ms": 10.517,
+      "p95_ms": 11.569,
+      "response_bytes": 261,
+      "returned_items": 2
+    },
+    "candidates": {
+      "samples_ms": [
+        7.138,
+        7.582,
+        7.586,
+        6.884,
+        7.394
+      ],
+      "median_ms": 7.394,
+      "p95_ms": 7.586,
+      "response_bytes": 105,
+      "returned_items": null
+    },
+    "ior": {
+      "samples_ms": [
+        6.273,
+        5.709,
+        5.745,
+        5.325,
+        5.518
+      ],
+      "median_ms": 5.709,
+      "p95_ms": 6.273,
+      "response_bytes": 105,
+      "returned_items": null
+    },
+    "history": {
+      "samples_ms": [
+        9.403,
+        9.465,
+        8.937,
+        8.909,
+        9.153
+      ],
+      "median_ms": 9.153,
+      "p95_ms": 9.465,
+      "response_bytes": 1744,
+      "returned_items": 3
+    }
+  },
+  "cli": {
+    "graph_check": {
+      "samples_ms": [
+        11.401,
+        10.073,
+        9.681,
+        10.269,
+        10.031
+      ],
+      "median_ms": 10.073,
+      "p95_ms": 11.401
+    },
+    "graph_roots": {
+      "samples_ms": [
+        25.547,
+        26.311,
+        26.909,
+        26.035,
+        27.221
+      ],
+      "median_ms": 26.311,
+      "p95_ms": 27.221
+    },
+    "graph_full": {
+      "samples_ms": [
+        45.782,
+        48.816,
+        48.872,
+        50.728,
+        50.799
+      ],
+      "median_ms": 48.872,
+      "p95_ms": 50.799
+    },
+    "search": {
+      "samples_ms": [
+        16.234,
+        13.135,
+        13.835,
+        13.319,
+        13.041
+      ],
+      "median_ms": 13.319,
+      "p95_ms": 16.234
+    },
+    "show": {
+      "samples_ms": [
+        41.59,
+        41.397,
+        42.449,
+        37.794,
+        37.146
+      ],
+      "median_ms": 41.397,
+      "p95_ms": 42.449
+    },
+    "deps_transitive": {
+      "samples_ms": [
+        57.5,
+        58.032,
+        64.547,
+        61.02,
+        66.118
+      ],
+      "median_ms": 61.02,
+      "p95_ms": 66.118
+    },
+    "refs_transitive": {
+      "samples_ms": [
+        45.36,
+        49.122,
+        45.469,
+        43.37,
+        41.208
+      ],
+      "median_ms": 45.36,
+      "p95_ms": 49.122
+    },
+    "leaves": {
+      "samples_ms": [
+        41.806,
+        40.542,
+        40.193,
+        44.914,
+        42.912
+      ],
+      "median_ms": 41.806,
+      "p95_ms": 44.914
+    },
+    "ior": {
+      "samples_ms": [
+        37.538,
+        38.474,
+        36.901,
+        42.144,
+        37.584
+      ],
+      "median_ms": 37.584,
+      "p95_ms": 42.144
+    }
+  },
+  "writes": {
+    "create_node": {
+      "samples_ms": [
+        365.113,
+        360.283,
+        366.445,
+        356.376,
+        359.496
+      ],
+      "median_ms": 360.283,
+      "p95_ms": 366.445
+    },
+    "rename": {
+      "samples_ms": [
+        24.206,
+        18.802,
+        21.243,
+        18.95,
+        26.694
+      ],
+      "median_ms": 21.243,
+      "p95_ms": 26.694
+    },
+    "reject_stale_write": {
+      "samples_ms": [
+        4.065,
+        5.391,
+        3.957,
+        3.907,
+        5.426
+      ],
+      "median_ms": 4.065,
+      "p95_ms": 5.426
+    },
+    "save_text": {
+      "samples_ms": [
+        18.054,
+        19.207,
+        19.352,
+        17.875,
+        19.764
+      ],
+      "median_ms": 19.207,
+      "p95_ms": 19.764
+    },
+    "add_edge": {
+      "samples_ms": [
+        360.108,
+        362.621,
+        355.121,
+        351.744,
+        358.072
+      ],
+      "median_ms": 358.072,
+      "p95_ms": 362.621
+    },
+    "reject_cycle": {
+      "samples_ms": [
+        13.948,
+        16.532,
+        13.849,
+        15.084,
+        14.116
+      ],
+      "median_ms": 14.116,
+      "p95_ms": 16.532
+    },
+    "remove_edge": {
+      "samples_ms": [
+        352.659,
+        427.485,
+        358.152,
+        359.657,
+        375.033
+      ],
+      "median_ms": 359.657,
+      "p95_ms": 427.485
+    }
+  },
+  "graph": {
+    "nodes": 8525,
+    "edges": 35195
+  },
+  "representatives": {
+    "high_out_degree": {
+      "broken": false,
+      "depth": 174,
+      "fnode": "efe18342-d224-5510-8fbf-d571403d95c7",
+      "lean": "unverified",
+      "title": "Mathlib",
+      "out_degree": 8524,
+      "in_degree": 0
+    },
+    "high_in_degree": {
+      "broken": false,
+      "depth": 6,
+      "fnode": "7cb8179f-70dd-580d-8906-e16a6906178f",
+      "lean": "unverified",
+      "title": "Mathlib.Init",
+      "out_degree": 30,
+      "in_degree": 202
+    },
+    "deep": {
+      "broken": false,
+      "depth": 174,
+      "fnode": "efe18342-d224-5510-8fbf-d571403d95c7",
+      "lean": "unverified",
+      "title": "Mathlib",
+      "out_degree": 8524,
+      "in_degree": 0
+    }
+  },
+  "concurrent_reads": {
+    "samples_ms": [
+      8.511,
+      47.324,
+      4.286,
+      26.114,
+      68.475,
+      69.241,
+      94.486,
+      72.851,
+      109.57,
+      122.616,
+      105.441,
+      104.351,
+      88.289,
+      104.985,
+      116.908,
+      96.602,
+      98.069,
+      85.526,
+      102.682,
+      100.927,
+      95.887,
+      98.496,
+      87.119,
+      106.108,
+      104.108,
+      101.181,
+      103.424,
+      91.193,
+      109.933,
+      106.073,
+      102.29,
+      101.833,
+      88.011,
+      104.339,
+      104.647,
+      98.863,
+      96.174,
+      85.235,
+      102.346,
+      99.309
+    ],
+    "median_ms": 99.086,
+    "p95_ms": 109.933,
+    "clients": 8,
+    "requests": 40,
+    "elapsed_ms": 505.077
+  }
+}

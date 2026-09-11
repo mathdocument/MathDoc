@@ -54,13 +54,14 @@ def main():
     parser.add_argument("--samples", type=int, default=20)
     parser.add_argument("--cli", help="Installed mdc executable for fresh-process measurements")
     parser.add_argument("--proj", help="DATABASE/BRANCH served at --url; required with --cli")
+    parser.add_argument("--query", default="equation", help="Representative title search term")
     parser.add_argument("--writes", action="store_true", help="Adds nodes: use ONLY on a disposable database branch")
     args = parser.parse_args()
     if args.cli and not args.proj:
         parser.error("--cli requires --proj DATABASE/BRANCH")
     if args.samples < 1:
         parser.error("samples must be positive")
-    report = {"platform": platform.platform(), "url": args.url, "reads": {}, "cli": {}, "writes": {}}
+    report = {"platform": platform.platform(), "url": args.url, "query": args.query, "reads": {}, "cli": {}, "writes": {}}
     graph, _, _ = request(args.url, "/graph/full")
     nodes, edges = graph["nodes"], graph["edges"]
     assert nodes, "benchmark needs a populated graph"
@@ -79,7 +80,8 @@ def main():
     source, target, deepest = [nodes[i]["fnode"] for i in (highout, highin, deep)]
     paths = {
         "graph_check": "/graph/check", "graph_roots": "/graph/roots", "graph_full": "/graph/full",
-        "search_common": "/search?q=equation&n=20", "search_missing": "/search?q=__mdc_no_matching_title__&n=20",
+        "search_common": "/search?" + urllib.parse.urlencode({"q": args.query, "n": 20}),
+        "search_missing": "/search?q=__mdc_no_matching_title__&n=20",
         "resolve_uuid": "/resolve?" + urllib.parse.urlencode({"ref": source}),
         "resolve_name": "/resolve?" + urllib.parse.urlencode({"ref": unique["title"]}),
         "view_high_out_degree": f"/node/{source}/view", "view_high_in_degree": f"/node/{target}/view",
@@ -111,7 +113,7 @@ def main():
     if args.cli:
         commands = {
             "graph_check": ["graph", "check"], "graph_roots": ["graph", "roots"], "graph_full": ["graph", "full"],
-            "search": ["search", "equation", "-n", "20"], "show": ["show", source],
+            "search": ["search", args.query, "-n", "20"], "show": ["show", source],
             "deps_transitive": ["dep", "show", deepest, "--depth", "-1"],
             "refs_transitive": ["dep", "refs", target, "--depth", "-1"],
             "leaves": ["dep", "leaf", deepest], "ior": ["metric", "ior", source],

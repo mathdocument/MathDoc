@@ -758,14 +758,15 @@ async fn candidates(
         .filter(|n| n.title.to_lowercase().contains(&q) || n.fnode.contains(&q))
         .collect();
     let source = matches.iter().filter(|n| n.fnode == node.fnode).count();
+    let dependencies: HashSet<_> = node.depens.iter().collect();
     let existing = matches
         .iter()
-        .filter(|n| node.depens.contains(&n.fnode))
+        .filter(|n| dependencies.contains(&n.fnode))
         .count();
     let available = matches.len() - source - existing;
     let nodes: Vec<_> = matches
         .into_iter()
-        .filter(|n| n.fnode != node.fnode && !node.depens.contains(&n.fnode))
+        .filter(|n| n.fnode != node.fnode && !dependencies.contains(&n.fnode))
         .take(query.n.unwrap_or(50).min(200))
         .map(|n| summary(&snapshot, n))
         .collect();

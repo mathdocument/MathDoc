@@ -63,3 +63,22 @@ elaboration of a small theorem succeeds. These failures also occur independently
 of mdc, before a mathlib compilation baseline can complete. Main-thread and
 single-worker settings did not make the build reliable. No failed process is
 counted as successful compilation, and no whole-mathlib verification is claimed.
+
+## Dependency candidates and graph baseline
+
+The candidate endpoint scanned the direct dependency vector for every matching
+node, twice. Replacing that membership test with a set reduces the high-degree
+`Mathlib` root query from 121.99 ms to 7.39 ms (five samples, median).
+`graph-candidates.json` also records writes on the disposable branch: text saves
+19.21 ms, rename 21.24 ms, but node creation and edge changes still about 360 ms.
+Those structural writes still rebuild all input hashes and are the next measured
+bottleneck. The after run uses the title query `Algebra`; the original report's
+`equation` query had no matching module names, so those search timings are not
+comparable. Concurrent Linux Rust compilation shared the Docker VM during this
+run; small differences in unrelated endpoints should not be treated as gains.
+
+Browser regression: 10/10 passed, including native goals/diagnostics, draft
+preservation, cancellation, changed dependencies and concurrent CLI/browser edges.
+The small native fixture measured 302 ms from save to automatic verification,
+301 ms warm navigation and 500 ms warm edit diagnostics. These are fixture timings,
+not full-Mathlib editor measurements. Documentation checking and build passed.
