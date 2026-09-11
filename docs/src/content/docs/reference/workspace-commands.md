@@ -14,6 +14,7 @@ Without `--port`, the OS assigns an available port. Explicit ports must be in
 after the launching terminal closes. A missing database/branch or an already
 running branch fails; start never creates a branch. Stopping an inactive branch
 reports that it is not running. All commands work from any directory.
+Background startup is encapsulated in `start`; there is no internal CLI subcommand.
 
 Status returns a JSON object mapping `DATABASE/BRANCH` to a status object. The
 `port` field is `null` if that branch has no service in the configured cache directory. For example:
@@ -31,14 +32,17 @@ no running mdc service. The output is the same in terminals and when redirected.
 Help lists commands in one `Commands` section with three groups separated by blank
 lines: project/service management, whole-branch operations, and single-node
 operations. `metric ior` belongs to the single-node group. Every command and
-subcommand includes a short description.
+subcommand includes a short description. The root lists only `-h/--help`.
+Command options list `-h/--help` and `-m/--meas` first, then a blank line before
+other options. `project` is last in the branch group; `dep` follows `new`.
 
-Branch and node commands require `--proj DATABASE/BRANCH`. Except for `branch del`,
+Branch and node commands require `-p/--proj DATABASE/BRANCH`. Except for `branch del`,
 they discover the running service port locally; no URL option or default project is used. The selector can appear
 after a client command, such as `mdc graph --proj myproject/main check` or
 `mdc graph check --proj myproject/main`. The CLI root and init/start/stop/status
-do not accept `--proj`. Global `--prof` prints command timing measurements to stderr
-and keeps JSON output on stdout.
+do not accept `-p/--proj`. `-m/--meas` belongs to each command and prints timing measurements to stderr
+while keeping JSON on stdout, for example `mdc graph check -p myproject/main -m`.
+The root rejects `mdc -m` and `mdc -m graph check`.
 
 ```sh
 mdc new --proj myproject/main -t 'A theorem'

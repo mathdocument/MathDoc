@@ -7,11 +7,12 @@ use serde_json::{json, Value};
 use std::io::Read;
 
 #[derive(Parser)]
-#[command(name = "mdc", about = "MathDoc local web service and API client")]
+#[command(
+    name = "mdc",
+    about = "MathDoc local web service and API client",
+    disable_help_subcommand = true
+)]
 struct Cli {
-    /// Print command timing measurements to stderr.
-    #[arg(long, global = true)]
-    prof: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -34,14 +35,6 @@ enum Commands {
         #[arg(value_name = "DATABASE/BRANCH", value_parser = parse_project)]
         project: String,
     },
-    /// Run the internal background service for one branch.
-    #[command(name = "__run", hide = true)]
-    Run {
-        #[arg(value_parser = parse_project)]
-        project: String,
-        #[arg(long)]
-        port: u16,
-    },
     /// Search branch nodes by title or UUID.
     Search {
         query: String,
@@ -57,11 +50,6 @@ enum Commands {
     Export,
     /// Restore a complete graph JSON bundle into an empty branch.
     Import { input: std::path::PathBuf },
-    /// Manage the branch's Lean toolchain and library configuration.
-    Project {
-        #[command(subcommand)]
-        command: Project,
-    },
     /// Show the latest 50 commits in the branch's history.
     History,
     /// Create a branch or delete a stopped branch and its Lean caches.
@@ -69,10 +57,20 @@ enum Commands {
         #[command(subcommand)]
         command: Branch,
     },
+    /// Manage the branch's Lean toolchain and library configuration.
+    Project {
+        #[command(subcommand)]
+        command: Project,
+    },
     /// Create a node in the database.
     New {
         #[arg(short, long)]
         title: String,
+    },
+    /// Manage or traverse dependencies and referrers of a node.
+    Dep {
+        #[command(subcommand)]
+        command: Dep,
     },
     /// Read a node by exact name or complete UUID.
     Show { source: String },
@@ -87,11 +85,6 @@ enum Commands {
     },
     /// Rename a node using an optimistic revision guard.
     Rename { source: String, title: String },
-    /// Manage or traverse dependencies and referrers of a node.
-    Dep {
-        #[command(subcommand)]
-        command: Dep,
-    },
     /// Compute graph metrics for a node.
     Metric {
         #[command(subcommand)]
@@ -275,12 +268,21 @@ fn command_group(name: &str) -> u8 {
 }
 
 fn grouped_command() -> clap::Command {
-    let command = Cli::command().mut_subcommands(|subcommand| {
+    let mut command = Cli::command().mut_subcommands(|subcommand| {
+        let subcommand = subcommand.arg(
+            clap::Arg::new("meas")
+                .short('m')
+                .long("meas")
+                .action(clap::ArgAction::SetTrue)
+                .global(true)
+                .help("Print command timing measurements to stderr"),
+        );
         if subcommand.is_hide_set() || command_group(subcommand.get_name()) == 0 {
             return subcommand;
         }
         subcommand.arg(
             clap::Arg::new("proj")
+                .short('p')
                 .long("proj")
                 // Inherit only within this client command, never at the CLI root.
                 .global(true)
@@ -289,11 +291,11 @@ fn grouped_command() -> clap::Command {
                 .help("Select a project branch (required)"),
         )
     });
+    command.build();
     let header = command.get_styles().get_header();
     // Render together to align columns, then separate management, graph and node operations.
     let mut commands = command
         .clone()
-        .disable_help_subcommand(true)
         .help_template("{subcommands}")
         .render_help()
         .to_string();
@@ -307,7 +309,36 @@ fn grouped_command() -> clap::Command {
         previous = group;
     }
     let template = format!("{{about-with-newline}}\n{{usage-heading}} {{usage}}\n\n{header}Commands:{header:#}\n{commands}\n{header}Options:{header:#}\n{{options}}");
-    command.help_template(template)
+    group_options(command.help_template(template))
+}
+
+fn group_options(command: clap::Command) -> clap::Command {
+    let mut command = command.mut_args(|arg| {
+        let order = match arg.get_id().as_str() {
+            "help" => 0,
+            "meas" => 1,
+            _ => arg.get_display_order().saturating_add(2),
+        };
+        arg.display_order(order)
+    });
+    // Keep Clap's alignment and styling; add one separator before command-specific options.
+    let mut help = command.render_help().ansi().to_string();
+    let literal = command.get_styles().get_literal();
+    let separator = command
+        .get_arguments()
+        .filter(|arg| !matches!(arg.get_id().as_str(), "help" | "meas"))
+        .filter_map(|arg| {
+            let prefix = match arg.get_short() {
+                Some(short) => format!("\n  {literal}-{short}"),
+                None => format!("\n      {literal}--{}", arg.get_long()?),
+            };
+            help.find(&prefix)
+        })
+        .min();
+    if let Some(separator) = separator {
+        help.insert(separator, '\n');
+    }
+    command.override_help(help).mut_subcommands(group_options)
 }
 
 pub fn run() -> i32 {
@@ -317,7 +348,11 @@ pub fn run() -> i32 {
         .and_then(|(_, args)| args.try_get_one::<String>("proj").ok().flatten())
         .cloned();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
-    crate::profile::set_enabled(cli.prof);
+    crate::profile::set_enabled(
+        matches
+            .subcommand()
+            .is_some_and(|(_, args)| args.get_flag("meas")),
+    );
     let result = tokio::runtime::Runtime::new()
         .map_err(anyhow::Error::from)
         .and_then(|rt| rt.block_on(dispatch(cli, project)));
@@ -330,6 +365,7 @@ pub fn run() -> i32 {
         }
     }
 }
+
 async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
     let _profile = crate::profile::scope("service.request");
     let local = match &cli.command {
@@ -351,28 +387,12 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
             Some(json!({"initialized":true}))
         }
         Commands::Start { project, port } => {
-            Some(crate::service::start(project, port.unwrap_or(0)).await?)
+            let Some(info) = crate::service::start(project, port.unwrap_or(0)).await? else {
+                return Ok(0);
+            };
+            Some(info)
         }
         Commands::Stop { project } => Some(crate::service::stop(project).await?),
-        Commands::Run { project, port } => {
-            let result = async {
-                let (database, branch) = crate::config::project_parts(project)?;
-                crate::service::serve(Database::from_env(database.into(), branch.into())?, *port)
-                    .await
-            }
-            .await;
-            if let Err(error) = result {
-                use std::io::Write;
-                let _ = writeln!(
-                    std::io::stdout(),
-                    "{}",
-                    json!({"error":format!("{error:#}")})
-                );
-                eprintln!("error: {error:#}");
-                return Ok(1);
-            }
-            return Ok(0);
-        }
         _ => None,
     };
     if let Some(value) = local {
@@ -407,7 +427,6 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
         | Commands::Init { .. }
         | Commands::Start { .. }
         | Commands::Stop { .. }
-        | Commands::Run { .. }
         | Commands::Branch {
             command: Branch::Del,
         } => unreachable!(),
@@ -604,6 +623,30 @@ async fn mutate_dep(api: &Api, source: &str, target: &str, add: bool) -> Result<
 mod tests {
     use super::*;
     #[test]
+    fn errors_only_advertise_public_commands() {
+        for args in [
+            vec!["mdc"],
+            vec!["mdc", "-m"],
+            vec!["mdc", "--meas"],
+            vec!["mdc", "__rn"],
+            vec!["mdc", "strt"],
+        ] {
+            let mut command = grouped_command();
+            let error = command.try_get_matches_from_mut(args.clone()).unwrap_err();
+            assert_eq!(error.exit_code(), 2);
+            let text = error.to_string();
+            assert!(!text.contains("__run"), "{args:?}: {text}");
+            assert!(text.contains("--help"), "{args:?}: {text}");
+            if args.last() == Some(&"strt") {
+                assert!(text.contains("tip:") && text.contains("'start'"), "{text}");
+            }
+        }
+        assert!(grouped_command()
+            .try_get_matches_from(["mdc", "__run", "db/main", "--port", "0"])
+            .is_err());
+    }
+
+    #[test]
     fn help_groups_commands_without_footers_or_changing_subcommands() {
         let mut command = grouped_command();
         let short = command.render_help().to_string();
@@ -632,17 +675,17 @@ mod tests {
             names,
             [
                 vec!["status", "init", "start", "stop"],
-                vec!["search", "graph", "export", "import", "project", "history", "branch"],
-                vec!["new", "show", "edit", "rename", "dep", "metric", "lean"],
+                vec!["search", "graph", "export", "import", "history", "branch", "project"],
+                vec!["new", "dep", "show", "edit", "rename", "metric", "lean"],
             ]
         );
         assert!(!short.contains("__run"));
         assert!(!short.contains("Examples:"));
         assert!(!short.contains("--proj"));
-        assert!(short.contains("Print command timing measurements to stderr"));
+        assert!(!short.contains("--meas"));
         for args in [
-            vec!["mdc", "help"],
-            vec!["mdc", "help", "status"],
+            vec!["mdc", "--help"],
+            vec!["mdc", "status", "-h"],
             vec!["mdc", "status", "--help"],
         ] {
             let error = grouped_command().try_get_matches_from(args).unwrap_err();
@@ -668,6 +711,49 @@ mod tests {
             let error = grouped_command().try_get_matches_from(args).unwrap_err();
             assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
             assert!(error.to_string().starts_with(&about), "{path:?}: {error}");
+            let help = error.to_string();
+            let options: Vec<_> = help
+                .split_once("Options:\n")
+                .unwrap()
+                .1
+                .trim_end()
+                .lines()
+                .collect();
+            assert!(
+                options[0].trim_start().starts_with("-h, --help"),
+                "{path:?}"
+            );
+            if path.len() == 1 {
+                assert_eq!(options.len(), 1);
+            } else {
+                assert!(
+                    options[1].trim_start().starts_with("-m, --meas"),
+                    "{path:?}"
+                );
+            }
+            if options.len() > 2 {
+                assert_eq!(options[2], "", "{path:?}");
+                assert!(options[3].trim_start().starts_with('-'), "{path:?}");
+            }
+            let mut short_args = path.clone();
+            short_args.push("-h".into());
+            assert_eq!(
+                grouped_command()
+                    .try_get_matches_from(short_args)
+                    .unwrap_err()
+                    .to_string(),
+                help
+            );
+            assert!(!error
+                .to_string()
+                .lines()
+                .any(|line| line.trim_start().starts_with("help ")));
+            if command.has_subcommands() {
+                let mut args = path.clone();
+                args.push("help".into());
+                let error = grouped_command().try_get_matches_from(args).unwrap_err();
+                assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
+            }
             for child in command.get_subcommands() {
                 let mut child_path = path.clone();
                 child_path.push(child.get_name().into());
@@ -768,5 +854,30 @@ mod tests {
         assert!(grouped_command()
             .try_get_matches_from(["mdc", "export", "node", "--proj", "db/main"])
             .is_err());
+        for args in [
+            vec!["mdc", "graph", "check", "-m", "-p", "db/main"],
+            vec!["mdc", "graph", "-p", "db/main", "check", "--meas"],
+        ] {
+            let matches = grouped_command().try_get_matches_from(args).unwrap();
+            assert_eq!(
+                matches
+                    .subcommand()
+                    .unwrap()
+                    .1
+                    .get_one::<String>("proj")
+                    .unwrap(),
+                "db/main"
+            );
+            assert!(matches.subcommand().unwrap().1.get_flag("meas"));
+        }
+        for args in [
+            vec!["mdc", "status", "--prof"],
+            vec!["mdc", "-m", "status"],
+            vec!["mdc", "--meas", "status"],
+            vec!["mdc", "status", "-p", "db/main"],
+            vec!["mdc", "-p", "db/main", "graph", "check"],
+        ] {
+            assert!(grouped_command().try_get_matches_from(args).is_err());
+        }
     }
 }

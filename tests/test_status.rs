@@ -114,6 +114,21 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
     first.db.create_branch("agent").await.unwrap();
     let cache = tempfile::tempdir().unwrap();
     let root = cache.path();
+    // A closed bootstrap peer must still be recognized; never recursively launch start.
+    let (mut bootstrap, child_input) = std::os::unix::net::UnixStream::pair().unwrap();
+    let child_input: std::os::fd::OwnedFd = child_input.into();
+    let child = command(root)
+        .args(["start", "mdcbootstrapmissing/main"])
+        .stdin(Stdio::from(child_input))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(&mut bootstrap, b"bad-start").unwrap();
+    drop(bootstrap);
+    let failed = child.wait_with_output().await.unwrap();
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("invalid service startup handshake"));
     let main = format!("{}/main", first.db.database);
     let agent = format!("{}/agent", first.db.database);
     let unused = format!("{}/main", second.db.database);
@@ -147,6 +162,13 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
     )
     .await;
     let a = Started::start(root, &main, None).await;
+    let process = std::process::Command::new("ps")
+        .args(["-p", &a.info["pid"].to_string(), "-o", "command="])
+        .output()
+        .unwrap();
+    let process = String::from_utf8(process.stdout).unwrap();
+    assert!(process.contains(&format!("mdc start {main}")), "{process}");
+    assert!(!process.contains("__run"));
     let reserved = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let explicit_port = reserved.local_addr().unwrap().port();
     drop(reserved);
@@ -154,17 +176,20 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
     assert_eq!(b.port(), explicit_port);
     assert_ne!(a.port(), b.port());
     let running = status(root).await;
-    let profiled = command(root)
-        .args(["status", "--prof"])
-        .output()
-        .await
-        .unwrap();
-    assert!(profiled.status.success());
-    assert_eq!(
-        serde_json::from_slice::<Value>(&profiled.stdout).unwrap(),
-        run(root, &["status"]).await
-    );
-    assert!(String::from_utf8_lossy(&profiled.stderr).contains("service.request"));
+    for option in ["--meas", "-m"] {
+        let measured = command(root)
+            .args(["status", option])
+            .output()
+            .await
+            .unwrap();
+        assert!(measured.status.success());
+        let value: Value = serde_json::from_slice(&measured.stdout).unwrap();
+        // Other tests may create or delete their own branches between status requests.
+        for project in [&main, &agent, &unused] {
+            assert_eq!(value[project], serde_json::json!({"port":running[project]}));
+        }
+        assert!(String::from_utf8_lossy(&measured.stderr).contains("service.request"));
+    }
     assert_eq!(
         (running[&main], running[&agent], running[&unused]),
         (Some(a.port()), Some(b.port()), None)
@@ -189,7 +214,7 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
         1
     );
     assert_eq!(
-        run(root, &["graph", "--proj", &agent, "check"]).await["nodes"],
+        run(root, &["graph", "-p", &agent, "check"]).await["nodes"],
         0
     );
 

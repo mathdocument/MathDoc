@@ -372,9 +372,46 @@ pub(crate) async fn delete_branch(project: &str) -> Result<Value> {
     Ok(json!({"project":project,"deleted":true}))
 }
 
-pub(crate) async fn start(project: &str, port: u16) -> Result<Value> {
-    use std::{os::unix::fs::OpenOptionsExt, process::Stdio, time::Duration};
-    use tokio::io::{AsyncBufReadExt, BufReader};
+pub(crate) async fn start(project: &str, port: u16) -> Result<Option<Value>> {
+    use std::{
+        io::Write,
+        os::{
+            fd::AsFd,
+            unix::{fs::OpenOptionsExt, net::UnixStream},
+        },
+        process::Stdio,
+        time::Duration,
+    };
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+    // Only a child launched below inherits an anonymous Unix socket on stdin.
+    // Re-exec keeps Tokio initialization out of the post-fork child.
+    if let Ok(fd) = std::io::stdin().as_fd().try_clone_to_owned() {
+        let channel = UnixStream::from(fd);
+        if channel
+            .local_addr()
+            .is_ok_and(|address| address.is_unnamed())
+        {
+            channel.set_nonblocking(true)?;
+            let mut channel = tokio::net::UnixStream::from_std(channel)?;
+            let mut marker = [0; 9];
+            tokio::time::timeout(Duration::from_secs(5), channel.read_exact(&mut marker)).await??;
+            anyhow::ensure!(&marker == b"mdc-start", "invalid service startup handshake");
+            drop(channel);
+            let result = async {
+                let (database, branch) = crate::config::project_parts(project)?;
+                serve(Database::from_env(database.into(), branch.into())?, port).await
+            }
+            .await;
+            if let Err(error) = &result {
+                let _ = writeln!(
+                    std::io::stdout(),
+                    "{}",
+                    json!({"error":format!("{error:#}")})
+                );
+            }
+            return result.map(|_| None);
+        }
+    }
     let root = crate::config::Settings::load()?.project_cache(project)?;
     if running_service(&root)?.is_some() {
         bail!("{project} is already running");
@@ -387,12 +424,17 @@ pub(crate) async fn start(project: &str, port: u16) -> Result<Value> {
         .mode(0o600)
         .open(&log_path)?;
     let mut command = tokio::process::Command::new(std::env::current_exe()?);
+    let (mut bootstrap, child_bootstrap) = UnixStream::pair()?;
+    let child_bootstrap: std::os::fd::OwnedFd = child_bootstrap.into();
     command
-        .args(["__run", project, "--port", &port.to_string()])
+        .args(["start", project])
         .current_dir(&root)
-        .stdin(Stdio::null())
+        .stdin(Stdio::from(child_bootstrap))
         .stdout(Stdio::piped())
         .stderr(log);
+    if port != 0 {
+        command.args(["--port", &port.to_string()]);
+    }
     if let Some(path) = std::env::var_os("MDC_CONFIG") {
         command.env("MDC_CONFIG", std::fs::canonicalize(path)?);
     }
@@ -407,6 +449,7 @@ pub(crate) async fn start(project: &str, port: u16) -> Result<Value> {
     }
     let mut child = command.spawn().context("start mdc service process")?;
     let ready: Result<RunningService> = async {
+        bootstrap.write_all(b"mdc-start")?;
         let mut output = BufReader::new(child.stdout.take().context("service startup pipe")?);
         let mut line = String::new();
         tokio::select! {
@@ -425,6 +468,7 @@ pub(crate) async fn start(project: &str, port: u16) -> Result<Value> {
         Ok(serde_json::from_value(ready)?)
     }
     .await;
+    drop(bootstrap);
     let info = match ready {
         Ok(info) => info,
         Err(error) => {
@@ -432,7 +476,9 @@ pub(crate) async fn start(project: &str, port: u16) -> Result<Value> {
             return Err(error);
         }
     };
-    Ok(json!({"project":project,"port":info.port,"pid":info.pid,"url":info.url(),"log":log_path}))
+    Ok(Some(
+        json!({"project":project,"port":info.port,"pid":info.pid,"url":info.url(),"log":log_path}),
+    ))
 }
 
 pub(crate) async fn stop(project: &str) -> Result<Value> {
