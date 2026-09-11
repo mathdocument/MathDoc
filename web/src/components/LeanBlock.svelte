@@ -7,11 +7,11 @@
   import { errMsg } from "../lib/format";
   import { removeDraft, setDraftDirty, trackMutation } from "../lib/unsaved";
   interface Props {
-    fnode: string; revision: string; block?: SrcBlock; theme: Theme; active?: boolean; selection?: number;
+    fnode: string; revision: string; module?: string; block?: SrcBlock; theme: Theme; active?: boolean; selection?: number;
     onDeleted?: (node: NodeDetail, srctype: string) => void;
     onSaved?: (node: NodeDetail) => void; onReady?: () => void;
   }
-  let { fnode, revision, block, theme, selection = 0, onDeleted, onSaved, onReady }: Props = $props();
+  let { fnode, revision, module, block, theme, selection = 0, onDeleted, onSaved, onReady }: Props = $props();
   let frame = $state<HTMLIFrameElement>();
   let session = $state<string | null>(null);
   let content = $state("");
@@ -159,6 +159,9 @@
       <button class="delete" onclick={() => void remove()} disabled={busy} aria-label="Delete block" title="Delete block"><Trash2 size={14} strokeWidth={1.8}/></button>
     </div>
   </header>
+  {#if module}
+    <details class="module-import"><summary>Lean import</summary><code>import {module}</code></details>
+  {/if}
   {#if action}<div class="status activity" role="status" aria-live="polite">{{ save: "Saving…", delete: "Deleting…" }[action]}</div>{/if}
   {#if validating && !dirty}<div class="status activity" role="status" aria-live="polite">Verifying saved version…</div>{/if}
   {#if !ready && !error}<div class="status" aria-busy="true">{session && runtimeReady ? "Opening Lean node…" : "Starting Lean editor…"}</div>{/if}
@@ -180,6 +183,9 @@
 </article>
 <style>
   .hidden, .collapsed { display: none; }
+  .module-import { padding: .5rem .65rem; color: var(--mdc-muted); font-size: var(--mdc-text-xs); border-bottom: 1px solid var(--mdc-border); }
+  .module-import summary { cursor: pointer; }
+  .module-import code { display: block; margin-top: .4rem; overflow-wrap: anywhere; user-select: all; }
   .editor-surface { position: relative; }
   .source-placeholder { box-sizing: border-box; height: 500px; overflow: auto; margin: 0; padding: 12px; font: 13px/1.6 monospace; white-space: pre-wrap; }
   .pending { visibility: hidden; position: absolute; inset: 0; }

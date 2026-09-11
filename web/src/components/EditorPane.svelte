@@ -227,9 +227,6 @@
           <span class="status-text">{formalStatusLabels[node.formalization.rocq]}</span>
         </span>
       </div>
-      {#if node.module}
-        <details class="module-import"><summary>Lean import</summary><code>import {node.module}</code></details>
-      {/if}
     </header>
   {/if}
     <div class="blocks" class:hidden={!node}>
@@ -262,7 +259,7 @@
         {/each}
       {/if}
       {/if}
-      <LeanBlock fnode={node?.fnode ?? ""} revision={node?.revision ?? ""} block={node?.blocks.find(block => block.srctype === "lean")} {theme} {active} {selection}
+      <LeanBlock fnode={node?.fnode ?? ""} revision={node?.revision ?? ""} module={node?.module} block={node?.blocks.find(block => block.srctype === "lean")} {theme} {active} {selection}
         onDeleted={applyBlockUpdate} onSaved={applyBlockUpdate} onReady={() => reportBlockReady("lean")} />
       {#if node}
       {#key node.fnode}
@@ -279,9 +276,6 @@
 
 <style>
   .hidden { display:none !important; }
-  .module-import { margin-top:.6rem; color:var(--mdc-dim); font-size:.75rem; }
-  .module-import summary { cursor:pointer; }
-  .module-import code { display:block; margin-top:.4rem; overflow-wrap:anywhere; user-select:all; }
   .center {
     flex: 1;
     min-width: 0;
