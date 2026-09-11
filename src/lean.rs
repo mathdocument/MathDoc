@@ -534,6 +534,9 @@ impl LeanService {
             let module = import["module"]["name"]
                 .as_str()
                 .context("Lean import omitted module name")?;
+            if !module.starts_with("Lib.") {
+                continue;
+            }
             let Some(id) = known.get(&crate::store::module_file(module, "lean")?) else {
                 continue;
             };
@@ -1053,7 +1056,7 @@ mod tests {
         let mut dependency = Node::new("Editor dependency".into()).unwrap();
         dependency.blocks.push(crate::store::Block {
             srctype: "lean".into(),
-            content: "theorem depTruth : True := by trivial\n".into(),
+            content: "import Lean\ntheorem depTruth : True := by trivial\n".into(),
             ..Default::default()
         });
         let mut target = Node::new("Editor target".into()).unwrap();
@@ -1061,7 +1064,7 @@ mod tests {
         target.blocks.push(crate::store::Block {
             srctype: "lean".into(),
             content: format!(
-                "import {}\ntheorem targetTruth : True := depTruth\n",
+                "import Std\nimport {}\ntheorem targetTruth : True := depTruth\n",
                 dependency.module
             ),
             ..Default::default()
