@@ -1,4 +1,4 @@
-// Thin fetch wrapper around the JSON API exposed by `mdc serve`.
+// Thin fetch wrapper around the JSON API exposed by the local mdc service.
 // All functions throw on network/parse errors; 4xx/5xx become Error with the
 // server's { error: string } message.
 

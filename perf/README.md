@@ -10,8 +10,11 @@ or opens a Lean editor.
 
 ```sh
 python3 perf/graph-service.py --url http://127.0.0.1:7600 \
-  --cli "$(command -v mdc)" --samples 20 --output /tmp/graph-baseline.json
+  --cli "$(command -v mdc)" --proj etp/main --samples 20 --output /tmp/graph-baseline.json
 ```
+
+The benchmark's `--url` selects the HTTP measurement endpoint; `--proj` is required
+with `--cli` and must identify the same service. The mdc CLI itself has no URL option.
 
 The default is read-only. For writes, create a disposable database branch and run
 a separate service for that branch, then pass `--writes` to its URL. This adds

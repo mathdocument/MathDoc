@@ -1,22 +1,23 @@
-# Frontend (mdc serve)
+# Frontend (mdc start)
 
 Svelte 5 + Vite + TypeScript. Built output is embedded into the `mdc`
 binary at compile time via `rust-embed`.
 
 ## Development
 
-Two terminals:
+Use an existing development project, with caches outside the source checkout:
 
 ```bash
-# 1) Ordinary backend, on Vite's default proxy target
-cargo run -- serve --bind 127.0.0.1:7599
+# Background backend, on Vite's default proxy target
+mdc start dev/main --port 7599
 
-# 2) Vite dev server
+# Vite dev server
 cd web && npm ci && npm run dev
 ```
 
 Point your browser at the Vite dev URL (default http://localhost:5173); it
 owns frontend serving and HMR in development and proxies `/api` to the Rust backend.
+Stop the backend with `mdc stop dev/main`.
 
 ## Release build
 

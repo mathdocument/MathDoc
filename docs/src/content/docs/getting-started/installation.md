@@ -15,7 +15,8 @@ Store service settings in the private user configuration described in [Configura
 
 ```sh
 mdc init myproject
-mdc serve myproject
+mdc start myproject/main
+mdc status
 ```
 
-Run `init` once per new project. It creates a project database and schema on the already-running TerminusDB instance. Open `http://127.0.0.1:7599` while `serve` is running. The executable embeds the browser assets. To update it after frontend changes, rebuild `web/dist` before reinstalling.
+Run `init` once per new project. It creates a project database and schema on the already-running TerminusDB instance. Open the browser URL printed by `start`; the port is automatically assigned unless you pass `--port PORT`. The service runs in the background. Stop it with `mdc stop myproject/main`. The executable embeds the browser assets. To update it after frontend changes, rebuild `web/dist` before reinstalling.

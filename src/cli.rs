@@ -7,9 +7,13 @@ use serde_json::{json, Value};
 use std::io::Read;
 
 #[derive(Parser)]
-#[command(name = "mdc", about = "MathDoc local web service and API client")]
+#[command(
+    name = "mdc",
+    about = "MathDoc local web service and API client",
+    after_help = "Examples:\n  mdc init myproject\n  mdc start myproject/main\n  mdc --proj myproject/main graph check\n  mdc stop myproject/main\n\nClient commands require --proj DATABASE/BRANCH. Use mdc status to list projects and ports."
+)]
 struct Cli {
-    /// Select the running local project branch for client commands.
+    /// Required for client commands: select a running local project branch.
     #[arg(long, global = true, value_name = "DATABASE/BRANCH", value_parser = parse_project)]
     proj: Option<String>,
     #[arg(long, global = true)]

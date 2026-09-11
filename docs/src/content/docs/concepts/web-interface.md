@@ -2,7 +2,7 @@
 title: Web interface
 ---
 
-Open `http://127.0.0.1:7599` after starting `mdc serve DATABASE`. Navigate by search, referrers, dependencies or the graph view. Nodes are created with a title; no filename is requested.
+Run `mdc start DATABASE/BRANCH` and open the URL it prints. Use `mdc status` to find the port again. Navigate by search, referrers, dependencies or the graph view. Nodes are created with a title; no filename is requested.
 
 Lean blocks use Monaco on the left and native Infoview on the right, including goals, diagnostics and interactive widgets. **Save** writes to the database. The editor automatically certifies the saved version using its existing diagnostics and native import information, then refreshes the node status. Successfully compiled dependencies are certified from their compiler metadata with the same strict dependency checks. Unsaved drafts never certify a different database version. There is no separate check/build button or second checker on save.
 

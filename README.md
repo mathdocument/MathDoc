@@ -26,25 +26,28 @@ Save service settings in `~/.config/mdc/config.toml` (mode 600), or
 terminus_url = "http://127.0.0.1:6363"
 terminus_user = "admin"
 terminus_password = "the-existing-database-password"
-url = "http://127.0.0.1:7599"
 # cache_dir = "/absolute/path/to/cache"
 # lean_timeout_seconds = 300
 ```
 
 `MDC_CONFIG` selects another config file. Environment overrides are
-`MDC_TERMINUS_URL`, `MDC_TERMINUS_USER`, `MDC_TERMINUS_PASSWORD`, `MDC_URL`,
+`MDC_TERMINUS_URL`, `MDC_TERMINUS_USER`, `MDC_TERMINUS_PASSWORD`,
 `MDC_CACHE_DIR` and `MDC_LEAN_TIMEOUT_SECONDS`. No per-project launch script,
 local executable, `.env`, or working directory is required.
 
 ```sh
 mdc init myproject                    # once: creates this project's database
-mdc serve myproject                   # start its HTTP service
+mdc start myproject/main              # background service on an available port
+mdc status                           # see project branches and running ports
 ```
 
-Open http://127.0.0.1:7599. `init` requires a running TerminusDB instance; it creates
+Open the URL printed by `start`. Use `--port 7600` to request a specific port;
+an occupied port is an error. `init` requires a running TerminusDB instance; it creates
 a new database, schema and default Lean settings. It does not initialize Docker,
-reset existing projects, or create a file workspace. `serve` must remain running
-while the browser and CLI use it. This deployment is for trusted local authors:
+reset existing projects, or create a file workspace. `start` returns when the
+service is ready; it keeps running after the terminal closes. `mdc stop myproject/main`
+waits for the HTTP service and Lean workers to shut down, retaining database data
+and caches. This deployment is for trusted local authors:
 Lean metaprograms execute as the service user. Bind and browser-origin checks
 restrict the HTTP service to the local machine.
 
@@ -59,35 +62,46 @@ mdocs/main
 ```
 
 Column headings are bold in a terminal. A blank port means no service owns the
-branch's cache with a registered listener. Status works without `mdc serve`, uses
-the configured database credentials and cache directory, and rejects the client
-`--url` option. Services record their actual port, including with `--bind …:0`;
-stopped or crashed services do not leave a stale running port in the table.
+branch's cache with a registered listener. Status uses the configured database
+credentials and cache directory. Stopped or crashed services do not leave a stale
+running port in the table.
 
 Each project uses a separate database in the shared TerminusDB instance. Each
-HTTP service serves one branch. For example, `mdc serve other --bind 127.0.0.1:7600`
-serves another project; `mdc --url http://127.0.0.1:7600 graph check` selects it as
-a client. `mdc branch create agent` creates a branch in the current project; serve
-it with `mdc serve myproject --branch agent --bind 127.0.0.1:7601`.
+HTTP service serves one existing branch. There is no implicit client target:
+client commands require `--proj DATABASE/BRANCH` and find that service's local port
+without contacting TerminusDB. Start/stop take the project as a positional argument;
+init takes a database name, and status lists all projects.
+
+```sh
+mdc start other/main --port 7600
+mdc --proj other/main graph check
+mdc --proj myproject/main branch create agent
+mdc start myproject/agent
+mdc stop myproject/agent
+```
+
+Branch creation forks the selected service's current branch head and leaves that
+service on its original branch. Missing branches and duplicate starts are errors.
 
 Caches live under `$XDG_CACHE_HOME/mdc` or `~/.cache/mdc`, separated by database
-endpoint, database name, branch and Lean environment. `serve` creates them.
+endpoint, database name, branch and Lean environment. `start` creates them.
 They contain generated sources, Lake artifacts, check certificates and temporary
-browser drafts. Stop the service before removing its cache. Durable graph/source
+browser drafts. The branch cache also holds `service.log` and a private service
+record. Stop the service before removing its cache. Durable graph/source
 history lives in TerminusDB's volume; a cache directory is not a database backup.
 The installed executable is separate from this cache.
 
 ## Authoring and checks
 
 ```sh
-mdc new -t 'My theorem'
-printf 'theorem exampleA : True := by trivial\n' | mdc edit 'My theorem' --type lean
-mdc lean check 'My theorem'
-mdc lean check 'My theorem' --build
-mdc lean goals 'My theorem' --line 0 --column 31
-mdc show 'My theorem'
-mdc dep add 'My theorem' --target 'Earlier lemma'
-mdc graph check
+mdc --proj myproject/main new -t 'My theorem'
+printf 'theorem exampleA : True := by trivial\n' | mdc --proj myproject/main edit 'My theorem' --type lean
+mdc --proj myproject/main lean check 'My theorem'
+mdc --proj myproject/main lean check 'My theorem' --build
+mdc --proj myproject/main lean goals 'My theorem' --line 0 --column 31
+mdc --proj myproject/main show 'My theorem'
+mdc --proj myproject/main dep add 'My theorem' --target 'Earlier lemma'
+mdc --proj myproject/main graph check
 ```
 
 References accept exact names or complete UUIDs; duplicate names require a UUID.
@@ -108,16 +122,16 @@ reload the affected environment. Saved check results and live editor progress
 are displayed separately. Large cold imports still cost time.
 
 Configure toolchain, Lake TOML and the complete lock manifest in the Lean project
-dialog or `mdc project show` / `mdc project set` (JSON on stdin). Libraries are not
+dialog or `mdc --proj myproject/main project show` / `mdc --proj myproject/main project set` (JSON on stdin). Libraries are not
 limited to Mathlib; Git dependencies must be pinned to full commits. Title/text
 edits do not invalidate Lean results. Ordinary commands never scan source files.
 
 ## Export and restore
 
 ```sh
-mdc export > backup.json
-mdc export 'My theorem' > theorem.json
-mdc --url http://127.0.0.1:7600 import backup.json
+mdc --proj myproject/main export > backup.json
+mdc --proj myproject/main export 'My theorem' > theorem.json
+mdc --proj other/main import backup.json
 ```
 
 Full JSON bundles contain all current nodes, module identities and Lean project
@@ -137,7 +151,7 @@ npm --prefix web test
 npm --prefix web run build
 cargo test --locked
 cargo build --locked
-cargo test --locked --test test_database --test test_service --test test_lean_service -- --ignored --nocapture
+cargo test --locked --test test_database --test test_service --test test_lean_service --test test_status -- --ignored --nocapture
 npm --prefix web run test:e2e
 npm --prefix docs run check
 npm --prefix docs run build

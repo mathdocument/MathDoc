@@ -3,9 +3,9 @@ title: Lean checks and builds
 ---
 
 ```sh
-mdc lean check 'Theorem'
-mdc lean check 'Theorem' --revision REV --build
-mdc lean goals 'Theorem' --line 2 --column 4
+mdc --proj myproject/main lean check 'Theorem'
+mdc --proj myproject/main lean check 'Theorem' --revision REV --build
+mdc --proj myproject/main lean goals 'Theorem' --line 2 --column 4
 ```
 
 Line and column are zero-based LSP positions (columns use UTF-16 code units).

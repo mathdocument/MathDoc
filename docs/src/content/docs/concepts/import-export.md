@@ -2,13 +2,13 @@
 title: JSON export and restore
 ---
 
-`mdc export` produces a JSON bundle with `nodes` and `project`. Nodes retain their UUID, title, stable Lean module, direct dependencies and source blocks. `project` contains the toolchain, Lake configuration and lock manifest.
+`mdc --proj myproject/main export` produces a JSON bundle with `nodes` and `project`. Nodes retain their UUID, title, stable Lean module, direct dependencies and source blocks. `project` contains the toolchain, Lake configuration and lock manifest.
 
-`mdc export NAME` produces a single-node JSON bundle with `project: null`. The node's dependencies must already exist in the destination database or be included in a combined bundle.
+`mdc --proj myproject/main export NAME` produces a single-node JSON bundle with `project: null`. The node's dependencies must already exist in the destination database or be included in a combined bundle.
 
 ```sh
-mdc export > backup.json
-mdc --url http://127.0.0.1:7600 import backup.json
+mdc --proj myproject/main export > backup.json
+mdc --proj other/main import backup.json
 ```
 
 Import validates UUIDs, supported block types, module identities and graph constraints. Existing UUIDs cannot be overwritten. Project settings require an empty destination database. This exports the current snapshot; preserve the TerminusDB volume for complete history and branches.
