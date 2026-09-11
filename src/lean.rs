@@ -416,12 +416,37 @@ pub struct CheckResult {
     pub input_key: String,
     pub passed: bool,
     pub certified: bool,
+    /// Native sorry evidence for this module; absent in older certificates.
+    #[serde(default)]
+    pub has_sorry: Option<bool>,
     pub built: bool,
     pub cache_hit: bool,
     pub diagnostics: Vec<Value>,
     pub imports: Vec<Value>,
     pub dependency_errors: Vec<String>,
     pub elapsed_ms: u128,
+}
+
+fn sorry_warning(message: &str) -> bool {
+    // ponytail: use native warnings; a full axiom audit is needed to cover disabled warn.sorry.
+    message.contains("declaration uses") && message.contains("sorry")
+}
+
+fn diagnostics_have_sorry(diagnostics: &[Value]) -> bool {
+    diagnostics
+        .iter()
+        .any(|d| d["severity"] == 2 && d["message"].as_str().is_some_and(sorry_warning))
+}
+
+async fn artifact_has_sorry(base: &Path, module: &str) -> Option<bool> {
+    let path = base.join(crate::store::module_file(module, "trace").ok()?);
+    let trace: Value = serde_json::from_slice(&tokio::fs::read(path).await.ok()?).ok()?;
+    if trace["synthetic"] != false {
+        return None;
+    }
+    Some(trace["log"].as_array()?.iter().any(|entry| {
+        entry["level"] == "warning" && entry["message"].as_str().is_some_and(sorry_warning)
+    }))
 }
 #[derive(Clone)]
 pub struct Input {
@@ -538,8 +563,14 @@ impl LeanService {
             .map(|(n, k)| (n.fnode.clone(), k.clone()))
             .collect();
         let nodes: HashMap<_, _> = input.chain.iter().map(|(n, _)| (&n.fnode, n)).collect();
-        let mut observed =
-            HashMap::from([(target.fnode.clone(), (diagnostics.clone(), imports.clone()))]);
+        let mut observed = HashMap::from([(
+            target.fnode.clone(),
+            (
+                Some(diagnostics_have_sorry(&diagnostics)),
+                diagnostics.clone(),
+                imports.clone(),
+            ),
+        )]);
         let mut pending = if diagnostics.iter().any(|d| d["severity"] == 1) {
             vec![]
         } else {
@@ -589,7 +620,14 @@ impl LeanService {
             }
             let imports = metadata.direct_imports.iter().map(|i| Ok(json!({"module":{"name":i.first().and_then(Value::as_str).context("invalid Lean artifact import")?}}))).collect::<Result<Vec<_>>>()?;
             pending.extend(imports.clone());
-            observed.insert(id.clone(), (vec![], imports));
+            observed.insert(
+                id.clone(),
+                (
+                    artifact_has_sorry(&base, &node.module).await,
+                    vec![],
+                    imports,
+                ),
+            );
         }
         let mut final_result = None;
         for (node, key) in &input.chain {
@@ -601,7 +639,7 @@ impl LeanService {
                 final_result = Some(result);
                 continue;
             }
-            let Some((diagnostics, imports)) = observed.remove(&node.fnode) else {
+            let Some((has_sorry, diagnostics, imports)) = observed.remove(&node.fnode) else {
                 continue;
             };
             let passed = !diagnostics.iter().any(|d| d["severity"] == 1);
@@ -613,6 +651,7 @@ impl LeanService {
                 input_key: key.clone(),
                 passed,
                 certified: passed && errors.is_empty(),
+                has_sorry,
                 built: false,
                 cache_hit: false,
                 diagnostics,
@@ -650,6 +689,28 @@ impl LeanService {
         // A new owner is not serving until its HTTP listener has been bound.
         lease.set_len(0)?;
         lease.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        // Restore certificates once, so graph reads need neither disk scans nor
+        // compilation. Every lookup still checks the current recursive input key.
+        let mut results = HashMap::new();
+        if let Ok(entries) = std::fs::read_dir(root.join("checks-v1")) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_none_or(|ext| ext != "json") {
+                    continue;
+                }
+                if let Some(result) = std::fs::read(&path)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<CheckResult>(&bytes).ok())
+                    .filter(|r| {
+                        r.certified
+                            && r.passed
+                            && path.file_stem().is_some_and(|id| id == r.fnode.as_str())
+                    })
+                {
+                    results.insert(result.fnode.clone(), result);
+                }
+            }
+        }
         Ok(Self {
             manager: Mutex::new(Manager {
                 project_key: String::new(),
@@ -658,16 +719,35 @@ impl LeanService {
                 sources: HashMap::new(),
             }),
             root,
-            results: RwLock::new(HashMap::new()),
+            results: RwLock::new(results),
             _lease: lease,
         })
+    }
+    pub fn formal_status(&self, node: &Node, key: &str) -> &'static str {
+        if node
+            .source("lean")
+            .is_none_or(|source| source.trim().is_empty())
+        {
+            return "no_code";
+        }
+        if self
+            .results
+            .read()
+            .unwrap()
+            .get(&node.fnode)
+            .is_some_and(|r| r.input_key == key && r.certified && r.has_sorry == Some(false))
+        {
+            "verified"
+        } else {
+            "unverified"
+        }
     }
     pub fn cached(&self, id: &str, key: &str, revision: &str, build: bool) -> Option<CheckResult> {
         self.results
             .read()
             .ok()?
             .get(id)
-            .filter(|r| r.input_key == key && (!build || r.built))
+            .filter(|r| r.input_key == key && r.has_sorry.is_some() && (!build || r.built))
             .cloned()
             .map(|mut r| {
                 r.revision = revision.into();
@@ -841,6 +921,7 @@ impl LeanService {
                     input_key: key.clone(),
                     passed: false,
                     certified: false,
+                    has_sorry: None,
                     built: false,
                     cache_hit: false,
                     diagnostics: vec![],
@@ -883,6 +964,7 @@ impl LeanService {
                 input_key: key.clone(),
                 passed,
                 certified,
+                has_sorry: Some(diagnostics_have_sorry(&diagnostics)),
                 built: false,
                 cache_hit: false,
                 diagnostics,
@@ -1078,7 +1160,7 @@ mod tests {
         let mut dependency = Node::new("Editor dependency".into()).unwrap();
         dependency.blocks.push(crate::store::Block {
             srctype: "lean".into(),
-            content: "import Lean\ntheorem depTruth : True := by trivial\n".into(),
+            content: "import Lean\ntheorem depTruth : True := by sorry\n".into(),
             ..Default::default()
         });
         let mut target = Node::new("Editor target".into()).unwrap();
@@ -1086,7 +1168,7 @@ mod tests {
         target.blocks.push(crate::store::Block {
             srctype: "lean".into(),
             content: format!(
-                "import Std\nimport {}\ntheorem targetTruth : True := depTruth\n",
+                "import Std\nimport {}\n-- sorry in prose is not a proof gap\ndef message := \"sorry\"\ntheorem targetTruth : True := depTruth\n",
                 dependency.module
             ),
             ..Default::default()
@@ -1110,6 +1192,19 @@ mod tests {
             .await
             .unwrap();
         assert!(result.certified, "{result:?}");
+        assert_eq!(result.has_sorry, Some(false));
+        assert_eq!(service.formal_status(&target, "target-key"), "verified");
+        assert_eq!(service.formal_status(&target, "stale-key"), "unverified");
+        assert_eq!(service.formal_status(&dependency, "dep-key"), "unverified");
+        assert_eq!(
+            service
+                .cached(&dependency.fnode, "dep-key", &dependency.revision(), false)
+                .unwrap()
+                .has_sorry,
+            Some(true)
+        );
+        let empty = Node::new("No Lean".into()).unwrap();
+        assert_eq!(service.formal_status(&empty, "unused"), "no_code");
         assert!(
             service
                 .cached(&dependency.fnode, "dep-key", &dependency.revision(), false)
@@ -1143,6 +1238,12 @@ mod tests {
         );
         editor.server.shutdown().await;
         service.shutdown().await;
+        drop(service);
+        let reopened = LeanService::new(cache.path().to_path_buf()).unwrap();
+        assert_eq!(reopened.formal_status(&dependency, "dep-key"), "unverified");
+        // The latest target certificate was deliberately invalidated above.
+        // Its earlier successful persisted certificate is still keyed correctly.
+        assert_eq!(reopened.formal_status(&target, "target-key"), "verified");
     }
 
     #[tokio::test]

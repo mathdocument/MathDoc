@@ -16,7 +16,8 @@ contents or fuzzy-match names, and it does not paginate beyond that limit.
 
 Graph operations read the service's validated projection. `check` returns node
 and edge counts and missing/invalid/cycle lists; it does not compile Lean.
-`full` returns node summaries and index-pair edges for visualization. `roots`
+`full` returns node summaries, each with its cached `lean` status, and index-pair
+edges for visualization. It does not compile Lean to obtain colors. `roots`
 returns unreferenced nodes with topological depth and weak component size.
 
 `metric ior` is a single-node operation. Its result includes UUID, in-degree,

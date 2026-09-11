@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack } from "svelte";
   import { Maximize2 } from "@lucide/svelte";
-  import type { GraphFull, NodeInfo } from "../lib/types";
+  import type { FormalCodeStatus, GraphFull } from "../lib/types";
   import type { Theme } from "../lib/theme";
   import { api } from "../lib/api";
   import { shortFnode } from "../lib/format";
@@ -11,7 +11,7 @@
     theme: Theme;
     onSelect: (fnode: string | null) => void;
     selectedFnode: string | null;
-    /** Increment to trigger a data refresh (after dep mutations). */
+    /** Increment after graph edits or Lean validation changes. */
     revision?: number;
   }
   let { active, theme, onSelect, selectedFnode, revision = 0 }: Props = $props();
@@ -23,8 +23,7 @@
     depth: number;
     inDegree: number;
     outDegree: number;
-    isRoot: boolean;
-    isLeaf: boolean;
+    lean: FormalCodeStatus;
     baseRadius: number;
     order: number;
     x: number;
@@ -51,9 +50,9 @@
   // Canvas cannot read CSS custom properties, so these mirror the accent tokens
   // in app.css. Keep them in step when the palette changes.
   const DARK_PALETTE = {
-    node: "#7c8cff",
-    root: "#f0b661",
-    leaf: "#4fd6ae",
+    no_code: "#79828f",
+    unverified: "#f0b661",
+    verified: "#4fd6ae",
     outgoing: "79, 214, 174",
     incoming: "180, 140, 255",
     outline: "#eef1f7",
@@ -61,9 +60,9 @@
     label: "198, 205, 218",
   };
   const LIGHT_PALETTE = {
-    node: "#4d5bd9",
-    root: "#96601a",
-    leaf: "#0a7d64",
+    no_code: "#69727f",
+    unverified: "#96601a",
+    verified: "#0a7d64",
     outgoing: "10, 125, 100",
     incoming: "116, 64, 208",
     outline: "#0f1420",
@@ -97,7 +96,7 @@
     return r;
   }
 
-  // Compute directed degrees, root, and leaf status for all rendered nodes.
+  // Compute directed degrees and node sizes.
   function computeMetadata(nodeList: SimNode[], edges: GraphFull["edges"]) {
     outgoingLinks = new Map<string, SimNode[]>();
     incomingLinks = new Map<string, SimNode[]>();
@@ -118,8 +117,6 @@
       else incomingLinks.set(t, [source]);
     }
     for (const n of nodeList) {
-      n.isRoot = n.inDegree === 0;
-      n.isLeaf = n.outDegree === 0;
       const ior = Math.log1p(n.inDegree) - Math.log1p(n.outDegree);
       n.baseRadius = Math.min(MAX_NODE_RADIUS, 6 * (Math.max(0, ior) + 1));
     }
@@ -131,15 +128,14 @@
   let graphLoadCancelled = false;
 
   function installGraph(data: GraphFull) {
-    nodes = data.nodes.map((node: NodeInfo) => ({
+    nodes = data.nodes.map((node) => ({
       id: node.fnode,
       title: node.title,
       labelLines: null,
       depth: node.depth,
       inDegree: 0,
       outDegree: 0,
-      isRoot: false,
-      isLeaf: false,
+      lean: node.lean ?? "unverified",
       baseRadius: 6,
       order: 0,
       x: 0,
@@ -395,21 +391,17 @@
     }
 
     const labelStride = Math.max(1, Math.ceil(visibleNodes.length / 500));
-    const rootPath = new Path2D();
-    const leafPath = new Path2D();
-    const nodePath = new Path2D();
+    const paths = { no_code: new Path2D(), unverified: new Path2D(), verified: new Path2D() };
     for (const n of visibleNodes) {
       const r = nodeRadius(n, graphSelection);
-      const path = n.isRoot ? rootPath : n.isLeaf ? leafPath : nodePath;
+      const path = paths[n.lean];
       path.moveTo(n.x + r, n.y);
       path.arc(n.x, n.y, r, 0, 2 * Math.PI);
     }
-    ctx.fillStyle = palette.node;
-    ctx.fill(nodePath);
-    ctx.fillStyle = palette.root;
-    ctx.fill(rootPath);
-    ctx.fillStyle = palette.leaf;
-    ctx.fill(leafPath);
+    for (const status of ["no_code", "unverified", "verified"] as const) {
+      ctx.fillStyle = palette[status];
+      ctx.fill(paths[status]);
+    }
 
     const selectedNode = graphSelection ? nodesById.get(graphSelection) ?? null : null;
     if (selectedNode) {
@@ -837,7 +829,7 @@
     }
   });
 
-  // Reload graph data when revision changes (after dep mutations).
+  // Refresh both topology and Lean colors when their revision changes.
   let loadedRevision: number | null = null;
   $effect(() => {
     const nextRevision = revision;
@@ -877,6 +869,11 @@
       ? ` Selected node: ${selectedFnode}.`
       : ""} Use Search to select a node.
   </p>
+  <div class="graph-legend" aria-label="Lean verification colors">
+    <span class="no-code">No Lean code</span>
+    <span class="unverified">Unverified / sorry</span>
+    <span class="verified">Verified</span>
+  </div>
   <canvas
     bind:this={canvasEl}
     aria-hidden="true"
@@ -898,6 +895,11 @@
 </div>
 
 <style>
+  .graph-legend { position: absolute; top: .75rem; left: .75rem; display: flex; flex-wrap: wrap; gap: .75rem; padding: .4rem .6rem; color: var(--mdc-fg-soft); background: var(--mdc-panel); border: 1px solid var(--mdc-border); border-radius: var(--mdc-radius-sm); font-size: var(--mdc-text-xs); pointer-events: none; }
+  .graph-legend span { display: inline-flex; align-items: center; gap: .35rem; }
+  .graph-legend span::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--mdc-muted); }
+  .graph-legend .unverified::before { background: var(--mdc-warning); }
+  .graph-legend .verified::before { background: var(--mdc-accent-down); }
   .graph-container {
     position: relative;
     width: 100%;

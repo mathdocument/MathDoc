@@ -24,6 +24,10 @@ Results distinguish `passed` (no Lean errors), `certified` (passed plus exact
 managed imports and certified dependencies), and `built` (target artifacts ready).
 `cache_hit` indicates a reused result. A check exits with code 1 when uncertified,
 while retaining its JSON result. Lean's `sorry` warnings remain warnings.
+`has_sorry` records native sorry evidence (`null` when unavailable). A certified
+result with `has_sorry: true` remains usable as a dependency, but displays yellow;
+green additionally requires `has_sorry: false`. This is local to the checked
+module, not a sorry-free claim about its entire dependency tree.
 
 Saving in the browser stores source; the existing editor automatically certifies
 that exact saved version once native diagnostics and import information are ready.

@@ -38,7 +38,7 @@ export type NodeView = { node: NodeDetail, referrers: Array<NodeSummary>, childr
 
 export type ResolveResponse = { fnode: string, title: string, };
 
-export type GraphFull = { nodes: Array<NodeSummary>, edges: Array<[number, number]>, };
+export type GraphFull = { nodes: Array<NodeSummary & { lean: FormalCodeStatus }>, edges: Array<[number, number]>, };
 
 export type SearchQuery = { q: string, n?: number, };
 

@@ -28,6 +28,19 @@ certification of different database contents. Native Lake builds imported
 artifacts and, on `mdc lean check Example -p myproject/main --build`, the target
 `.olean`. Matching artifacts are reused rather than rebuilt unconditionally.
 
+The Lean block's **Lean import** disclosure shows the module name to use from
+other nodes. The graph and the node's Lean status use the same colors: gray for
+no Lean source (including an empty block), yellow for unchecked/failed checks or
+native `sorry` warnings, and green for a current successful check without those
+warnings. Rocq does not affect graph colors. Colors describe the saved node's
+own Lean result, not a transitive axiom audit; a complete proof may still depend
+on an admitted result. Comments and strings containing `sorry` do not count.
+
+Older certificates without sorry evidence remain yellow until checked again.
+Graph queries use in-memory certificates and never launch Lean. Certificates
+are restored once at service startup; saving or certifying Lean refreshes graph
+colors while preserving the graph viewport.
+
 Managed Lean imports must agree with declared graph dependencies. Maintain edges
 with `mdc dep`, and edit the corresponding imports in Lean source. Generated
 compiler files are service-owned; they are not a second editing interface.

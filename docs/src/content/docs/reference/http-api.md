@@ -12,7 +12,7 @@ UUIDs; CLI references are resolved by exact name or UUID first.
 | --- | --- | --- |
 | `GET /graph/check` | `graph check` | Node/edge counts and graph issues. |
 | `GET /graph/roots` | `graph roots` | Root summaries with depth and component size. |
-| `GET /graph/full` | `graph full` | Node summaries and index-pair edges. |
+| `GET /graph/full` | `graph full` | Node summaries with `lean` status (`no_code`, `unverified`, `verified`) and index-pair edges. |
 | `GET /search?q=TEXT&n=N` | `search TEXT -n N` | Title/UUID matches; default/cap 200. |
 | `GET /resolve?ref=NAME_OR_UUID` | Used by node commands | `{fnode, title}`. |
 | `GET /node/ID/view` | `show` and `dep` reads | `{node, referrers, children}`; CLI `show` returns `node`. |

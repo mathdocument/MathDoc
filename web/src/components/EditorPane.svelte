@@ -47,9 +47,9 @@
     verified: "Verified",
   };
 
-  function applyBlockUpdate(updated: NodeDetail) {
+  function applyBlockUpdate(updated: NodeDetail, graphChanged = false) {
     if (load.kind !== "ready" || load.node.fnode !== updated.fnode) return;
-    onRefresh?.(updated);
+    onRefresh?.(updated, graphChanged);
   }
 
   function reportReady() {
@@ -252,7 +252,7 @@
             {block}
             {theme}
             {active}
-            onDeleted={applyBlockUpdate}
+            onDeleted={(updated) => applyBlockUpdate(updated)}
             onSaved={applyBlockUpdate}
             onReady={() => reportBlockReady(block.srctype)}
           />
@@ -260,14 +260,14 @@
       {/if}
       {/if}
       <LeanBlock fnode={node?.fnode ?? ""} revision={node?.revision ?? ""} module={node?.module} block={node?.blocks.find(block => block.srctype === "lean")} {theme} {active} {selection}
-        onDeleted={applyBlockUpdate} onSaved={applyBlockUpdate} onReady={() => reportBlockReady("lean")} />
+        onDeleted={(updated) => applyBlockUpdate(updated, true)} onSaved={(updated) => applyBlockUpdate(updated, true)} onReady={() => reportBlockReady("lean")} />
       {#if node}
       {#key node.fnode}
       <AddBlockControl
         fnode={node.fnode}
         revision={node.revision}
         existingSrctypes={node.blocks.map((b) => b.srctype)}
-        onAdded={applyBlockUpdate}
+        onAdded={(updated) => applyBlockUpdate(updated, true)}
       />
       {/key}
       {/if}

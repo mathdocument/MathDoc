@@ -188,6 +188,53 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.deepEqual(report.cycles, []);
         assert.equal(report.edges, 2);
       }));
+    await suite.test("graph colors follow saved Lean evidence independently of node degree and Rocq", () => {
+      const nodes = [
+        ["Rocq only", "rocq", "Check nat."],
+        ["Empty Lean", "lean", "  \n"],
+        ["Unchecked", "lean", "#check Nat\n"],
+        ["Admitted", "lean", "theorem admitted : True := by sorry\n"],
+        ["Proven", "lean", '-- sorry in a comment\ndef text := "sorry"\ntheorem proven : True := by trivial\n'],
+      ].map(([title, srctype, content], i) => ({
+        fnode: randomUUID(), title, module: `Lib.Color${i}`, depens: [], blocks: [{ srctype, content }],
+      }));
+      return fixture(browser, async ({ cli, page, url }) => {
+        for (const title of ["Admitted", "Proven"]) {
+          const check = JSON.parse((await cli("lean", "check", title)).stdout);
+          assert.equal(check.certified, true);
+          assert.equal(check.has_sorry, title === "Admitted");
+        }
+        const response = page.waitForResponse(r => r.url().endsWith("/graph/full"));
+        await page.getByRole("button", { name: "Graph", exact: true }).click();
+        const graph = await (await response).json();
+        const expected = { "Rocq only": "no_code", "Empty Lean": "no_code", Unchecked: "unverified", Admitted: "unverified", Proven: "verified" };
+        for (const node of nodes) {
+          const status = graph.nodes.find(n => n.fnode === node.fnode).lean;
+          assert.equal(status, expected[node.title]);
+          const view = await (await fetch(`${url}/api/node/${node.fnode}/view`)).json();
+          assert.equal(view.node.formalization.lean, status);
+        }
+        await page.getByLabel("Lean verification colors").waitFor();
+        await page.waitForFunction(() => {
+          const canvas = document.querySelector('.graph-container canvas');
+          if (!canvas?.width) return false;
+          const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+          const style = getComputedStyle(canvas);
+          return ['--mdc-muted', '--mdc-warning', '--mdc-accent-down'].every(token => {
+            const hex = style.getPropertyValue(token).trim().slice(1);
+            const rgb = [0, 2, 4].map(i => parseInt(hex.slice(i, i + 2), 16));
+            for (let i = 0; i < pixels.length; i += 4) {
+              if (pixels[i] === rgb[0] && pixels[i + 1] === rgb[1] && pixels[i + 2] === rgb[2] && pixels[i + 3] === 255) return true;
+            }
+            return false;
+          });
+        });
+        if (process.env.MDC_E2E_ARTIFACTS) {
+          await mkdir(process.env.MDC_E2E_ARTIFACTS, { recursive: true });
+          await page.screenshot({ path: resolve(process.env.MDC_E2E_ARTIFACTS, "graph-colors.png"), fullPage: true });
+        }
+      }, nodes);
+    });
     await suite.test("native Lean bridge drains bidirectional backpressure and cancels a busy session", () => {
       const node = { fnode: randomUUID(), title: "Transport", module: "Lib.Transport", depens: [], blocks: [{ srctype: "lean", content: "#check Nat\n" }] };
       return fixture(browser, async ({ cli, url }) => {
@@ -293,6 +340,9 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.equal(headers.length, 4);
         for (const style of headers) assert.deepEqual(style, headers[0]);
         const leanBlock = page.locator('article[data-srctype="lean"]');
+        assert.equal(await center(page).locator('.head .module-import').count(), 0);
+        await leanBlock.getByText("Lean import", { exact: true }).click();
+        assert.equal(await leanBlock.locator('.module-import code').textContent(), `import ${a.module}`);
         let browserChecks = 0;
         page.on("request", request => { if (request.url().endsWith("/lean/check")) browserChecks++; });
         const initializedBeforeCollapse = messages.filter(m => m.method === "initialize").length;
@@ -312,7 +362,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           await page.screenshot({ path: resolve(process.env.MDC_E2E_ARTIFACTS, "editors-narrow.png"), fullPage: true });
           await page.setViewportSize({ width: 1440, height: 900 });
         }
-        await page.getByText("Verified", { exact: true }).waitFor();
+        await page.getByLabel("Lean: Verified", { exact: true }).waitFor();
         await page.screenshot({ path: resolve(root, "lean-editor.png"), fullPage: true });
         const badSource = "theorem demo : True := by\n  exact 42\n";
         const firstError = nativeError(badSource);
@@ -354,8 +404,12 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await page.getByText("Unsaved", { exact: true }).waitFor();
         const savedAt = performance.now();
         await saveButton.click();
-        await page.getByText("Verified", { exact: true }).waitFor();
+        await page.getByLabel("Lean: Verified", { exact: true }).waitFor();
         console.log("Save to automatic Verified (ms):", Math.round(performance.now()-savedAt));
+        const refreshedGraph = page.waitForResponse(r => r.url().endsWith("/graph/full"));
+        await page.getByRole("button", { name: "Graph", exact: true }).click();
+        assert.equal((await (await refreshedGraph).json()).nodes.find(n => n.fnode === a.fnode).lean, "verified");
+        await page.getByRole("button", { name: "Knowledge", exact: true }).click();
         const current = JSON.parse((await cli("show", a.fnode)).stdout);
         const cached = await (await fetch(`${url}/api/node/${a.fnode}/lean/check`, {
           method: "POST", headers: { "content-type": "application/json", "if-match": `"${current.revision}"` }, body: JSON.stringify({ build: false }),
@@ -558,7 +612,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         };
         await select("Lean Dependent");
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
-        await page.getByText("Verified", { exact: true }).waitFor();
+        await page.getByLabel("Lean: Verified", { exact: true }).waitFor();
         const leanStatus = async id => (await (await fetch(`${url}/api/node/${id}/view`)).json()).node.formalization.lean;
         assert.equal(await leanStatus(dep.fnode), "verified", "the editor's compiled imports must certify dependencies too");
         const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
@@ -569,7 +623,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await select("Lean Dependent");
         await frame.locator(".squiggly-error").first().waitFor();
         await page.getByText("Lean errors", { exact: false }).waitFor();
-        assert.equal(await page.getByText("Verified", { exact: true }).count(), 0);
+        assert.equal(await page.getByLabel("Lean: Verified", { exact: true }).count(), 0);
         assert.equal(await leanStatus(target.fnode), "unverified");
         assert.equal(sent.filter(m => m.method === "initialize").length, 1);
         assert.ok(sent.some(m => m.method === "textDocument/didClose"), "a changed dependency must invalidate the worker environment");

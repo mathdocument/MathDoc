@@ -56,4 +56,14 @@ edge alone is insufficient. These certificates share the CLI's versioned memory
 and disk cache, so a subsequent check needs no second elaboration. Save does not
 force a target artifact build; native Lake restores or builds it when required.
 
+Certificates retain `has_sorry`: native LSP warnings supply it for opened modules,
+and nonsynthetic Lake `.trace` warning logs supply it for compiled imports.
+Missing evidence is `null`, which cannot produce a green UI status and requires
+a native check before certificate reuse. `certified` still means compilation and
+dependency matching succeeded, so admitted declarations remain usable during
+staged formalization. The green status additionally requires `has_sorry: false`.
+This uses compiler warnings, including their configured `warn.sorry` behavior;
+it is not an axiom audit. Graph colors do not propagate admitted assumptions
+through downstream nodes.
+
 Dependency changes reopen the importing document so Lean reloads its import environment. Proof edits preserve the live worker and its elaboration snapshots. Native `lake build +MODULE` generates target artifacts on an explicit build request. On disconnect, the shared CLI/browser transport sends LSP `shutdown` and `exit`, draining stdout until Lean has reaped its workers (which use separate process groups). The writer gets up to one second to finish queued frames before the two-second shutdown handshake. A broken or unfinished frame forces termination without appending shutdown bytes to it. Service shutdown waits for editor and CLI cleanup before stopping the async runtime.

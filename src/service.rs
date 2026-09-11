@@ -112,16 +112,8 @@ pub fn detail(snapshot: &Snapshot, node: &Node, lean: &crate::lean::LeanService)
     value["depens"] = json!(node.depens);
     value["blocks"] = json!(node.blocks);
     value["module"] = json!(node.module);
-    value["formalization"] = json!({"lean":if node.source("lean").is_some(){"unverified"}else{"no_code"},
+    value["formalization"] = json!({"lean":lean.formal_status(node, &snapshot.lean_keys[&node.fnode]),
         "rocq":if node.source("rocq").is_some(){"unverified"}else{"no_code"}});
-    if let Some(key) = snapshot.lean_keys.get(&node.fnode) {
-        if lean
-            .cached(&node.fnode, key, &node.revision(), false)
-            .is_some_and(|r| r.certified)
-        {
-            value["formalization"]["lean"] = json!("verified");
-        }
-    }
     value
 }
 fn revision_response(
@@ -552,9 +544,11 @@ async fn full(State(s): State<Arc<Service>>) -> ApiResult<Json<Value>> {
                 .filter_map(|d| Some([*indexes.get(&n.fnode)?, *indexes.get(d)?]))
         })
         .collect();
-    Ok(Json(
-        json!({"nodes":snapshot.nodes.values().map(|n|summary(&snapshot,n)).collect::<Vec<_>>(),"edges":edges}),
-    ))
+    Ok(Json(json!({"nodes":snapshot.nodes.values().map(|n| {
+            let mut value = summary(&snapshot, n);
+            value["lean"] = json!(s.lean.formal_status(n, &snapshot.lean_keys[&n.fnode]));
+            value
+        }).collect::<Vec<_>>(),"edges":edges})))
 }
 #[derive(Deserialize)]
 struct Search {

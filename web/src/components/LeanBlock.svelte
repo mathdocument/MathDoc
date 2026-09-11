@@ -176,6 +176,7 @@
   {#if result}
     <div class="status" class:error-bar={!result.certified}>
       {result.certified ? "Checked" : result.passed ? "Dependency check failed" : "Lean errors"}
+      {result.has_sorry ? "· contains sorry" : ""}
       {result.built ? "· olean ready" : ""} · {result.cache_hit ? "cached" : `${result.elapsed_ms} ms`}
       {#each result.dependency_errors as issue}<div>{issue}</div>{/each}
     </div>
