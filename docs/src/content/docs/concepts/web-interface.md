@@ -8,4 +8,11 @@ Lean blocks use Monaco on the left and native Infoview on the right, including g
 
 Each tab keeps an isolated draft environment and one Lean connection across node and layout changes. The two most recently used Lean documents retain their native workers. Selecting a node refreshes its dependency snapshot and restarts the file worker if dependencies changed; reload the environment after project configuration changes. New or evicted documents still load imports, while Lake's shared artifact cache retains compiled dependencies after the tab closes. The target `.olean` is generated when imported or explicitly requested through CLI `--build`.
 
+Switching nodes cancels any older preparation request. “Preparing Lean
+environment…” means the selected source is displayed while its native file is
+being attached; it does not indicate a full project build. Preparation that takes
+more than 30 seconds triggers one automatic reconnect with the unsaved draft
+retained. If recovery fails again, use **Reload environment**. Cold imports can
+still take longer and appear separately as “Loading Lean imports…”.
+
 The Lean project toolbar button edits the pinned toolchain, Lake TOML and lock manifest. All block types share a header, save/delete controls, collapse behavior and status styling. Text, Rocq and LaTeX use CodeMirror; Lean retains Monaco and Infoview. Only Lean has a language server in this release.

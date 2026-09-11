@@ -90,8 +90,18 @@ jobs:
       - name: Test browser with real backend
         env:
           MDC_TERMINUS_PASSWORD: local-ci-mathdoc
+          MDC_E2E_ARTIFACTS: ${{ runner.temp }}/mdc-e2e-artifacts
         run: npm run test:e2e
         working-directory: web
+
+      - name: Upload browser diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: browser-diagnostics
+          path: ${{ runner.temp }}/mdc-e2e-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
 
   macos-rust:
     runs-on: macos-latest

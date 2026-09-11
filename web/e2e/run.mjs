@@ -43,25 +43,50 @@ async function fixture(browser, body, extraNodes = []) {
     await cli("dep", "add", "Alpha", "--target", "Beta");
     await cli("graph", "check");
     context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    await context.tracing.start({ screenshots: true, snapshots: true });
     const page = await context.newPage();
     page.setDefaultTimeout(30000);
-    const errors = [];
+    const errors = [], traffic = [];
+    page.on("websocket", ws => {
+      const record = (direction, payload) => {
+        traffic.push({ time: Date.now(), direction, message: String(payload).slice(0, 16000) });
+        if (traffic.length > 300) traffic.shift();
+      };
+      ws.on("framesent", ({ payload }) => record("client", payload));
+      ws.on("framereceived", ({ payload }) => record("server", payload));
+      ws.on("close", () => record("close", ws.url()));
+    });
     page.on("console", message => { if (message.type() === "error") console.error("Browser console:", message.text()); });
     page.on("pageerror", (error) => errors.push(error.stack ?? error.message));
     page.on("dialog", (dialog) => void dialog.accept());
-    await page.goto(server.url);
-    await title(page, "Alpha");
-    try { await body({ root, cli, page, url: server.url, serverOutput: server.output }); }
-    catch(e) {
-      await page.screenshot({ path: resolve(root, "failure.png"), fullPage: true });
+    try {
+      await page.goto(server.url);
+      await title(page, "Alpha");
+      await body({ root, cli, page, url: server.url, serverOutput: server.output });
+      await cli("graph", "check");
+      assert.deepEqual(errors, []);
+    } catch (e) {
+      const artifacts = process.env.MDC_E2E_ARTIFACTS
+        ? resolve(process.env.MDC_E2E_ARTIFACTS, database)
+        : await mkdtemp(resolve(tmpdir(), "mdc-e2e-failure-"));
+      await mkdir(artifacts, { recursive: true });
+      await page.screenshot({ path: resolve(artifacts, "failure.png"), fullPage: true }).catch(console.error);
+      await context.tracing.stop({ path: resolve(artifacts, "trace.zip") }).catch(console.error);
+      const frames = await Promise.all(page.frames().map(async frame => ({
+        url: frame.url(),
+        text: await frame.locator("body").innerText({ timeout: 1000 }).catch(() => ""),
+        editor: await frame.locator(".view-line, .squiggly-error").evaluateAll(elements => elements.map(el => ({
+          text: el.textContent, class: el.className, bounds: el.getBoundingClientRect().toJSON(),
+        }))).catch(() => []),
+      })));
+      await writeFile(resolve(artifacts, "diagnostics.json"), JSON.stringify({ errors, frames, traffic }, null, 2));
+      await writeFile(resolve(artifacts, "service.log"), server.output());
+      console.error("Browser failure artifacts:", artifacts);
       console.error("Server:", server.output());
       console.error("Browser errors:", errors);
-      console.error("Page:", (await page.locator("body").innerText()).slice(-5000));
-      for (const frame of page.frames().slice(1)) { console.error("Frame:", (await frame.locator("body").innerText().catch(() => "")).slice(-3000)); }
+      console.error("Page:", frames.map(frame => frame.text.slice(-3000)));
       throw e;
     }
-    await cli("graph", "check");
-    assert.deepEqual(errors, []);
   } finally {
     await context?.close();
     if (server) {
@@ -219,9 +244,24 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
       return fixture(browser, async ({ root, page, cli, url }) => {
         let sessions = 0;
         const messages = [];
-        page.on("websocket", ws => ws.on("framesent", ({ payload }) => {
-          try { messages.push(JSON.parse(String(payload))); } catch {}
-        }));
+        let socket;
+        page.on("websocket", ws => {
+          socket = ws;
+          ws.on("framesent", ({ payload }) => {
+            try { messages.push(JSON.parse(String(payload))); } catch {}
+          });
+        });
+        const nativeError = source => socket.waitForEvent("framereceived", {
+          predicate: ({ payload }) => {
+            const message = JSON.parse(String(payload));
+            if (message.method !== "textDocument/publishDiagnostics") return false;
+            const change = messages.findLast(m => m.method === "textDocument/didChange" && m.params.textDocument.uri === message.params.uri);
+            // Monaco may auto-indent the final blank line after keyboard insertion.
+            return change?.params.contentChanges.at(-1).text.trimEnd() === source.trimEnd() &&
+              change.params.textDocument.version === message.params.version &&
+              message.params.diagnostics.some(d => d.severity === 1);
+          },
+        });
         page.on("request", request => { if (request.method() === "POST" && request.url().endsWith("/lean/session")) sessions++; });
         let releaseSession;
         const sessionGate = new Promise(resolveGate => { releaseSession = resolveGate; });
@@ -274,9 +314,12 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         }
         await page.getByText("Verified", { exact: true }).waitFor();
         await page.screenshot({ path: resolve(root, "lean-editor.png"), fullPage: true });
+        const badSource = "theorem demo : True := by\n  exact 42\n";
+        const firstError = nativeError(badSource);
         await input.press("ControlOrMeta+A");
-        await page.keyboard.insertText("theorem demo : True := by\n  exact 42\n");
+        await page.keyboard.insertText(badSource);
         await page.getByText("Unsaved", { exact: true }).waitFor();
+        await firstError;
         await frame.locator(".squiggly-error").first().waitFor();
         const sessionURL = await page.locator('iframe[title="Lean source and Infoview"]').getAttribute("src");
         const switchTimes = [];
@@ -355,9 +398,12 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
         assert.equal(sessions, 1);
         assert.equal(messages.filter(m => m.method === "textDocument/didOpen").length, opened);
+        const warmSource = "theorem demo : True := by exact 42\n";
+        const warmError = nativeError(warmSource);
         await input.press("ControlOrMeta+A");
         const edited = performance.now();
-        await page.keyboard.insertText("theorem demo : True := by exact 42\n");
+        await page.keyboard.insertText(warmSource);
+        await warmError; // Distinguish missing native diagnostics from a hidden marker.
         await frame.locator(".squiggly-error").first().waitFor();
         console.log("Warm Lean edit diagnostics (ms):", Math.round(performance.now() - edited));
         await select("Third Lean"); // Confirmed navigation discards that unsaved edit.

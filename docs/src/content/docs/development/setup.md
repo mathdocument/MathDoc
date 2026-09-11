@@ -40,7 +40,17 @@ Do not use a production database or start a test project inside the checkout.
 `test_service` and `test_lean_service` exercise real Lean and database behavior.
 The browser suite uses the actual backend and native editor, including draft
 preservation, revision conflicts, certification reuse and process cleanup.
-`MDC_BIN` optionally selects a prebuilt binary for browser tests.
+`MDC_BIN` optionally selects a prebuilt binary for browser tests. The Lean cases
+also exercise bidirectional backpressure, superseded selections and a real
+30-second preparation timeout. Error checks require native diagnostics for the
+edited document version before asserting that Monaco displays the marker.
+
+Browser failures retain a screenshot, Playwright `trace.zip`, `service.log` and
+`diagnostics.json` (recent LSP traffic, document versions and editor viewport
+state). The test prints their directory; it defaults to a separate system temp
+directory that survives fixture cleanup. Set `MDC_E2E_ARTIFACTS` to choose the
+parent directory. Release CI uploads these files as `browser-diagnostics` on
+failure. Inspect a trace with `npx playwright show-trace /path/to/trace.zip`.
 
 The optional `test_service_scale` target measures real graph requests on 47,435
 nodes and 368,017 edges without compiling that graph. It is a performance test,
