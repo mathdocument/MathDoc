@@ -78,13 +78,14 @@ export default defineConfig({
           ],
         },
         {
-          label: 'CLI Reference',
+          label: 'Reference',
           items: [
-            { label: 'Service & Node Commands', slug: 'reference/workspace-commands' },
+            { label: 'CLI Commands', slug: 'reference/workspace-commands' },
             { label: 'Dependency Commands', slug: 'reference/dependency-commands' },
             { label: 'Graph & Metrics', slug: 'reference/graph-and-metrics' },
             { label: 'Lean Checks & Builds', slug: 'reference/work-and-compilers' },
-            { label: 'Configuration & Profiling', slug: 'reference/configuration' },
+            { label: 'Configuration & Measurements', slug: 'reference/configuration' },
+            { label: 'HTTP API', slug: 'reference/http-api' },
           ],
         },
         {
@@ -92,6 +93,7 @@ export default defineConfig({
           collapsed: true,
           items: [
             { label: 'Development Setup', slug: 'development/setup' },
+            { label: 'Performance Measurements', slug: 'development/performance' },
             { label: 'Architecture', slug: 'development/architecture' },
             { label: 'Graph & Compilation Caches', slug: 'development/index-cache' },
             { label: 'Safe Mutations', slug: 'development/safe-mutations' },

@@ -2,7 +2,10 @@
 title: Dependency graph
 ---
 
-Each node declares direct dependencies by UUID. TerminusDB stores these as typed links. Transactions reject missing targets, duplicate edges, self links and cycles before committing.
+Each node declares direct dependencies by UUID. TerminusDB stores these as typed
+links. Graph validation rejects missing targets, duplicate edges, self links and
+cycles before committing. Adding an already-present dependency through the API
+is an idempotent operation and does not create another edge.
 
 The service maintains an in-memory graph projection with topological depths, reverse edges and Lean input keys. It refreshes after its own writes, or reloads on detecting a commit made outside the service. The graph check reports the validated projection; it does not reparse source files.
 

@@ -1,14 +1,28 @@
 ---
-title: Graph and metrics
+title: Graph, search and metrics
 ---
 
 ```sh
-mdc graph check --proj myproject/main
-mdc graph roots --proj myproject/main
-mdc graph full --proj myproject/main
-mdc metric ior --proj myproject/main 'Theorem'
+mdc search theorem -n 20 -p myproject/main
+mdc graph check -p myproject/main -m
+mdc graph roots -p myproject/main
+mdc graph full -p myproject/main
+mdc metric ior 'Theorem' -p myproject/main
 ```
 
-These commands query the service's validated graph projection. Graph check returns node and edge counts plus missing/invalid/cycle lists. Full graph returns node summaries and index-pair edges for visualization. Roots are unreferenced nodes; each includes its topological depth and weak component size.
+`search QUERY` matches titles and UUIDs case-insensitively. It returns node
+summaries, with `-n/--max-results` in 0–200 (default 200). It does not search block
+contents or fuzzy-match names, and it does not paginate beyond that limit.
 
-IOR is `ln((in_degree + 1) / (out_degree + 1))`. Reverse edge queries use the projection's reverse adjacency map. No command performs filesystem synchronization.
+Graph operations read the service's validated projection. `check` returns node
+and edge counts and missing/invalid/cycle lists; it does not compile Lean.
+`full` returns node summaries and index-pair edges for visualization. `roots`
+returns unreferenced nodes with topological depth and weak component size.
+
+`metric ior` is a single-node operation. Its result includes UUID, in-degree,
+out-degree and `ior = ln((in_degree + 1) / (out_degree + 1))`. Reverse queries use
+the resident reverse adjacency map. Every request checks the database revision;
+external commits can trigger a projection reload. There is no file scan.
+
+For repeatable graph benchmarks and their scope, see
+[Performance measurements](../../development/performance/).

@@ -6,9 +6,13 @@ description: Versioned mathematical graphs with native Lean editing.
 MathDoc stores connected mathematical knowledge in **TerminusDB** and serves it
 through a local browser and CLI. Nodes contain text, Lean, Rocq and LaTeX blocks.
 Lean uses native Lean Server, Monaco and Infoview for incremental proof editing.
+Only Lean compilation is integrated; other block types remain editable sources.
 
 [Install and run MathDoc](getting-started/installation/) · [Quick start](getting-started/quick-start/)
 
 All writes are versioned database transactions. There is no filesystem refresh
 before ordinary commands. Explicit import/export replaces source synchronization.
 The browser and agents share the same API and revision checks.
+
+[CLI commands](reference/workspace-commands/) · [HTTP API](reference/http-api/) ·
+[Storage and references](concepts/workspaces/) · [Development](development/setup/)

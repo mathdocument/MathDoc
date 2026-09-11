@@ -2,14 +2,37 @@
 title: Quick start
 ---
 
-Start the local service as described in [Installation](../installation/), then use New node in the browser. Add text, Lean, Rocq or LaTeX blocks. Lean opens a source editor and native Infoview side by side.
+Complete [Installation](../installation/), then create and start a project:
 
 ```sh
-mdc new --proj myproject/main -t 'Example'
-printf 'theorem exampleA : True := by trivial\n' | mdc edit --proj myproject/main Example --type lean
-mdc lean check --proj myproject/main Example
-mdc lean check --proj myproject/main Example --build
-mdc graph check --proj myproject/main
+mdc init myproject
+mdc start myproject/main
 ```
 
-The Lean editor checks as you type. **Save** writes the source to the database; once that exact version finishes checking, its status and compiled dependencies update automatically. Editor results and Lake artifacts are shared with CLI checks. Use `mdc lean check --proj myproject/main NODE --build` only when you need the target `.olean` immediately; imports build it on demand. CLI source edits read stdin. To retain an archive, run `mdc export --proj myproject/main > backup.json`.
+Open the printed URL and use **New node**. Add text, Lean, Rocq or LaTeX blocks.
+Lean opens the source editor and native Infoview side by side. The toolbar's Lean
+project dialog configures the pinned toolchain and external libraries.
+
+CLI agents use the same branch service from any directory:
+
+```sh
+mdc new -p myproject/main -t 'Example'
+printf 'theorem exampleA : True := by trivial\n' | mdc edit Example -p myproject/main --type lean
+mdc lean check Example -p myproject/main
+mdc graph check -p myproject/main -m
+mdc export -p myproject/main > backup.json
+```
+
+The editor checks as you type. **Save** stores the source; once that exact version
+finishes checking, its status and compiled dependencies update automatically.
+Editor certificates and Lake artifacts are shared with CLI checks. Use
+`mdc lean check Example -p myproject/main --build` when you need the target
+`.olean` immediately; imports build it on demand.
+
+Read a node with `show` and pass its `--revision` on later writes when another
+agent may edit concurrently. See [Source workflow](../../concepts/source-workflow/)
+and the complete [CLI reference](../../reference/workspace-commands/).
+
+`mdc status` finds running ports. Finish with `mdc stop myproject/main`; graph data
+and caches remain available for the next start. [Export and restore](../../concepts/import-export/)
+covers backups and copying the graph to a new database.

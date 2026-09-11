@@ -1,23 +1,56 @@
 ---
-title: Service and node commands
+title: CLI commands
 ---
+
+## Help, selection and output
+
+`mdc --help` lists three command groups in this order:
+
+| Scope | Commands |
+| --- | --- |
+| Project and service management | `status`, `init`, `start`, `stop` |
+| Entire branch | `search`, `graph`, `export`, `import`, `history`, `branch`, `project` |
+| Single node | `new`, `dep`, `show`, `edit`, `rename`, `metric`, `lean` |
+
+Use `mdc COMMAND -h` or `mdc COMMAND SUBCOMMAND --help`. There is no `help`
+subcommand. The root accepts only `-h/--help`; command help places `-h/--help` and
+`-m/--meas` first, followed by a blank line and the other applicable options.
+
+Branch and node commands require `-p/--proj DATABASE/BRANCH` after the command
+name. The selector is inherited by nested subcommands. Except for `branch del`,
+these commands require the selected branch's local service to be running.
+
+```sh
+mdc graph check -p myproject/main -m
+mdc graph -p myproject/main check
+mdc status --meas
+```
+
+There is no default project, default client port, `--url` option or `MDC_URL`
+setting. The root and `status/init/start/stop` do not accept `-p/--proj`.
+`mdc -m`, `mdc -m graph check` and `mdc -p myproject/main graph check` are invalid.
+
+Successful operations print JSON to stdout; lists such as search and history can
+be JSON arrays. `-m/--meas` prints inclusive timing measurements to stderr.
+Operational failures return exit code 1; invalid CLI arguments return 2.
+Help returns 0. An uncertified Lean check also returns 1 while preserving its
+JSON result. No command performs a source-workspace refresh.
+
+## Projects and services
 
 | Command | Behavior |
 | --- | --- |
-| `mdc init DATABASE` | Create a database with its default `main` branch; no service is started. |
-| `mdc start DATABASE/BRANCH [--port PORT]` | Start a background service and print its browser URL, port, PID and log path when ready. |
-| `mdc stop DATABASE/BRANCH` | Wait for the service and Lean workers to shut down; keep database data and caches. |
-| `mdc status` | List all MathDoc database branches and their local service ports. |
+| `mdc status` | List all MathDoc database branches and local service ports. |
+| `mdc init DATABASE` | Create a database with default `main` branch and Lean settings. |
+| `mdc start DATABASE/BRANCH [--port PORT]` | Start a background service and return URL, port, PID and log path. |
+| `mdc stop DATABASE/BRANCH` | Wait for service and Lean worker shutdown; retain graph data and caches. |
 
-Without `--port`, the OS assigns an available port. Explicit ports must be in
-1–65535; an occupied port is an error. Services bind to `127.0.0.1` and keep running
-after the launching terminal closes. A missing database/branch or an already
-running branch fails; start never creates a branch. Stopping an inactive branch
-reports that it is not running. All commands work from any directory.
-Background startup is encapsulated in `start`; there is no internal CLI subcommand.
+Start requires an existing branch. Missing branches and duplicate starts fail.
+Without `--port`, the OS chooses an available port; explicit ports are 1–65535 and
+must be free. Services bind to `127.0.0.1`. Stopping an inactive branch is an error.
+All commands work from any directory; `start` encapsulates its own background launch.
 
-Status returns a JSON object mapping `DATABASE/BRANCH` to a status object. The
-`port` field is `null` if that branch has no service in the configured cache directory. For example:
+Status is an object whose keys are `DATABASE/BRANCH`:
 
 ```json
 {
@@ -26,53 +59,81 @@ Status returns a JSON object mapping `DATABASE/BRANCH` to a status object. The
 }
 ```
 
-An empty inventory returns `{}`. Status queries TerminusDB metadata and requires
-no running mdc service. The output is the same in terminals and when redirected.
+`port` is null if no service owns that branch's lease in the configured cache
+root. Crashed services do not leave a stale running port. An empty inventory is
+`{}`. Status reads TerminusDB metadata and needs no running mdc service.
 
-Help lists commands in one `Commands` section with three groups separated by blank
-lines: project/service management, whole-branch operations, and single-node
-operations. `metric ior` belongs to the single-node group. Every command and
-subcommand includes a short description. The root lists only `-h/--help`.
-Command options list `-h/--help` and `-m/--meas` first, then a blank line before
-other options. `project` is last in the branch group; `dep` follows `new`.
-
-Branch and node commands require `-p/--proj DATABASE/BRANCH`. Except for `branch del`,
-they discover the running service port locally; no URL option or default project is used. The selector can appear
-after a client command, such as `mdc graph --proj myproject/main check` or
-`mdc graph check --proj myproject/main`. The CLI root and init/start/stop/status
-do not accept `-p/--proj`. `-m/--meas` belongs to each command and prints timing measurements to stderr
-while keeping JSON on stdout, for example `mdc graph check -p myproject/main -m`.
-The root rejects `mdc -m` and `mdc -m graph check`.
+## Branches and history
 
 ```sh
-mdc new --proj myproject/main -t 'A theorem'
-mdc show --proj myproject/main 'A theorem'
-mdc rename --proj myproject/main 'A theorem' 'Renamed theorem'
-mdc search --proj myproject/main theorem
-mdc export --proj myproject/main > backup.json
-mdc import --proj other/main backup.json
-mdc branch new --proj myproject/main agent
+mdc branch new agent -p myproject/main
 mdc start myproject/agent
-mdc history --proj myproject/agent
+mdc history -p myproject/agent
 mdc stop myproject/agent
-mdc branch del --proj myproject/agent
+mdc branch del -p myproject/agent
 ```
 
-Branch creation forks the selected service's current branch head without changing
-that service's branch. History returns the latest 50 TerminusDB commits as JSON.
+`branch new NAME` forks the selected running branch's current head in the same
+database. It neither starts the new branch nor switches the source service.
+Each service stays attached to one branch; `status` identifies it explicitly.
+`history` returns the latest 50 TerminusDB commits.
 
-`mdc branch del --proj DATABASE/BRANCH` deletes the selected branch directly in
-TerminusDB. Its service must already be stopped; a running or starting service
-causes an error that asks you to run `mdc stop DATABASE/BRANCH` first. Deletion
-removes all files in that branch's cache directory, including Lean artifacts,
-checks, editor workspaces, libraries and logs. Only the empty service lock is kept
-for coordination. Other branches and their caches are untouched. TerminusDB's
-immutable commits remain in the database; deleting a branch removes its reference.
+`branch del` deletes the branch selected by `-p` directly in TerminusDB. It must
+already be stopped; a running or starting service blocks deletion. The command
+cleans that branch's Lean artifacts, certificates, editor workspaces, libraries
+and logs in the configured cache root. Only an empty service lock remains for
+coordination. Other branches and caches are unaffected. Immutable database
+commits remain after their branch reference is removed.
 
-`mdc edit --proj myproject/main NAME --type TYPE [--revision REV]` reads the complete
-block source from stdin. References accept exact names or full UUIDs. Use
-`mdc --help` for the installed command surface.
+There is no CLI merge, rebase, checkout, or database-deletion command. These
+administrative operations use TerminusDB directly. Deleting the last branch does
+not delete its database. See [Storage](../../concepts/workspaces/).
 
-`project show` reads the selected branch's Lean build configuration. `project set`
-replaces it from stdin JSON: `toolchain`, `lakefile`, and optional `manifest`. This
-configures Lean and external libraries; it does not create or select a database.
+## Nodes
+
+References are exact names or complete UUIDs. Ambiguous names require a UUID;
+paths and UUID prefixes are not accepted.
+
+```sh
+mdc new -p myproject/main -t 'Lemma'
+mdc new -p myproject/main -t 'Another lemma' --parent 'Theorem' --revision PARENT_REV
+mdc show -p myproject/main 'Lemma'
+mdc rename -p myproject/main 'Lemma' 'Renamed lemma' --revision NODE_REV
+printf 'Explanation.\n' | mdc edit -p myproject/main 'Renamed lemma' --type text --revision NODE_REV
+mdc edit -p myproject/main 'Renamed lemma' --type text --delete --revision NODE_REV
+```
+
+`new` returns the created node. With `--parent`, node creation and adding the edge
+from parent to new node are one transaction; `--revision` applies to that parent
+and requires `--parent`. Names may be duplicated, but generated UUIDs and module
+identities are distinct.
+
+`show` returns the node's fields, revision and formalization status. `rename`
+changes only its display title, preserving its UUID and Lean module identity.
+`edit` replaces or creates a complete source block from stdin. Types are `text`,
+`lean` (default), `rocq` and `latex`. `--delete` removes that block and reads no
+stdin; an empty source without `--delete` remains an existing block.
+
+Use the revision returned by `show` on edits, renames and dependency mutations.
+If omitted, the CLI fetches the latest revision immediately before its write.
+Explicit revisions protect work based on an earlier read; stale writes fail
+without overwriting newer data. This is separate from compilation.
+See [Dependency commands](../dependency-commands/), [Lean checks](../work-and-compilers/)
+and [Concurrent edits](../../development/safe-mutations/).
+
+## Lean project settings
+
+`project show` returns `{revision, project}` for the selected branch. `project set`
+reads a complete project object from stdin, with `toolchain`, `lakefile` and
+optional `manifest` string (or null). An explicit `--revision` uses the branch
+revision from `project show`; otherwise the CLI fetches the current branch revision.
+
+```sh
+mdc project show -p myproject/main
+mdc project set -p myproject/main --revision BRANCH_REV < lean-project.json
+```
+
+This configures Lean and external libraries. It does not create or select a
+database. See [Configuration](../configuration/) for the input shape and library
+pinning rules. Whole-graph [export and import](../../concepts/import-export/)
+include these project settings, without compilation caches or other branches.
