@@ -16,6 +16,13 @@ file model takes over with the current draft and cursor intact. Superseded
 selection responses cannot replace the visible node. Two native document workers
 remain warm; cold or evicted documents still need to load their imports.
 
+Editor and CLI processes enable Lake's native content-addressed artifact cache.
+Each editor links `.lake/cache` to its database branch's canonical project cache,
+so compiled dependencies survive temporary-session deletion. Lake validates the
+source, toolchain and transitive build inputs before restoring artifacts. Standard
+artifact paths are restored for metadata readers; writable draft sources and live
+document environments remain isolated.
+
 An unexpected connection failure triggers one automatic session reconnect. The
 parent editor retains unsaved text and restores it into the new runtime without
 saving it to the database. Repeated failures require “Reload environment”, which

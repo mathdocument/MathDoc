@@ -49,6 +49,11 @@ pub fn command(root: &Path, args: &[&str]) -> Command {
     let mut c = Command::new("lake");
     c.args(args)
         .current_dir(root)
+        // Lake keys artifacts by compiler inputs, including transitive imports.
+        // Editor roots link this directory to the branch's canonical project.
+        .env("LAKE_ARTIFACT_CACHE", "true")
+        .env("LAKE_RESTORE_ARTIFACTS", "true")
+        .env("LAKE_CACHE_DIR", root.join(".lake/cache"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -796,6 +801,13 @@ impl LeanService {
             root.join(".lake/packages"),
         )
         .await?;
+        let artifacts = canonical.join(".lake/cache");
+        tokio::fs::create_dir_all(&artifacts).await?;
+        tokio::fs::symlink(
+            tokio::fs::canonicalize(artifacts).await?,
+            root.join(".lake/cache"),
+        )
+        .await?;
         // Never wait for a running CLI check. Lake can rebuild the isolated managed
         // modules from this snapshot while still using the shared external libraries.
         if let Ok(_manager) = self.manager.try_lock() {
@@ -856,7 +868,11 @@ pub async fn prepare_project(root: &Path, project: &LeanProject) -> Result<()> {
         format!("{}\n", project.toolchain),
     )
     .await?;
-    tokio::fs::write(root.join("lakefile.toml"), &project.lakefile).await?;
+    let mut config: toml::Table = toml::from_str(&project.lakefile)?;
+    // Older pinned Lake releases do not read LAKE_RESTORE_ARTIFACTS. Keep
+    // standard artifact paths for metadata consumers without changing user data.
+    config.insert("restoreAllArtifacts".into(), toml::Value::Boolean(true));
+    tokio::fs::write(root.join("lakefile.toml"), toml::to_string(&config)?).await?;
     if let Some(manifest) = &project.manifest {
         tokio::fs::write(root.join("lake-manifest.json"), manifest).await?;
     }
@@ -890,6 +906,50 @@ async fn verify_manifest(root: &Path, project: &LeanProject) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    #[ignore = "requires native Lean and Lake"]
+    async fn lake_reuses_editor_artifacts_after_the_draft_is_removed() {
+        let cache = tempfile::tempdir().unwrap();
+        let service = LeanService::new(cache.path().to_path_buf()).unwrap();
+        let marker = cache.path().join("compiled");
+        let mut node = Node::new("Cached editor artifact".into()).unwrap();
+        node.blocks.push(crate::store::Block {
+            srctype: "lean".into(),
+            content: format!("import Lean\nrun_cmd Lean.Elab.Command.liftIO <| IO.FS.writeFile {} \"compiled\"\ntheorem cachedEditor : True := by trivial\n", serde_json::to_string(&marker.to_string_lossy()).unwrap()),
+            ..Default::default()
+        });
+        let input = Input {
+            project: LeanProject::default(),
+            chain: vec![(node.clone(), "input".into())],
+        };
+        let first = service.editor_project(&input).await.unwrap();
+        build_module(first.path(), &node.module).await.unwrap();
+        assert!(marker.is_file());
+        drop(first);
+        std::fs::remove_file(&marker).unwrap();
+        let second = service.editor_project(&input).await.unwrap();
+        assert!(!second.path().join(".lake/build").exists());
+        build_module(second.path(), &node.module).await.unwrap();
+        assert!(
+            !marker.exists(),
+            "restoring Lake artifacts must not execute the compiler again"
+        );
+        assert!(second
+            .path()
+            .join(".lake/build/lib/lean")
+            .join(crate::store::module_file(&node.module, "olean").unwrap())
+            .is_file());
+        node.blocks[0].content.push_str("\n-- new input\n");
+        write_source(second.path(), &node, node.source("lean").unwrap())
+            .await
+            .unwrap();
+        build_module(second.path(), &node.module).await.unwrap();
+        assert!(
+            marker.exists(),
+            "changed source must miss the old artifact cache"
+        );
+    }
+
     #[tokio::test]
     async fn editor_frames_preserve_deep_json_and_bound_protocol_input() {
         let text = format!("{}0{}", "[".repeat(2048), "]".repeat(2048));
