@@ -5,9 +5,7 @@ import { viteStaticCopy } from "vite-plugin-static-copy";
 import importMetaUrlPlugin from "@codingame/esbuild-import-meta-url-plugin";
 import path from "node:path";
 
-// In `vite dev` mode the backend runs on a random port (127.0.0.1:NNNN).
-// During development we proxy /api → that backend; the dev port is set via
-// the MDC_API_PROXY env var (defaults to 127.0.0.1:0 fallback handled below).
+// Proxy /api to an existing branch service; MDC_API_PROXY can select its allocated port.
 const apiTarget = process.env.MDC_API_PROXY ?? "http://127.0.0.1:7599";
 const sveltePlugins = svelte();
 
@@ -39,7 +37,8 @@ export default defineConfig({
     proxy: {
       "/api": {
         target: apiTarget,
-        changeOrigin: true,
+        // Preserve Host alongside Origin for the backend's same-origin checks.
+        changeOrigin: false,
         ws: true,
       },
     },
