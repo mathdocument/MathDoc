@@ -28,7 +28,7 @@ async function fixture(browser, body) {
   let server;
   let context;
   const database = `mdce2e${randomUUID().replaceAll("-", "")}`;
-  const cli = (...args) => run(binary, (args[0] === "init" ? ["init", database] : ["--proj", `${database}/main`, ...args]), { cwd: root, env: { ...env, MDC_CACHE_DIR: resolve(root, "cache") }, timeout: 30000 });
+  const cli = (...args) => run(binary, (args[0] === "init" ? ["init", database] : [args[0], "--proj", `${database}/main`, ...args.slice(1)]), { cwd: root, env: { ...env, MDC_CACHE_DIR: resolve(root, "cache") }, timeout: 30000 });
   try {
     await cli("init");
     server = await startServer(root, database);

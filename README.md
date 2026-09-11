@@ -55,27 +55,30 @@ restrict the HTTP service to the local machine.
 
 `mdc status` lists all MathDoc project branches in the configured TerminusDB:
 
-```text
-Project     Port
-etp/main    7600
-mdocs/main
+```json
+{
+  "etp/main": { "port": 7600 },
+  "mdocs/main": { "port": null }
+}
 ```
 
-Column headings are bold in a terminal. A blank port means no service owns the
-branch's cache with a registered listener. Status uses the configured database
+The JSON object maps `DATABASE/BRANCH` to a status object. Its `port` is `null` when no service owns
+the branch's cache with a registered listener. Status uses the configured database
 credentials and cache directory. Stopped or crashed services do not leave a stale
-running port in the table.
+running port in the output. An empty inventory produces `{}`.
 
 Each project uses a separate database in the shared TerminusDB instance. Each
 HTTP service serves one existing branch. There is no implicit client target:
 client commands require `--proj DATABASE/BRANCH` and find that service's local port
-without contacting TerminusDB. Start/stop take the project as a positional argument;
+without contacting TerminusDB. This option belongs to the client command and must
+follow it; the CLI root and management commands do not accept it. Start/stop take
+the project as a positional argument;
 init takes a database name, and status lists all projects.
 
 ```sh
 mdc start other/main --port 7600
-mdc --proj other/main graph check
-mdc --proj myproject/main branch create agent
+mdc graph check --proj other/main
+mdc branch create --proj myproject/main agent
 mdc start myproject/agent
 mdc stop myproject/agent
 ```
@@ -94,14 +97,14 @@ The installed executable is separate from this cache.
 ## Authoring and checks
 
 ```sh
-mdc --proj myproject/main new -t 'My theorem'
-printf 'theorem exampleA : True := by trivial\n' | mdc --proj myproject/main edit 'My theorem' --type lean
-mdc --proj myproject/main lean check 'My theorem'
-mdc --proj myproject/main lean check 'My theorem' --build
-mdc --proj myproject/main lean goals 'My theorem' --line 0 --column 31
-mdc --proj myproject/main show 'My theorem'
-mdc --proj myproject/main dep add 'My theorem' --target 'Earlier lemma'
-mdc --proj myproject/main graph check
+mdc new --proj myproject/main -t 'My theorem'
+printf 'theorem exampleA : True := by trivial\n' | mdc edit --proj myproject/main 'My theorem' --type lean
+mdc lean check --proj myproject/main 'My theorem'
+mdc lean check --proj myproject/main 'My theorem' --build
+mdc lean goals --proj myproject/main 'My theorem' --line 0 --column 31
+mdc show --proj myproject/main 'My theorem'
+mdc dep add --proj myproject/main 'My theorem' --target 'Earlier lemma'
+mdc graph check --proj myproject/main
 ```
 
 References accept exact names or complete UUIDs; duplicate names require a UUID.
@@ -122,16 +125,16 @@ reload the affected environment. Saved check results and live editor progress
 are displayed separately. Large cold imports still cost time.
 
 Configure toolchain, Lake TOML and the complete lock manifest in the Lean project
-dialog or `mdc --proj myproject/main project show` / `mdc --proj myproject/main project set` (JSON on stdin). Libraries are not
+dialog or `mdc project show --proj myproject/main` / `mdc project set --proj myproject/main` (JSON on stdin). Libraries are not
 limited to Mathlib; Git dependencies must be pinned to full commits. Title/text
 edits do not invalidate Lean results. Ordinary commands never scan source files.
 
 ## Export and restore
 
 ```sh
-mdc --proj myproject/main export > backup.json
-mdc --proj myproject/main export 'My theorem' > theorem.json
-mdc --proj other/main import backup.json
+mdc export --proj myproject/main > backup.json
+mdc export --proj myproject/main 'My theorem' > theorem.json
+mdc import --proj other/main backup.json
 ```
 
 Full JSON bundles contain all current nodes, module identities and Lean project

@@ -15,30 +15,50 @@ after the launching terminal closes. A missing database/branch or an already
 running branch fails; start never creates a branch. Stopping an inactive branch
 reports that it is not running. All commands work from any directory.
 
-Status has **Project** (`DATABASE/BRANCH`) and **Port** columns. Headers are bold
-in terminals and plain when redirected. Port is blank when no service is running
-for that branch in the configured cache directory. Status queries TerminusDB
-metadata and requires no running mdc service.
+Status returns a JSON object mapping `DATABASE/BRANCH` to a status object. The
+`port` field is `null` if that branch has no service in the configured cache directory. For example:
+
+```json
+{
+  "etp/main": { "port": 7600 },
+  "mdocs/main": { "port": null }
+}
+```
+
+An empty inventory returns `{}`. Status queries TerminusDB metadata and requires
+no running mdc service. The output is the same in terminals and when redirected.
+
+Help lists commands in one `Commands` section with three groups separated by blank
+lines: project/service management, whole-branch operations, and single-node
+operations. `metric ior` belongs to the single-node group. Every command and
+subcommand includes a short description.
 
 All client commands require `--proj DATABASE/BRANCH`. They discover the service
 port locally; no URL option or default project is used. The selector can appear
-before or after the client subcommand. Do not pass `--proj` to init/start/stop/status.
+after a client command, such as `mdc graph --proj myproject/main check` or
+`mdc graph check --proj myproject/main`. The CLI root and init/start/stop/status
+do not accept `--proj`. Global `--prof` prints command timing measurements to stderr
+and keeps JSON output on stdout.
 
 ```sh
-mdc --proj myproject/main new -t 'A theorem'
-mdc --proj myproject/main show 'A theorem'
-mdc --proj myproject/main rename 'A theorem' 'Renamed theorem'
-mdc --proj myproject/main search theorem
-mdc --proj myproject/main export > backup.json
-mdc --proj other/main import backup.json
-mdc --proj myproject/main branch create agent
+mdc new --proj myproject/main -t 'A theorem'
+mdc show --proj myproject/main 'A theorem'
+mdc rename --proj myproject/main 'A theorem' 'Renamed theorem'
+mdc search --proj myproject/main theorem
+mdc export --proj myproject/main > backup.json
+mdc import --proj other/main backup.json
+mdc branch create --proj myproject/main agent
 mdc start myproject/agent
-mdc --proj myproject/agent history
+mdc history --proj myproject/agent
 ```
 
 Branch creation forks the selected service's current branch head without changing
 that service's branch. History returns the latest 50 TerminusDB commits as JSON.
 
-`mdc --proj myproject/main edit NAME --type TYPE [--revision REV]` reads the complete
+`mdc edit --proj myproject/main NAME --type TYPE [--revision REV]` reads the complete
 block source from stdin. References accept exact names or full UUIDs. Use
 `mdc --help` for the installed command surface.
+
+`project show` reads the selected branch's Lean build configuration. `project set`
+replaces it from stdin JSON: `toolchain`, `lakefile`, and optional `manifest`. This
+configures Lean and external libraries; it does not create or select a database.

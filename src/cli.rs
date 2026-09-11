@@ -1,21 +1,15 @@
 //! API client. Files are only read by explicit import and stdin source editing.
 use crate::store::Database;
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use reqwest::{Client, Method};
 use serde_json::{json, Value};
 use std::io::Read;
 
 #[derive(Parser)]
-#[command(
-    name = "mdc",
-    about = "MathDoc local web service and API client",
-    after_help = "Examples:\n  mdc init myproject\n  mdc start myproject/main\n  mdc --proj myproject/main graph check\n  mdc stop myproject/main\n\nClient commands require --proj DATABASE/BRANCH. Use mdc status to list projects and ports."
-)]
+#[command(name = "mdc", about = "MathDoc local web service and API client")]
 struct Cli {
-    /// Required for client commands: select a running local project branch.
-    #[arg(long, global = true, value_name = "DATABASE/BRANCH", value_parser = parse_project)]
-    proj: Option<String>,
+    /// Print command timing measurements to stderr.
     #[arg(long, global = true)]
     prof: bool,
     #[command(subcommand)]
@@ -24,14 +18,9 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// List all project branches and their local service ports, including stopped projects.
-    #[command(
-        after_help = "Reads the configured TerminusDB and local cache directory directly; no running mdc service is required. Project is DATABASE/BRANCH. Port is blank for stopped services."
-    )]
     Status,
     /// Create a new project database on the configured TerminusDB instance.
-    Init {
-        database: String,
-    },
+    Init { database: String },
     /// Start a project branch in the background and print its browser URL.
     Start {
         #[arg(value_name = "DATABASE/BRANCH", value_parser = parse_project)]
@@ -45,6 +34,7 @@ enum Commands {
         #[arg(value_name = "DATABASE/BRANCH", value_parser = parse_project)]
         project: String,
     },
+    /// Run the internal background service for one branch.
     #[command(name = "__run", hide = true)]
     Run {
         #[arg(value_parser = parse_project)]
@@ -52,127 +42,143 @@ enum Commands {
         #[arg(long)]
         port: u16,
     },
+    /// Search branch nodes by title or UUID.
+    Search {
+        query: String,
+        #[arg(short = 'n', long, default_value = "200")]
+        max_results: usize,
+    },
+    /// Inspect or validate the dependency graph of the branch.
+    Graph {
+        #[command(subcommand)]
+        command: Graph,
+    },
+    /// Export the database, or one node, as a portable JSON bundle.
+    Export { source: Option<String> },
+    /// Import a JSON bundle without overwriting existing node UUIDs.
+    Import { input: std::path::PathBuf },
+    /// Manage the branch's Lean toolchain and library configuration.
+    Project {
+        #[command(subcommand)]
+        command: Project,
+    },
+    /// Show the latest 50 commits in the branch's history.
+    History,
+    /// Create a branch from the selected branch head.
+    Branch {
+        #[command(subcommand)]
+        command: Branch,
+    },
     /// Create a node in the database.
     New {
         #[arg(short, long)]
         title: String,
     },
     /// Read a node by exact name or complete UUID.
-    Show {
-        source: String,
-    },
-    /// Replace one source block with stdin; never opens or synchronizes a workspace file.
+    Show { source: String },
+    /// Replace one source block of a node with text from stdin.
     Edit {
         source: String,
         #[arg(long="type",default_value="lean",value_parser=["text","lean","rocq","latex"])]
         language: String,
+        /// Require the node revision returned by show.
         #[arg(long)]
         revision: Option<String>,
     },
     /// Rename a node using an optimistic revision guard.
-    Rename {
-        source: String,
-        title: String,
-    },
-    Search {
-        query: String,
-        #[arg(short = 'n', long, default_value = "200")]
-        max_results: usize,
-    },
-    Graph {
-        #[command(subcommand)]
-        command: Graph,
-    },
+    Rename { source: String, title: String },
+    /// Manage or traverse dependencies and referrers of a node.
     Dep {
         #[command(subcommand)]
         command: Dep,
     },
+    /// Compute graph metrics for a node.
     Metric {
         #[command(subcommand)]
         command: Metric,
     },
+    /// Check Lean code or inspect proof goals for a node.
     Lean {
         #[command(subcommand)]
         command: Lean,
     },
-    /// Export the database, or one node, as a portable JSON bundle.
-    Export {
-        source: Option<String>,
-    },
-    /// Import a JSON bundle. Existing node UUIDs are never overwritten.
-    Import {
-        input: std::path::PathBuf,
-    },
-    Project {
-        #[command(subcommand)]
-        command: Project,
-    },
-    History,
-    Branch {
-        #[command(subcommand)]
-        command: Branch,
-    },
 }
 #[derive(Subcommand)]
 enum Graph {
+    /// Validate the branch graph and report missing links or cycles.
     Check,
+    /// List unreferenced graph roots and their component sizes.
     Roots,
+    /// Return all node summaries and dependency edges in the branch.
     Full,
 }
 #[derive(Subcommand)]
 enum Metric {
+    /// Compute a node's IOR metric from its dependency and referrer counts.
     Ior { source: String },
 }
 #[derive(Subcommand)]
 enum Dep {
+    /// Add a dependency from one node to another.
     Add {
         source: String,
         #[arg(short, long)]
         target: String,
     },
+    /// Remove a dependency from a node.
     Rm {
         source: String,
         #[arg(short, long)]
         target: String,
     },
+    /// List dependencies reachable from a node at the requested depth.
     Show {
         source: String,
         #[arg(short, long, default_value = "1", allow_hyphen_values = true)]
         depth: i32,
     },
+    /// List nodes that depend on the target at the requested depth.
     Refs {
         target: String,
         #[arg(short, long, default_value = "1", allow_hyphen_values = true)]
         depth: i32,
     },
-    Leaf {
-        source: String,
-    },
+    /// List dependency leaves reachable from a node.
+    Leaf { source: String },
 }
 #[derive(Subcommand)]
 enum Lean {
+    /// Validate a node with Lean and optionally build its olean artifact.
     Check {
         source: String,
+        /// Generate the target node's olean artifact.
         #[arg(long)]
         build: bool,
+        /// Require the node revision returned by show.
         #[arg(long)]
         revision: Option<String>,
     },
+    /// Show Lean proof goals at a position in a node.
     Goals {
         source: String,
+        /// Zero-based line number.
         #[arg(long)]
         line: u32,
+        /// Zero-based character offset within the line.
         #[arg(long, default_value = "0")]
         column: u32,
     },
 }
 #[derive(Subcommand)]
 enum Project {
+    /// Read the branch's Lean toolchain, Lake configuration and dependency lockfile.
     Show,
+    /// Replace the branch's Lean toolchain, Lake configuration and lockfile from stdin JSON.
     Set,
 }
 #[derive(Subcommand)]
 enum Branch {
+    /// Fork a new branch from the selected branch head.
     Create { name: String },
 }
 
@@ -257,12 +263,62 @@ fn stdin() -> Result<String> {
     std::io::stdin().read_to_string(&mut s)?;
     Ok(s)
 }
+
+fn command_group(name: &str) -> u8 {
+    match name {
+        "status" | "init" | "start" | "stop" => 0,
+        "new" | "show" | "edit" | "rename" | "dep" | "metric" | "lean" => 2,
+        _ => 1,
+    }
+}
+
+fn grouped_command() -> clap::Command {
+    let command = Cli::command().mut_subcommands(|subcommand| {
+        if subcommand.is_hide_set() || command_group(subcommand.get_name()) == 0 {
+            return subcommand;
+        }
+        subcommand.arg(
+            clap::Arg::new("proj")
+                .long("proj")
+                // Inherit only within this client command, never at the CLI root.
+                .global(true)
+                .value_name("DATABASE/BRANCH")
+                .value_parser(parse_project)
+                .help("Select a running project branch (required)"),
+        )
+    });
+    let header = command.get_styles().get_header();
+    // Render together to align columns, then separate management, graph and node operations.
+    let mut commands = command
+        .clone()
+        .disable_help_subcommand(true)
+        .help_template("{subcommands}")
+        .render_help()
+        .to_string();
+    let mut previous = 0;
+    for subcommand in command.get_subcommands().filter(|c| !c.is_hide_set()) {
+        let group = command_group(subcommand.get_name());
+        if group != previous {
+            let entry = format!("\n  {} ", subcommand.get_name());
+            commands = commands.replacen(&entry, &format!("\n{entry}"), 1);
+        }
+        previous = group;
+    }
+    let template = format!("{{about-with-newline}}\n{{usage-heading}} {{usage}}\n\n{header}Commands:{header:#}\n{commands}\n{header}Options:{header:#}\n{{options}}");
+    command.help_template(template)
+}
+
 pub fn run() -> i32 {
-    let cli = Cli::parse();
+    let matches = grouped_command().get_matches();
+    let project = matches
+        .subcommand()
+        .and_then(|(_, args)| args.try_get_one::<String>("proj").ok().flatten())
+        .cloned();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     crate::profile::set_enabled(cli.prof);
     let result = tokio::runtime::Runtime::new()
         .map_err(anyhow::Error::from)
-        .and_then(|rt| rt.block_on(dispatch(cli)));
+        .and_then(|rt| rt.block_on(dispatch(cli, project)));
     crate::profile::print_report();
     match result {
         Ok(code) => code,
@@ -272,20 +328,20 @@ pub fn run() -> i32 {
         }
     }
 }
-async fn dispatch(cli: Cli) -> Result<i32> {
+async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
     let _profile = crate::profile::scope("service.request");
-    if matches!(
-        cli.command,
-        Commands::Status
-            | Commands::Init { .. }
-            | Commands::Start { .. }
-            | Commands::Stop { .. }
-            | Commands::Run { .. }
-    ) && cli.proj.is_some()
-    {
-        bail!("--proj selects a client target; start/stop take DATABASE/BRANCH directly, init takes DATABASE, and status lists all projects");
-    }
     let local = match &cli.command {
+        Commands::Status => {
+            let projects = crate::store::Terminus::from_env()?.projects().await?;
+            let mut status = serde_json::Map::new();
+            for db in projects {
+                status.insert(
+                    format!("{}/{}", db.database, db.branch),
+                    json!({"port":crate::service::running_service(&db.cache_path()?)?.map(|s| s.port)}),
+                );
+            }
+            Some(Value::Object(status))
+        }
         Commands::Init { database } => {
             Database::from_env(database.clone(), "main".into())?
                 .initialize()
@@ -321,23 +377,7 @@ async fn dispatch(cli: Cli) -> Result<i32> {
         println!("{}", serde_json::to_string_pretty(&value)?);
         return Ok(0);
     }
-    if matches!(cli.command, Commands::Status) {
-        let projects = crate::store::Terminus::from_env()?.projects().await?;
-        let rows = projects
-            .iter()
-            .map(|db| {
-                Ok((
-                    format!("{}/{}", db.database, db.branch),
-                    crate::service::running_service(&db.cache_path()?)?.map(|s| s.port),
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        use std::io::IsTerminal;
-        print!("{}", status_table(&rows, std::io::stdout().is_terminal()));
-        return Ok(0);
-    }
-    let project = cli
-        .proj
+    let project = project
         .context("select a project with --proj DATABASE/BRANCH; use mdc status to list projects")?;
     let root = crate::config::Settings::load()?.project_cache(&project)?;
     let service = crate::service::running_service(&root)?
@@ -522,30 +562,6 @@ fn parse_project(value: &str) -> Result<String, String> {
     Ok(value.into())
 }
 
-fn status_table(rows: &[(String, Option<u16>)], bold: bool) -> String {
-    use std::fmt::Write;
-    let width = rows
-        .iter()
-        .map(|(project, _)| project.len())
-        .max()
-        .unwrap_or(0)
-        .max(7);
-    let (start, end) = if bold {
-        ("\x1b[1m", "\x1b[0m")
-    } else {
-        ("", "")
-    };
-    let mut table = format!("{start}{:<width$}  Port{end}\n", "Project");
-    for (project, port) in rows {
-        writeln!(
-            table,
-            "{project:<width$}  {}",
-            port.map(|p| p.to_string()).unwrap_or_default()
-        )
-        .unwrap();
-    }
-    table
-}
 async fn traverse(api: &Api, source: &str, mode: &str, depth: i32) -> Result<Value> {
     let n = api.node(source).await?;
     api.request(
@@ -583,23 +599,89 @@ async fn mutate_dep(api: &Api, source: &str, target: &str, add: bool) -> Result<
 mod tests {
     use super::*;
     #[test]
-    fn status_headers_are_bold_only_in_a_terminal_and_stopped_ports_are_blank() {
-        let rows = vec![("etp/main".into(), Some(7600)), ("mdocs/main".into(), None)];
+    fn help_groups_commands_without_footers_or_changing_subcommands() {
+        let mut command = grouped_command();
+        let short = command.render_help().to_string();
         assert_eq!(
-            status_table(&rows, false),
-            "Project     Port\netp/main    7600\nmdocs/main  \n"
+            short.split_once("Options:").unwrap().0,
+            command
+                .render_long_help()
+                .to_string()
+                .split_once("Options:")
+                .unwrap()
+                .0
         );
+        assert_eq!(short.matches("Commands:").count(), 1);
+        let (_, groups) = short.split_once("Commands:\n").unwrap();
+        let groups = groups.split_once("Options:\n").unwrap().0.trim();
+        let names: Vec<Vec<_>> = groups
+            .split("\n\n")
+            .map(|group| {
+                group
+                    .lines()
+                    .filter_map(|line| line.split_whitespace().next())
+                    .collect()
+            })
+            .collect();
         assert_eq!(
-            status_table(&rows, true),
-            "\x1b[1mProject     Port\x1b[0m\netp/main    7600\nmdocs/main  \n"
+            names,
+            [
+                vec!["status", "init", "start", "stop"],
+                vec!["search", "graph", "export", "import", "project", "history", "branch"],
+                vec!["new", "show", "edit", "rename", "dep", "metric", "lean"],
+            ]
         );
-        assert_eq!(status_table(&[], false), "Project  Port\n");
+        assert!(!short.contains("__run"));
+        assert!(!short.contains("Examples:"));
+        assert!(!short.contains("--proj"));
+        assert!(short.contains("Print command timing measurements to stderr"));
+        for args in [
+            vec!["mdc", "help"],
+            vec!["mdc", "help", "status"],
+            vec!["mdc", "status", "--help"],
+        ] {
+            let error = grouped_command().try_get_matches_from(args).unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+            assert!(!error
+                .to_string()
+                .contains("Reads the configured TerminusDB"));
+        }
     }
+
     #[test]
-    fn project_selection_belongs_to_service_commands() {
-        assert!(Cli::try_parse_from(["mdc", "init"]).is_err());
-        assert!(Cli::try_parse_from(["mdc", "start", "mdocs/agent"]).is_ok());
-        assert!(Cli::try_parse_from(["mdc", "stop", "mdocs/agent"]).is_ok());
+    fn every_command_and_subcommand_has_a_description_in_help() {
+        let mut pending = vec![(vec!["mdc".to_string()], Cli::command())];
+        while let Some((path, command)) = pending.pop() {
+            let about = command
+                .get_about()
+                .expect("command description")
+                .to_string();
+            assert!(!about.trim().is_empty(), "{path:?}");
+            assert!(command.get_after_help().is_none(), "{path:?}");
+            let mut args = path.clone();
+            args.push("--help".into());
+            let error = grouped_command().try_get_matches_from(args).unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+            assert!(error.to_string().starts_with(&about), "{path:?}: {error}");
+            for child in command.get_subcommands() {
+                let mut child_path = path.clone();
+                child_path.push(child.get_name().into());
+                pending.push((child_path, child.clone()));
+            }
+        }
+    }
+
+    #[test]
+    fn project_selection_is_scoped_to_client_commands() {
+        assert!(grouped_command()
+            .try_get_matches_from(["mdc", "init"])
+            .is_err());
+        assert!(grouped_command()
+            .try_get_matches_from(["mdc", "start", "mdocs/agent"])
+            .is_ok());
+        assert!(grouped_command()
+            .try_get_matches_from(["mdc", "stop", "mdocs/agent"])
+            .is_ok());
         for project in [
             "mdocs",
             "/main",
@@ -608,18 +690,62 @@ mod tests {
             "../main",
             "mdocs/main/extra",
         ] {
-            assert!(Cli::try_parse_from(["mdc", "start", project]).is_err());
+            assert!(grouped_command()
+                .try_get_matches_from(["mdc", "start", project])
+                .is_err());
         }
         for port in ["0", "65536", "-1", "abc"] {
-            assert!(Cli::try_parse_from(["mdc", "start", "mdocs/main", "--port", port]).is_err());
+            assert!(grouped_command()
+                .try_get_matches_from(["mdc", "start", "mdocs/main", "--port", port])
+                .is_err());
         }
-        assert!(Cli::try_parse_from(["mdc", "serve", "mdocs"]).is_err());
-        assert!(Cli::try_parse_from(["mdc", "--database", "other", "graph", "check"]).is_err());
-        assert!(
-            Cli::try_parse_from(["mdc", "--url", "http://localhost:7600", "graph", "check"])
-                .is_err()
-        );
-        assert!(Cli::try_parse_from(["mdc", "graph", "check", "--proj", "mdocs/main"]).is_ok());
-        assert!(Cli::try_parse_from(["mdc", "work", "node"]).is_err());
+        assert!(grouped_command()
+            .try_get_matches_from(["mdc", "serve", "mdocs"])
+            .is_err());
+        assert!(grouped_command()
+            .try_get_matches_from(["mdc", "--database", "other", "graph", "check"])
+            .is_err());
+        assert!(grouped_command()
+            .try_get_matches_from(["mdc", "--url", "http://localhost:7600", "graph", "check"])
+            .is_err());
+        assert!(grouped_command()
+            .try_get_matches_from(["mdc", "graph", "check", "--proj", "mdocs/main"])
+            .is_ok());
+        assert!(grouped_command()
+            .try_get_matches_from(["mdc", "graph", "--proj", "mdocs/main", "check"])
+            .is_ok());
+        assert!(grouped_command()
+            .try_get_matches_from(["mdc", "--proj", "mdocs/main", "graph", "check"])
+            .is_err());
+        for args in [
+            vec!["mdc", "status"],
+            vec!["mdc", "init", "db"],
+            vec!["mdc", "start", "db/main"],
+            vec!["mdc", "stop", "db/main"],
+        ] {
+            let mut help = args.clone();
+            help.push("--help");
+            let error = grouped_command().try_get_matches_from(help).unwrap_err();
+            assert!(!error.to_string().contains("--proj"));
+            let mut invalid = args;
+            invalid.extend(["--proj", "mdocs/main"]);
+            assert!(grouped_command().try_get_matches_from(invalid).is_err());
+        }
+        for path in [
+            vec!["new"],
+            vec!["graph", "check"],
+            vec!["project", "show"],
+            vec!["history"],
+            vec!["branch", "create"],
+        ] {
+            let mut args = vec!["mdc"];
+            args.extend(path);
+            args.push("--help");
+            let error = grouped_command().try_get_matches_from(args).unwrap_err();
+            assert!(error.to_string().contains("--proj"));
+        }
+        assert!(grouped_command()
+            .try_get_matches_from(["mdc", "work", "node"])
+            .is_err());
     }
 }

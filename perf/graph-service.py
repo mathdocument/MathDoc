@@ -120,7 +120,7 @@ def main():
             samples = []
             for _ in range(args.samples):
                 started = time.perf_counter()
-                result = subprocess.run([args.cli, "--proj", args.proj, *command], capture_output=True, check=True, timeout=180)
+                result = subprocess.run([args.cli, *command, "--proj", args.proj], capture_output=True, check=True, timeout=180)
                 json.loads(result.stdout)
                 samples.append((time.perf_counter() - started) * 1000)
             report["cli"][label] = statistics_ms(samples)

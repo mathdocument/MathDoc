@@ -44,25 +44,17 @@ async fn reject(root: &Path, args: &[&str], message: &str) {
 }
 
 async fn status(root: &Path) -> BTreeMap<String, Option<u16>> {
-    let output = command(root).arg("status").output().await.unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let text = String::from_utf8(output.stdout).unwrap();
-    let mut lines = text.lines();
-    assert_eq!(
-        lines.next().unwrap().split_whitespace().collect::<Vec<_>>(),
-        ["Project", "Port"]
-    );
-    lines
-        .map(|line| {
-            let mut columns = line.split_whitespace();
-            let name = columns.next().unwrap().into();
-            let port = columns.next().map(|p| p.parse().unwrap());
-            assert!(columns.next().is_none());
-            (name, port)
+    let value = run(root, &["status"]).await;
+    value
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(project, state)| {
+            assert_eq!(state.as_object().unwrap().len(), 1);
+            (
+                project.clone(),
+                serde_json::from_value(state["port"].clone()).unwrap(),
+            )
         })
         .collect()
 }
@@ -162,6 +154,17 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
     assert_eq!(b.port(), explicit_port);
     assert_ne!(a.port(), b.port());
     let running = status(root).await;
+    let profiled = command(root)
+        .args(["status", "--prof"])
+        .output()
+        .await
+        .unwrap();
+    assert!(profiled.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&profiled.stdout).unwrap(),
+        run(root, &["status"]).await
+    );
+    assert!(String::from_utf8_lossy(&profiled.stderr).contains("service.request"));
     assert_eq!(
         (running[&main], running[&agent], running[&unused]),
         (Some(a.port()), Some(b.port()), None)
@@ -177,23 +180,23 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
     reject(
         root,
         &["start", &main, "--proj", &agent],
-        "--proj selects a client target",
+        "unexpected argument",
     )
     .await;
-    run(root, &["--proj", &main, "new", "-t", "Only in main"]).await;
+    run(root, &["new", "--proj", &main, "-t", "Only in main"]).await;
     assert_eq!(
         run(root, &["graph", "check", "--proj", &main]).await["nodes"],
         1
     );
     assert_eq!(
-        run(root, &["--proj", &agent, "graph", "check"]).await["nodes"],
+        run(root, &["graph", "--proj", &agent, "check"]).await["nodes"],
         0
     );
 
     // Clients discover locally without contacting TerminusDB or reading its password.
     let without_password = command(root)
         .env_remove("MDC_TERMINUS_PASSWORD")
-        .args(["--proj", &main, "graph", "check"])
+        .args(["graph", "check", "--proj", &main])
         .output()
         .await
         .unwrap();
@@ -237,7 +240,7 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
     let stopped = status(root).await;
     assert_eq!((stopped[&main], stopped[&agent]), (None, Some(b.port())));
     reject(root, &["stop", &main], "not running").await;
-    reject(root, &["--proj", &main, "graph", "check"], "mdc start").await;
+    reject(root, &["graph", "check", "--proj", &main], "mdc start").await;
 
     unsafe {
         assert_eq!(
@@ -254,7 +257,7 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
     .unwrap();
     let c = Started::start(root, &agent, Some(b.port())).await;
     assert_eq!(
-        run(root, &["--proj", &agent, "graph", "check"]).await["nodes"],
+        run(root, &["graph", "--proj", &agent, "check"]).await["nodes"],
         0
     );
     run(root, &["stop", &agent]).await;
