@@ -65,6 +65,26 @@ of mdc, before a mathlib compilation baseline can complete. Main-thread and
 single-worker settings did not make the build reliable. No failed process is
 counted as successful compilation, and no whole-mathlib verification is claimed.
 
+Follow-up diagnosis: this release pins mimalloc 3.4.1. Its native crash stack
+matches the upstream [macOS thread-exit allocator issue](https://github.com/microsoft/mimalloc/issues/1333).
+The unmodified `lake --version` and a `lean --run` program using `IO.asTask`
+failed with SIGTRAP in all six control runs, independently of mdc.
+A temporary runtime was relinked from the installed Lean archives and the same
+tag's command-line shell, replacing mimalloc with 3.4.4 and its pthread TLS model.
+The Lean compiler archives and `.olean` standard library were reused unchanged.
+All 20 corresponding smoke runs passed. A temporary toolchain layout was needed
+to make child processes use that library too; five native `lake serve` document
+open/check/close cycles then passed, followed by a normal shutdown.
+[`macos-runtime.json`](macos-runtime.json) records these observations. This is
+runtime diagnosis, not a full-Mathlib compatibility or performance result; no
+replacement was installed into the user's Lean toolchain during this experiment.
+
+Separately, mdc now reports initialization disconnects immediately and owns the
+single automatic reconnect, preserving unsaved edits. Previously a transport
+failure could leave the editor's initialization wait unresolved and surface as
+the unrelated 30-second node-preparation timeout. The browser regression suite
+passes 11/11, including disconnect-before-initialize and subsequent draft recovery.
+
 ## Dependency candidates and graph baseline
 
 The candidate endpoint scanned the direct dependency vector for every matching

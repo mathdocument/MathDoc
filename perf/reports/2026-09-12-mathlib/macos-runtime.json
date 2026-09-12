@@ -1,0 +1,361 @@
+{
+  "platform": "macOS 27 arm64",
+  "toolchain": "leanprover/lean4:v4.34.0-rc2",
+  "lean_commit": "6a10ac8c22beadecabdbb0919c2b50214762f91d",
+  "original_mimalloc": "3.4.1",
+  "temporary_mimalloc": "3.4.4",
+  "temporary_tls_model": "pthreads",
+  "installed": false,
+  "samples": [
+    {
+      "fixed": false,
+      "command": [
+        "lake",
+        "--version"
+      ],
+      "iteration": 0,
+      "code": -5,
+      "seconds": 0.29,
+      "stdout": "Lake version 5.0.0-src+6a10ac8 (Lean version 4.34.0-rc2)\n",
+      "stderr": ""
+    },
+    {
+      "fixed": false,
+      "command": [
+        "lake",
+        "--version"
+      ],
+      "iteration": 1,
+      "code": -5,
+      "seconds": 0.079,
+      "stdout": "Lake version 5.0.0-src+6a10ac8 (Lean version 4.34.0-rc2)\n",
+      "stderr": ""
+    },
+    {
+      "fixed": false,
+      "command": [
+        "lake",
+        "--version"
+      ],
+      "iteration": 2,
+      "code": -5,
+      "seconds": 0.082,
+      "stdout": "Lake version 5.0.0-src+6a10ac8 (Lean version 4.34.0-rc2)\n",
+      "stderr": ""
+    },
+    {
+      "fixed": false,
+      "command": [
+        "lean",
+        "--run",
+        "Smoke.lean"
+      ],
+      "iteration": 0,
+      "code": -5,
+      "seconds": 6.468,
+      "stdout": "42\n",
+      "stderr": ""
+    },
+    {
+      "fixed": false,
+      "command": [
+        "lean",
+        "--run",
+        "Smoke.lean"
+      ],
+      "iteration": 1,
+      "code": -5,
+      "seconds": 0.59,
+      "stdout": "42\n",
+      "stderr": ""
+    },
+    {
+      "fixed": false,
+      "command": [
+        "lean",
+        "--run",
+        "Smoke.lean"
+      ],
+      "iteration": 2,
+      "code": -5,
+      "seconds": 0.579,
+      "stdout": "42\n",
+      "stderr": ""
+    },
+    {
+      "fixed": true,
+      "command": [
+        "lake",
+        "--version"
+      ],
+      "iteration": 0,
+      "code": 0,
+      "seconds": 2.326,
+      "stdout": "Lake version 5.0.0-src+6a10ac8 (Lean version 4.34.0-rc2)\n",
+      "stderr": ""
+    },
+    {
+      "fixed": true,
+      "command": [
+        "lake",
+        "--version"
+      ],
+      "iteration": 1,
+      "code": 0,
+      "seconds": 0.067,
+      "stdout": "Lake version 5.0.0-src+6a10ac8 (Lean version 4.34.0-rc2)\n",
+      "stderr": ""
+    },
+    {
+      "fixed": true,
+      "command": [
+        "lake",
+        "--version"
+      ],
+      "iteration": 2,
+      "code": 0,
+      "seconds": 0.08,
+      "stdout": "Lake version 5.0.0-src+6a10ac8 (Lean version 4.34.0-rc2)\n",
+      "stderr": ""
+    },
+    {
+      "fixed": true,
+      "command": [
+        "lake",
+        "--version"
+      ],
+      "iteration": 3,
+      "code": 0,
+      "seconds": 0.049,
+      "stdout": "Lake version 5.0.0-src+6a10ac8 (Lean version 4.34.0-rc2)\n",
+      "stderr": ""
+    },
+    {
+      "fixed": true,
+      "command": [
+        "lake",
+        "--version"
+      ],
+      "iteration": 4,
+      "code": 0,
+      "seconds": 0.047,
+      "stdout": "Lake version 5.0.0-src+6a10ac8 (Lean version 4.34.0-rc2)\n",
+      "stderr": ""
+    },
+    {
+      "fixed": true,
+      "command": [
+        "lake",
+        "--version"
+      ],
+      "iteration": 5,
+      "code": 0,
+      "seconds": 0.047,
+      "stdout": "Lake version 5.0.0-src+6a10ac8 (Lean version 4.34.0-rc2)\n",
+      "stderr": ""
+    },
+    {
+      "fixed": true,
+      "command": [
+        "lake",
+        "--version"
+      ],
+      "iteration": 6,
+      "code": 0,
+      "seconds": 0.048,
+      "stdout": "Lake version 5.0.0-src+6a10ac8 (Lean version 4.34.0-rc2)\n",
+      "stderr": ""
+    },
+    {
+      "fixed": true,
+      "command": [
+        "lake",
+        "--version"
+      ],
+      "iteration": 7,
+      "code": 0,
+      "seconds": 0.049,
+      "stdout": "Lake version 5.0.0-src+6a10ac8 (Lean version 4.34.0-rc2)\n",
+      "stderr": ""
+    },
+    {
+      "fixed": true,
+      "command": [
+        "lake",
+        "--version"
+      ],
+      "iteration": 8,
+      "code": 0,
+      "seconds": 0.048,
+      "stdout": "Lake version 5.0.0-src+6a10ac8 (Lean version 4.34.0-rc2)\n",
+      "stderr": ""
+    },
+    {
+      "fixed": true,
+      "command": [
+        "lake",
+        "--version"
+      ],
+      "iteration": 9,
+      "code": 0,
+      "seconds": 0.047,
+      "stdout": "Lake version 5.0.0-src+6a10ac8 (Lean version 4.34.0-rc2)\n",
+      "stderr": ""
+    },
+    {
+      "fixed": true,
+      "command": [
+        "lean",
+        "--run",
+        "Smoke.lean"
+      ],
+      "iteration": 0,
+      "code": 0,
+      "seconds": 0.933,
+      "stdout": "42\n",
+      "stderr": ""
+    },
+    {
+      "fixed": true,
+      "command": [
+        "lean",
+        "--run",
+        "Smoke.lean"
+      ],
+      "iteration": 1,
+      "code": 0,
+      "seconds": 0.786,
+      "stdout": "42\n",
+      "stderr": ""
+    },
+    {
+      "fixed": true,
+      "command": [
+        "lean",
+        "--run",
+        "Smoke.lean"
+      ],
+      "iteration": 2,
+      "code": 0,
+      "seconds": 0.679,
+      "stdout": "42\n",
+      "stderr": ""
+    },
+    {
+      "fixed": true,
+      "command": [
+        "lean",
+        "--run",
+        "Smoke.lean"
+      ],
+      "iteration": 3,
+      "code": 0,
+      "seconds": 0.688,
+      "stdout": "42\n",
+      "stderr": ""
+    },
+    {
+      "fixed": true,
+      "command": [
+        "lean",
+        "--run",
+        "Smoke.lean"
+      ],
+      "iteration": 4,
+      "code": 0,
+      "seconds": 0.635,
+      "stdout": "42\n",
+      "stderr": ""
+    },
+    {
+      "fixed": true,
+      "command": [
+        "lean",
+        "--run",
+        "Smoke.lean"
+      ],
+      "iteration": 5,
+      "code": 0,
+      "seconds": 0.645,
+      "stdout": "42\n",
+      "stderr": ""
+    },
+    {
+      "fixed": true,
+      "command": [
+        "lean",
+        "--run",
+        "Smoke.lean"
+      ],
+      "iteration": 6,
+      "code": 0,
+      "seconds": 0.584,
+      "stdout": "42\n",
+      "stderr": ""
+    },
+    {
+      "fixed": true,
+      "command": [
+        "lean",
+        "--run",
+        "Smoke.lean"
+      ],
+      "iteration": 7,
+      "code": 0,
+      "seconds": 0.632,
+      "stdout": "42\n",
+      "stderr": ""
+    },
+    {
+      "fixed": true,
+      "command": [
+        "lean",
+        "--run",
+        "Smoke.lean"
+      ],
+      "iteration": 8,
+      "code": 0,
+      "seconds": 0.63,
+      "stdout": "42\n",
+      "stderr": ""
+    },
+    {
+      "fixed": true,
+      "command": [
+        "lean",
+        "--run",
+        "Smoke.lean"
+      ],
+      "iteration": 9,
+      "code": 0,
+      "seconds": 0.579,
+      "stdout": "42\n",
+      "stderr": ""
+    }
+  ],
+  "lsp": [
+    {
+      "round": 0,
+      "diagnostics": "passed"
+    },
+    {
+      "round": 1,
+      "diagnostics": "passed"
+    },
+    {
+      "round": 2,
+      "diagnostics": "passed"
+    },
+    {
+      "round": 3,
+      "diagnostics": "passed"
+    },
+    {
+      "round": 4,
+      "diagnostics": "passed"
+    },
+    {
+      "exit": 0
+    }
+  ]
+}
