@@ -6,8 +6,9 @@ The service runs native `lake serve` with JSON-RPC Content-Length framing. It se
 
 CLI checks open only the requested target. Lake builds its necessary imports,
 then the same native artifact-certification path used by the browser validates
-their dependency edges. Already certified input keys skip repeated metadata
-reads. A dependency is not elaborated again in a separate LSP worker merely to
+their dependency edges. Already certified input keys with complete sorry evidence
+skip repeated metadata reads; their recorded imports still lead to any incomplete
+transitive certificates. A dependency is not elaborated again in a separate LSP worker merely to
 refresh its status. Missing or mismatched evidence remains unverified.
 
 The browser bridge forwards framed JSON without constructing a recursive JSON tree.
@@ -68,12 +69,23 @@ force a target artifact build; native Lake restores or builds it when required.
 
 Certificates retain `has_sorry`: native LSP warnings supply it for opened modules,
 and nonsynthetic Lake `.trace` warning logs supply it for compiled imports.
-Missing evidence is `null`, which cannot produce a green UI status and requires
-a native check before certificate reuse. `certified` still means compilation and
+Lake cache restoration produces synthetic traces without those logs. For these
+imports the service batches a read of existing `.olean` proof bodies using the
+project's pinned Lean, including `.olean.server` and `.olean.private` for modules.
+It neither rebuilds nor elaborates these dependencies. Results are persisted in
+the same certificates, so this recovery is not repeated on subsequent checks.
+Missing or unreadable evidence stays `null` and cannot produce a green UI status.
+A cached target cannot bypass incomplete certificates in its dependency closure.
+Editor certification refreshes the graph after these dependency statuses are saved;
+users need not visit each dependency. Uncompiled reverse dependents are not
+automatically certified by checking a node they import.
+
+`certified` still means compilation and
 dependency matching succeeded, so admitted declarations remain usable during
 staged formalization. The green status additionally requires `has_sorry: false`.
-This uses compiler warnings, including their configured `warn.sorry` behavior;
-it is not an axiom audit. Graph colors do not propagate admitted assumptions
+The warning-based paths respect configured `warn.sorry` behavior; artifact
+inspection detects direct uses even with warnings disabled. Neither is a
+transitive axiom audit. Graph colors do not propagate admitted assumptions
 through downstream nodes.
 
 Dependency changes reopen the importing document so Lean reloads its import environment. Proof edits preserve the live worker and its elaboration snapshots. Native `lake build +MODULE` generates target artifacts on an explicit build request. On disconnect, the shared CLI/browser transport sends LSP `shutdown` and `exit`, draining stdout until Lean has reaped its workers (which use separate process groups). The writer gets up to one second to finish queued frames before the two-second shutdown handshake. A broken or unfinished frame forces termination without appending shutdown bytes to it. Service shutdown waits for editor and CLI cleanup before stopping the async runtime.

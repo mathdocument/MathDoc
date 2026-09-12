@@ -939,18 +939,6 @@ async fn lean_check(
         let snapshot = s.read().await?;
         let node = snapshot.resolve(&id)?;
         check_revision(&headers, node)?;
-        if let Some(result) = s
-            .lean
-            .cached_or_load(
-                node,
-                &snapshot.lean_keys[&node.fnode],
-                &snapshot.project_key,
-                body.build,
-            )
-            .await
-        {
-            return Ok(Json(json!(result)));
-        }
         crate::lean::Input::capture(&snapshot, &id)?
     };
     let result = s.lean.check(input, body.build).await?;

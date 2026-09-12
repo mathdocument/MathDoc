@@ -448,6 +448,59 @@ async fn artifact_has_sorry(base: &Path, module: &str) -> Option<bool> {
         entry["level"] == "warning" && entry["message"].as_str().is_some_and(sorry_warning)
     }))
 }
+
+/// Lake's content cache restores synthetic traces without warning logs. Inspect
+/// their existing proof bodies once in a batch, using the project's own Lean.
+async fn artifact_sorry_fallback(root: &Path, paths: &[PathBuf]) -> Result<Vec<Option<bool>>> {
+    if paths.is_empty() {
+        return Ok(vec![]);
+    }
+    let script = tempfile::Builder::new().suffix(".lean").tempfile_in(root)?;
+    tokio::fs::write(script.path(), include_str!("lean/artifact_status.lean")).await?;
+    let mut process = spawn(
+        root,
+        &[
+            "env",
+            "lean",
+            "--run",
+            script
+                .path()
+                .to_str()
+                .context("invalid artifact inspector path")?,
+        ],
+    )?;
+    let mut stdin = process
+        .child
+        .stdin
+        .take()
+        .context("Lean stdin unavailable")?;
+    let mut stdout = process
+        .child
+        .stdout
+        .take()
+        .context("Lean stdout unavailable")?;
+    tokio::time::timeout(timeout()?, async {
+        let mut input = serde_json::to_vec(paths)?;
+        input.push(b'\n');
+        stdin.write_all(&input).await?;
+        drop(stdin);
+        let mut output = vec![];
+        stdout.read_to_end(&mut output).await?;
+        if !process.child.wait().await?.success() {
+            bail!(
+                "Lean artifact inspection failed: {}",
+                String::from_utf8_lossy(&output)
+            );
+        }
+        let result: Vec<Option<bool>> = serde_json::from_slice(&output)?;
+        if result.len() != paths.len() {
+            bail!("Lean artifact inspection returned an invalid result count");
+        }
+        Ok(result)
+    })
+    .await
+    .context("Lean artifact inspection timed out")?
+}
 #[derive(Clone)]
 pub struct Input {
     pub project: Arc<LeanProject>,
@@ -567,6 +620,7 @@ impl LeanService {
         } else {
             imports
         };
+        let mut visited = BTreeSet::from([target.fnode.clone()]);
         while let Some(import) = pending.pop() {
             let module = import["module"]["name"]
                 .as_str()
@@ -574,19 +628,18 @@ impl LeanService {
             let Some(id) = known.get(&crate::store::module_file(module, "lean")?) else {
                 continue;
             };
-            if observed.contains_key(id) {
+            if !visited.insert(id.clone()) {
                 continue;
             }
             let Some(node) = nodes.get(id) else {
                 continue;
             };
-            if self
-                .results
-                .read()
-                .unwrap()
-                .get(id)
-                .is_some_and(|r| r.certified && keys.get(id) == Some(&r.input_key))
-            {
+            if let Some(cached) = self.results.read().unwrap().get(id).filter(|r| {
+                r.certified && r.has_sorry.is_some() && keys.get(id) == Some(&r.input_key)
+            }) {
+                // A known direct dependency can still have older, incomplete
+                // transitive certificates. Follow its native imports as well.
+                pending.extend(cached.imports.clone());
                 continue;
             }
             let Some(source) = node.source("lean") else {
@@ -627,6 +680,25 @@ impl LeanService {
                     imports,
                 ),
             );
+        }
+        let missing: Vec<_> = observed
+            .iter()
+            .filter(|(_, (has_sorry, _, _))| has_sorry.is_none())
+            .map(|(id, _)| id.clone())
+            .collect();
+        let paths = missing
+            .iter()
+            .map(|id| {
+                Ok(root
+                    .join(".lake/build/lib/lean")
+                    .join(crate::store::module_file(&nodes[id].module, "olean")?))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for (id, has_sorry) in missing
+            .iter()
+            .zip(artifact_sorry_fallback(root, &paths).await?)
+        {
+            observed.get_mut(id).unwrap().0 = has_sorry;
         }
         let mut final_result = None;
         for (node, key) in &input.chain {
@@ -803,19 +875,32 @@ impl LeanService {
         tokio::fs::rename(temporary, root.join(format!("{}.json", result.fnode))).await?;
         Ok(())
     }
+    async fn cached_input(&self, input: &Input, build: bool) -> Option<CheckResult> {
+        let (target, key) = input.chain.last()?;
+        let result = self
+            .cached_or_load(target, key, &input.project_key, build)
+            .await?;
+        if result.certified {
+            let results = self.results.read().ok()?;
+            if input.chain.iter().any(|(node, key)| {
+                !results
+                    .get(&node.fnode)
+                    .is_some_and(|r| r.certified && r.has_sorry.is_some() && &r.input_key == key)
+            }) {
+                return None;
+            }
+        }
+        Some(result)
+    }
     pub async fn check(&self, input: Input, build: bool) -> Result<CheckResult> {
         let start = Instant::now();
-        let (target, key) = input.chain.last().context("no Lean target")?;
-        if let Some(result) = self
-            .cached_or_load(target, key, &input.project_key, build)
-            .await
-        {
+        let (target, _) = input.chain.last().context("no Lean target")?;
+        if let Some(result) = self.cached_input(&input, build).await {
             return Ok(result);
         }
         let target_id = target.fnode.clone();
-        let target_key = key.clone();
         let mut manager = self.manager.lock().await;
-        if let Some(result) = self.cached(&target.fnode, &target_key, &target.revision(), build) {
+        if let Some(result) = self.cached_input(&input, build).await {
             return Ok(result);
         }
         self.prepare_input(&mut manager, &input).await?;
@@ -863,11 +948,8 @@ impl LeanService {
         refresh_editor_sources(&manager.root, input, &mut manager.sources).await
     }
     async fn check_chain(&self, manager: &mut Manager, input: &Input) -> Result<CheckResult> {
-        let (target, key) = input.chain.last().context("no Lean target")?;
-        if let Some(result) = self
-            .cached_or_load(target, key, &input.project_key, false)
-            .await
-        {
+        let (target, _) = input.chain.last().context("no Lean target")?;
+        if let Some(result) = self.cached_input(input, false).await {
             return Ok(result);
         }
         let source = target.source("lean").context("node has no Lean block")?;
@@ -1158,6 +1240,126 @@ mod tests {
         // The latest target certificate was deliberately invalidated above.
         // Its earlier successful persisted certificate is still keyed correctly.
         assert_eq!(reopened.formal_status(&target, "target-key"), "verified");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires native Lean and Lake"]
+    async fn restored_artifacts_refresh_the_entire_dependency_status() {
+        let cache = tempfile::tempdir().unwrap();
+        let service = LeanService::new(cache.path().to_path_buf()).unwrap();
+        let marker = cache.path().join("compiled");
+        let mut leaf = Node::new("Complete leaf".into()).unwrap();
+        let mut gap = Node::new("Pending leaf".into()).unwrap();
+        let mut middle = Node::new("Complete dependent proof".into()).unwrap();
+        let mut target = Node::new("Root".into()).unwrap();
+        middle.depens = vec![leaf.fnode.clone(), gap.fnode.clone()];
+        target.depens = vec![middle.fnode.clone()];
+        for (node, source) in [
+            (&mut leaf, format!("import Lean\nrun_cmd Lean.Elab.Command.liftIO <| IO.FS.writeFile {} \"compiled\"\ntheorem leafTruth : True := by trivial\n", serde_json::to_string(&marker.to_string_lossy()).unwrap())),
+            (&mut gap, "module\npublic import Lean\nset_option warn.sorry false\npublic theorem gapTruth : True := by sorry\n".into()),
+        ] {
+            node.blocks.push(crate::store::Block {srctype: "lean".into(), content: source, ..Default::default()});
+        }
+        middle.blocks.push(crate::store::Block {
+            srctype: "lean".into(),
+            content: format!(
+                "import {}\nimport {}\ntheorem middleTruth : True := gapTruth\n",
+                leaf.module, gap.module
+            ),
+            ..Default::default()
+        });
+        target.blocks.push(crate::store::Block {
+            srctype: "lean".into(),
+            content: format!(
+                "import {}\ntheorem rootTruth : True := middleTruth\n",
+                middle.module
+            ),
+            ..Default::default()
+        });
+        let input = Input {
+            project: LeanProject::default().into(),
+            project_key: LeanProject::default().key(),
+            modules: [&leaf, &gap, &middle, &target]
+                .into_iter()
+                .map(|node| {
+                    (
+                        crate::store::module_file(&node.module, "lean").unwrap(),
+                        node.fnode.clone(),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+                .into(),
+            chain: [&leaf, &gap, &middle, &target]
+                .into_iter()
+                .map(|node| (Arc::new(node.clone()), node.fnode.clone()))
+                .collect(),
+        };
+        let draft = service.editor_project(&input).await.unwrap();
+        let mut editor = Lsp::start(draft.path()).await.unwrap();
+        let uri = file_uri(&module_path(draft.path(), &target.module).unwrap()).unwrap();
+        let (diagnostics, imports) = editor
+            .check(&uri, target.source("lean").unwrap(), "deps")
+            .await
+            .unwrap();
+        assert!(
+            service
+                .record_editor_check(draft.path(), &input, diagnostics, imports)
+                .await
+                .unwrap()
+                .certified
+        );
+        assert!(marker.exists());
+        // Model older certificates: the parent and direct import are complete,
+        // but transitive imports have lost their warning evidence.
+        for node in [&leaf, &gap] {
+            let mut result = service.results.read().unwrap()[&node.fnode].clone();
+            result.has_sorry = None;
+            service.persist_result(&result).await.unwrap();
+            service
+                .results
+                .write()
+                .unwrap()
+                .insert(node.fnode.clone(), result);
+        }
+        assert!(service.cached_input(&input, false).await.is_none());
+        editor.server.shutdown().await;
+        drop(draft);
+        std::fs::remove_file(&marker).unwrap();
+        // Only open the root; Lake restores all imports from the local cache.
+        let result = service.check(input.clone(), false).await.unwrap();
+        assert!(result.certified, "{result:?}");
+        assert!(!result.cache_hit);
+        assert!(
+            !marker.exists(),
+            "status recovery must not recompile imports"
+        );
+        for node in [&leaf, &middle, &target] {
+            assert_eq!(
+                service.formal_status(node, &node.fnode),
+                "verified",
+                "{}",
+                node.title
+            );
+        }
+        assert_eq!(
+            service
+                .cached(&gap.fnode, &gap.fnode, &gap.revision(), false)
+                .unwrap()
+                .has_sorry,
+            Some(true)
+        );
+        assert_eq!(service.formal_status(&gap, &gap.fnode), "unverified");
+        assert!(service.check(input, false).await.unwrap().cache_hit);
+        let root = service.manager.lock().await.root.clone();
+        assert_eq!(
+            artifact_has_sorry(&root.join(".lake/build/lib/lean"), &leaf.module).await,
+            None
+        );
+        service.shutdown().await;
+        drop(service);
+        let reopened = LeanService::new(cache.path().to_path_buf()).unwrap();
+        assert_eq!(reopened.formal_status(&leaf, &leaf.fnode), "verified");
+        assert_eq!(reopened.formal_status(&gap, &gap.fnode), "unverified");
     }
 
     #[tokio::test]
