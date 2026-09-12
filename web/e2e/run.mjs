@@ -23,7 +23,7 @@ async function startServer(cwd, database) {
   return { ...info, output: () => readFileSync(info.log, "utf8").slice(-16000) };
 }
 
-async function fixture(browser, body, extraNodes = []) {
+async function fixture(browser, body, extraNodes = [], expectedPageErrors = []) {
   const root = await mkdtemp(resolve(tmpdir(), "mdc-e2e-"));
   let server;
   let context;
@@ -64,7 +64,7 @@ async function fixture(browser, body, extraNodes = []) {
       await title(page, "Alpha");
       await body({ root, cli, page, url: server.url, serverOutput: server.output });
       await cli("graph", "check");
-      assert.deepEqual(errors, []);
+      assert.deepEqual(errors.filter(error => !expectedPageErrors.some(pattern => pattern.test(error))), []);
     } catch (e) {
       const artifacts = process.env.MDC_E2E_ARTIFACTS
         ? resolve(process.env.MDC_E2E_ARTIFACTS, database)
@@ -475,6 +475,45 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         }
       }, [a]);
     });
+    await suite.test("Lean startup failure is reported immediately and preserves editable source", () =>
+      fixture(browser, async ({ cli, page, url }) => {
+        const node = JSON.parse((await cli("show", "Alpha")).stdout);
+        const response = await fetch(`${url}/api/node/${node.fnode}/block/lean`, {
+          method: "PUT", headers: { "content-type": "application/json", "if-match": `"${node.revision}"` },
+          body: JSON.stringify({ content: "theorem startup : True := by trivial\n" }),
+        });
+        assert.equal(response.status, 200);
+        let fail = true, attempts = 0;
+        await page.routeWebSocket(/\/api\/lean\/session\/.*\/ws$/, ws => {
+          attempts++;
+          const server = ws.connectToServer();
+          ws.onMessage(message => server.send(message));
+          server.onMessage(message => {
+            if (fail && JSON.parse(String(message)).result?.capabilities) {
+              ws.close({ code: 1011, reason: "fixture: native startup failed" });
+              server.close();
+            } else ws.send(message);
+          });
+        });
+        await page.reload();
+        await page.getByText(/Lean connection closed;/).first().waitFor({ timeout: 10000 });
+        await page.waitForFunction(() => document.body.innerText.includes("Lean connection closed;") && !document.body.innerText.includes("Reconnecting Lean…"));
+        assert.equal(attempts, 2, "only one automatic reconnect is allowed");
+        const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
+        await frame.getByRole("textbox", { name: /Editor content/ }).press("ControlOrMeta+End");
+        await page.keyboard.insertText("-- draft after failed startup\n");
+        await page.getByText("Unsaved", { exact: true }).waitFor();
+        fail = false;
+        await page.getByRole("button", { name: "Reload environment", exact: true }).click();
+        await page.getByText("Lean editor ready", { exact: true }).waitFor();
+        await frame.getByText("-- draft after failed startup", { exact: true }).waitFor();
+        assert.doesNotMatch(JSON.parse((await cli("show", "Alpha")).stdout).blocks[0].content, /draft after failed startup/);
+      }, [], [
+        // Upstream emits shutdown rejections when initialize is interrupted.
+        // Only this fault-injection fixture allows them; recovery is asserted above.
+        /^Error: Client is not running and can't be stopped\. It's current state is: starting\n/,
+        /^\w+: Pending response rejected since connection got disposed\n/,
+      ]));
     await suite.test("Lean cancels stale selections and recovers from preparation timeouts without losing drafts", () =>
       fixture(browser, async ({ root, cli, page, url, serverOutput }) => {
         const ids = {};

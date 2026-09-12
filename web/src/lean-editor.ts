@@ -2,6 +2,7 @@ import { LeanMonaco, LeanMonacoEditor, type LeanClient } from "lean4monaco";
 import { CancellationTokenSource, Uri, KeyCode, KeyMod, editor as MonacoEditor } from "monaco-editor";
 import { createModelReference } from "vscode/monaco";
 import { FileUri } from "lean4monaco/dist/vscode-lean4/vscode-lean4/src/utils/exturi";
+import { CloseAction, ErrorAction } from "vscode-languageclient/lib/common/client.js";
 
 const params = new URLSearchParams(location.search);
 const id = params.get("session");
@@ -32,10 +33,17 @@ let shownFnode = "";
 let preview: MonacoEditor.ITextModel | undefined;
 let updating = false;
 let selection = new AbortController();
+let connectionFailure: string | undefined;
 let resolveClient: (client: LeanClient) => void;
 const clientReady = new Promise<LeanClient>(resolve => { resolveClient = resolve; });
 const send = (type: string, value?: unknown, generation?: number) => parent.postMessage({ type, value, fnode: shownFnode, generation }, location.origin);
-function showProgress() { send("lean-progress", preview ? "Preparing Lean environment…" : selected?.progress ?? ""); }
+function showProgress() { send("lean-progress", connectionFailure ? "" : preview ? "Preparing Lean environment…" : selected?.progress ?? ""); }
+function disconnected(reason: string) {
+  if (connectionFailure) return;
+  connectionFailure = reason;
+  selection.abort(new Error(reason));
+  send("lean-disconnected", reason);
+}
 async function validate(entry: OpenDocument) {
   const key = () => `${entry.document.revision}:${entry.document.environment_key}:${entry.reference.object.textEditorModel?.getVersionId()}`;
   if (documents.get(entry.document.filename) !== entry || entry.validating || entry.validated === key() || entry.progress !== "Lean editor ready" ||
@@ -168,6 +176,18 @@ async function start() {
   runtime.setInfoviewElement(document.getElementById("infoview")!);
   await runtime.start({
     websocket: { url: `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/lean/session/${encodeURIComponent(id)}/ws` },
+    // The parent recreates the session and restores drafts. Retrying this consumed
+    // socket inside vscode-languageclient races that recovery, including at init.
+    clientOptions: {
+      documentSelector: [{ language: "lean4" }],
+      errorHandler: {
+        error: () => ({ action: ErrorAction.Continue }),
+        closed: () => {
+          disconnected("Lean connection closed; check the service log for the native startup error.");
+          return { action: CloseAction.DoNotRestart, handled: true };
+        },
+      },
+    },
     htmlElement: document.getElementById("layout")!,
     vscode: {
       "editor.fontSize": 13,
@@ -180,11 +200,19 @@ async function start() {
   // session has one known root, including modules nested under Lib/EGA, etc.
   const provider = runtime.clientProvider!;
   const ensureClient = provider.ensureClient.bind(provider);
-  provider.ensureClient = () => ensureClient(new FileUri("/project/lean-toolchain"));
+  provider.ensureClient = async () => {
+    try { return await ensureClient(new FileUri("/project/lean-toolchain")); }
+    catch (e) {
+      // lean4monaco's transport factory can reject before LeanClient installs
+      // its failure listeners. Settle pending selections instead of timing out.
+      disconnected(`Lean failed to initialize: ${e instanceof Error ? e.message : (e as { message?: string })?.message ?? String(e)}`);
+      return [false, undefined];
+    }
+  };
   runtime.clientProvider!.clientAdded((client: LeanClient) => {
     client.restarted(() => { if (client.isRunning()) resolveClient(client); });
-    client.stopped((reason: { message: string }) => send("lean-disconnected", reason.message));
-    client.serverFailed((reason: string) => send("lean-disconnected", reason));
+    client.stopped((reason: { message: string }) => disconnected(reason.message));
+    client.serverFailed((reason: string) => disconnected(reason));
     if (client.isRunning()) resolveClient(client);
     client.progressChanged(([uri, processing]: [string, { range: { start: { line: number } } }[]]) => {
       const entry = documents.get(Uri.parse(uri).path);
@@ -219,6 +247,7 @@ async function start() {
       selection.abort();
       const current = selection = new AbortController();
       showNode(fnode, source, generation);
+      if (connectionFailure) { error(connectionFailure); return; }
       const timer = setTimeout(() => current.abort(new DOMException("Lean node preparation timed out", "TimeoutError")), 30000);
       // Superseded requests cannot hold up the latest selection or replace its model.
       void abortable(selectNode(fnode, revision, generation, current.signal), current.signal).catch(e => {
