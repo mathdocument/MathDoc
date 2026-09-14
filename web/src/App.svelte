@@ -354,6 +354,27 @@
     }
   });
 
+  let layoutWidth = $state(0);
+  let editorPixels = $state(0);
+  let editorElement: HTMLDivElement;
+  let editorWidth = $state<number | null>(null);
+  let resizePointer = $state<number | null>(null);
+  let resizeStartX = 0;
+  let resizeStartWidth = 0;
+  const maxEditorWidth = $derived(Math.max(320, layoutWidth - 24 - 292));
+
+  function setEditorWidth(width: number) {
+    editorWidth = Math.max(320, Math.min(maxEditorWidth, width));
+  }
+  function resizeWithKeyboard(event: KeyboardEvent) {
+    const current = Math.min(maxEditorWidth, editorWidth ?? editorElement.clientWidth);
+    const width = { ArrowLeft: current + 32, ArrowRight: current - 32,
+      Home: 320, End: maxEditorWidth }[event.key];
+    if (width === undefined) return;
+    event.preventDefault();
+    setEditorWidth(width);
+  }
+
   let statusLoad = $derived(view === "force" ? nodeSession.selectedLoad : nodeSession.load);
 
   async function onForceSelect(
@@ -368,6 +389,7 @@
     if (refreshing || historyNavigating) return;
     cancelStartup();
     nodeSession.cancel();
+    resizePointer = null;
     // Both layouts use the same editor, including its unsaved buffer and LSP.
     // A layout change never waits for Lean or discards drafts.
     if (view === "columns") {
@@ -382,6 +404,8 @@
   }
 
 </script>
+
+<svelte:window onblur={() => resizePointer = null} />
 
 <div
   class="app"
@@ -495,7 +519,8 @@
     </div>
   {/if}
 
-  <main class="layout" class:force-layout={view === "force"}>
+  <main class="layout" class:force-layout={view === "force"} class:resizing={resizePointer !== null}
+    bind:clientWidth={layoutWidth} style:--graph-editor-width={editorWidth === null ? null : `${editorWidth}px`}>
     <div class="force-canvas-wrap" class:hidden={view !== "force"}>
       <DepthGraph
         active={view === "force"}
@@ -516,7 +541,31 @@
         onHover={(i) => (nodeSession.referrersSelected = i)}
       />
     {/if}
-    <div class="editor-wrap" class:force-editor-wrap={view === "force"}>
+    {#if view === "force"}
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions (A focusable separator is the ARIA window splitter pattern.) -->
+      <div class="graph-resizer" role="separator" tabindex="0" aria-label="Resize graph editor"
+        aria-orientation="vertical" aria-controls="graph-editor" aria-valuemin={320}
+        aria-valuemax={Math.floor(maxEditorWidth)} aria-valuenow={Math.round(editorPixels)}
+        aria-valuetext={`Editor width ${Math.round(editorPixels)} pixels`}
+        onkeydown={resizeWithKeyboard}
+        onpointerdown={(event) => {
+          if (event.button !== 0 || !event.isPrimary) return;
+          event.preventDefault();
+          event.currentTarget.focus();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          resizePointer = event.pointerId;
+          resizeStartX = event.clientX;
+          resizeStartWidth = editorElement.clientWidth;
+        }}
+        onpointermove={(event) => {
+          if (resizePointer === event.pointerId) setEditorWidth(resizeStartWidth + resizeStartX - event.clientX);
+        }}
+        onpointerup={() => resizePointer = null}
+        onpointercancel={() => resizePointer = null}
+        onlostpointercapture={() => resizePointer = null}
+      ></div>
+    {/if}
+    <div id="graph-editor" class="editor-wrap" class:force-editor-wrap={view === "force"} bind:clientWidth={editorPixels} bind:this={editorElement}>
       {#if initialError && view === "columns"}
         <div class="full-error">{initialError}</div>
       {:else}
@@ -959,13 +1008,25 @@
     box-shadow: var(--mdc-shadow-lg);
   }
   .force-editor-wrap {
-    flex: 0 0 clamp(340px, 34%, 560px);
-    width: clamp(340px, 34%, 560px);
+    flex: 0 0 clamp(320px, var(--graph-editor-width, clamp(340px, 34%, 560px)), calc(100% - 292px));
     min-width: 0;
     display: flex;
     flex-direction: column;
     overflow: hidden;
   }
+  .force-layout { gap: 0; }
+  .graph-resizer {
+    flex: 0 0 12px;
+    display: grid;
+    place-items: center;
+    cursor: col-resize;
+    touch-action: none;
+    border-radius: 6px;
+  }
+  .graph-resizer::after { content: ""; width: 3px; height: 32px; border-radius: 3px; background: var(--mdc-border-strong); }
+  .graph-resizer:hover::after, .graph-resizer:focus-visible::after, .resizing .graph-resizer::after { background: var(--mdc-accent); }
+  .resizing { user-select: none; cursor: col-resize; }
+  .resizing :global(iframe) { pointer-events: none; }
   .full-error {
     flex: 1;
     display: grid;
@@ -1030,7 +1091,9 @@
     }
     .force-layout {
       flex-direction: column;
+      gap: 0.75rem;
     }
+    .graph-resizer { display: none; }
     .force-canvas-wrap {
       flex: 1 1 52%;
       min-height: 240px;

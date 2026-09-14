@@ -457,6 +457,22 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           assert.equal(await page.locator('iframe[title="Lean source and Infoview"]').getAttribute("src"), sessionURL);
           await page.getByText("Unsaved", { exact: true }).waitFor();
           switchTimes.push(Math.round(performance.now() - started));
+          if (i === 0) {
+            const divider = page.getByRole("separator", { name: "Resize graph editor" });
+            const box = await divider.boundingBox();
+            const before = (await page.locator(".editor-wrap").boundingBox()).width;
+            await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+            await page.mouse.down();
+            await page.mouse.move(box.x + box.width / 2 - 140, box.y + box.height / 2, { steps: 8 });
+            await page.mouse.up();
+            const wider = (await page.locator(".editor-wrap").boundingBox()).width;
+            assert.ok(Math.abs(wider - before - 140) < 2, "dragging left widens the editor");
+            await divider.press("ArrowRight");
+            await page.waitForFunction(expected => document.getElementById("graph-editor").clientWidth === expected, Math.round(wider) - 32);
+            const narrower = (await page.locator(".editor-wrap").boundingBox()).width;
+            assert.ok(Math.abs(wider - narrower - 32) < 2, "the divider supports keyboard resizing");
+            assert.equal(await page.locator('iframe[title="Lean source and Infoview"]').getAttribute("src"), sessionURL);
+          }
         }
         assert.equal(sessions, 1, "layout changes must reuse the Lean session, including a loading or dirty editor");
         console.log("Lean editor layout switch durations (ms):", switchTimes.join(", "));
