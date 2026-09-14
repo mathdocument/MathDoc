@@ -20,7 +20,9 @@ sha2 = "0.10"
 # Web frontend (mdc start)
 axum = { version = "0.7", default-features = false, features = ["http1", "json", "tokio", "query", "ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "process", "io-util", "sync", "time", "fs"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+# Reuse the HTTP stack's native upgrade tunnel for Lean WebSockets.
+hyper = { version = "1", features = ["http1"] }
 futures-util = "0.3"
 rust-embed = { version = "8", features = ["mime-guess"] }
 tempfile = "3"

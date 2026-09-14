@@ -18,22 +18,22 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
-    /// List all project branches and their local service ports, including stopped projects.
+    /// Show the entry server and all project branches with their running state and URLs.
     Status,
     /// Create a new project database on the configured TerminusDB instance.
     Init { database: String },
-    /// Start a project branch in the background and print its browser URL.
+    /// Start the entry server and optionally a project branch in the background.
     Start {
         #[arg(value_name = "DATABASE/BRANCH", value_parser = parse_project)]
-        project: String,
-        /// Use this port; omitted means an available port chosen by the OS.
+        project: Option<String>,
+        /// Entry server port; defaults to the configured port or 17843.
         #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
         port: Option<u16>,
     },
-    /// Stop a project service and wait for Lean workers to shut down.
+    /// Stop a branch and its Lean workers, or stop only the entry server when omitted.
     Stop {
         #[arg(value_name = "DATABASE/BRANCH", value_parser = parse_project)]
-        project: String,
+        project: Option<String>,
     },
     /// Search branch nodes by title or UUID.
     Search {
@@ -408,17 +408,7 @@ pub fn run() -> i32 {
 async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
     let _profile = crate::profile::scope("service.request");
     let local = match &cli.command {
-        Commands::Status => {
-            let projects = crate::store::Terminus::from_env()?.projects().await?;
-            let mut status = serde_json::Map::new();
-            for db in projects {
-                status.insert(
-                    format!("{}/{}", db.database, db.branch),
-                    json!({"port":crate::service::running_service(&db.cache_path()?)?.map(|s| s.port)}),
-                );
-            }
-            Some(Value::Object(status))
-        }
+        Commands::Status => Some(crate::gateway::status().await?),
         Commands::Init { database } => {
             Database::from_env(database.clone(), "main".into())?
                 .initialize()
@@ -426,12 +416,12 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
             Some(json!({"initialized":true}))
         }
         Commands::Start { project, port } => {
-            let Some(info) = crate::service::start(project, port.unwrap_or(0)).await? else {
+            let Some(info) = crate::service::start(project.as_deref(), *port).await? else {
                 return Ok(0);
             };
             Some(info)
         }
-        Commands::Stop { project } => Some(crate::service::stop(project).await?),
+        Commands::Stop { project } => Some(crate::service::stop(project.as_deref()).await?),
         _ => None,
     };
     if let Some(value) = local {
@@ -453,12 +443,15 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
     let root = crate::config::Settings::load()?.project_cache(&project)?;
     let service = crate::service::running_service(&root)?
         .with_context(|| format!("{project} is not running; run mdc start {project}"))?;
+    let gateway =
+        crate::service::running_service(&crate::config::Settings::load()?.gateway_cache()?)?
+            .context("entry server is not running; run mdc start")?;
     let api = Api {
         client: Client::builder()
             .no_proxy()
             .timeout(std::time::Duration::from_secs(1800))
             .build()?,
-        url: service.url(),
+        url: format!("{}/p/{project}", gateway.url()),
         token: service.token,
     };
     let value = match cli.command {

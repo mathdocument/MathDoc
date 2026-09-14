@@ -734,24 +734,7 @@ impl LeanService {
             .context("editor check produced no target result")
     }
     pub fn new(root: PathBuf) -> Result<Self> {
-        use std::os::{
-            fd::AsRawFd,
-            unix::fs::{OpenOptionsExt, PermissionsExt},
-        };
-        std::fs::create_dir_all(&root)?;
-        let lease = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .open(root.join("service.lock"))?;
-        if unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            bail!("this database branch cache is already owned by another service");
-        }
-        // A new owner is not serving until its HTTP listener has been bound.
-        lease.set_len(0)?;
-        lease.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        let lease = crate::service::acquire_lease(&root)?;
         // Restore certificates once, so graph reads need neither disk scans nor
         // compilation. Every lookup still checks the current recursive input key.
         let mut results = HashMap::new();

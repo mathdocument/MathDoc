@@ -12,6 +12,7 @@ pub mod core;
 pub mod lean;
 pub(crate) mod profile;
 pub mod service;
+pub(crate) mod gateway;
 pub mod store;
 #[cfg(unix)]
 pub mod web;

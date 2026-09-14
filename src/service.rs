@@ -61,7 +61,7 @@ impl Service {
     }
 }
 
-pub struct ApiError(StatusCode, String);
+pub struct ApiError(pub(crate) StatusCode, pub(crate) String);
 impl From<anyhow::Error> for ApiError {
     fn from(error: anyhow::Error) -> Self {
         let text = error.to_string();
@@ -205,31 +205,7 @@ async fn local_origin(
         )
             .into_response();
     }
-    let host = request
-        .headers()
-        .get("host")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    let valid = host
-        .parse::<axum::http::uri::Authority>()
-        .ok()
-        .is_some_and(|h| {
-            h.host() == "localhost"
-                || h.host()
-                    .trim_matches(['[', ']'])
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|ip| ip.is_loopback())
-        });
-    let origin_valid = request.headers().get("origin").is_none_or(|origin| {
-        origin
-            .to_str()
-            .ok()
-            .and_then(|v| reqwest::Url::parse(v).ok())
-            .is_some_and(|u| {
-                u.scheme() == "http" && u.origin().ascii_serialization() == format!("http://{host}")
-            })
-    });
-    if !valid || !origin_valid {
+    if !allowed_origin(request.headers(), None) {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({"error":"local same-origin requests required"})),
@@ -256,6 +232,62 @@ async fn local_origin(
     response
 }
 
+pub(crate) fn allowed_origin(headers: &HeaderMap, public_origin: Option<&str>) -> bool {
+    let host = headers
+        .get("host")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    let local = host
+        .parse::<axum::http::uri::Authority>()
+        .ok()
+        .is_some_and(|h| {
+            h.host() == "localhost"
+                || h.host()
+                    .trim_matches(['[', ']'])
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+        });
+    let local_origin = format!("http://{host}");
+    let expected = public_origin
+        .filter(|origin| {
+            origin
+                .split_once("://")
+                .is_some_and(|(_, authority)| authority == host)
+        })
+        .or_else(|| local.then_some(local_origin.as_str()));
+    let Some(expected) = expected else {
+        return false;
+    };
+    headers.get("origin").is_none_or(|origin| {
+        origin
+            .to_str()
+            .ok()
+            .and_then(|v| reqwest::Url::parse(v).ok())
+            .is_some_and(|u| u.origin().ascii_serialization() == expected)
+    })
+}
+
+pub(crate) fn acquire_lease(root: &std::path::Path) -> Result<std::fs::File> {
+    use std::os::{
+        fd::AsRawFd,
+        unix::fs::{OpenOptionsExt, PermissionsExt},
+    };
+    std::fs::create_dir_all(root)?;
+    let lease = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(root.join("service.lock"))?;
+    if unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        bail!("this service cache is already owned by another service");
+    }
+    lease.set_len(0)?;
+    lease.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    Ok(lease)
+}
+
 pub(crate) async fn serve(db: Database, port: u16) -> Result<()> {
     // Bind the requested port itself: probing then rebinding races other processes.
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
@@ -266,6 +298,7 @@ pub(crate) async fn serve(db: Database, port: u16) -> Result<()> {
         port: listener.local_addr()?.port(),
         pid: std::process::id(),
         token: service.token.clone(),
+        public_origin: None,
     };
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     std::fs::write(
@@ -331,10 +364,15 @@ pub(crate) struct RunningService {
     pub port: u16,
     pub pid: u32,
     pub token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_origin: Option<String>,
 }
 impl RunningService {
     pub fn url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
+    }
+    pub fn browser_url(&self) -> String {
+        self.public_origin.clone().unwrap_or_else(|| self.url())
     }
 }
 
@@ -364,17 +402,12 @@ pub(crate) async fn delete_branch(project: &str) -> Result<Value> {
     Ok(json!({"project":project,"deleted":true}))
 }
 
-pub(crate) async fn start(project: &str, port: u16) -> Result<Option<Value>> {
+pub(crate) async fn start(project: Option<&str>, port: Option<u16>) -> Result<Option<Value>> {
     use std::{
         io::{Read, Write},
-        os::{
-            fd::AsFd,
-            unix::{fs::OpenOptionsExt, net::UnixStream},
-        },
-        process::Stdio,
+        os::{fd::AsFd, unix::net::UnixStream},
         time::Duration,
     };
-    use tokio::io::{AsyncBufReadExt, BufReader};
     // Node.js also uses anonymous sockets for ordinary child stdin. Only the
     // marker queued before spawn identifies our child; never wait for user stdin.
     // Re-exec keeps Tokio initialization out of the post-fork child.
@@ -387,10 +420,21 @@ pub(crate) async fn start(project: &str, port: u16) -> Result<Option<Value>> {
             channel.set_nonblocking(true)?;
             let mut marker = [0; 9];
             if channel.read_exact(&mut marker).is_ok() && &marker == b"mdc-start" {
+                let mut port_bytes = [0; 2];
+                channel.read_exact(&mut port_bytes)?;
+                let internal_port = u16::from_be_bytes(port_bytes);
                 drop(channel);
                 let result = async {
-                    let (database, branch) = crate::config::project_parts(project)?;
-                    serve(Database::from_env(database.into(), branch.into())?, port).await
+                    if let Some(project) = project {
+                        let (database, branch) = crate::config::project_parts(project)?;
+                        serve(
+                            Database::from_env(database.into(), branch.into())?,
+                            internal_port,
+                        )
+                        .await
+                    } else {
+                        crate::gateway::serve(internal_port).await
+                    }
                 }
                 .await;
                 if let Err(error) = &result {
@@ -404,10 +448,75 @@ pub(crate) async fn start(project: &str, port: u16) -> Result<Option<Value>> {
             }
         }
     }
-    let root = crate::config::Settings::load()?.project_cache(project)?;
-    if running_service(&root)?.is_some() {
-        bail!("{project} is already running");
+    let settings = crate::config::Settings::load()?;
+    if let Some(project) = project {
+        if running_service(&settings.project_cache(project)?)?.is_some() {
+            bail!("{project} is already running");
+        }
+        let (database, branch) = crate::config::project_parts(project)?;
+        Database::from_env(database.into(), branch.into())?
+            .version()
+            .await?;
     }
+    let gateway_root = settings.gateway_cache()?;
+    let gateway = if let Some(info) = running_service(&gateway_root)? {
+        if port.is_some_and(|port| port != info.port) {
+            bail!(
+                "entry server is already using port {}; run mdc stop before changing its port",
+                info.port
+            );
+        }
+        info
+    } else {
+        let requested = port.unwrap_or(settings.gateway_port()?);
+        match spawn_background(None, requested, &gateway_root).await {
+            Ok(info) => info,
+            Err(error) => {
+                // Concurrent branch starts may race to launch the single entry server.
+                let current = tokio::time::timeout(Duration::from_secs(2), async {
+                    loop {
+                        if let Some(info) = running_service(&gateway_root)? {
+                            if info.port == requested {
+                                return Ok::<_, anyhow::Error>(info);
+                            }
+                            bail!("entry server started on a different port");
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                })
+                .await;
+                match current {
+                    Ok(Ok(info)) => info,
+                    _ => return Err(error),
+                }
+            }
+        }
+    };
+    let Some(project) = project else {
+        return Ok(Some(
+            json!({"port":gateway.port,"pid":gateway.pid,"url":gateway.browser_url(),"log":gateway_root.join("service.log")}),
+        ));
+    };
+    let root = settings.project_cache(project)?;
+    let info = spawn_background(Some(project), 0, &root).await?;
+    Ok(Some(
+        json!({"project":project,"port":gateway.port,"pid":info.pid,
+        "url":format!("{}/p/{project}/", gateway.browser_url()),"log":root.join("service.log")}),
+    ))
+}
+
+async fn spawn_background(
+    project: Option<&str>,
+    port: u16,
+    root: &std::path::Path,
+) -> Result<RunningService> {
+    use std::{
+        io::Write,
+        os::unix::{fs::OpenOptionsExt, net::UnixStream},
+        process::Stdio,
+        time::Duration,
+    };
+    use tokio::io::{AsyncBufReadExt, BufReader};
     std::fs::create_dir_all(&root)?;
     let log_path = root.join("service.log");
     let log = std::fs::OpenOptions::new()
@@ -418,15 +527,16 @@ pub(crate) async fn start(project: &str, port: u16) -> Result<Option<Value>> {
     let mut command = tokio::process::Command::new(std::env::current_exe()?);
     let (mut bootstrap, child_bootstrap) = UnixStream::pair()?;
     bootstrap.write_all(b"mdc-start")?;
+    bootstrap.write_all(&port.to_be_bytes())?;
     let child_bootstrap: std::os::fd::OwnedFd = child_bootstrap.into();
     command
-        .args(["start", project])
+        .arg("start")
         .current_dir(&root)
         .stdin(Stdio::from(child_bootstrap))
         .stdout(Stdio::piped())
         .stderr(log);
-    if port != 0 {
-        command.args(["--port", &port.to_string()]);
+    if let Some(project) = project {
+        command.arg(project);
     }
     if let Some(path) = std::env::var_os("MDC_CONFIG") {
         command.env("MDC_CONFIG", std::fs::canonicalize(path)?);
@@ -468,15 +578,18 @@ pub(crate) async fn start(project: &str, port: u16) -> Result<Option<Value>> {
             return Err(error);
         }
     };
-    Ok(Some(
-        json!({"project":project,"port":info.port,"pid":info.pid,"url":info.url(),"log":log_path}),
-    ))
+    Ok(info)
 }
 
-pub(crate) async fn stop(project: &str) -> Result<Value> {
+pub(crate) async fn stop(project: Option<&str>) -> Result<Value> {
     use std::time::Duration;
-    let root = crate::config::Settings::load()?.project_cache(project)?;
-    let info = running_service(&root)?.with_context(|| format!("{project} is not running"))?;
+    let settings = crate::config::Settings::load()?;
+    let root = match project {
+        Some(project) => settings.project_cache(project)?,
+        None => settings.gateway_cache()?,
+    };
+    let name = project.unwrap_or("entry server");
+    let info = running_service(&root)?.with_context(|| format!("{name} is not running"))?;
     let response = reqwest::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(10))
@@ -496,7 +609,10 @@ pub(crate) async fn stop(project: &str) -> Result<Value> {
     })
     .await
     .context("service is still shutting down; inspect service.log")??;
-    Ok(json!({"project":project,"stopped":true}))
+    Ok(match project {
+        Some(project) => json!({"project":project,"stopped":true}),
+        None => json!({"stopped":true}),
+    })
 }
 
 async fn graph_check(State(s): State<Arc<Service>>) -> ApiResult<Json<Value>> {

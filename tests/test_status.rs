@@ -62,18 +62,15 @@ async fn reject(root: &Path, args: &[&str], message: &str) {
     );
 }
 
-async fn status(root: &Path) -> BTreeMap<String, Option<u16>> {
+async fn status(root: &Path) -> BTreeMap<String, bool> {
     let value = run(root, &["status"]).await;
-    value
+    value["projects"]
         .as_object()
         .unwrap()
         .iter()
         .map(|(project, state)| {
-            assert_eq!(state.as_object().unwrap().len(), 1);
-            (
-                project.clone(),
-                serde_json::from_value(state["port"].clone()).unwrap(),
-            )
+            assert_eq!(state.as_object().unwrap().len(), 2);
+            (project.clone(), state["running"].as_bool().unwrap())
         })
         .collect()
 }
@@ -85,6 +82,20 @@ struct Started {
 }
 impl Started {
     async fn start(root: &Path, project: &str, port: Option<u16>) -> Self {
+        let state = run(root, &["status"]).await;
+        let port = port.or_else(|| {
+            if state["server"]["running"] == true {
+                None
+            } else {
+                Some(
+                    std::net::TcpListener::bind("127.0.0.1:0")
+                        .unwrap()
+                        .local_addr()
+                        .unwrap()
+                        .port(),
+                )
+            }
+        });
         let value = port.map(|p| p.to_string());
         let mut args = vec!["start", project];
         if let Some(value) = &value {
@@ -127,6 +138,22 @@ impl Drop for Started {
             .env("MDC_CACHE_DIR", &self.root)
             .current_dir(&self.root)
             .output();
+        let state = std::process::Command::new(env!("CARGO_BIN_EXE_mdc"))
+            .arg("status")
+            .env("MDC_CACHE_DIR", &self.root)
+            .output()
+            .unwrap();
+        if let Ok(state) = serde_json::from_slice::<Value>(&state.stdout) {
+            if state["projects"]
+                .as_object()
+                .is_some_and(|p| p.values().all(|v| v["running"] == false))
+            {
+                let _ = std::process::Command::new(env!("CARGO_BIN_EXE_mdc"))
+                    .arg("stop")
+                    .env("MDC_CACHE_DIR", &self.root)
+                    .output();
+            }
+        }
     }
 }
 
@@ -142,6 +169,11 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
     // A closed bootstrap peer must still be recognized; never recursively launch start.
     let (mut bootstrap, child_input) = std::os::unix::net::UnixStream::pair().unwrap();
     std::io::Write::write_all(&mut bootstrap, b"mdc-start").unwrap();
+    std::io::Write::write_all(
+        &mut bootstrap,
+        &occupied.local_addr().unwrap().port().to_be_bytes(),
+    )
+    .unwrap();
     let child_input: std::os::fd::OwnedFd = child_input.into();
     let child = command(root)
         .args([
@@ -159,14 +191,17 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
     let failed = child.wait_with_output().await.unwrap();
     assert!(!failed.status.success());
     let failed: Value = serde_json::from_slice(&failed.stdout).unwrap();
-    assert!(failed["error"].as_str().unwrap().contains("cannot bind port"));
+    assert!(failed["error"]
+        .as_str()
+        .unwrap()
+        .contains("cannot bind port"));
     let main = format!("{}/main", first.db.database);
     let agent = format!("{}/agent", first.db.database);
     let unused = format!("{}/main", second.db.database);
     let before = status(root).await;
     assert_eq!(
         (before[&main], before[&agent], before[&unused]),
-        (None, None, None)
+        (false, false, false)
     );
     assert_eq!(
         std::fs::read_dir(root).unwrap().count(),
@@ -202,9 +237,19 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
     let reserved = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let explicit_port = reserved.local_addr().unwrap().port();
     drop(reserved);
-    let b = Started::start(root, &agent, Some(explicit_port)).await;
-    assert_eq!(b.port(), explicit_port);
-    assert_ne!(a.port(), b.port());
+    reject(
+        root,
+        &["start", &agent, "--port", &explicit_port.to_string()],
+        "entry server is already using port",
+    )
+    .await;
+    let b = Started::start(root, &agent, Some(a.port())).await;
+    assert_eq!(a.port(), b.port());
+    assert_ne!(a.info["url"], b.info["url"]);
+    assert!(a.info["url"]
+        .as_str()
+        .unwrap()
+        .ends_with(&format!("/p/{main}/")));
     let running = status(root).await;
     for option in ["--meas", "-m"] {
         let measured = command(root)
@@ -216,13 +261,13 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
         let value: Value = serde_json::from_slice(&measured.stdout).unwrap();
         // Other tests may create or delete their own branches between status requests.
         for project in [&main, &agent, &unused] {
-            assert_eq!(value[project], serde_json::json!({"port":running[project]}));
+            assert_eq!(value["projects"][project]["running"], running[project]);
         }
         assert!(String::from_utf8_lossy(&measured.stderr).contains("service.request"));
     }
     assert_eq!(
         (running[&main], running[&agent], running[&unused]),
-        (Some(a.port()), Some(b.port()), None)
+        (true, true, false)
     );
     reject(root, &["start", &main], "already running").await;
     reject(root, &["graph", "check"], "--proj DATABASE/BRANCH").await;
@@ -261,7 +306,7 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
         String::from_utf8_lossy(&without_password.stderr)
     );
     let http = reqwest::Client::builder().no_proxy().build().unwrap();
-    let url = a.info["url"].as_str().unwrap();
+    let url = a.info["url"].as_str().unwrap().trim_end_matches('/');
     assert_eq!(
         http.post(format!("{url}/api/service/stop"))
             .send()
@@ -293,9 +338,69 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
         String::from_utf8_lossy(&stopped.stderr)
     );
     let stopped = status(root).await;
-    assert_eq!((stopped[&main], stopped[&agent]), (None, Some(b.port())));
+    assert_eq!((stopped[&main], stopped[&agent]), (false, true));
     reject(root, &["stop", &main], "not running").await;
     reject(root, &["graph", "check", "--proj", &main], "mdc start").await;
+
+    // Stopping/restarting the entry server must retain branch processes and URLs.
+    let entry = format!("http://127.0.0.1:{}", b.port());
+    let inventory: Value = http
+        .get(format!("{entry}/api/status"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(inventory["projects"][&agent]["running"], true);
+    assert_eq!(inventory["projects"][&agent]["url"], b.info["url"]);
+    assert_eq!(
+        http.get(format!("{entry}/api/status"))
+            .header("origin", "https://attacker.invalid")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    assert_eq!(
+        http.get(format!("{entry}/api/status"))
+            .header("host", "attacker.invalid")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    assert_eq!(
+        http.get(format!("{entry}/p/{main}/api/graph/check"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        503
+    );
+    run(root, &["stop"]).await;
+    let stopped_entry = run(root, &["status"]).await;
+    assert_eq!(
+        stopped_entry["server"],
+        serde_json::json!({"running":false,"port":null,"url":null})
+    );
+    assert_eq!(
+        stopped_entry["projects"][&agent],
+        serde_json::json!({"running":true,"url":null})
+    );
+    reject(
+        root,
+        &["graph", "check", "-p", &agent],
+        "entry server is not running",
+    )
+    .await;
+    run(root, &["start", "--port", &b.port().to_string()]).await;
+    assert_eq!(
+        run(root, &["graph", "check", "-p", &agent]).await["nodes"],
+        0
+    );
 
     unsafe {
         assert_eq!(
@@ -304,7 +409,7 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
         );
     }
     tokio::time::timeout(Duration::from_secs(5), async {
-        while status(root).await[&agent].is_some() {
+        while status(root).await[&agent] {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
@@ -316,7 +421,7 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
         0
     );
     run(root, &["stop", &agent]).await;
-    assert_eq!(status(root).await[&agent], None);
+    assert!(!status(root).await[&agent]);
     drop(c);
 }
 

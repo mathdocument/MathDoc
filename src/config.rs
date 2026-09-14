@@ -11,6 +11,8 @@ pub struct Settings {
     pub terminus_password: Option<String>,
     pub cache_dir: Option<PathBuf>,
     pub lean_timeout_seconds: Option<u64>,
+    pub port: Option<u16>,
+    pub public_origin: Option<String>,
 }
 
 fn user_dir(variable: &str, fallback: &str) -> Result<PathBuf> {
@@ -25,6 +27,31 @@ fn user_dir(variable: &str, fallback: &str) -> Result<PathBuf> {
 }
 
 impl Settings {
+    pub fn gateway_port(&self) -> Result<u16> {
+        let port = self.port.unwrap_or(17843);
+        anyhow::ensure!(port != 0, "port must be between 1 and 65535");
+        Ok(port)
+    }
+
+    pub fn public_origin(&self) -> Result<Option<String>> {
+        self.public_origin.as_ref().map(|value| {
+            let url = reqwest::Url::parse(value).context("invalid public_origin")?;
+            anyhow::ensure!(matches!(url.scheme(), "http" | "https")
+                && url.host_str().is_some() && url.username().is_empty()
+                && url.password().is_none() && url.path() == "/"
+                && url.query().is_none() && url.fragment().is_none(),
+                "public_origin must be an HTTP(S) origin without credentials, path, query or fragment");
+            Ok(url.origin().ascii_serialization())
+        }).transpose()
+    }
+
+    pub fn gateway_cache(&self) -> Result<PathBuf> {
+        Ok(self
+            .cache_root()?
+            .join(&crate::store::digest(self.terminus_url().as_bytes())[..12])
+            .join(".gateway"))
+    }
+
     pub fn terminus_url(&self) -> String {
         std::env::var("MDC_TERMINUS_URL")
             .ok()
@@ -102,5 +129,32 @@ mod tests {
         assert_eq!(settings.lean_timeout_seconds, Some(600));
         assert!(toml::from_str::<Settings>("database = 'accidental-shared-project'").is_err());
         assert!(toml::from_str::<Settings>("url = 'http://127.0.0.1:7599'").is_err());
+        assert_eq!(Settings::default().gateway_port().unwrap(), 17843);
+        assert!(toml::from_str::<Settings>("port = 0")
+            .unwrap()
+            .gateway_port()
+            .is_err());
+        let settings: Settings =
+            toml::from_str("public_origin = 'https://mdc.example.test/'").unwrap();
+        let origin = settings.public_origin().unwrap().unwrap();
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("host", "mdc.example.test".parse().unwrap());
+        headers.insert("origin", origin.parse().unwrap());
+        assert!(crate::service::allowed_origin(&headers, Some(&origin)));
+        assert!(!crate::service::allowed_origin(&headers, None));
+        headers.insert("origin", "https://attacker.invalid".parse().unwrap());
+        assert!(!crate::service::allowed_origin(&headers, Some(&origin)));
+        for invalid in [
+            "https://host/path",
+            "https://user:secret@host",
+            "https://host?query",
+            "file:///tmp",
+        ] {
+            let settings = Settings {
+                public_origin: Some(invalid.into()),
+                ..Default::default()
+            };
+            assert!(settings.public_origin().is_err());
+        }
     }
 }
