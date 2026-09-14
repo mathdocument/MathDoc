@@ -8,6 +8,10 @@ path helper scopes branch API calls, Lean iframe URLs and WebSocket URLs;
 static assets stay at the root. The editor provides search, graph/column navigation, dependency
 operations and block editing. It tracks unsaved drafts and serializes node
 mutations with revision guards. All four block types use consistent controls.
+`web/src/design.css` supplies the shared colors, fonts and header geometry for
+the project directory, editor and documentation site. The documentation theme
+maps Starlight surfaces to these tokens; its header retains native search and
+theme persistence.
 
 Lean uses a lazy-loaded page embedding `lean4monaco` and upstream Infoview. Each
 page has an isolated native WebSocket session, with source on the left and

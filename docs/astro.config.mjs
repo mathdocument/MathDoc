@@ -13,11 +13,8 @@ export default defineConfig({
         alt: 'MathDoc',
       },
       favicon: '/mdc-logo.png',
-      customCss: [
-        '@fontsource-variable/manrope',
-        '@fontsource-variable/newsreader',
-        './src/styles/custom.css',
-      ],
+      components: { Header: './src/components/Header.astro' },
+      customCss: ['./src/styles/custom.css'],
       social: [
         {
           icon: 'github',
@@ -55,7 +52,20 @@ export default defineConfig({
       lastUpdated: true,
       expressiveCode: {
         styleOverrides: {
-          borderRadius: '0.75rem',
+          borderRadius: 'var(--mdc-radius-md)',
+          borderColor: 'var(--mdc-border)',
+          codeBackground: 'var(--mdc-code-bg)',
+          codeFontFamily: 'var(--mdc-mono)',
+          codeFontSize: '0.875rem',
+          uiFontFamily: 'var(--mdc-font)',
+          frames: {
+            terminalBackground: 'var(--mdc-code-bg)',
+            terminalTitlebarBackground: 'var(--mdc-panel-raised)',
+            editorActiveTabBackground: 'var(--mdc-panel-raised)',
+            editorActiveTabForeground: 'var(--mdc-fg-soft)',
+            editorTabBarBackground: 'var(--mdc-panel)',
+            editorActiveTabIndicatorTopColor: 'var(--mdc-accent)',
+          },
         },
       },
       sidebar: [

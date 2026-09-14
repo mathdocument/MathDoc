@@ -1,0 +1,38 @@
+---
+import Search from '@astrojs/starlight/components/Search.astro';
+import SocialIcons from '@astrojs/starlight/components/SocialIcons.astro';
+import ThemeSelect from '@astrojs/starlight/components/ThemeSelect.astro';
+import logo from '../assets/mdc-logo.svg';
+const { siteTitleHref, hasSidebar } = Astro.locals.starlightRoute;
+---
+
+<div class="app-header">
+  <a class="app-brand" href={siteTitleHref} aria-label="MathDoc documentation">
+    <img src={logo.src} alt="" /><strong>MathDoc</strong>
+  </a>
+  <div class="docs-search"><Search /></div>
+  <div class="docs-social"><SocialIcons /></div>
+  {hasSidebar && <span class="docs-menu-space" aria-hidden="true"></span>}
+  <div class="docs-theme" hidden><ThemeSelect /></div>
+  <button class="header-theme" type="button" aria-label="Toggle theme">
+    <svg class="theme-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/></svg>
+    <svg class="theme-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.464.402.807a6.25 6.25 0 0 0 8.268 8.268c.344-.215.83-.004.803.397"/></svg>
+  </button>
+</div>
+
+<script>
+  // Keep Starlight's theme persistence and system preference handling.
+  const button = document.querySelector<HTMLButtonElement>('.header-theme')!;
+  const picker = document.querySelector<HTMLSelectElement>('.docs-theme select')!;
+  const nextTheme = () => document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  const label = () => {
+    button.title = `Switch to ${nextTheme()} mode`;
+    button.setAttribute('aria-label', button.title);
+  };
+  button.addEventListener('click', () => {
+    picker.value = nextTheme();
+    picker.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  new MutationObserver(label).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  label();
+</script>
