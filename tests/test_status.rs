@@ -307,6 +307,20 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
     );
     let http = reqwest::Client::builder().no_proxy().build().unwrap();
     let url = a.info["url"].as_str().unwrap().trim_end_matches('/');
+    let redirect = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+        .get(format!("{url}?node=example&q=a%2Fb"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(redirect.status(), 307);
+    assert_eq!(
+        redirect.headers()["location"],
+        format!("/p/{main}/?node=example&q=a%2Fb")
+    );
     assert_eq!(
         http.post(format!("{url}/api/service/stop"))
             .send()
@@ -396,7 +410,10 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
         "entry server is not running",
     )
     .await;
-    run(root, &["start", "--port", &b.port().to_string()]).await;
+    let port = b.port().to_string();
+    let args = ["start", "--port", &port];
+    let (entry_a, entry_b) = tokio::join!(run(root, &args), run(root, &args));
+    assert_eq!(entry_a["pid"], entry_b["pid"]);
     assert_eq!(
         run(root, &["graph", "check", "-p", &agent]).await["nodes"],
         0

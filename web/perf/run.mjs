@@ -203,7 +203,7 @@ async function runEditorSample(context, url) {
     if (proofText.trim() !== "Inline proof.") throw new Error("inline proof environment did not close");
     await page.setViewportSize({ width: 375, height: 667 });
     const mobileLayout = await page.evaluate(() => ({
-      editorWidth: document.querySelector(".layout > .center")?.getBoundingClientRect().width ?? 0,
+      editorWidth: document.querySelector(".editor-wrap > .center")?.getBoundingClientRect().width ?? 0,
       sidebarsVisible: [...document.querySelectorAll(".layout > .column")]
         .some((element) => getComputedStyle(element).display !== "none"),
     }));

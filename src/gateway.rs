@@ -136,8 +136,10 @@ fn project(params: &HashMap<String, String>) -> Result<String> {
 
 async fn project_redirect(
     Path(params): Path<HashMap<String, String>>,
+    uri: axum::http::Uri,
 ) -> Result<Redirect, ApiError> {
-    Ok(Redirect::temporary(&format!("/p/{}/", project(&params)?)))
+    let query = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+    Ok(Redirect::temporary(&format!("/p/{}/{query}", project(&params)?)))
 }
 
 async fn project_page(Path(params): Path<HashMap<String, String>>) -> Result<Response, ApiError> {
