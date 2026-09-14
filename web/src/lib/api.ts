@@ -18,6 +18,7 @@ import type {
   RmDepBody,
   TitleBody,
 } from "./types";
+import { projectPath } from "./project-path";
 
 export function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
@@ -34,7 +35,7 @@ export class ApiError extends Error {
   }
 }
 
-async function req<T>(path: string, init?: RequestInit): Promise<T> {
+export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(path, init);
   const text = await resp.text();
   let body: unknown = null;
@@ -53,6 +54,15 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(msg, resp.status, body);
   }
   return body as T;
+}
+
+function req<T>(path: string, init?: RequestInit): Promise<T> {
+  return fetchJson<T>(projectPath(path), init);
+}
+
+export interface ServiceStatus {
+  server: { running: boolean; port: number | null; url: string | null };
+  projects: Record<string, { running: boolean; url: string | null }>;
 }
 
 const nodeMutationTails = new Map<string, Promise<string>>();

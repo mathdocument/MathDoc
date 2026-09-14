@@ -3,6 +3,7 @@ import { CancellationTokenSource, Uri, KeyCode, KeyMod, editor as MonacoEditor }
 import { createModelReference } from "vscode/monaco";
 import { FileUri } from "lean4monaco/dist/vscode-lean4/vscode-lean4/src/utils/exturi";
 import { CloseAction, ErrorAction } from "vscode-languageclient/lib/common/client.js";
+import { projectPath } from "./lib/project-path";
 
 const params = new URLSearchParams(location.search);
 const id = params.get("session");
@@ -170,12 +171,12 @@ async function selectNode(fnode: string, revision: string, generation: number, s
 }
 async function start() {
   if (!id) throw new Error("Missing Lean session");
-  const response = await fetch(`/api/lean/session/${encodeURIComponent(id)}`);
+  const response = await fetch(projectPath(`/api/lean/session/${encodeURIComponent(id)}`));
   const session: Document & { error?: string } = await response.json();
   if (!response.ok) throw new Error(session.error ?? "Lean session unavailable");
   runtime.setInfoviewElement(document.getElementById("infoview")!);
   await runtime.start({
-    websocket: { url: `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/lean/session/${encodeURIComponent(id)}/ws` },
+    websocket: { url: `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}${projectPath(`/api/lean/session/${encodeURIComponent(id)}/ws`)}` },
     // The parent recreates the session and restores drafts. Retrying this consumed
     // socket inside vscode-languageclient races that recovery, including at init.
     clientOptions: {
@@ -271,7 +272,7 @@ async function start() {
 void start().catch(error);
 window.addEventListener("pagehide", () => {
   selection.abort();
-  if (id) void fetch(`/api/lean/session/${encodeURIComponent(id)}`, { method: "DELETE", keepalive: true }).catch(console.warn);
+  if (id) void fetch(projectPath(`/api/lean/session/${encodeURIComponent(id)}`), { method: "DELETE", keepalive: true }).catch(console.warn);
   preview?.dispose();
   for (const entry of documents.values()) entry.reference.dispose();
   editor.editor?.dispose(); runtime.dispose();

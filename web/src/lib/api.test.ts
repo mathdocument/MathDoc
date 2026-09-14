@@ -1,10 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "./api";
+import { projectName, projectPath } from "./project-path";
 
 const jsonResponse = (revision: string) => Response.json({ revision });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+it("routes node requests and Lean pages inside the selected database and branch", async () => {
+  vi.stubGlobal("location", { pathname: "/p/mathlib4/agent-one/lean.html" });
+  const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(Response.json({})));
+  vi.stubGlobal("fetch", fetchMock);
+  await api.nodeView("same-uuid");
+  expect(fetchMock.mock.calls[0]![0]).toBe("/p/mathlib4/agent-one/api/node/same-uuid/view");
+  expect(projectPath("/lean.html?session=one")).toBe("/p/mathlib4/agent-one/lean.html?session=one");
+  expect(projectName("/p/db/main-other/")).toBe("db/main-other");
+  expect(projectName("/p/db/../main/")).toBeNull();
+  expect(projectName("/")).toBeNull();
 });
 
 describe("node mutations", () => {

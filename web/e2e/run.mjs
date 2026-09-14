@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { chromium } from "playwright";
+import { createServer } from "node:net";
 
 const run = promisify(execFile);
 const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -16,11 +17,15 @@ const binary = resolve(process.env.MDC_BIN ?? resolve(webRoot, "../target/debug/
 
 const env = { ...process.env };
 async function startServer(cwd, database) {
-  const { stdout } = await run(binary, ["start", `${database}/main`], {
+  const reservation = createServer();
+  await new Promise(resolve => reservation.listen(0, "127.0.0.1", resolve));
+  const port = reservation.address().port;
+  await new Promise(resolve => reservation.close(resolve));
+  const { stdout } = await run(binary, ["start", `${database}/main`, "--port", String(port)], {
     cwd, env: { ...env, MDC_CACHE_DIR: resolve(cwd, "cache") }, timeout: 30000,
   });
   const info = JSON.parse(stdout);
-  return { ...info, output: () => readFileSync(info.log, "utf8").slice(-16000) };
+  return { ...info, url: info.url.replace(/\/$/, ""), output: () => readFileSync(info.log, "utf8").slice(-16000) };
 }
 
 async function fixture(browser, body, extraNodes = [], expectedPageErrors = []) {
@@ -91,6 +96,9 @@ async function fixture(browser, body, extraNodes = [], expectedPageErrors = []) 
     await context?.close();
     if (server) {
       await run(binary, ["stop", `${database}/main`], {
+        cwd: root, env: { ...env, MDC_CACHE_DIR: resolve(root, "cache") }, timeout: 35000,
+      });
+      await run(binary, ["stop"], {
         cwd: root, env: { ...env, MDC_CACHE_DIR: resolve(root, "cache") }, timeout: 35000,
       });
     }
@@ -176,7 +184,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         const view = await (await fetch(`${url}/api/node/${c}/view`)).json();
         const results = await Promise.all([
           cli("dep", "add", "Beta", "--target", "Gamma").then(() => true, () => false),
-          page.evaluate(async ({ b, c, revision }) => (await fetch(`/api/node/${c}/dep/add`, {
+          page.evaluate(async ({ b, c, revision }) => (await fetch(`${location.pathname.replace(/\/$/, "")}/api/node/${c}/dep/add`, {
             method: "POST", headers: { "content-type": "application/json", "if-match": `"${revision}"` },
             body: JSON.stringify({ dep_fnode: b }),
           })).ok, { b, c, revision: view.node.revision }),
@@ -188,6 +196,59 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.deepEqual(report.cycles, []);
         assert.equal(report.edges, 2);
       }));
+    await suite.test("project directory tracks branch services without disconnecting other Lean editors", () => {
+      const node = { fnode: randomUUID(), title: "Directory proof", module: "Lib.Directory", depens: [], blocks: [{ srctype: "lean", content: "theorem directoryProof : True := by trivial\n" }] };
+      return fixture(browser, async ({ root, cli, page, url }) => {
+        const base = new URL(url).origin;
+        const project = new URL(url).pathname.slice(3);
+        const database = project.split("/")[0];
+        const agent = `${database}/agent`;
+        const manage = (...args) => run(binary, args, { cwd: root, env: { ...env, MDC_CACHE_DIR: resolve(root, "cache") }, timeout: 35000 });
+        await cli("branch", "new", "agent");
+        let agentRunning = false;
+        try {
+          await page.goto(base);
+          await page.getByRole("heading", { name: "Projects", exact: true }).waitFor();
+          await page.getByRole("textbox", { name: "Search projects and branches" }).fill(database);
+          const mainRow = page.locator(`[data-project="${project}"]`);
+          const agentRow = page.locator(`[data-project="${agent}"]`);
+          await mainRow.getByText("Running", { exact: true }).waitFor();
+          await agentRow.getByText("Stopped", { exact: true }).waitFor();
+          assert.equal(await agentRow.getByRole("link").count(), 0);
+          const started = JSON.parse((await manage("start", agent)).stdout); agentRunning = true;
+          assert.equal(new URL(started.url).origin, base);
+          await agentRow.getByText("Running", { exact: true }).waitFor({ timeout: 10000 });
+          await mainRow.getByRole("link", { name: `Open ${project}` }).click();
+          await title(page, "Alpha");
+          assert.equal(new URL(page.url()).pathname, `/p/${project}/`);
+          let opened = 0, closed = 0;
+          page.on("websocket", socket => { opened++; socket.on("close", () => closed++); });
+          await page.getByRole("button", { name: /Search nodes/ }).click();
+          await page.getByPlaceholder("Search by title or fnode…").fill(node.title);
+          await page.getByRole("dialog").getByRole("button", { name: new RegExp(node.title) }).click();
+          await page.getByText("Lean editor ready", { exact: true }).waitFor();
+          await manage("stop", agent); agentRunning = false;
+          assert.equal((await fetch(`${base}/p/${agent}/api/graph/check`)).status, 503);
+          await cli("graph", "check");
+          assert.equal(opened, 1); assert.equal(closed, 0);
+          const frames = page.frames().map(frame => frame.url());
+          assert.ok(frames.some(path => path.startsWith(`${url}/lean.html?`)));
+          await page.getByRole("link", { name: "All projects" }).click();
+          await page.getByRole("textbox", { name: "Search projects and branches" }).fill(database);
+          await page.locator(`[data-project="${agent}"]`).getByText("Stopped", { exact: true }).waitFor();
+          await page.getByRole("button", { name: "Stopped", exact: true }).click();
+          assert.equal(await page.locator(`[data-project="${project}"]`).count(), 0);
+          await page.getByRole("button", { name: "All branches", exact: true }).click();
+          if (process.env.MDC_E2E_ARTIFACTS) {
+            await page.screenshot({ path: resolve(process.env.MDC_E2E_ARTIFACTS, "projects-desktop.png"), fullPage: true });
+            await page.getByRole("button", { name: "Toggle theme" }).click();
+            await page.setViewportSize({ width: 420, height: 900 });
+            assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+            await page.screenshot({ path: resolve(process.env.MDC_E2E_ARTIFACTS, "projects-mobile.png"), fullPage: true });
+          }
+        } finally { if (agentRunning) await manage("stop", agent); }
+      }, [node]);
+    });
     await suite.test("graph colors follow saved Lean evidence independently of node degree and Rocq", () => {
       const nodes = [
         ["Rocq only", "rocq", "Check nat."],

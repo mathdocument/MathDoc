@@ -4,6 +4,7 @@
   import type { NodeDetail, SrcBlock } from "../lib/types";
   import type { Theme } from "../lib/theme";
   import { api } from "../lib/api";
+  import { projectPath } from "../lib/project-path";
   import { errMsg } from "../lib/format";
   import { removeDraft, setDraftDirty, trackMutation } from "../lib/unsaved";
   interface Props {
@@ -169,7 +170,7 @@
   <div class="editor-surface">
     {#if !ready && expanded}<pre class="source-placeholder" aria-label="Lean source while editor loads">{content}</pre>{/if}
   {#if session}
-    <div class:pending={!ready} class:collapsed={!expanded} inert={!ready || !expanded}><iframe bind:this={frame} title="Lean source and Infoview" src={`/lean.html?session=${encodeURIComponent(session)}&theme=${initialTheme}`} allow="clipboard-write"></iframe></div>
+    <div class:pending={!ready} class:collapsed={!expanded} inert={!ready || !expanded}><iframe bind:this={frame} title="Lean source and Infoview" src={projectPath(`/lean.html?session=${encodeURIComponent(session)}&theme=${initialTheme}`)} allow="clipboard-write"></iframe></div>
   {/if}
   </div>
   {#if error}<div class="error-bar" role="alert">{error}</div>{/if}

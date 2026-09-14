@@ -156,7 +156,7 @@ async function preparePage(context, scenario) {
   });
   const bodies = apiBodies(scenario);
   await page.route("**/api/**", async (route) => {
-    const path = new URL(route.request().url()).pathname;
+    const path = new URL(route.request().url()).pathname.replace(/^\/p\/benchmark\/main/, "");
     const body = bodies.get(path);
     await route.fulfill(body === undefined
       ? { status: 404, contentType: "application/json", body: '{"error":"missing perf fixture"}' }
@@ -174,7 +174,7 @@ async function nextPaint(page) {
 async function runEditorSample(context, url) {
   const { page, errors } = await preparePage(context, "editor");
   try {
-    await page.goto(url, { waitUntil: "domcontentloaded" });
+    await page.goto(`${url}/p/benchmark/main/`, { waitUntil: "domcontentloaded" });
     await page.locator('.cm-editor').waitFor({ state: "visible" });
     await nextPaint(page);
     const editorReadyMs = await page.evaluate(() => performance.now() - window.__mdcPerfStart);
@@ -220,10 +220,10 @@ async function runEditorSample(context, url) {
 async function runGraphSample(context, url) {
   const { page, errors } = await preparePage(context, "graph");
   try {
-    await page.goto(url, { waitUntil: "domcontentloaded" });
+    await page.goto(`${url}/p/benchmark/main/`, { waitUntil: "domcontentloaded" });
     await page.locator("h1.title", { hasText: "Performance fixture" }).waitFor();
     const graphResponse = page.waitForResponse((response) =>
-      new URL(response.url()).pathname === "/api/graph/full",
+      new URL(response.url()).pathname === "/p/benchmark/main/api/graph/full",
     );
     await page.evaluate(() => { window.__mdcPerfAction = performance.now(); });
     await page.getByTitle("Graph view").click();

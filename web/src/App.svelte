@@ -23,6 +23,7 @@
   } from "./lib/state.svelte";
   import { WorkspaceSession } from "./lib/workspace.svelte";
   import { api } from "./lib/api";
+  import { projectName } from "./lib/project-path";
   import NodeColumn from "./components/NodeColumn.svelte";
   import EditorPane from "./components/EditorPane.svelte";
   import SearchOverlay from "./components/SearchOverlay.svelte";
@@ -57,6 +58,12 @@
   let refreshRequest = 0;
   let historyNavigating = $state(false);
   const workspaceSession = new WorkspaceSession();
+  const project = projectName();
+  async function showProjects(event: MouseEvent) {
+    event.preventDefault();
+    if (!confirmDiscardDrafts() || !await settlePendingMutations()) return;
+    window.location.assign("/");
+  }
 
   // Top-level view state: three-column layout vs. full-screen force graph.
   let view = $state<"columns" | "force">("columns");
@@ -392,12 +399,13 @@
   <header class="toolbar">
     <!-- Zone 1: identity and navigation history. -->
     <div class="bar-zone bar-start">
-      <div class="identity" aria-label="MathDoc">
+      <a class="identity" href="/" aria-label="All projects" title="All projects" onclick={showProjects}>
         <img class="brand-mark" src="/mdc-logo.svg" alt="" />
         <span class="brand-copy">
           <strong>MathDoc</strong>
         </span>
-      </div>
+      </a>
+      {#if project}<span class="project-name" title={project}>{project}</span>{/if}
       <div class="history-tools" aria-label="navigation history">
         <button
           class="tool icon-only"
@@ -688,7 +696,12 @@
     align-items: center;
     gap: 0.5rem;
     margin-right: 0.15rem;
+    text-decoration: none;
   }
+  .identity:focus-visible { outline: 2px solid var(--mdc-accent); outline-offset: 4px; border-radius: 4px; }
+  .project-name { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mdc-dim); font-size: var(--mdc-text-xs); font-family: var(--mdc-mono); }
+  @media (max-width: 1100px) { .project-name { max-width: 110px; } }
+  @media (max-width: 800px) { .project-name { display: none; } }
   .brand-mark {
     display: block;
     width: 1.65rem;

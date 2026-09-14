@@ -5,8 +5,8 @@ import { viteStaticCopy } from "vite-plugin-static-copy";
 import importMetaUrlPlugin from "@codingame/esbuild-import-meta-url-plugin";
 import path from "node:path";
 
-// Proxy /api to an existing branch service; MDC_API_PROXY can select its allocated port.
-const apiTarget = process.env.MDC_API_PROXY ?? "http://127.0.0.1:7599";
+// Proxy the project APIs and directory to the shared entry server.
+const apiTarget = process.env.MDC_API_PROXY ?? "http://127.0.0.1:17843";
 const sveltePlugins = svelte();
 
 // svelte-check 4.6 expects the config-only plugin name introduced after plugin-svelte 5.
@@ -14,6 +14,15 @@ sveltePlugins.push({ name: "vite-plugin-svelte:config", api: sveltePlugins[0]!.a
 
 export default defineConfig({
   plugins: [
+    {
+      name: "project-editor-page",
+      configureServer(server) {
+        server.middlewares.use((request, _response, next) => {
+          request.url = request.url?.replace(/^\/p\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/(lean\.html(?:\?|$))/, "/$1");
+          next();
+        });
+      },
+    },
     nodePolyfills({ overrides: { fs: "memfs" } }),
     viteStaticCopy({ targets: [
       { src: "node_modules/@leanprover/infoview/dist/*", dest: "infoview" },
@@ -41,6 +50,7 @@ export default defineConfig({
         changeOrigin: false,
         ws: true,
       },
+      "^/p/[^/]+/[^/]+/api(?:/|$)": { target: apiTarget, changeOrigin: false, ws: true },
     },
   },
   optimizeDeps: { esbuildOptions: { plugins: [importMetaUrlPlugin] } },
