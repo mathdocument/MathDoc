@@ -19,7 +19,7 @@ UUIDs; CLI references are resolved by exact name or UUID first.
 | `GET /graph/full` | `graph full` | Node summaries with `lean` status (`no_code`, `unverified`, `verified`) and index-pair edges. |
 | `GET /search?q=TEXT&n=N` | `search TEXT -n N` | Title/UUID matches; default/cap 200. |
 | `GET /resolve?ref=NAME_OR_UUID` | Used by node commands | `{fnode, title}`. |
-| `GET /node/ID/view` | `show` and `dep` reads | `{node, referrers, children}`; CLI `show` returns `node`. |
+| `GET /node/ID/view` | `show` and `dep` reads | `{node, referrers, children}`; all include `formalization: {lean, rocq}` status. CLI `show` returns `node`. |
 | `POST /node/new` | `new -t TITLE [--parent REF]` | Body `{title, parent_fnode?}`; optionally creates an edge atomically. |
 | `PUT /node/ID/title` | `rename` | Body `{title}`; updated node. |
 | `PUT /node/ID/block/TYPE` | `edit --type TYPE` | Body `{content}`; updated node. |

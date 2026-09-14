@@ -125,14 +125,18 @@ fn check_revision(headers: &HeaderMap, node: &Node) -> ApiResult<()> {
 fn summary(snapshot: &Snapshot, node: &Node) -> Value {
     json!({"fnode":node.fnode,"title":node.title,"broken":false,"depth":snapshot.depths.get(&node.fnode).copied().unwrap_or(0)})
 }
-pub fn detail(snapshot: &Snapshot, node: &Node, lean: &crate::lean::LeanService) -> Value {
+fn preview(snapshot: &Snapshot, node: &Node, lean: &crate::lean::LeanService) -> Value {
     let mut value = summary(snapshot, node);
+    value["formalization"] = json!({"lean":lean.formal_status(node, &snapshot.lean_keys[&node.fnode]),
+        "rocq":if node.source("rocq").is_some(){"unverified"}else{"no_code"}});
+    value
+}
+pub fn detail(snapshot: &Snapshot, node: &Node, lean: &crate::lean::LeanService) -> Value {
+    let mut value = preview(snapshot, node, lean);
     value["revision"] = json!(node.revision());
     value["depens"] = json!(node.depens);
     value["blocks"] = json!(node.blocks);
     value["module"] = json!(node.module);
-    value["formalization"] = json!({"lean":lean.formal_status(node, &snapshot.lean_keys[&node.fnode]),
-        "rocq":if node.source("rocq").is_some(){"unverified"}else{"no_code"}});
     value
 }
 fn revision_response(
@@ -667,8 +671,8 @@ async fn view(State(s): State<Arc<Service>>, Path(id): Path<String>) -> ApiResul
         )
         .await;
     Ok(Json(json!({"node":detail(&snapshot,n,&s.lean),
-        "referrers":snapshot.referrers.get(&n.fnode).into_iter().flatten().map(|id|summary(&snapshot,&snapshot.nodes[id])).collect::<Vec<_>>(),
-        "children":n.depens.iter().filter_map(|id|snapshot.nodes.get(id)).map(|n|summary(&snapshot,n)).collect::<Vec<_>>()})))
+        "referrers":snapshot.referrers.get(&n.fnode).into_iter().flatten().map(|id|preview(&snapshot,&snapshot.nodes[id],&s.lean)).collect::<Vec<_>>(),
+        "children":n.depens.iter().filter_map(|id|snapshot.nodes.get(id)).map(|n|preview(&snapshot,n,&s.lean)).collect::<Vec<_>>()})))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

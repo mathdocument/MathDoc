@@ -1,5 +1,5 @@
 import { browserHistoryAdapter, type BrowserHistoryAdapter } from "./browser-history";
-import type { NodeDetail, NodeInfo, NodeView } from "./types";
+import type { NodeDetail, NodePreview, NodeView } from "./types";
 import { api } from "./api";
 import {
   confirmDiscardDrafts,
@@ -23,7 +23,7 @@ export type LoadState =
   | { kind: "error"; message: string };
 
 export interface ColumnState {
-  items: NodeInfo[];
+  items: NodePreview[];
   selected: number; // -1 = none
 }
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { NodeDetail, NodeInfo } from "./types";
+import type { NodeDetail, NodePreview } from "./types";
 import { api } from "./api";
 import { NodeSession } from "./state.svelte";
 import { removeDraft, setDraftDirty } from "./unsaved";
@@ -48,13 +48,14 @@ describe("NodeSession", () => {
     const session = new NodeSession();
     const original = node("r1");
     session.snapshot = { node: original, referrers: [], children: [] };
-    const relation: NodeInfo = {
+    const relation: NodePreview = {
       fnode: "relation",
       title: "Relation",
       broken: false,
       depth: 2,
+      formalization: { lean: "verified", rocq: "unverified" },
     };
-    let resolveView!: (view: { node: NodeDetail; referrers: NodeInfo[]; children: NodeInfo[] }) => void;
+    let resolveView!: (view: { node: NodeDetail; referrers: NodePreview[]; children: NodePreview[] }) => void;
     vi.spyOn(api, "nodeView").mockReturnValue(new Promise((resolve) => {
       resolveView = resolve;
     }));

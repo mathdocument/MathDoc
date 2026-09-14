@@ -1,10 +1,11 @@
 <script lang="ts">
-  import type { NodeInfo } from "../lib/types";
+  import type { NodePreview } from "../lib/types";
+  import FormalStatus from "./FormalStatus.svelte";
   import { shortFnode } from "../lib/format";
   import { ArrowDownRight, ArrowUpRight } from "@lucide/svelte";
 
   interface Props {
-    items: NodeInfo[];
+    items: NodePreview[];
     title: string;
     accent: "up" | "down";
     lastVisitedFnode: string | null;
@@ -23,7 +24,7 @@
     onHover,
   }: Props = $props();
 
-  function ariaLabel(n: NodeInfo): string {
+  function ariaLabel(n: NodePreview): string {
     return `${n.broken ? "broken " : ""}${n.title} (${shortFnode(n.fnode)})`;
   }
 
@@ -60,6 +61,8 @@
           <span class="card-meta">
             <span class="fnode">{shortFnode(item.fnode)}</span>
             <span class="depth" title={`depth ${item.depth}`}>d{item.depth}</span>
+            <FormalStatus language="Lean" status={item.formalization.lean} compact />
+            <FormalStatus language="Rocq" status={item.formalization.rocq} compact />
           </span>
         </button>
       </li>
@@ -220,13 +223,14 @@
   }
   .card-meta {
     display: flex;
-    align-items: baseline;
+    align-items: center;
+    flex-wrap: wrap;
     gap: 0.4rem;
     min-width: 0;
     font-size: var(--mdc-text-2xs);
-    font-family: var(--mdc-mono);
     color: var(--mdc-muted);
   }
+  .fnode, .depth { font-family: var(--mdc-mono); }
   .fnode {
     flex: 0 0 auto;
     color: var(--mdc-accent);

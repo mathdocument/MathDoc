@@ -310,18 +310,19 @@
   }
 
   function refreshNode(node: NodeDetail, graphChanged = false) {
-    if (graphChanged) graphRevision++;
     nodeSession.acceptNode(node);
+    if (graphChanged) {
+      graphRevision++;
+      void nodeSession.syncView(node.fnode).catch((error) => {
+        refreshError = error instanceof Error ? error.message : String(error);
+      });
+    }
   }
 
   function afterDepMutation(updated: NodeDetail, delta: { nodes: number; edges: number }) {
     refreshError = null;
-    graphRevision++;
     workspaceSession.applyDelta(delta.nodes, delta.edges);
-    nodeSession.acceptNode(updated);
-    void nodeSession.syncView(updated.fnode).catch((error) => {
-      refreshError = error instanceof Error ? error.message : String(error);
-    });
+    refreshNode(updated, true);
   }
 
   function afterNodeCreated(fnode: string, skipUnsavedGuard = false) {
@@ -353,14 +354,7 @@
     }
   });
 
-  let statusText = $derived.by(() => {
-    const s = view === "force" ? nodeSession.selectedLoad : nodeSession.load;
-    if (s.kind === "ready") {
-      return `${s.node.title}  ·  ${s.node.fnode.slice(0, 8)}`;
-    }
-    if (s.kind === "error") return `error: ${s.message}`;
-    return "";
-  });
+  let statusLoad = $derived(view === "force" ? nodeSession.selectedLoad : nodeSession.load);
 
   async function onForceSelect(
     fnode: string | null,
@@ -549,8 +543,14 @@
 
   <!-- Ambient state lives here instead of competing with actions in the header. -->
   <footer class="statusbar">
-    {#if statusText}
-      <span class="status"><span class="status-dot"></span>{statusText}</span>
+    {#if statusLoad.kind === "ready"}
+      <span class="status">
+        <span class="status-fnode" title={statusLoad.node.fnode}>{statusLoad.node.fnode.slice(0, 8)}</span>
+        <span class="status-dot" aria-hidden="true"></span>
+        <span class="status-title" title={statusLoad.node.title}>{statusLoad.node.title}</span>
+      </span>
+    {:else if statusLoad.kind === "error"}
+      <span class="status"><span class="status-title" title={statusLoad.message}>error: {statusLoad.message}</span></span>
     {/if}
     <span class="spacer"></span>
     <span
@@ -868,14 +868,13 @@
     align-items: center;
     gap: 0.45rem;
     min-width: 0;
-    max-width: 46ch;
     font-family: var(--mdc-mono);
     font-size: var(--mdc-text-2xs);
     color: var(--mdc-dim);
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .status-fnode { flex: 0 0 auto; }
+  .status-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .status-dot {
     width: 6px;
     height: 6px;
@@ -1015,9 +1014,6 @@
     .tool.primary {
       width: 32px;
       padding: 0;
-    }
-    .status {
-      max-width: 24ch;
     }
   }
 

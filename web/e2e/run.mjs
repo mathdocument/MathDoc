@@ -221,19 +221,19 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           await mainRow.getByRole("link", { name: `Open ${project}` }).click();
           await title(page, "Alpha");
           assert.equal(new URL(page.url()).pathname, `/p/${project}/`);
-          let opened = 0, closed = 0;
-          page.on("websocket", socket => { opened++; socket.on("close", () => closed++); });
+          let opened = 0, closed = 0, currentSocket;
+          page.on("websocket", socket => { currentSocket = socket; opened++; socket.on("close", () => closed++); });
           await page.getByRole("button", { name: /Search nodes/ }).click();
           await page.getByPlaceholder("Search by title or fnode…").fill(node.title);
           await page.getByRole("dialog").getByRole("button", { name: new RegExp(node.title) }).click();
           await page.getByText("Lean editor ready", { exact: true }).waitFor();
           const otherPage = await page.context().newPage();
-          let otherClosed = false;
-          otherPage.on("websocket", socket => socket.on("close", () => otherClosed = true));
+          const otherConnection = otherPage.waitForEvent("websocket");
           await otherPage.goto(`${started.url}#ref=${node.fnode}`);
           await otherPage.getByText("Lean editor ready", { exact: true }).waitFor();
-          await manage("stop", agent); agentRunning = false;
-          assert.ok(otherClosed, "stopping a branch closes its native Lean socket");
+          const otherSocket = await otherConnection;
+          await Promise.all([otherSocket.waitForEvent("close", { timeout: 10000 }), manage("stop", agent)]);
+          agentRunning = false;
           await otherPage.close();
           assert.equal((await fetch(`${base}/p/${agent}/api/graph/check`)).status, 503);
           await cli("graph", "check");
@@ -255,9 +255,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           }
           await page.goto(`${url}/#ref=${node.fnode}`);
           await page.getByText("Lean editor ready", { exact: true }).waitFor();
-          const beforeStop = closed;
-          await manage("stop");
-          assert.ok(closed > beforeStop, "stopping the server closes remaining Lean sessions");
+          await Promise.all([currentSocket.waitForEvent("close", { timeout: 10000 }), manage("stop")]);
           const stopped = JSON.parse((await manage("status")).stdout);
           assert.equal(stopped.server.running, false);
           assert.equal(stopped.projects[project].running, false);
@@ -440,7 +438,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           await page.screenshot({ path: resolve(process.env.MDC_E2E_ARTIFACTS, "editors-narrow.png"), fullPage: true });
           await page.setViewportSize({ width: 1440, height: 900 });
         }
-        await page.getByLabel("Lean: Verified", { exact: true }).waitFor();
+        await center(page).getByLabel("Lean: Verified", { exact: true }).waitFor();
         await page.screenshot({ path: resolve(root, "lean-editor.png"), fullPage: true });
         const badSource = "theorem demo : True := by\n  exact 42\n";
         const firstError = nativeError(badSource);
@@ -482,7 +480,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await page.getByText("Unsaved", { exact: true }).waitFor();
         const savedAt = performance.now();
         await saveButton.click();
-        await page.getByLabel("Lean: Verified", { exact: true }).waitFor();
+        await center(page).getByLabel("Lean: Verified", { exact: true }).waitFor();
         console.log("Save to automatic Verified (ms):", Math.round(performance.now()-savedAt));
         const refreshedGraph = page.waitForResponse(r => r.url().endsWith("/graph/full"));
         await page.getByRole("button", { name: "Graph", exact: true }).click();
@@ -729,9 +727,12 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         };
         await select("Lean Dependent");
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
-        await page.getByLabel("Lean: Verified", { exact: true }).waitFor();
+        await center(page).getByLabel("Lean: Verified", { exact: true }).waitFor();
         const leanStatus = async id => (await (await fetch(`${url}/api/node/${id}/view`)).json()).node.formalization.lean;
         assert.equal(await leanStatus(dep.fnode), "verified", "the editor's compiled imports must certify dependencies too");
+        const dependencyCard = page.locator(`.card[data-fnode="${dep.fnode}"]`);
+        await dependencyCard.getByLabel("Lean: Verified", { exact: true }).waitFor();
+        await dependencyCard.getByLabel("Rocq: No code", { exact: true }).waitFor();
         const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
         assert.equal(await frame.locator(".squiggly-error").count(), 0);
         await put(dep.fnode, "def anchor : Nat := 2\n");
@@ -740,7 +741,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await select("Lean Dependent");
         await frame.locator(".squiggly-error").first().waitFor();
         await page.getByText("Lean errors", { exact: false }).waitFor();
-        assert.equal(await page.getByLabel("Lean: Verified", { exact: true }).count(), 0);
+        assert.equal(await center(page).getByLabel("Lean: Verified", { exact: true }).count(), 0);
         assert.equal(await leanStatus(target.fnode), "unverified");
         assert.equal(sent.filter(m => m.method === "initialize").length, 1);
         assert.ok(sent.some(m => m.method === "textDocument/didClose"), "a changed dependency must invalidate the worker environment");

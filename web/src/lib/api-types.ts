@@ -34,7 +34,9 @@ revision: string,
  */
 depens: Array<string>, blocks: Array<SrcBlock>, formalization: FormalizationStatus, };
 
-export type NodeView = { node: NodeDetail, referrers: Array<NodeSummary>, children: Array<NodeSummary>, };
+export type NodePreview = NodeSummary & { formalization: FormalizationStatus };
+
+export type NodeView = { node: NodeDetail, referrers: Array<NodePreview>, children: Array<NodePreview>, };
 
 export type ResolveResponse = { fnode: string, title: string, };
 

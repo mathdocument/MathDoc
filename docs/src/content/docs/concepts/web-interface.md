@@ -16,7 +16,10 @@ Nodes are created with a title; no filename is requested.
 **Lean import** is inside the Lean source block and shows the module name other
 nodes should import. Graph nodes share the Lean status colors: gray for no Lean
 code, yellow for unchecked/failed checks or reported sorry, and green for a
-successful check without reported sorry. Rocq does not affect graph colors.
+successful check without reported sorry. Rocq does not affect graph colors. Knowledge view cards show both Lean and Rocq
+status lights after the node ID and depth, refreshed after saved edits and Lean
+certification. The bottom bar shows the node ID, status dot and title; long titles
+use an ellipsis and show their full text on hover.
 
 Lean blocks use Monaco on the left and native Infoview on the right, including goals, diagnostics and interactive widgets. **Save** writes to the database. The editor automatically certifies the saved version using its existing diagnostics and native import information, then refreshes the node status. Successfully compiled dependencies are certified from their compiler metadata with the same strict dependency checks. Unsaved drafts never certify a different database version. There is no separate check/build button or second checker on save.
 
