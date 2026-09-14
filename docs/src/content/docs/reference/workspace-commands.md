@@ -44,15 +44,15 @@ JSON result. No command performs a source-workspace refresh.
 | `mdc status` | Return entry server status and all database branches, including stopped branches. |
 | `mdc init DATABASE` | Create a database with default `main` branch and Lean settings. |
 | `mdc start [DATABASE/BRANCH] [--port PORT]` | Start/reuse the entry server; optionally start one branch. Return URL, entry port, process PID and log path. |
-| `mdc stop [DATABASE/BRANCH]` | Stop one branch and its Lean workers, or stop only the entry server when no branch is given. Retain graph data and caches. |
+| `mdc stop [DATABASE/BRANCH]` | Unload one branch and stop its Lean workers, or stop the entire server and all branches when no branch is given. Retain graph data and caches. |
 
 An optional branch must already exist and be stopped; missing branches and
 duplicate branch starts fail. `mdc start` without a branch is safe to repeat.
 The entry server defaults to port **17843**, configurable with TOML `port` or
 `--port`. Explicit ports are 1–65535 and must be free. If the entry server is
 already running, it is reused; requesting a different port fails until you stop
-it with `mdc stop`. Branch processes receive private OS-assigned ports.
-All listeners bind to `127.0.0.1`. Stopping an inactive service is an error.
+it with `mdc stop`. There is one process and one HTTP listener, bound to
+`127.0.0.1`; branches have no separate HTTP ports or backend processes. Stopping an inactive service is an error.
 Commands work from any directory; `start` encapsulates background launch.
 
 Open `http://127.0.0.1:17843/` for the project list and
@@ -79,9 +79,9 @@ Status separates the entry server from the branches:
 ```
 
 `running` reflects the held service lease in the configured cache root. When the
-entry server is stopped, its `port` and `url` are null. Branches can remain
-`running: true`, but their `url` is null until the entry server restarts. A stopped
-branch always has a null URL. Crashed services do not remain marked running.
+server is stopped, its `port` and `url` are null and all branches are stopped.
+A stopped branch has a null URL. Restart the server with `mdc start` and explicitly
+load desired branches with `mdc start DATABASE/BRANCH`. Crashed services do not remain marked running.
 An empty inventory has `projects: {}`. Status reads TerminusDB metadata without
 requiring a running mdc service, loading graphs or starting Lean.
 
@@ -97,7 +97,7 @@ mdc branch del -p myproject/agent
 
 `branch new NAME` forks the selected running branch's current head in the same
 database. It neither starts the new branch nor switches the source service.
-Each service stays attached to one branch; `status` identifies it explicitly.
+Each loaded branch keeps its own graph, Lean environment and cache; `status` identifies it explicitly.
 `history` returns the latest 50 TerminusDB commits.
 
 `branch del` deletes the branch selected by `-p` directly in TerminusDB. It must

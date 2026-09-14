@@ -46,9 +46,12 @@ new node directly. There is no node-deletion API.
 ## Local management and editor sessions
 
 `init`, `status`, and `branch del` contact TerminusDB directly. `start` owns its
-background process launch. `stop` discovers the entry record or named branch
-record and calls its direct loopback `POST /api/service/stop` with the private
-`x-mdc-service` token, then waits for the lease to be released. The project list
+background process launch. Loading a branch calls
+`POST /p/DATABASE/BRANCH/api/service/start` with the server's local token.
+`stop DATABASE/BRANCH` calls `POST /p/DATABASE/BRANCH/api/service/stop` with that
+branch's token; bare `stop` calls `POST /api/service/stop` with the server token.
+Stop waits for the relevant cache lease to be released. All calls use the same
+listening port; no branch HTTP process or forwarding hop exists. The project list
 is read-only; it does not expose browser start/stop controls. None of these
 operations require a hidden CLI command.
 
@@ -88,8 +91,8 @@ the whole bundle before one commit and rejects nonempty destinations.
 | 415 | JSON request has an unsupported content type. |
 | 422 | Invalid graph, source type, project configuration or request body. |
 | 428 | Missing quoted If-Match where required. |
-| 502 | TerminusDB or branch transport failure. |
-| 503 | Requested branch has no running service. |
+| 502 | TerminusDB request failure. |
+| 503 | Requested branch is stopped, starting or stopping. |
 
 Application errors use `{error: string}`; framework rejections, such as malformed
 JSON or oversized bodies, may be plain text. Check the status before decoding.
@@ -102,7 +105,8 @@ commit reload costs grow with source size.
 Host and browser-origin checks restrict requests to loopback or the configured
 `public_origin`. See [reverse proxy configuration](../configuration/). CLI
 requests carry `x-mdc-service` from the private local service record, preventing
-a reused port from silently routing them to a different mdc service. The entry
-also binds browser requests to the current branch lease before forwarding.
+a reloaded branch or reused port from silently accepting a stale CLI command.
+The server selects the current branch router directly, including native
+WebSocket upgrades, without reconstructing HTTP requests.
 This is a trusted-author deployment; remote user authentication, per-project
 permissions and compiler sandboxing are not provided by MathDoc.

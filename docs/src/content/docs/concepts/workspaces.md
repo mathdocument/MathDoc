@@ -7,15 +7,15 @@ title: Databases and references
 A MathDoc project is a TerminusDB database. `mdc init NAME` creates `NAME/main`;
 branches within that database have independent graph heads and share database
 history. One entry server serves the project list on port 17843 by default and
-routes `/p/DATABASE/BRANCH/` to the corresponding branch process. Each branch
-process serves exactly one graph. CLI `-p` uses the same entry server and routes.
+dispatches `/p/DATABASE/BRANCH/` directly to that branch's in-process router.
+Each loaded branch has its own graph state. CLI `-p` uses the same entry server and routes.
 `mdc status` returns `server` and `projects` objects, including stopped branches.
 
 Several projects can use the same TerminusDB server. They remain separate
 databases, with separate graphs and Lean settings. Several branches can run at
-once behind the same entry point, using private internal ports. The operating system schedules their native Lean
-processes; mdc does not pin workers to CPU cores or impose a machine-wide worker
-budget. Every service owns its branch cache using an OS file lock.
+once within the same mdc process, without internal HTTP ports or forwarding.
+Native Lean processes remain separate; the operating system schedules them; mdc does not pin workers to CPU cores or impose a machine-wide worker
+budget. Each loaded branch owns its cache using an OS file lock.
 
 ## Where data lives
 
@@ -23,8 +23,8 @@ budget. Every service owns its branch cache using an OS file lock.
 | --- | --- |
 | Nodes, source blocks, graph links, Lean project settings, history | TerminusDB storage; durable and independent of service processes. |
 | Database credentials and host settings | Private user configuration or environment; outside graph exports. |
-| Generated Lean sources, libraries, artifacts, certificates, logs, service record | Local cache, separated by endpoint/database/branch; disposable after stopping the service. |
-| Entry server record and log | `CACHE_ROOT/ENDPOINT_HASH/.gateway/`; no graph or compiler state. |
+| Generated Lean sources, libraries, artifacts, certificates, branch record | Local cache, separated by endpoint/database/branch; disposable after stopping the service. |
+| Server record and shared runtime log | `CACHE_ROOT/ENDPOINT_HASH/.server/`; no durable graph or compiler state. |
 | Unsaved browser drafts | Browser/editor session; save before closing or restarting. |
 
 The supplied Compose deployment mounts Docker volume `mathdoc-terminus-data` at
@@ -41,10 +41,10 @@ branches have isolated artifacts; creating a branch does not copy its parent's
 
 Use one cache root consistently for all commands on a host. Service discovery and
 the lock are scoped to that root; a different root cannot see or stop the old
-service. `stop DATABASE/BRANCH` retains caches. Bare `mdc stop` stops only the entry
-server, leaving branch processes and caches alive; browser/CLI access resumes
-after `mdc start`. Stopping the entry disconnects browser Lean connections, so
-save drafts first. `branch del` requires a stopped branch and removes
+service. `stop DATABASE/BRANCH` unloads just that branch and retains its cache.
+Bare `mdc stop` shuts down the server and all loaded branches, including their
+Lean workers. `mdc start` starts an empty server; load desired branches explicitly.
+Save drafts before stopping their branch or the whole server. `branch del` requires a stopped branch and removes
 its cache contents, leaving only the service lock for coordination.
 
 No project folder or source mirror is required. Generated Lean files are owned

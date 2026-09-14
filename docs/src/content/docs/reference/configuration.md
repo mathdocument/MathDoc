@@ -40,12 +40,12 @@ endpoint spelling: it is part of the cache identity. The timeout applies to
 native Lean operations, not to CLI argument parsing or service startup.
 
 `port` selects the entry server's listening port (default 17843); `mdc start
---port PORT` overrides it. It does not assign a branch's internal port and has no
+--port PORT` overrides it. All branches share this one listener; the setting has no
 environment override. A running entry server keeps its port until stopped.
 
 Cache overrides must be absolute paths. Cache paths append an endpoint hash,
-database name and branch name. The branch record, logs and generated Lean data
-live there; the entry record/log live in `ENDPOINT_HASH/.gateway/`.
+database name and branch name. The branch record and generated Lean data
+live there; the server record and shared runtime log live in `ENDPOINT_HASH/.server/`.
 See [Storage](../../concepts/workspaces/). Changing a cache root does
 not migrate records or stop services in the old root.
 

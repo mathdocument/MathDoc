@@ -35,7 +35,7 @@ Its development middleware serves nested `lean.html` requests from the shared
 Lean entry page. `MDC_API_PROXY` selects another entry URL if its port was
 changed. It is a Vite development setting, not an mdc client project selector.
 The proxy preserves the incoming Host/Origin pair for backend same-origin checks.
-Stop the branch with `mdc stop dev/main`; `mdc stop` stops the shared entry server.
+Stop the branch with `mdc stop dev/main`; `mdc stop` shuts down the server and all loaded branches.
 
 ## Release and validation
 

@@ -4,56 +4,52 @@ title: Architecture
 
 `store.rs` maps typed node links and Lean project documents to TerminusDB HTTP
 transactions. Data-version guards protect graph and configuration writes.
-`gateway.rs` serves the project directory and shared browser assets, and streams
-branch HTTP requests and native Lean WebSockets to independent branch processes.
-`service.rs` owns each branch's JSON API and native Lean sessions.
-`cli.rs` is the single public command parser; `config.rs` reads user settings.
+`server.rs` owns the single HTTP listener, branch registry and project directory.
+`service.rs` owns each branch's graph, JSON API and native Lean sessions.
+`cli.rs` is the public parser/client; `config.rs` reads host settings.
 
-The CLI is an HTTP client for branch and node operations, except `branch del`,
-which must delete a stopped branch directly in TerminusDB. `init` creates a
-database, `status` reads entry/branch inventory, `start` launches/reuses the entry
-server and optionally starts a branch, and `stop` uses the selected local record
-to request shutdown. See the
+The CLI uses the shared server for branch and node operations. `init`, `status`
+and stopped-branch deletion access TerminusDB directly. See the
 [CLI/API mapping](../../reference/http-api/).
 
-## Local service lifecycle
+## Server and branch lifecycle
 
-Status reads TerminusDB metadata and existing cache leases. It does not load node
-graphs, scan source workspaces or launch compilers. The entry server binds a
-loopback listener on port 17843 by default and owns the endpoint's `.gateway`
-lease. Each branch binds port zero internally, loads its graph and publishes
-its private port, PID and random service token in its own lease. The parent
-waits up to 180 seconds for each launched process to become ready.
+`mdc start` launches or reuses one background process on loopback port 17843 by
+default. The process owns `ENDPOINT_HASH/.server/service.lock` and writes its
+runtime log beside that record. `mdc start DATABASE/BRANCH` loads the branch into
+this process through an authenticated local control request. The branch owns its
+existing cache lease and records the same server PID/port with its own random
+token. Native Lean workers remain child processes; there are no per-branch HTTP
+listeners, backend processes or proxy connections.
 
-Background launch is encapsulated in `start`: the process re-executes the public
-command with an inherited Unix socket carrying a private bootstrap marker and
-internal port queued before process creation. Ordinary stdin sockets, including Node.js subprocess
-pipes, do not activate this path or wait for a marker.
-There is no hidden server subcommand or shell launch script. The child creates a
-new process session and runs from its branch cache or `.gateway` directory,
-independent of the caller's working directory. Stderr goes to `service.log` there.
+Background launch re-executes `mdc start` with an inherited Unix socket carrying
+a private bootstrap marker and the listening port. Ordinary stdin sockets do
+not activate this path. The child detaches from the terminal and runs from the
+server cache, independent of the caller's directory. No hidden CLI command or
+shell wrapper is involved. Startup allows up to 180 seconds for readiness.
 
-Client `-p/--proj DATABASE/BRANCH` resolves local entry and branch records without
-querying the database. It addresses `/p/DATABASE/BRANCH/api/...` at the entry
-server. Requests carry the branch service token so a replaced lease cannot
-silently select a different process. Stop requests graceful shutdown at the direct
-private address and waits for the original lease to be released; it also works
-when the entry server is stopped. A crashed owner releases its OS
-lock; a leftover record is ignored and cleared by the next owner.
+The registry holds a short lock only to reserve, publish or look up a branch;
+graph loading and Lean cleanup happen outside it. Management tasks finish even
+if the requesting client disconnects. The server strips the project path prefix
+and calls the existing Axum router directly, preserving encoded paths, queries
+and the native WebSocket upgrade. Host/Origin checks run before dispatch; branch
+tokens reject CLI requests from a previous load. No request body is copied into
+a second HTTP request.
 
-Locks and discovery are scoped to the configured cache root. Branch deletion
-acquires that same lock, clears artifacts and logs, and removes the database
-branch reference. It keeps the lock inode so a concurrent start cannot bypass
-coordination. Discovery requires neither a port scan nor a registry database.
+`mdc stop DATABASE/BRANCH` makes that branch unavailable, cancels its pending API
+requests, closes its browser sessions and shuts down its CLI Lean worker. Request
+lifetimes are drained before editor cleanup, preventing late session creation.
+Other branches continue operating. Bare `mdc stop` also waits for management
+operations and closes every branch before the server exits. Save drafts and wait
+for writes before stopping; a request interrupted during a database transaction
+may require reading back its result. Restarting the server starts no branches
+implicitly: load the desired branches with `mdc start DATABASE/BRANCH`.
 
-The entry reads the requested branch lease on each API request. It strips the
-project prefix, preserves encoded paths and queries, rewrites Host/Origin for
-loopback and binds the forwarded request to the current branch token. Incoming
-Host/Origin checks run first. Bodies stream through the existing HTTP client;
-WebSocket upgrades use a bidirectional byte tunnel. Starting/stopping branches
-needs no route reload and leaves other branch sessions connected. Graph state,
-locks and Lean budgets remain per branch. Stopping the entry disconnects its
-browser connections but leaves branch processes running.
+`status` reads TerminusDB inventory and held cache leases without loading graphs
+or starting Lean. When the server exits or crashes, all branches are stopped.
+Data and compiled artifacts remain on disk. One consistent cache root is
+required for discovery and exclusive ownership. Branch deletion takes the same
+cache lock and retains its inode to prevent concurrent starts bypassing it.
 
 ## Graph and Lean state
 
@@ -66,6 +62,6 @@ commands no longer pay filesystem synchronization costs.
 
 `lean.rs` generates requested compiler inputs and manages native Lean Server and
 Lake. Browser drafts are isolated from each other and saved sources, while
-artifacts are shared within a branch. This is process/state separation, not an
+artifacts are shared within a branch. This is state separation, not an
 operating-system sandbox. See [Compiler internals](../compiler-internals/) and
 [Graph and compilation caches](../index-cache/).

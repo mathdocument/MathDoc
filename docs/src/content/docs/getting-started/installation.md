@@ -59,22 +59,22 @@ new database; it does not reset an existing one.
 `start` launches/reuses the shared entry server and starts the requested branch.
 The default port is **17843**. Open `http://127.0.0.1:17843/` for the project list
 or the printed `http://127.0.0.1:17843/p/myproject/main/` URL for the editor.
-The JSON result also includes the entry port, branch PID and log path.
+The JSON result also includes the shared port, server PID and runtime log path.
 Services remain running after the terminal closes. Commands work from any directory.
 
 ```sh
 mdc stop myproject/main
 mdc start myproject/main
-# Stop only the entry server and change its port; branches remain running.
+# Stop all branches and change the shared port, then reload the desired branch.
 mdc stop
-mdc start --port 17844
+mdc start myproject/main --port 17844
 ```
 
-`stop DATABASE/BRANCH` waits for that branch and its Lean workers to shut down,
-retaining data and caches. Bare `stop` stops only the entry server; bare `start`
-starts/reuses it without starting a branch. `--port` always selects the entry
-port; occupied ports and attempts to change a running entry's port fail. Branches
-use private OS-assigned ports. Background execution is part of `start`, with no
+`stop DATABASE/BRANCH` unloads that branch and shuts down its Lean workers,
+retaining data and caches. Bare `stop` shuts down the server and every loaded
+branch; bare `start` starts/reuses the server without loading a branch. `--port` always selects the entry
+port; occupied ports and attempts to change a running entry's port fail. All branches
+run in the same mdc process through one HTTP listener. Background execution is part of `start`, with no
 internal CLI command. See [Configuration](../../reference/configuration/) for
 the default port setting and authenticated reverse-proxy deployment. Local use
 requires no separate web server. Lean metaprograms execute as the service user.
@@ -83,9 +83,8 @@ requires no separate web server. Lean metaprograms execute as the service user.
 
 Reinstall the binary after pulling changes. If frontend sources changed, rebuild
 `web/dist` first using the [development workflow](../../development/setup/).
-Existing service processes keep their previous executable until stopped and
-started again. Restart the entry server with `mdc stop` then `mdc start` to update
-shared browser assets and routing. Restart affected branches separately for
-backend changes. Save drafts before restarting and reload the browser afterwards.
+The running server keeps its previous executable until restarted. Save drafts,
+run `mdc stop`, then `mdc start DATABASE/BRANCH` for each branch you want to load.
+This updates the backend and frontend together. Reload the browser afterwards.
 The same entry port keeps project URLs stable. Keep the TerminusDB volume and
 existing credentials throughout upgrades.
