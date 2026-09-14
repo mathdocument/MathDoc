@@ -1,6 +1,5 @@
 import { mount } from "svelte";
 import App from "./App.svelte";
-import Projects from "./Projects.svelte";
 import { projectName } from "./lib/project-path";
 import "./app.css";
 import "./block.css";
@@ -10,4 +9,5 @@ if (!target) {
   throw new Error("#app root element missing");
 }
 
-mount(projectName() ? App : Projects, { target });
+if (projectName()) mount(App, { target });
+else void import("./Projects.svelte").then(({ default: Projects }) => mount(Projects, { target }));
