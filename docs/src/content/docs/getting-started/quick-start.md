@@ -9,7 +9,9 @@ mdc init myproject
 mdc start myproject/main
 ```
 
-Open the printed URL and use **New node**. Add text, Lean, Rocq or LaTeX blocks.
+Open the printed `/p/myproject/main/` URL and use **New node**. The root page
+`http://127.0.0.1:17843/` lists all projects and their branch service states.
+Add text, Lean, Rocq or LaTeX blocks.
 Lean opens the source editor and native Infoview side by side. The toolbar's Lean
 project dialog configures the pinned toolchain and external libraries.
 
@@ -33,6 +35,8 @@ Read a node with `show` and pass its `--revision` on later writes when another
 agent may edit concurrently. See [Source workflow](../../concepts/source-workflow/)
 and the complete [CLI reference](../../reference/workspace-commands/).
 
-`mdc status` finds running ports. Finish with `mdc stop myproject/main`; graph data
-and caches remain available for the next start. [Export and restore](../../concepts/import-export/)
+`mdc status` returns entry and branch states with access URLs. Finish with
+`mdc stop myproject/main`; graph data and caches remain available for the next
+start. Optionally run `mdc stop` to stop the entry server as well.
+[Export and restore](../../concepts/import-export/)
 covers backups and copying the graph to a new database.

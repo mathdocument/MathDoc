@@ -2,7 +2,10 @@
 title: Browser frontend
 ---
 
-The Svelte 5 interface provides search, graph/column navigation, dependency
+The Svelte 5 interface mounts the project directory at `/` and the editor at
+`/p/DATABASE/BRANCH/`. The directory polls `/api/status` while visible. A shared
+path helper scopes branch API calls, Lean iframe URLs and WebSocket URLs;
+static assets stay at the root. The editor provides search, graph/column navigation, dependency
 operations and block editing. It tracks unsaved drafts and serializes node
 mutations with revision guards. All four block types use consistent controls.
 
@@ -16,21 +19,23 @@ requests target artifacts when required.
 ## Development server
 
 Create a disposable development database once, then start its branch. Keep the
-cache outside the source checkout. A fixed port makes the default proxy work:
+cache outside the source checkout. The default entry port matches Vite's proxy:
 
 ```sh
 mdc init dev
-mdc start dev/main --port 7599
+mdc start dev/main
 npm --prefix web ci
 npm --prefix web run dev
 ```
 
 Open the Vite URL (normally `http://localhost:5173`). Vite serves frontend assets
-and proxies HTTP and WebSocket `/api` requests to `http://127.0.0.1:7599`.
-`MDC_API_PROXY` selects another backend URL if you use an automatically allocated
-port. It is a Vite development setting, not an mdc client project selector.
+for the project list, or `/p/dev/main/` for the editor. Vite proxies `/api` and
+`/p/DATABASE/BRANCH/api` HTTP/WebSocket requests to `http://127.0.0.1:17843`.
+Its development middleware serves nested `lean.html` requests from the shared
+Lean entry page. `MDC_API_PROXY` selects another entry URL if its port was
+changed. It is a Vite development setting, not an mdc client project selector.
 The proxy preserves the incoming Host/Origin pair for backend same-origin checks.
-Stop the backend with `mdc stop dev/main`.
+Stop the branch with `mdc stop dev/main`; `mdc stop` stops the shared entry server.
 
 ## Release and validation
 

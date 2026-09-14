@@ -1,7 +1,7 @@
 # MathDoc
 
 MathDoc manages mathematical knowledge as a versioned dependency graph in
-TerminusDB, with a locally hosted browser interface and the `mdc` CLI.
+TerminusDB, with one local browser entry point for all projects and the `mdc` CLI.
 
 Nodes support text, Lean, Rocq and LaTeX. Lean editing includes Monaco, native
 Infoview, incremental Lean Server checks and reusable Lake artifacts. Browser

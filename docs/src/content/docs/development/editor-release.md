@@ -10,5 +10,7 @@ Database revisions are independent of source-code Git commits. Every graph mutat
 
 Use the checks in [Development setup](../setup/), including the CLI lifecycle and
 real-browser tests. A binary upgrade does not replace already running services:
-save browser drafts, run `mdc stop DATABASE/BRANCH`, then `mdc start DATABASE/BRANCH`
-and reload the browser. With automatic port selection, the new URL may differ.
+save browser drafts, restart the entry server with `mdc stop` then `mdc start`,
+and restart affected branch backends with `mdc stop DATABASE/BRANCH` then
+`mdc start DATABASE/BRANCH`. Reload the browser. The public project URL stays
+the same while the entry port stays unchanged; internal branch ports may differ.

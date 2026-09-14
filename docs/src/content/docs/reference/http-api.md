@@ -2,8 +2,12 @@
 title: HTTP API and CLI mapping
 ---
 
-Each running branch serves JSON under `/api` at the URL returned by `mdc start`.
-The browser and CLI use these same handlers. Node path IDs should be complete
+The shared entry serves inventory at `GET /api/status`, with the same
+`{server, projects}` result as [`mdc status`](../workspace-commands/).
+Branch endpoints use `/p/DATABASE/BRANCH/api`, for example
+`http://127.0.0.1:17843/p/myproject/main/api/graph/check`.
+Tables below give paths relative to that prefix. The browser and CLI use the
+same handlers. Node path IDs should be complete
 UUIDs; CLI references are resolved by exact name or UUID first.
 
 ## Graph and authoring
@@ -42,9 +46,11 @@ new node directly. There is no node-deletion API.
 ## Local management and editor sessions
 
 `init`, `status`, and `branch del` contact TerminusDB directly. `start` owns its
-background process launch. `stop` discovers the local service record and calls
-`POST /api/service/stop` with its private `x-mdc-service` token; it waits for the
-service lease to be released. None of these operations require a hidden CLI command.
+background process launch. `stop` discovers the entry record or named branch
+record and calls its direct loopback `POST /api/service/stop` with the private
+`x-mdc-service` token, then waits for the lease to be released. The project list
+is read-only; it does not expose browser start/stop controls. None of these
+operations require a hidden CLI command.
 
 The following endpoints maintain browser draft sessions rather than saved graph
 objects. CLI agents use `lean check` and `lean goals` instead of managing sessions.
@@ -82,7 +88,8 @@ the whole bundle before one commit and rejects nonempty destinations.
 | 415 | JSON request has an unsupported content type. |
 | 422 | Invalid graph, source type, project configuration or request body. |
 | 428 | Missing quoted If-Match where required. |
-| 502 | TerminusDB request failure. |
+| 502 | TerminusDB or branch transport failure. |
+| 503 | Requested branch has no running service. |
 
 Application errors use `{error: string}`; framework rejections, such as malformed
 JSON or oversized bodies, may be plain text. Check the status before decoding.
@@ -92,7 +99,10 @@ There is no streaming import/export or pagination over the full graph. The
 service holds the complete source snapshot in memory, so startup and external
 commit reload costs grow with source size.
 
-Host and browser-origin checks restrict requests to the local service. CLI
+Host and browser-origin checks restrict requests to loopback or the configured
+`public_origin`. See [reverse proxy configuration](../configuration/). CLI
 requests carry `x-mdc-service` from the private local service record, preventing
-a reused port from silently routing them to a different mdc service. This is a
-trusted-local-author deployment, not remote multi-tenant authentication.
+a reused port from silently routing them to a different mdc service. The entry
+also binds browser requests to the current branch lease before forwarding.
+This is a trusted-author deployment; remote user authentication, per-project
+permissions and compiler sandboxing are not provided by MathDoc.

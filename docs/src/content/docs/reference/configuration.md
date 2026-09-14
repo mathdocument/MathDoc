@@ -13,6 +13,8 @@ then built-in defaults apply. Unknown TOML keys are rejected.
 terminus_url = "http://127.0.0.1:6363"
 terminus_user = "admin"
 terminus_password = "the-existing-database-password"
+# port = 17843
+# public_origin = "https://mdc.example.test"
 # cache_dir = "/absolute/path/to/cache"
 # lean_timeout_seconds = 300
 ```
@@ -37,15 +39,37 @@ they discover it locally and do not query TerminusDB themselves. Use the same
 endpoint spelling: it is part of the cache identity. The timeout applies to
 native Lean operations, not to CLI argument parsing or service startup.
 
+`port` selects the entry server's listening port (default 17843); `mdc start
+--port PORT` overrides it. It does not assign a branch's internal port and has no
+environment override. A running entry server keeps its port until stopped.
+
 Cache overrides must be absolute paths. Cache paths append an endpoint hash,
-database name and branch name. The service record, logs and generated Lean data
-live there; see [Storage](../../concepts/workspaces/). Changing a cache root does
+database name and branch name. The branch record, logs and generated Lean data
+live there; the entry record/log live in `ENDPOINT_HASH/.gateway/`.
+See [Storage](../../concepts/workspaces/). Changing a cache root does
 not migrate records or stop services in the old root.
 
 There is no `MDC_URL`, TOML `url`, or CLI `--url`. Select a running branch with
 `-p/--proj DATABASE/BRANCH` after a branch or node command. Management commands use
 positional names instead. No current directory, default branch or default client
 port selects a project implicitly.
+
+## Access through a reverse proxy
+
+The entry server listens on loopback. For browser access from another machine,
+place an authenticated HTTPS reverse proxy on the same host and forward the
+whole site to `127.0.0.1:17843`, preserving paths, queries and the public Host.
+Enable WebSocket upgrades and long-lived connections for Lean. All projects use
+the same public origin and `/p/DATABASE/BRANCH/` routes; no per-branch proxy rules
+are needed.
+
+Set `public_origin` to that exact HTTP(S) origin, then restart the entry server.
+The setting permits its Host/Origin pair and controls returned browser URLs;
+paths, queries, fragments and credentials are rejected. Leave it unset for local
+use. The proxy must supply authentication and access control: this setting is
+an origin allowlist, not a login system. MathDoc currently trusts its authors,
+has no per-project user permissions and runs Lean metaprograms as the service
+user. Only deploy shared access to trusted authors. Keep TerminusDB private.
 
 ## Versioned Lean project
 

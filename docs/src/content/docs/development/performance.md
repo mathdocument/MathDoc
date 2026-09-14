@@ -17,7 +17,7 @@ records all samples, median/p95 and response size. It never requests Lean checki
 or opens a Lean editor.
 
 ```sh
-python3 perf/graph-service.py --url http://127.0.0.1:7600 \
+python3 perf/graph-service.py --url http://127.0.0.1:17843/p/mathlib4/main \
   --cli "$(command -v mdc)" --proj mathlib4/main --query Algebra \
   --samples 20 --output /tmp/graph-baseline.json
 ```
@@ -31,6 +31,7 @@ temporary nodes and measures creation, rename, text saves, adding/removing edges
 and rejection of stale revisions and cycles. Afterwards, run `mdc stop DATABASE/BRANCH`
 and `mdc branch del -p DATABASE/BRANCH` to remove the test branch and its caches.
 The benchmark does not delete nodes itself.
+Stop the entry server with `mdc stop` only if it is dedicated to the test run.
 
 HTTP measurements include connection establishment, response transfer and JSON
 decoding. CLI measurements additionally include a fresh client process and output

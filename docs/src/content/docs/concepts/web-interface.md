@@ -2,7 +2,16 @@
 title: Web interface
 ---
 
-Run `mdc start DATABASE/BRANCH` and open the URL it prints. Use `mdc status` to find the port again. Navigate by search, referrers, dependencies or the graph view. Nodes are created with a title; no filename is requested.
+Run `mdc start DATABASE/BRANCH` and open its printed `/p/DATABASE/BRANCH/` URL.
+The root page at `http://127.0.0.1:17843/` lists projects and branches, with
+**Running** and **Stopped** labels, search, status filters and links to running
+branches. It refreshes every five seconds while visible. Start or stop branches
+with the CLI; `mdc status` returns the same inventory and access URLs.
+
+The editor toolbar identifies the current branch. Click the MathDoc logo to
+return to **All projects**; unsaved drafts require confirmation before leaving.
+Within a branch, navigate by search, referrers, dependencies or the graph view.
+Nodes are created with a title; no filename is requested.
 
 **Lean import** is inside the Lean source block and shows the module name other
 nodes should import. Graph nodes share the Lean status colors: gray for no Lean
