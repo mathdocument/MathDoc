@@ -1,8 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import {
-    ArrowLeft,
-    ArrowRight,
     Columns3,
     Link2,
     Moon,
@@ -396,32 +394,12 @@
   inert={refreshing || historyNavigating}
   aria-busy={refreshing || historyNavigating}
 >
-  <header class="toolbar">
-    <!-- Zone 1: identity and navigation history. -->
+  <header class="app-header">
     <div class="bar-zone bar-start">
-      <a class="identity" href="/" aria-label="All projects" title="All projects" onclick={showProjects}>
-        <img class="brand-mark" src="/mdc-logo.svg" alt="" />
-        <span class="brand-copy">
-          <strong>MathDoc</strong>
-        </span>
+      <a class="app-brand" href="/" aria-label="All projects" title="All projects" onclick={showProjects}>
+        <img src="/mdc-logo.svg" alt="" /><strong>MathDoc</strong>
       </a>
       {#if project}<span class="project-name" title={project}>{project}</span>{/if}
-      <div class="history-tools" aria-label="navigation history">
-        <button
-          class="tool icon-only"
-          onclick={() => window.history.back()}
-          disabled={nodeSession.historyIdx <= 0}
-          title="Back"
-          aria-label="Back"
-        ><ArrowLeft size={16} strokeWidth={1.8} /></button>
-        <button
-          class="tool icon-only"
-          onclick={() => window.history.forward()}
-          disabled={nodeSession.historyIdx >= nodeSession.history.length - 1}
-          title="Forward"
-          aria-label="Forward"
-        ><ArrowRight size={16} strokeWidth={1.8} /></button>
-      </div>
     </div>
 
     <!-- Zone 2: the command affordance, styled as a field rather than a button. -->
@@ -475,15 +453,6 @@
       <button class="tool icon-only" onclick={() => overlay = { kind: "project" }} title="Lean project" aria-label="Lean project"><Settings size={16} /></button>
       <button
         class="tool icon-only"
-        onclick={toggleTheme}
-        title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-        aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-      >
-        {#if theme === "dark"}<Sun size={16} strokeWidth={1.8} />
-        {:else}<Moon size={16} strokeWidth={1.8} />{/if}
-      </button>
-      <button
-        class="tool icon-only"
         class:spinning={refreshing}
         onclick={refreshView}
         disabled={refreshing}
@@ -491,6 +460,15 @@
         aria-label="Refresh database view"
       ><RefreshCw size={16} strokeWidth={1.8} /></button>
     </div>
+      <button
+        class="header-theme"
+        onclick={toggleTheme}
+        title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+        aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+      >
+        {#if theme === "dark"}<Sun size={16} strokeWidth={1.8} />
+        {:else}<Moon size={16} strokeWidth={1.8} />{/if}
+      </button>
   </header>
   {#if nodeSession.navigationError || refreshError}
     <div class="app-error" role="alert">
@@ -663,72 +641,28 @@
     height: 100%;
     position: relative;
   }
-  /* Three-zone header: identity, command field, actions. The centre zone is
-     free to grow so the search field stays optically centred. */
-  .toolbar {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    min-height: var(--mdc-toolbar-h);
-    padding: 0 0.75rem;
-    border-bottom: 1px solid var(--mdc-border);
-    background: color-mix(in srgb, var(--mdc-panel) 82%, transparent);
-    backdrop-filter: blur(12px) saturate(160%);
-    flex-shrink: 0;
-    z-index: 4;
-  }
   .bar-zone {
     display: flex;
     align-items: center;
     gap: 0.5rem;
     min-width: 0;
   }
-  .bar-start,
-  .bar-end {
-    flex: 0 0 auto;
-  }
+  .bar-start { flex: 0 0 auto; }
+  .bar-end { flex: 0 1 auto; overflow-x: auto; scrollbar-width: none; }
+  .bar-end > * { flex-shrink: 0; }
   .bar-center {
     flex: 1 1 auto;
     justify-content: center;
   }
-  .identity {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    margin-right: 0.15rem;
-    text-decoration: none;
-  }
-  .identity:focus-visible { outline: 2px solid var(--mdc-accent); outline-offset: 4px; border-radius: 4px; }
-  .project-name { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mdc-dim); font-size: var(--mdc-text-xs); font-family: var(--mdc-mono); }
+  .project-name { max-width: 200px; padding-left: 0.75rem; margin-left: 0.25rem; border-left: 1px solid var(--mdc-border-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mdc-dim); font-size: var(--mdc-text-xs); font-family: var(--mdc-mono); }
   @media (max-width: 1100px) { .project-name { max-width: 110px; } }
   @media (max-width: 800px) { .project-name { display: none; } }
-  .brand-mark {
-    display: block;
-    width: 1.65rem;
-    height: 1.65rem;
-    flex: 0 0 auto;
-  }
-  .brand-copy {
-    display: block;
-    line-height: 1;
-  }
-  .brand-copy strong {
-    color: var(--mdc-fg);
-    font-size: var(--mdc-text-md);
-    font-weight: 680;
-    letter-spacing: -0.03em;
-  }
   .toolbar-divider {
     width: 1px;
     height: 20px;
     margin: 0 0.15rem;
     flex: 0 0 auto;
     background: var(--mdc-border);
-  }
-  .history-tools {
-    display: flex;
-    align-items: center;
-    gap: 0.15rem;
   }
   .tool {
     display: inline-flex;
@@ -1055,9 +989,6 @@
   }
 
   @media (max-width: 1000px) {
-    .brand-copy {
-      display: none;
-    }
     .view-switch button span {
       display: none;
     }
@@ -1091,18 +1022,6 @@
   }
 
   @media (max-width: 700px) {
-    .toolbar {
-      gap: 0.5rem;
-      overflow-x: auto;
-      overflow-y: hidden;
-      scrollbar-width: none;
-    }
-    .toolbar::-webkit-scrollbar {
-      display: none;
-    }
-    .toolbar > * {
-      flex-shrink: 0;
-    }
     .bar-center {
       flex: 0 0 auto;
     }

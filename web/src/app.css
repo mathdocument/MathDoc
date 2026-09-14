@@ -529,3 +529,46 @@ dialog.modal-dialog .secondary:hover:not(:disabled) {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Shared shell geometry keeps project navigation and theme controls in place. */
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  height: var(--mdc-toolbar-h);
+  flex: 0 0 var(--mdc-toolbar-h);
+  padding: 0 0.75rem;
+  border-bottom: 1px solid var(--mdc-border);
+  background: color-mix(in srgb, var(--mdc-panel) 82%, transparent);
+  backdrop-filter: blur(12px) saturate(160%);
+  position: relative;
+  z-index: 4;
+}
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+  color: var(--mdc-fg);
+  text-decoration: none;
+  line-height: 1;
+}
+.app-brand img { display: block; width: 1.65rem; height: 1.65rem; }
+.app-brand strong { font-size: var(--mdc-text-md); font-weight: 680; letter-spacing: -0.03em; }
+.app-brand:focus-visible { outline: 2px solid var(--mdc-accent); outline-offset: 4px; border-radius: 4px; }
+.header-theme {
+  display: grid;
+  place-items: center;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  margin-left: auto;
+  color: var(--mdc-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--mdc-radius-sm);
+  cursor: pointer;
+}
+.header-theme:hover { background: var(--mdc-card-hover); color: var(--mdc-fg); }
+@media (max-width: 1000px) { .app-brand strong { display: none; } }

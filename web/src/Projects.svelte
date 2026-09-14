@@ -63,11 +63,10 @@
 </script>
 
 <div class="directory">
-  <header class="topbar">
-    <a class="brand" href="/" aria-label="MathDoc projects"><img src="/mdc-logo.svg" alt="" /><strong>MathDoc</strong></a>
-    <span class="section-label">Projects</span>
-    <button class="icon-button theme-button" onclick={toggleTheme} title="Toggle theme" aria-label="Toggle theme">
-      {#if theme === "dark"}<Sun size={17} />{:else}<Moon size={17} />{/if}
+  <header class="app-header">
+    <a class="app-brand" href="/" aria-label="MathDoc projects"><img src="/mdc-logo.svg" alt="" /><strong>MathDoc</strong></a>
+    <button class="header-theme" onclick={toggleTheme} title="Toggle theme" aria-label="Toggle theme">
+      {#if theme === "dark"}<Sun size={16} strokeWidth={1.8} />{:else}<Moon size={16} strokeWidth={1.8} />{/if}
     </button>
   </header>
 
@@ -121,11 +120,6 @@
 
 <style>
   .directory { height: 100%; overflow: auto; }
-  .topbar { display: flex; align-items: center; gap: 22px; height: 58px; padding: 0 28px; border-bottom: 1px solid var(--mdc-border); background: color-mix(in srgb, var(--mdc-panel) 82%, transparent); }
-  .brand { display: flex; align-items: center; gap: 9px; color: var(--mdc-fg); text-decoration: none; letter-spacing: -.03em; }
-  .brand img { width: 27px; height: 27px; }
-  .section-label { color: var(--mdc-dim); padding-left: 22px; border-left: 1px solid var(--mdc-border-strong); font-size: 12px; }
-  .theme-button { margin-left: auto; }
   main { max-width: 1144px; padding: 58px 32px 28px; margin: auto; }
   .intro { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 32px; }
   .eyebrow { color: var(--mdc-accent); font-size: 10px; letter-spacing: .13em; font-weight: 650; margin: 0 0 12px; }
@@ -171,7 +165,6 @@
   .empty p { margin: 0; font-size: 12px; }
   footer { display: flex; justify-content: space-between; color: var(--mdc-muted); font-size: 10px; margin-top: 24px; }
   @media (max-width: 700px) {
-    .topbar { padding: 0 18px; }
     main { padding: 32px 18px 24px; }
     .intro { align-items: flex-start; flex-direction: column; gap: 20px; }
     h1 { font-size: 29px; }
