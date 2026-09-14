@@ -30,7 +30,7 @@ enum Commands {
         #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
         port: Option<u16>,
     },
-    /// Stop a branch and its Lean workers, or stop only the entry server when omitted.
+    /// Stop one branch, or the server and all branches when omitted.
     Stop {
         #[arg(value_name = "DATABASE/BRANCH", value_parser = parse_project)]
         project: Option<String>,
@@ -408,7 +408,7 @@ pub fn run() -> i32 {
 async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
     let _profile = crate::profile::scope("service.request");
     let local = match &cli.command {
-        Commands::Status => Some(crate::gateway::status().await?),
+        Commands::Status => Some(crate::server::status().await?),
         Commands::Init { database } => {
             Database::from_env(database.clone(), "main".into())?
                 .initialize()
@@ -443,15 +443,15 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
     let root = crate::config::Settings::load()?.project_cache(&project)?;
     let service = crate::service::running_service(&root)?
         .with_context(|| format!("{project} is not running; run mdc start {project}"))?;
-    let gateway =
-        crate::service::running_service(&crate::config::Settings::load()?.gateway_cache()?)?
+    let server =
+        crate::service::running_service(&crate::config::Settings::load()?.server_cache()?)?
             .context("entry server is not running; run mdc start")?;
     let api = Api {
         client: Client::builder()
             .no_proxy()
             .timeout(std::time::Duration::from_secs(1800))
             .build()?,
-        url: format!("{}/p/{project}", gateway.url()),
+        url: format!("{}/p/{project}", server.url()),
         token: service.token,
     };
     let value = match cli.command {

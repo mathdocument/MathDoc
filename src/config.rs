@@ -27,7 +27,7 @@ fn user_dir(variable: &str, fallback: &str) -> Result<PathBuf> {
 }
 
 impl Settings {
-    pub fn gateway_port(&self) -> Result<u16> {
+    pub fn server_port(&self) -> Result<u16> {
         let port = self.port.unwrap_or(17843);
         anyhow::ensure!(port != 0, "port must be between 1 and 65535");
         Ok(port)
@@ -45,11 +45,11 @@ impl Settings {
         }).transpose()
     }
 
-    pub fn gateway_cache(&self) -> Result<PathBuf> {
+    pub fn server_cache(&self) -> Result<PathBuf> {
         Ok(self
             .cache_root()?
             .join(&crate::store::digest(self.terminus_url().as_bytes())[..12])
-            .join(".gateway"))
+            .join(".server"))
     }
 
     pub fn terminus_url(&self) -> String {
@@ -129,10 +129,10 @@ mod tests {
         assert_eq!(settings.lean_timeout_seconds, Some(600));
         assert!(toml::from_str::<Settings>("database = 'accidental-shared-project'").is_err());
         assert!(toml::from_str::<Settings>("url = 'http://127.0.0.1:7599'").is_err());
-        assert_eq!(Settings::default().gateway_port().unwrap(), 17843);
+        assert_eq!(Settings::default().server_port().unwrap(), 17843);
         assert!(toml::from_str::<Settings>("port = 0")
             .unwrap()
-            .gateway_port()
+            .server_port()
             .is_err());
         let settings: Settings =
             toml::from_str("public_origin = 'https://mdc.example.test/'").unwrap();

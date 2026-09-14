@@ -227,7 +227,14 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           await page.getByPlaceholder("Search by title or fnode…").fill(node.title);
           await page.getByRole("dialog").getByRole("button", { name: new RegExp(node.title) }).click();
           await page.getByText("Lean editor ready", { exact: true }).waitFor();
+          const otherPage = await page.context().newPage();
+          let otherClosed = false;
+          otherPage.on("websocket", socket => socket.on("close", () => otherClosed = true));
+          await otherPage.goto(`${started.url}#ref=${node.fnode}`);
+          await otherPage.getByText("Lean editor ready", { exact: true }).waitFor();
           await manage("stop", agent); agentRunning = false;
+          assert.ok(otherClosed, "stopping a branch closes its native Lean socket");
+          await otherPage.close();
           assert.equal((await fetch(`${base}/p/${agent}/api/graph/check`)).status, 503);
           await cli("graph", "check");
           assert.equal(opened, 1); assert.equal(closed, 0);
@@ -246,6 +253,16 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
             assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
             await page.screenshot({ path: resolve(process.env.MDC_E2E_ARTIFACTS, "projects-mobile.png"), fullPage: true });
           }
+          await page.goto(`${url}/#ref=${node.fnode}`);
+          await page.getByText("Lean editor ready", { exact: true }).waitFor();
+          const beforeStop = closed;
+          await manage("stop");
+          assert.ok(closed > beforeStop, "stopping the server closes remaining Lean sessions");
+          const stopped = JSON.parse((await manage("status")).stdout);
+          assert.equal(stopped.server.running, false);
+          assert.equal(stopped.projects[project].running, false);
+          await manage("start", project, "--port", new URL(base).port);
+          await page.goto(base);
         } finally { if (agentRunning) await manage("stop", agent); }
       }, [node]);
     });

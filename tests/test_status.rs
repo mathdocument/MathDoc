@@ -178,7 +178,6 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
     let child = command(root)
         .args([
             "start",
-            "mdcbootstrapmissing/main",
             "--port",
             &occupied.local_addr().unwrap().port().to_string(),
         ])
@@ -232,7 +231,7 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
         .output()
         .unwrap();
     let process = String::from_utf8(process.stdout).unwrap();
-    assert!(process.contains(&format!("mdc start {main}")), "{process}");
+    assert!(process.trim_end().ends_with("mdc start"), "{process}");
     assert!(!process.contains("__run"));
     let reserved = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let explicit_port = reserved.local_addr().unwrap().port();
@@ -245,6 +244,13 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
     .await;
     let b = Started::start(root, &agent, Some(a.port())).await;
     assert_eq!(a.port(), b.port());
+    assert_eq!(a.info["pid"], b.info["pid"], "branches share one server process");
+    for branch in ["main", "agent"] {
+        let path = mathdoc::store::Database::from_env(first.db.database.clone(), branch.into()).unwrap().with_cache_root(root.into()).cache_path().unwrap();
+        let record: Value = serde_json::from_slice(&std::fs::read(path.join("service.lock")).unwrap()).unwrap();
+        assert_eq!(record["port"], a.info["port"]);
+        assert_eq!(record["pid"], a.info["pid"]);
+    }
     assert_ne!(a.info["url"], b.info["url"]);
     assert!(a.info["url"]
         .as_str()
@@ -356,7 +362,7 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
     reject(root, &["stop", &main], "not running").await;
     reject(root, &["graph", "check", "--proj", &main], "mdc start").await;
 
-    // Stopping/restarting the entry server must retain branch processes and URLs.
+    // Stopping the single server must unload every branch and release its cache lease.
     let entry = format!("http://127.0.0.1:{}", b.port());
     let inventory: Value = http
         .get(format!("{entry}/api/status"))
@@ -402,18 +408,25 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
     );
     assert_eq!(
         stopped_entry["projects"][&agent],
-        serde_json::json!({"running":true,"url":null})
+        serde_json::json!({"running":false,"url":null})
     );
     reject(
         root,
         &["graph", "check", "-p", &agent],
-        "entry server is not running",
+        "is not running",
     )
     .await;
     let port = b.port().to_string();
     let args = ["start", "--port", &port];
     let (entry_a, entry_b) = tokio::join!(run(root, &args), run(root, &args));
     assert_eq!(entry_a["pid"], entry_b["pid"]);
+    assert!(!status(root).await[&agent]);
+    // Concurrent requests to load different branches use this same listener.
+    let main_args = ["start", &main];
+    let agent_args = ["start", &agent];
+    let (loaded_main, loaded_agent) = tokio::join!(run(root, &main_args), run(root, &agent_args));
+    assert_eq!(loaded_main["pid"], entry_a["pid"]);
+    assert_eq!(loaded_agent["pid"], entry_a["pid"]);
     assert_eq!(
         run(root, &["graph", "check", "-p", &agent]).await["nodes"],
         0
@@ -421,7 +434,7 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
 
     unsafe {
         assert_eq!(
-            libc::kill(b.info["pid"].as_u64().unwrap() as i32, libc::SIGKILL),
+            libc::kill(entry_a["pid"].as_u64().unwrap() as i32, libc::SIGKILL),
             0
         );
     }
@@ -432,6 +445,7 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
     })
     .await
     .unwrap();
+    assert!(!status(root).await[&main], "a server crash marks every branch stopped");
     let c = Started::start(root, &agent, Some(b.port())).await;
     assert_eq!(
         run(root, &["graph", "--proj", &agent, "check"]).await["nodes"],
