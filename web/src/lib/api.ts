@@ -43,6 +43,7 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
     try {
       body = JSON.parse(text);
     } catch {
+      if (resp.ok) throw new ApiError("Invalid JSON response", resp.status, text);
       body = text;
     }
   }
@@ -131,7 +132,6 @@ export const api = {
   }),
   roots: () => req<GraphRootItem[]>("/api/graph/roots"),
   graphCheck: () => req<GraphCheckReport>("/api/graph/check"),
-  refreshWorkspace: () => req<GraphCheckReport>("/api/graph/check"),
   full: (signal?: AbortSignal) => req<GraphFull>("/api/graph/full", { signal }),
   search: (q: string, n = 200, signal?: AbortSignal) =>
     req<NodeInfo[]>(`/api/search?q=${encodeURIComponent(q)}&n=${n}`, { signal }),

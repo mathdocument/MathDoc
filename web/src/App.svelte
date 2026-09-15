@@ -277,7 +277,7 @@
     try {
       if (!await settlePendingMutations()) return;
       if (request !== refreshRequest) return;
-      const checked = await workspaceSession.refresh(true);
+      const checked = await workspaceSession.refresh();
       if (request !== refreshRequest) return;
       const selectionWasCleared = nodeSession.selectionCleared;
       const current = nodeSession.node;

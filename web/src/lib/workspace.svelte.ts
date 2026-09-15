@@ -27,12 +27,12 @@ export class WorkspaceSession {
     this.loading = false;
   }
 
-  async refresh(refreshWorkspace = false): Promise<boolean> {
+  async refresh(): Promise<boolean> {
     const request = ++this.request;
     this.loading = true;
     this.error = null;
     try {
-      const report = await (refreshWorkspace ? api.refreshWorkspace() : api.graphCheck());
+      const report = await api.graphCheck();
       if (request !== this.request) return false;
       this.report = report;
       this.stale = false;

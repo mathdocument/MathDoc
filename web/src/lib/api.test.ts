@@ -1,8 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api } from "./api";
+import { api, fetchJson } from "./api";
 import { projectName, projectPath } from "./project-path";
 
 const jsonResponse = (revision: string) => Response.json({ revision });
+
+it("rejects malformed JSON successes while preserving HTTP errors and empty responses", async () => {
+  vi.stubGlobal("fetch", vi.fn()
+    .mockResolvedValueOnce(new Response("<html>proxy error</html>"))
+    .mockResolvedValueOnce(new Response("upstream unavailable", { status: 502 }))
+    .mockResolvedValueOnce(new Response(null, { status: 204 })));
+  await expect(fetchJson("/api/test")).rejects.toMatchObject({ message: "Invalid JSON response", status: 200 });
+  await expect(fetchJson("/api/test")).rejects.toMatchObject({ message: "HTTP 502", status: 502 });
+  await expect(fetchJson("/api/test")).resolves.toBeNull();
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
