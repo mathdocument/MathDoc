@@ -25,10 +25,10 @@ title lines reserved per row. Scrolling and Arrow/Home/End navigation can reach
 the complete list. Switching views keeps the columns' scroll positions and the
 same editor session. Node snapshots are replaced atomically instead of deeply
 proxied. The graph component loads on first use and keeps its layout in memory;
-the canvas reserves the window width and the sidebar clips its visible area.
-Sidebar resizing never reallocates, rescales or repaints the bitmap, including
-on Retina displays where the eight-million-pixel budget caps its resolution.
-Actual window-size and pixel-density changes resize and paint in one frame.
+the desktop layout uses fixed 5:3 grid columns for the graph and editor.
+The canvas bitmap fits its own viewport, with an eight-million-pixel budget on
+Retina displays. Window-size and pixel-density changes resize and paint in one
+frame.
 The dependency removal dialog filters by title or UUID and displays 50 results
 per page; selections remain active across pages and filters until submitted.
 

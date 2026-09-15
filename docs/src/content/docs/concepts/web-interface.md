@@ -11,10 +11,10 @@ with the CLI; `mdc status` returns the same inventory and access URLs.
 The editor toolbar identifies the current branch. Click the MathDoc logo to
 return to **All projects**; unsaved drafts require confirmation before leaving.
 Within a branch, navigate by search, referrers, dependencies or the graph view.
-Nodes are created with a title; no filename is requested. In Graph view, drag the
-vertical divider to resize the editor sidebar. Focus the divider and use the
-arrow keys, Home or End for keyboard control. Resizing preserves the active Lean
-session and unsaved edits; narrow screens retain the stacked layout.
+Nodes are created with a title; no filename is requested. In Graph view, the
+editor sidebar uses a fixed 3/8 of the available width and the graph uses 5/8.
+Narrow screens retain the stacked layout. Switching views preserves the active
+Lean session and unsaved edits.
 
 **Lean import** is inside the Lean source block and shows the module name other
 nodes should import. Graph nodes share the Lean status colors: gray for no Lean

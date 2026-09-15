@@ -290,30 +290,9 @@ async function runGraphSample(context, url) {
     await page.mouse.move(canvasBounds.x + canvasBounds.width / 2 + 30, canvasBounds.y + canvasBounds.height / 2 + 20);
     await page.mouse.up();
     await nextPaint(page);
-    const divider = page.getByRole("separator", { name: "Resize graph editor" });
-    const bounds = await divider.boundingBox();
-    const beforeWidth = await page.locator("canvas").getAttribute("width");
-    const viewportWidth = (await page.locator(".graph-container").boundingBox()).width;
-    await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + 100);
-    await page.mouse.down();
-    await page.mouse.move(bounds.x - 180, bounds.y + 100, { steps: 20 });
-    await page.mouse.up();
-    await nextPaint(page);
-    if (await page.locator("canvas").getAttribute("width") !== beforeWidth ||
-        Math.abs((await page.locator(".graph-container").boundingBox()).width - viewportWidth) < 100) {
-      throw new Error("sidebar drag must clip a stable bitmap without resizing it");
-    }
     const resizes = await page.evaluate(() => window.__canvasResizes);
     if (resizes.total < 2 || resizes.unpainted !== 0) {
       throw new Error(`canvas resize exposed an empty frame: ${JSON.stringify(resizes)}`);
-    }
-    await divider.press("ArrowRight");
-    const focus = await divider.evaluate(element => ({
-      outer: getComputedStyle(element).outlineStyle,
-      handle: getComputedStyle(element, "::after").outlineStyle,
-    }));
-    if (focus.outer !== "none" || focus.handle !== "solid") {
-      throw new Error("splitter keyboard focus should outline only the middle handle");
     }
     if (errors.length > 0) throw new Error(errors.join("\n"));
     return { graphReadyMs, zoomFrames };
@@ -331,34 +310,23 @@ async function checkRetinaResize(browser, url) {
     await page.getByTitle("Graph view", { exact: true }).click();
     await page.locator("canvas").waitFor();
     await page.waitForFunction(() => !document.querySelector(".graph-loading"));
-    const divider = page.getByRole("separator", { name: "Resize graph editor" });
-    const box = await divider.boundingBox();
-    await page.mouse.move(box.x + 6, box.y + 100);
-    await page.mouse.down();
-    await nextPaint(page);
-    const bitmap = () => page.locator("canvas").evaluate(canvas => ({
-      width: canvas.width, height: canvas.height, cssWidth: canvas.clientWidth, pixels: canvas.toDataURL(),
-    }));
-    const before = await bitmap();
-    if (before.width / before.cssWidth >= 2) throw new Error("Retina fixture did not reach the backing pixel budget");
-    await page.locator("canvas").evaluate(canvas => {
-      window.__resizePaints = 0;
-      const ctx = canvas.getContext("2d"), clear = ctx.clearRect.bind(ctx);
-      ctx.clearRect = (...args) => { window.__resizePaints++; return clear(...args); };
-    });
-    for (let i = 1; i <= 60; i++) await page.mouse.move(box.x + 6 - Math.sin(i / 10) * 220, box.y + 100);
-    await page.mouse.up();
-    await nextPaint(page);
-    const after = await bitmap();
-    if (JSON.stringify(before) !== JSON.stringify(after) || await page.evaluate(() => window.__resizePaints) !== 0) {
-      throw new Error("sidebar resizing repainted or resampled the Retina graph");
+    for (const width of [3840, 1920, 1024]) {
+      await page.setViewportSize({ width, height: width === 3840 ? 2160 : 1080 });
+      await nextPaint(page);
+      const layout = await page.evaluate(() => {
+        const graph = document.querySelector(".force-canvas-wrap").getBoundingClientRect();
+        const editor = document.querySelector(".force-editor-wrap").getBoundingClientRect();
+        const canvas = document.querySelector("canvas");
+        return { ratio: editor.width / (graph.width + editor.width), canvasWidth: canvas.clientWidth,
+          viewportWidth: canvas.parentElement.clientWidth, pixels: canvas.width * canvas.height,
+          scale: canvas.width / canvas.clientWidth, grid: getComputedStyle(canvas.parentElement).backgroundImage };
+      });
+      if (Math.abs(layout.ratio - 3 / 8) > .001) throw new Error(`graph sidebar must use 3/8 of available width: ${JSON.stringify(layout)}`);
+      if (layout.canvasWidth !== layout.viewportWidth) throw new Error("graph bitmap must fit its viewport");
+      if (layout.pixels > 8_010_000 || (width === 3840 && layout.scale >= 2)) throw new Error("Retina graph exceeded its backing pixel budget");
+      if (layout.grid !== "none") throw new Error("graph grid background was restored");
+      if (await page.getByRole("separator").count()) throw new Error("graph must not expose a sidebar splitter");
     }
-    if (await page.locator(".graph-container").evaluate(el => getComputedStyle(el).backgroundImage) !== "none") {
-      throw new Error("graph grid background was restored");
-    }
-    await page.setViewportSize({ width: 1920, height: 1080 });
-    await nextPaint(page);
-    if ((await bitmap()).cssWidth !== 1920) throw new Error("graph did not adapt to a window resize");
     if (errors.length) throw new Error(errors.join("\n"));
   } finally { await context.close(); }
 }

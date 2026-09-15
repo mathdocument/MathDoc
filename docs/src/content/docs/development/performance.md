@@ -124,9 +124,9 @@ The same run checks an 8,311-dependency list: bounded DOM size, scrolling to its
 end, keyboard navigation, node selection and scroll preservation across view
 switches. Its timings are recorded in `rawSamples.relations`. Canvas resize
 checks reject backing-size resets that leave a blank frame before painting.
-A 3840×2160, 2× Retina check reaches the canvas pixel cap and requires sidebar
-dragging to preserve the exact bitmap with zero redraws. Window resizing must
-still update the backing surface.
+A 3840×2160, 2× Retina check reaches the canvas pixel cap, verifies that the
+bitmap fits its viewport, and checks the fixed 3/8 sidebar proportion at
+multiple desktop window widths.
 The large-list check also verifies dependency removal pagination, filtering,
 selection retention and the exact submitted dependency IDs.
 Navigation checks delay the shell script and require a header on the first
@@ -164,9 +164,5 @@ about 8.46 MB compressed, with a 9 MB absolute ceiling and an 8% regression
 budget. The initial shell has a separate 56 KiB ceiling. Runtime fixtures measure
 LaTeX and graph interaction; native Lean is checked by the real-server browser test.
 
-The native Lean integration test also drags the sidebar with a 500-line Lean document.
-It checks that Monaco and its wrapped text resize while the pointer is held,
-without measuring the entire document through DOM ranges. MathDoc uses Monaco's
-monospace wrapping algorithm and one size observer; hidden editors skip layout.
 Run the real-server suite with `MDC_E2E_BROWSER=webkit` to check Safari's engine
 as well as the default Chromium (see [test setup](../setup/)).

@@ -364,8 +364,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
       }, [node]);
     });
     await suite.test("native Lean editor renders goals, diagnostics and saves to the database", () => {
-      const source = "theorem demo : True ∧ True := by\n  constructor\n  · trivial\n  · trivial\n" +
-        "-- Resize fixture: ∀ n : ℕ, this long comment must wrap continuously as the editor gets narrower or wider.\n".repeat(500);
+      const source = "theorem demo : True ∧ True := by\n  constructor\n  · trivial\n  · trivial\n";
       // Imported modules can be nested and quoted; later nodes use the flat Lib directory.
       const a = { fnode: randomUUID(), title: "Lean Example", module: "Lib.EGA.«1-1.7.1»", depens: [], blocks: [{ srctype: "lean", content: source }, { srctype: "text", content: "A shared block header." }, { srctype: "rocq", content: "Check nat." }, { srctype: "latex", content: "A formula: $x^2$." }] };
       return fixture(browser, async ({ root, page, cli, url }) => {
@@ -444,44 +443,6 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         }
         await center(page).getByLabel("Lean: Verified", { exact: true }).waitFor();
         await page.screenshot({ path: resolve(root, "lean-editor.png"), fullPage: true });
-        const resizeSessionURL = await page.locator('iframe[title="Lean source and Infoview"]').getAttribute("src");
-        await page.getByRole("button", { name: "Graph", exact: true }).click();
-        {
-          const divider = page.getByRole("separator", { name: "Resize graph editor" });
-          const box = await divider.boundingBox();
-          const before = (await page.locator(".editor-wrap").boundingBox()).width;
-          await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-          const viewport = frame.locator("#editor");
-          const leanWidth = (await viewport.boundingBox()).width;
-          const wrapHeight = () => frame.locator(".view-lines").evaluate(el => el.scrollHeight);
-          const originalHeight = await wrapHeight();
-          await viewport.evaluate(() => {
-            window.__resizeRangeReads = 0;
-            const read = Range.prototype.getClientRects;
-            Range.prototype.getClientRects = function () { window.__resizeRangeReads++; return read.call(this); };
-          });
-          await page.mouse.down();
-          for (const distance of [140, 280]) {
-            await page.mouse.move(box.x + box.width / 2 - distance, box.y + box.height / 2, { steps: 8 });
-            await viewport.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-            const width = (await viewport.boundingBox()).width;
-            assert.ok(Math.abs(width - leanWidth - distance / 2) < 2, "Lean viewport must resize while the pointer is held");
-            assert.ok(Math.abs((await frame.locator(".monaco-editor").boundingBox()).width - width) < 2, "Monaco must lay out at the current width");
-            assert.ok(await wrapHeight() < originalHeight, "Lean text must rewrap before releasing the divider");
-          }
-          const rangeReads = await viewport.evaluate(() => window.__resizeRangeReads);
-          assert.ok(rangeReads < 10000, `resizing must not measure all 500 lines in the DOM (${rangeReads} range reads)`);
-          console.log("Live Lean resize range reads:", rangeReads);
-          await page.mouse.up();
-          const wider = (await page.locator(".editor-wrap").boundingBox()).width;
-          assert.ok(Math.abs(wider - before - 280) < 2, "dragging left widens the editor");
-          await divider.press("ArrowRight");
-          await page.waitForFunction(expected => document.getElementById("graph-editor").clientWidth === expected, Math.round(wider) - 32);
-          const narrower = (await page.locator(".editor-wrap").boundingBox()).width;
-          assert.ok(Math.abs(wider - narrower - 32) < 2, "the divider supports keyboard resizing");
-          assert.equal(await page.locator('iframe[title="Lean source and Infoview"]').getAttribute("src"), resizeSessionURL);
-        }
-        await page.getByRole("button", { name: "Knowledge", exact: true }).click();
         const badSource = "theorem demo : True := by\n  exact 42\n";
         const firstError = nativeError(badSource);
         await input.press("ControlOrMeta+A");

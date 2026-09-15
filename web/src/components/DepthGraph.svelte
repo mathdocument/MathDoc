@@ -496,9 +496,7 @@
     const canvas = canvasEl;
     const container = containerEl;
     if (!canvas || !container) return;
-    // Reserve the full window width. The sidebar only clips this surface:
-    // resizing it must not reallocate or continuously rescale the bitmap.
-    canvasCssWidth = window.innerWidth;
+    canvasCssWidth = container.clientWidth;
     canvasCssHeight = container.clientHeight;
     const cssPixels = Math.max(1, canvasCssWidth * canvasCssHeight);
     const dpr = Math.min(
@@ -511,8 +509,6 @@
     const height = Math.max(1, Math.round(canvasCssHeight * dpr));
     if (canvas.width !== width) canvas.width = width;
     if (canvas.height !== height) canvas.height = height;
-    canvas.style.width = `${canvasCssWidth}px`;
-    canvas.style.height = `${canvasCssHeight}px`;
   }
 
   function watchDevicePixelRatio() {
@@ -779,7 +775,7 @@
     }
     if (containerEl) {
       resizeObserver = new ResizeObserver(() => {
-        if (canvasCssWidth !== window.innerWidth || canvasCssHeight !== containerEl!.clientHeight) requestRender();
+        if (canvasCssWidth !== containerEl!.clientWidth || canvasCssHeight !== containerEl!.clientHeight) requestRender();
         // Fit after any layout change that gives the canvas usable dimensions.
         if (needsFit && containerEl && containerEl.clientWidth > 0 && containerEl.clientHeight > 0) {
           needsFit = false;
@@ -907,7 +903,7 @@
   }
   canvas {
     position: absolute;
-    inset: 0 auto auto 0;
+    inset: 0;
     display: block;
     width: 100%;
     height: 100%;
