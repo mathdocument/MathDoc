@@ -55,7 +55,7 @@
 <div class="latex-preview" bind:this={host} onclick={navigate}>{@html html}</div>
 
 <style>
-  .latex-preview { padding:1.2rem 1.4rem; color:var(--mdc-fg); font-family:KaTeX_Main, "Latin Modern Roman", "Songti SC", serif; font-size:1.0625rem; line-height:1.75; overflow-wrap:anywhere; }
+  .latex-preview { padding:1.2rem 1.4rem; color:var(--mdc-fg); font-family:KaTeX_Main, "Latin Modern Roman", "Songti SC", serif; font-size:1rem; line-height:1.75; overflow-wrap:anywhere; }
   .latex-preview :global(p) { margin:.6em 0; }
   .latex-preview :global(h2), .latex-preview :global(h3), .latex-preview :global(h4) { margin:1em 0 .5em; line-height:1.35; }
   .latex-preview :global(a) { color:var(--mdc-accent); text-decoration:underline; text-underline-offset:3px; }
@@ -68,6 +68,9 @@
   .latex-preview :global(pre) { overflow-x:auto; white-space:pre; }
   .latex-preview :global(pre), .latex-preview :global(code) { font-family:var(--mdc-mono); font-size:.85em; }
   .latex-preview :global(.latex-bibliography) { border-top:1px solid var(--mdc-border); margin-top:1.5rem; font-size:.9em; }
+  .latex-preview :global(.latex-bibliography dl) { display:grid; grid-template-columns:max-content minmax(0, 1fr); column-gap:1em; row-gap:.6em; }
+  .latex-preview :global(.latex-bibliography dt) { font-weight:400; }
+  .latex-preview :global(.latex-bibliography dd), .latex-preview :global(.latex-bibliography p) { margin:0; }
   .latex-preview :global(dt) { font-weight:700; }
   .latex-preview :global(dd) { margin:0 0 .8rem 1rem; }
 </style>

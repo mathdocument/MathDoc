@@ -1,8 +1,10 @@
 """Run with: python -B -m unittest discover -s src/latex -p 'test_*.py'."""
 import unittest
+from pathlib import Path
 from unittest.mock import patch
-from pybtex.style.formatting import BaseStyle
 import renderer
+
+renderer.AMSALPHA = list(renderer.bst.parse_string(Path(__file__).with_name('amsalpha.bst').read_text()))
 
 A = '11111111-1111-4111-8111-111111111111'
 B = '22222222-2222-4222-8222-222222222222'
@@ -19,7 +21,7 @@ class RendererTest(unittest.TestCase):
             @customtype{Custom, title={<script>unsafe</script>}, url={https://example.org}}
             @book{FoxOther1957, title={Another title}, year={1957}}
         '''}
-        with patch.object(BaseStyle, 'format_entry', side_effect=AssertionError('Completion must not format entries')):
+        with patch.object(renderer.Interpreter, 'run', side_effect=AssertionError('Completion must not format entries')):
             catalog = renderer.handle({'kind': 'catalog', 'project': project})
         citations = {entry['key']: entry for entry in catalog['citations']}
         self.assertEqual(len(citations), 5)
@@ -34,6 +36,65 @@ class RendererTest(unittest.TestCase):
         self.assertIn('A paper', preview['html'])
         self.assertIn('&lt;script&gt;', preview['html'])
         self.assertNotIn('<script>', preview['html'])
+
+    def test_proof_captions_survive_environment_aliases(self):
+        preamble = r'\newenvironment{prf}{\begin{proof}}{\end{proof}}'
+        parsed = renderer.parse(preamble, r'''
+            \begin{proof}Default body.\end{proof}
+            \begin{prf}[Sketch of the \emph{proof}]Sketch body.\end{prf}
+            After the proof.
+        ''')
+        self.assertEqual(parsed.diagnostics, [])
+        output = ''.join(parsed.parts)
+        self.assertIn('>Proof</div>', output)
+        self.assertIn('>Sketch of the <em>proof</em></div>', output)
+        self.assertIn('After the proof.', output)
+        self.assertEqual(output.count('class="latex-proof"'), 2)
+
+    def test_native_character_text_is_preserved_and_escaped(self):
+        parsed = renderer.parse('', r'''Erd\H{o}s, Szemer\'edi, M\"uller, Fran\c{c}ois \& Co. & More''')
+        self.assertEqual(parsed.diagnostics, [])
+        self.assertIn('Erdős, Szemerédi, Müller, François &amp; Co. &amp; More', ''.join(parsed.parts))
+
+    def test_amsalpha_format_sorting_and_citation_set_cache(self):
+        project = {**PROJECT, 'bibliography': r'''
+            @article{GT2008, author={Green, Ben and Tao, Terence},
+              title={The primes contain arbitrarily long arithmetic progressions},
+              journal={Ann. of Math.}, volume={167}, number={2}, year={2008}, pages={481--547}}
+            @article{GT2008Other, author={Green, Ben and Tao, Terence},
+              title={Another result}, journal={Journal}, year={2008}}
+            @article{BadUnused, title={\input{must-not-be-read}}}
+        '''}
+        request = {'kind': 'preview', 'project': project, 'dependencies': [],
+                   'target': {'fnode': A, 'title': 'A', 'source': r'\cite{GT2008}'}}
+        preview = renderer.handle(request)
+        output = preview['html']
+        self.assertEqual(preview['diagnostics'], [])
+        self.assertIn('>GT08</a>', output)
+        self.assertIn('Ben Green and Terence Tao, <em>The primes contain arbitrarily long arithmetic', output)
+        self.assertIn('Ann. of Math. <strong>167</strong> (2008), no.\u00a02, 481–547.', output)
+        self.assertNotIn('<p><section', output)
+        both = renderer.handle({**request, 'target': {**request['target'], 'source': r'\cite{GT2008,GT2008Other}'}})
+        self.assertEqual(both['diagnostics'], [])
+        self.assertIn('>GT08a</a>', both['html'])
+        self.assertIn('>GT08b</a>', both['html'])
+        self.assertLess(both['html'].index('id="latex-cite-GT2008Other"'), both['html'].index('id="latex-cite-GT2008"'))
+        self.assertIn('———', both['html'])
+        with patch.object(renderer.Interpreter, 'run', side_effect=AssertionError('Reuse unchanged cited sets')):
+            self.assertEqual(renderer.handle(request), preview)
+
+        crossref = {**project, 'bibliography': r'''
+            @incollection{Child,author={Aaa, A},title={Chapter},pages={1--3},crossref={Parent}}
+            @book{Parent,editor={Bbb, B},title={Proceedings},publisher={Press},year={2020}}
+            @preamble{"\input{must-not-be-read}"}
+        '''}
+        inherited = renderer.handle({**request, 'project': crossref,
+            'target': {**request['target'], 'source': r'\cite{Child}'}})
+        self.assertEqual(inherited['diagnostics'], [])
+        self.assertIn('>Aaa20</a>', inherited['html'])
+        self.assertIn('>Bbb20</a>', inherited['html'])
+        self.assertIn('id="latex-cite-Parent"', inherited['html'])
+        self.assertIn('Proceedings', inherited['html'])
 
     def test_print_setup_is_not_executed_when_importing_content_macros(self):
         project = {**PROJECT, 'preamble': r'''

@@ -100,7 +100,14 @@ impl Worker {
     async fn spawn() -> Result<Self> {
         let python = python().await?;
         let mut child = Command::new(python)
-            .args(["-I", "-B", "-u", "-c", include_str!("renderer.py")])
+            .args([
+                "-I",
+                "-B",
+                "-u",
+                "-c",
+                include_str!("renderer.py"),
+                include_str!("amsalpha.bst"),
+            ])
             .current_dir(std::env::temp_dir())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

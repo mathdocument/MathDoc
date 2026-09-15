@@ -10,15 +10,19 @@ import logging
 import sys
 from collections import OrderedDict
 from dataclasses import dataclass
+from io import StringIO
 from urllib.parse import quote, urlparse
 
 from plasTeX import Command, Context, Environment, IfFalse, IfTrue, NewIf, TeXDocument
 from plasTeX.Base.TeX.Primitives import IfCommand
+from plasTeX.Base.LaTeX.Definitions import newcommand
 from plasTeX.Packages.amsthm import newtheorem
 from plasTeX.TeX import TeX
-from pybtex.database import parse_string
-from pybtex.exceptions import PybtexError
-from pybtex.plugin import find_plugin
+from pybtex.bibtex import bst
+from pybtex.bibtex.interpreter import Interpreter
+from pybtex.database import BibliographyData, parse_string
+from pybtex.database.input.bibtex import Parser
+from pybtex.errors import capture
 
 for name in ("plasTeX", "status", "parse", "context", "packages"):
     logging.getLogger(name).setLevel(logging.ERROR)
@@ -164,6 +168,16 @@ class NewTheorem(newtheorem):
     args = '* name:str [ shared:str ] header [ parent:str ]'
 
 
+class ProvideCommand(newcommand):
+    def invoke(self, tex):
+        # plasTeX aliases this to newcommand, which replaces existing macros.
+        self.parse(tex)
+        a = self.attributes
+        context = self.ownerDocument.context
+        if a['name'] not in context:
+            context.newcommand(a['name'], a['nargs'], a['definition'], opt=a['opt'])
+
+
 class Ref(Command):
     args = '* key:str'
 
@@ -228,6 +242,7 @@ class Parsed:
 PARSED = OrderedDict()
 PARSED_BYTES = 0
 BIB = OrderedDict()
+AMSALPHA = []  # The worker receives the bundled, unmodified style at startup.
 
 
 def parse(preamble, source):
@@ -251,7 +266,7 @@ def parse(preamble, source):
     definitions = {
         **{name: Ref for name in ('ref', 'cref', 'Cref', 'nameref', 'eqref')},
         'cite': Cite, 'label': Label, 'usepackage': UsePackage, 'RequirePackage': UsePackage,
-        'newtheorem': NewTheorem,
+        'newtheorem': NewTheorem, 'providecommand': ProvideCommand,
         'documentclass': ClassDeclaration, 'LoadClass': ClassDeclaration,
         'ProvidesClass': Provides, 'ProvidesPackage': Provides, 'NeedsTeXFormat': Provides,
         'DeclareOption': Options, 'ProcessOptions': ProcessOptions, 'PassOptionsToPackage': PassOptions,
@@ -303,6 +318,11 @@ def parse(preamble, source):
         if name == '#text':
             parts.append(esc(str(node)))
             return
+        if name == 'par' and any(getattr(child, 'blockType', False) for child in children):
+            # plasTeX can wrap a bibliography in a paragraph after its definitions.
+            # HTML paragraphs cannot contain block elements.
+            for child in children: render(child, depth + 1)
+            return
         if name in math_names:
             source = node.source
             if name == 'math': source = source[1:-1]
@@ -346,9 +366,33 @@ def parse(preamble, source):
             parts.append('</section>')
             return
         if name == 'proof':
-            parts.append('<section class="latex-proof"><div class="latex-statement-title">Proof</div>')
+            parts.append('<section class="latex-proof"><div class="latex-statement-title">')
+            caption = attrs.get('caption')
+            if caption is None:
+                parts.append('Proof')
+            else:
+                for child in caption.childNodes: render(child, depth + 1)
+            parts.append('</div>')
             for child in children: render(child, depth + 1)
             parts.append('</section>')
+            return
+        if name == 'thebibliography':
+            parts.append('<section class="latex-bibliography"><h3>References</h3><dl>')
+            for child in children: render(child, depth + 1)
+            parts.append('</dl></section>')
+            return
+        if name == 'bibitem':
+            start = len(parts)
+            if attrs.get('label') is None:
+                parts.append(esc(attrs['key']))
+            else:
+                for child in attrs['label'].childNodes: render(child, depth + 1)
+            label_html = ''.join(parts[start:])
+            del parts[start:]
+            parts.append({'bibitem': attrs['key'], 'label_html': label_html})
+            parts.append(f'<dt id="latex-cite-{esc(quote(attrs["key"], safe=""))}">[{label_html}]</dt><dd>')
+            for child in children: render(child, depth + 1)
+            parts.append('</dd>')
             return
         if name in ('href', 'url'):
             url = plain(attrs.get('url'))
@@ -375,14 +419,21 @@ def parse(preamble, source):
         if name in ('#document', '#document-fragment', 'document', 'bgroup', 'mbox', 'textrm', 'textnormal'):
             for child in children: render(child, depth + 1)
             return
-        if name in ('%', '&', '#', '_', '$', '{', '}'):
-            parts.append(esc(name))
+        if name.removeprefix('active::') in ('%', '&', '#', '_', '$', '{', '}'):
+            parts.append(esc(name.removeprefix('active::')))
             return
         if name in ('LaTeX', 'TeX'):
             parts.append(name)
             return
-        if name in (' ', 'nobreakspace', 'quad', 'qquad', ',', ';', '!'):
+        if name in ('nobreakspace', 'active::~'):
+            parts.append('\u00a0')
+            return
+        if name in (' ', 'quad', 'qquad', ',', ';', '!'):
             parts.append(' ')
+            return
+        if isinstance(getattr(node, 'str', None), str):
+            # Native plasTeX text equivalents include accents and active characters.
+            parts.append(esc(node.str))
             return
         # Unknown content must remain visible and diagnostic, never silently vanish.
         diagnostics.append(f'Unsupported command or environment: \\{name}')
@@ -407,12 +458,9 @@ def parse(preamble, source):
     return result
 
 
-def bibliography(source, cited_keys=()):
-    style = find_plugin('pybtex.style.formatting', 'alpha')()
+def bibliography(source):
     if source not in BIB:
         data = parse_string(source, 'bibtex')
-        entries = style.sort(list(data.entries.values()))
-        labels = dict(zip((entry.key for entry in entries), style.format_labels(entries)))
         citations = {}
         for key, entry in data.entries.items():
             authors = ', '.join(str(p) for p in entry.persons.get('author', []))
@@ -421,24 +469,39 @@ def bibliography(source, cited_keys=()):
                 entry.fields.get('title'), entry.fields.get('year'),
                 entry.fields.get('doi') or entry.fields.get('url'),
             ) if value) or key
-            citations[key] = {'key': key, 'label': labels[key], 'title': entry.fields.get('title', ''),
+            citations[key] = {'key': key, 'label': key, 'title': entry.fields.get('title', ''),
                               'authors': authors, 'year': entry.fields.get('year', ''), 'text': text}
-        BIB[source] = data, citations, set()
+        BIB[source] = data, citations, OrderedDict()
     BIB.move_to_end(source)
     while len(BIB) > 2: BIB.popitem(last=False)
-    data, citations, formatted = BIB[source]
-    # Completion needs metadata only. Format just the cited entries, once each.
-    for key in set(cited_keys) - formatted:
-        if key not in citations:
-            continue
-        try:
-            citations[key]['text'] = style.format_entry(citations[key]['label'], data.entries[key], bib_data=data).text.render_as('text')
-        except (PybtexError, AttributeError):
-            # Retain available metadata when a print style requires missing fields
-            # or does not implement this entry type; never invent bibliographic data.
-            pass
-        formatted.add(key)
-    return list(citations.values())
+    return list(BIB[source][1].values())
+
+
+def format_bibliography(source, cited_keys):
+    data, _, cache = BIB[source]
+    keys = tuple(sorted({data.entries[key].key for key in cited_keys if key in data.entries}))
+    if not keys:
+        return ''
+    if keys not in cache:
+        # Preserve crossref parents while serializing only this node's bibliography.
+        entries = {key: data.entries[key] for key in keys}
+        pending = list(entries.values())
+        for entry in pending:
+            parent = data.entries.get(entry.fields.get('crossref', ''))
+            if parent is not None and parent.key not in entries:
+                entries[parent.key] = parent
+                pending.append(parent)
+        subset = BibliographyData(entries).to_string('bibtex')
+        interpreter = Interpreter(Parser, None)
+        # Missing fields are BibTeX warnings, not errors that block a preview.
+        # Uploaded @preamble code is intentionally excluded from the subset.
+        with capture():
+            cache[keys] = interpreter.run(AMSALPHA, list(entries), [StringIO(subset)], min_crossrefs=2)
+    result = cache.pop(keys)
+    cache[keys] = result
+    while len(cache) > 128 or sum(len(value) for value in cache.values()) > 8 * 1024 * 1024:
+        cache.popitem(last=False)
+    return result
 
 
 def handle(request):
@@ -468,11 +531,16 @@ def handle(request):
     current = parse(preamble, target['source'])
     diagnostics += current.diagnostics
     cited_keys = [key for part in current.parts if isinstance(part, dict) for key in part.get('cite', [])]
-    citations = {entry['key']: entry for entry in bibliography(project['bibliography'], cited_keys)}
-    used_citations = []
+    citations = {entry['key']: entry for entry in bibliography(project['bibliography'])}
+    bbl = format_bibliography(project['bibliography'], cited_keys)
+    # HTML equivalents of the two print helpers supplied by amsalpha.bst.
+    bib = parse(preamble, r'\providecommand{\bysame}{———}\providecommand{\MR}[1]{MR~#1}' + bbl) if bbl else None
+    if bib: diagnostics += bib.diagnostics
+    citation_labels = {part['bibitem']: part['label_html'] for part in bib.parts
+                       if isinstance(part, dict) and 'bibitem' in part} if bib else {}
     exact = {item['key']: item for item in refs}
     output = []
-    for part in current.parts:
+    for part in current.parts + (bib.parts if bib else []):
         if isinstance(part, str):
             output.append(part)
         elif 'ref' in part:
@@ -498,15 +566,9 @@ def handle(request):
                     links.append(f'<span class="latex-error">?? {esc(key)}</span>')
                     continue
                 entry = citations[key]
-                if key not in used_citations: used_citations.append(key)
-                links.append(f'<a href="#latex-cite-{esc(quote(key, safe=""))}" title="{esc(entry["title"])}">{esc(entry["label"])}</a>')
+                label = citation_labels.get(key, esc(key))
+                links.append(f'<a href="#latex-cite-{esc(quote(key, safe=""))}" title="{esc(entry["title"])}">{label}</a>')
             output.append('[' + '; '.join(links) + (', ' + esc(part['note']) if part['note'] else '') + ']')
-    if used_citations:
-        output.append('<section class="latex-bibliography"><h3>References</h3><dl>')
-        for key in used_citations:
-            entry = citations[key]
-            output.append(f'<dt id="latex-cite-{esc(quote(key, safe=""))}">[{esc(entry["label"])}]</dt><dd>{esc(entry["text"])}</dd>')
-        output.append('</dl></section>')
     return {'html': ''.join(output), 'labels': current.labels, 'diagnostics': list(dict.fromkeys(diagnostics))}
 
 
@@ -522,4 +584,5 @@ def main():
 
 
 if __name__ == '__main__':
+    AMSALPHA = list(bst.parse_string(sys.argv[1]))
     main()

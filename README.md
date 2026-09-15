@@ -1,11 +1,7 @@
 # MathDoc
 
-MathDoc manages mathematical knowledge as a versioned dependency graph in
-TerminusDB, with one local browser entry point for all projects and the `mdc` CLI.
+MathDoc manages mathematical knowledge as a versioned dependency graph in TerminusDB, where nodes of the graph now support text, LaTeX, Lean and Rocq, with one local browser entry point for all projects and the `mdc` CLI, browser and CLI edits share database transactions and revision guards.
 
-Nodes support text, Lean, Rocq and LaTeX. Lean editing includes Monaco, native
-Infoview, incremental Lean Server checks and reusable Lake artifacts. Browser
-and CLI edits share database transactions and revision guards.
 
 - [Documentation](https://mathdocument.github.io/MathDoc/)
 - [Installation](docs/src/content/docs/getting-started/installation.md)
@@ -14,5 +10,3 @@ and CLI edits share database transactions and revision guards.
 - [HTTP API](docs/src/content/docs/reference/http-api.md)
 - [Development](docs/src/content/docs/development/setup.md)
 
-MathDoc is self-hosted on a Unix machine and accessed through a local browser.
-Only Lean compilation is integrated; Rocq and LaTeX blocks are stored and edited.

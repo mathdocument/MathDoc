@@ -40,6 +40,7 @@ Use ordinary LaTeX definitions, for example:
 \newcommand{\cA}{\mathcal{A}}
 \newcommand{\Hom}{\operatorname{Hom}}
 \newenvironment{items}{\begin{itemize}}{\end{itemize}}
+\newenvironment{prf}{\begin{proof}}{\end{proof}}
 \newtheorem{thm}{Theorem}
 ```
 
@@ -51,6 +52,11 @@ environment, math-operator and theorem declarations while skipping global setup
 calls and their arguments. Unsupported package declarations such as `etoolbox`,
 `geometry` and `fontspec` do not prevent independent macros from loading. Supported
 built-in plasTeX packages still supply their content commands.
+
+Proof environments retain optional captions, including through aliases:
+`\begin{prf}[Sketch of the proof] ... \end{prf}`. Preview text uses the bundled
+KaTeX Main font at 16px, a Computer Modern style web font, independently of the
+class's print fonts.
 
 Macro bodies are stored without executing them. For example, an unused title-page
 macro containing `\ifstrempty` does not require `etoolbox` support. Calling that
@@ -84,15 +90,20 @@ and `\eqref` retain their usual number/type presentation with local numbering.
 References carry the target UUID and label so the web client can navigate to the
 correct node without reading an `.aux` file or building a PDF.
 
-`\cite{key}` uses the shared BibTeX database. Pybtex produces alphabetic citation
-labels and formatted bibliography entries; only the entries cited by this node
-appear in its preview. Optional citation notes, such as `\cite[Theorem 2]{key}`,
-are retained. The HTML citation style is independent of a print-only `.bst` file.
-Missing fields such as `editor`, `author` or `year` do not block citations. If an
-entry cannot use the standard style, its available metadata is displayed instead;
-other entries retain their normal formatting. No missing metadata is invented.
-Completion reads entry metadata without formatting the whole library. Preview
-formats only the cited entries and caches their results.
+`\cite{key}` uses the shared BibTeX database. Pybtex's BibTeX interpreter runs the
+bundled, unmodified AMS `amsalpha.bst` (version 2.0, under LPPL 1.3c or later).
+It supplies alphabetic labels, ordering and entry formatting; plasTeX renders the
+result as HTML with italic titles and bold journal volumes. No BibTeX executable
+or TeX installation is required. Optional citation notes such as
+`\cite[Theorem 2]{key}` are retained.
+
+Only cited entries and their BibTeX `crossref` parents are processed. Label
+suffixes such as `a` and `b`, and repeated-author dashes, follow this node's cited
+set. Missing fields such as `editor`, `author` or `year` remain nonblocking BibTeX
+warnings; no missing metadata is invented. Completion reads metadata without
+formatting the whole library. Preview caches each cited set, bounded to 128 sets
+and 8 MiB per cached bibliography. Uploaded BibTeX `@preamble` code is not executed;
+put ordinary content macros in the shared `.cls` or `.tex` file.
 
 ## Runtime and caching
 
