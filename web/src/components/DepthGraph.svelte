@@ -84,6 +84,8 @@
   let selfEdgeNodes = new Set<string>();
   let dprQuery: MediaQueryList | null = null;
   let canvasDpr = 1;
+  let canvasCssWidth = 0;
+  let canvasCssHeight = 0;
   let edgePathSelection: string | null | undefined;
   let selectedOutgoingPath = new Path2D();
   let selectedIncomingPath = new Path2D();
@@ -352,7 +354,8 @@
     ctx.clearRect(0, 0, w, h);
     // viewX/viewY = screen position of world origin. Not relative to canvas
     // center, so resizing the canvas doesn't move the graph.
-    ctx.translate(viewX, viewY);
+    // Keep thin edges on the same backing-pixel phase while panning.
+    ctx.translate(Math.round(viewX * dpr) / dpr, Math.round(viewY * dpr) / dpr);
     ctx.scale(viewK, viewK);
 
     const margin = 80 / viewK;
@@ -493,18 +496,23 @@
     const canvas = canvasEl;
     const container = containerEl;
     if (!canvas || !container) return;
-    const rect = container.getBoundingClientRect();
-    const cssPixels = Math.max(1, rect.width * rect.height);
+    // Reserve the full window width. The sidebar only clips this surface:
+    // resizing it must not reallocate or continuously rescale the bitmap.
+    canvasCssWidth = window.innerWidth;
+    canvasCssHeight = container.clientHeight;
+    const cssPixels = Math.max(1, canvasCssWidth * canvasCssHeight);
     const dpr = Math.min(
       window.devicePixelRatio || 1,
       MAX_CANVAS_DPR,
       Math.sqrt(MAX_BACKING_PIXELS / cssPixels),
     );
     canvasDpr = dpr;
-    const width = Math.max(1, Math.round(rect.width * dpr));
-    const height = Math.max(1, Math.round(rect.height * dpr));
+    const width = Math.max(1, Math.round(canvasCssWidth * dpr));
+    const height = Math.max(1, Math.round(canvasCssHeight * dpr));
     if (canvas.width !== width) canvas.width = width;
     if (canvas.height !== height) canvas.height = height;
+    canvas.style.width = `${canvasCssWidth}px`;
+    canvas.style.height = `${canvasCssHeight}px`;
   }
 
   function watchDevicePixelRatio() {
@@ -674,16 +682,16 @@
   }
 
   function fitToNodes() {
-    const canvas = canvasEl;
-    if (!canvas || nodes.length === 0) return;
+    const container = containerEl;
+    if (!container || nodes.length === 0) return;
     const { minX, maxX, minY, maxY } = graphBounds;
     if (minX === Infinity) return;
     const graphW = maxX - minX;
     const graphH = maxY - minY;
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
-    const cw = canvas.clientWidth;
-    const ch = canvas.clientHeight;
+    const cw = container.clientWidth;
+    const ch = container.clientHeight;
     const margin = 0.2;
     const scaleX = cw / (graphW + 2 * 20);
     const scaleY = ch / (graphH + 2 * 20);
@@ -695,10 +703,10 @@
 
   /** Zoom by `factor` around the canvas center (used by the zoom buttons). */
   function zoomBy(factor: number) {
-    const canvas = canvasEl;
-    if (!canvas) return;
-    const cw = canvas.clientWidth;
-    const ch = canvas.clientHeight;
+    const container = containerEl;
+    if (!container) return;
+    const cw = container.clientWidth;
+    const ch = container.clientHeight;
     const anchor = screenToWorld(cw / 2, ch / 2);
     viewK = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, viewK * factor));
     viewX = cw / 2 - anchor.x * viewK;
@@ -715,7 +723,7 @@
   let graphLoadPromise: Promise<void> | null = null;
 
   function fitGraphWhenMeasurable() {
-    if (canvasEl && canvasEl.clientWidth > 0 && canvasEl.clientHeight > 0) {
+    if (containerEl && containerEl.clientWidth > 0 && containerEl.clientHeight > 0) {
       needsFit = false;
       fitToNodes();
     } else {
@@ -771,9 +779,9 @@
     }
     if (containerEl) {
       resizeObserver = new ResizeObserver(() => {
-        requestRender();
+        if (canvasCssWidth !== window.innerWidth || canvasCssHeight !== containerEl!.clientHeight) requestRender();
         // Fit after any layout change that gives the canvas usable dimensions.
-        if (needsFit && canvasEl && canvasEl.clientWidth > 0 && canvasEl.clientHeight > 0) {
+        if (needsFit && containerEl && containerEl.clientWidth > 0 && containerEl.clientHeight > 0) {
           needsFit = false;
           fitToNodes();
         }
@@ -839,7 +847,7 @@
   });
 </script>
 
-<svelte:window onblur={() => finishPointer(null, true)} />
+<svelte:window onblur={() => finishPointer(null, true)} onresize={requestRender} />
 
 <div class="graph-container" bind:this={containerEl}>
   {#if graphLoading}
@@ -885,7 +893,7 @@
 </div>
 
 <style>
-  .graph-legend { position: absolute; top: .75rem; left: .75rem; display: flex; flex-wrap: wrap; gap: .75rem; padding: .4rem .6rem; color: var(--mdc-fg-soft); background: var(--mdc-panel); border: 1px solid var(--mdc-border); border-radius: var(--mdc-radius-sm); font-size: var(--mdc-text-xs); pointer-events: none; }
+  .graph-legend { position: absolute; z-index: 1; top: .75rem; left: .75rem; display: flex; flex-wrap: wrap; gap: .75rem; padding: .4rem .6rem; color: var(--mdc-fg-soft); background: var(--mdc-panel); border: 1px solid var(--mdc-border); border-radius: var(--mdc-radius-sm); font-size: var(--mdc-text-xs); pointer-events: none; }
   .graph-legend span { display: inline-flex; align-items: center; gap: .35rem; }
   .graph-legend span::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--mdc-muted); }
   .graph-legend .unverified::before { background: var(--mdc-warning); }
@@ -895,13 +903,11 @@
     width: 100%;
     height: 100%;
     background-color: var(--mdc-bg);
-    background-image:
-      linear-gradient(var(--mdc-grid) 1px, transparent 1px),
-      linear-gradient(90deg, var(--mdc-grid) 1px, transparent 1px);
-    background-size: 32px 32px;
     overflow: hidden;
   }
   canvas {
+    position: absolute;
+    inset: 0 auto auto 0;
     display: block;
     width: 100%;
     height: 100%;

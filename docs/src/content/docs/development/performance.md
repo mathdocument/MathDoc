@@ -124,12 +124,23 @@ The same run checks an 8,311-dependency list: bounded DOM size, scrolling to its
 end, keyboard navigation, node selection and scroll preservation across view
 switches. Its timings are recorded in `rawSamples.relations`. Canvas resize
 checks reject backing-size resets that leave a blank frame before painting.
+A 3840×2160, 2× Retina check reaches the canvas pixel cap and requires sidebar
+dragging to preserve the exact bitmap with zero redraws. Window resizing must
+still update the backing surface.
 The large-list check also verifies dependency removal pagination, filtering,
 selection retention and the exact submitted dependency IDs.
 
 ```sh
 npm exec --prefix web -- playwright install --no-shell chromium
 npm --prefix web run perf
+```
+
+Run the same interaction checks in WebKit (Safari's engine) without comparing
+its timings to the Chromium baseline:
+
+```sh
+npm exec --prefix web -- playwright install webkit
+node web/perf/run.mjs --browser webkit --output /tmp/mdc-webkit-perf.json
 ```
 
 `npm --prefix web run perf` compares a new run with `web/perf/baseline.json`. Run it on the same

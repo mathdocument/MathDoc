@@ -6,7 +6,7 @@ import { once } from "node:events";
 import { readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
+import { chromium, webkit } from "playwright";
 import {
   apiBodies,
   EDITOR_LINE_COUNT,
@@ -27,6 +27,8 @@ function option(name) {
 }
 
 const webRoot = resolve(option("root") ?? defaultRoot);
+const browserName = option("browser") ?? "chromium";
+if (!["chromium", "webkit"].includes(browserName)) throw new Error("--browser must be chromium or webkit");
 const record = args.includes("--record");
 const outputPath = resolve(
   option("output") ?? resolve(perfDir, record ? "baseline.json" : "latest.json"),
@@ -267,7 +269,7 @@ async function runGraphSample(context, url) {
       const frameTimes = [];
       for (let index = 0; index < 20; index++) {
         await new Promise((resolveFrame) => requestAnimationFrame(resolveFrame));
-        const rect = canvas.getBoundingClientRect();
+        const rect = canvas.parentElement.getBoundingClientRect();
         const start = performance.now();
         canvas.dispatchEvent(new WheelEvent("wheel", {
           bubbles: true,
@@ -281,7 +283,7 @@ async function runGraphSample(context, url) {
       }
       return frameTimes;
     });
-    const canvasBounds = await page.locator(".force-layout:not(.hidden) canvas").boundingBox();
+    const canvasBounds = await page.locator(".graph-container").boundingBox();
     if (!canvasBounds) throw new Error("graph canvas is not measurable");
     await page.mouse.move(canvasBounds.x + canvasBounds.width / 2, canvasBounds.y + canvasBounds.height / 2);
     await page.mouse.down();
@@ -291,13 +293,15 @@ async function runGraphSample(context, url) {
     const divider = page.getByRole("separator", { name: "Resize graph editor" });
     const bounds = await divider.boundingBox();
     const beforeWidth = await page.locator("canvas").getAttribute("width");
+    const viewportWidth = (await page.locator(".graph-container").boundingBox()).width;
     await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + 100);
     await page.mouse.down();
     await page.mouse.move(bounds.x - 180, bounds.y + 100, { steps: 20 });
     await page.mouse.up();
     await nextPaint(page);
-    if (await page.locator("canvas").getAttribute("width") === beforeWidth) {
-      throw new Error("sidebar drag did not resize the graph");
+    if (await page.locator("canvas").getAttribute("width") !== beforeWidth ||
+        Math.abs((await page.locator(".graph-container").boundingBox()).width - viewportWidth) < 100) {
+      throw new Error("sidebar drag must clip a stable bitmap without resizing it");
     }
     const resizes = await page.evaluate(() => window.__canvasResizes);
     if (resizes.total < 2 || resizes.unpainted !== 0) {
@@ -316,6 +320,47 @@ async function runGraphSample(context, url) {
   } finally {
     await page.close();
   }
+}
+
+async function checkRetinaResize(browser, url) {
+  const context = await browser.newContext({ viewport: { width: 3840, height: 2160 }, deviceScaleFactor: 2 });
+  const { page, errors } = await preparePage(context, "graph");
+  try {
+    await page.goto(`${url}/p/benchmark/main/`);
+    await page.locator("h1.title").waitFor();
+    await page.getByTitle("Graph view", { exact: true }).click();
+    await page.locator("canvas").waitFor();
+    await page.waitForFunction(() => !document.querySelector(".graph-loading"));
+    const divider = page.getByRole("separator", { name: "Resize graph editor" });
+    const box = await divider.boundingBox();
+    await page.mouse.move(box.x + 6, box.y + 100);
+    await page.mouse.down();
+    await nextPaint(page);
+    const bitmap = () => page.locator("canvas").evaluate(canvas => ({
+      width: canvas.width, height: canvas.height, cssWidth: canvas.clientWidth, pixels: canvas.toDataURL(),
+    }));
+    const before = await bitmap();
+    if (before.width / before.cssWidth >= 2) throw new Error("Retina fixture did not reach the backing pixel budget");
+    await page.locator("canvas").evaluate(canvas => {
+      window.__resizePaints = 0;
+      const ctx = canvas.getContext("2d"), clear = ctx.clearRect.bind(ctx);
+      ctx.clearRect = (...args) => { window.__resizePaints++; return clear(...args); };
+    });
+    for (let i = 1; i <= 60; i++) await page.mouse.move(box.x + 6 - Math.sin(i / 10) * 220, box.y + 100);
+    await page.mouse.up();
+    await nextPaint(page);
+    const after = await bitmap();
+    if (JSON.stringify(before) !== JSON.stringify(after) || await page.evaluate(() => window.__resizePaints) !== 0) {
+      throw new Error("sidebar resizing repainted or resampled the Retina graph");
+    }
+    if (await page.locator(".graph-container").evaluate(el => getComputedStyle(el).backgroundImage) !== "none") {
+      throw new Error("graph grid background was restored");
+    }
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await nextPaint(page);
+    if ((await bitmap()).cssWidth !== 1920) throw new Error("graph did not adapt to a window resize");
+    if (errors.length) throw new Error(errors.join("\n"));
+  } finally { await context.close(); }
 }
 
 async function runRelationsSample(context, url) {
@@ -459,7 +504,7 @@ async function main() {
   const preview = await startPreview();
   let browser;
   try {
-    browser = await chromium.launch({
+    browser = browserName === "webkit" ? await webkit.launch() : await chromium.launch({
       channel: "chromium",
       headless: true,
       args: ["--enable-precise-memory-info"],
@@ -480,6 +525,7 @@ async function main() {
       graphSamples.push(await runGraphSample(context, preview.url));
     }
     const relations = await runRelationsSample(context, preview.url);
+    await checkRetinaResize(browser, preview.url);
     await context.close();
 
     const values = (name) => editorSamples.map((sample) => sample[name]);

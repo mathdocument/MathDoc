@@ -18,7 +18,10 @@ title lines reserved per row. Scrolling and Arrow/Home/End navigation can reach
 the complete list. Switching views keeps the columns' scroll positions and the
 same editor session. Node snapshots are replaced atomically instead of deeply
 proxied. The graph component loads on first use and keeps its layout in memory;
-canvas backing-size changes and drawing run together in one animation frame.
+the canvas reserves the window width and the sidebar clips its visible area.
+Sidebar resizing never reallocates, rescales or repaints the bitmap, including
+on Retina displays where the eight-million-pixel budget caps its resolution.
+Actual window-size and pixel-density changes resize and paint in one frame.
 The dependency removal dialog filters by title or UUID and displays 50 results
 per page; selections remain active across pages and filters until submitted.
 
