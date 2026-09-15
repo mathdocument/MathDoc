@@ -23,8 +23,8 @@ while typing and uses the unsaved draft; only **Save** writes the node. The
 read-only imported-dependency list is derived from `dep` and never inserted
 into the block source. Reference, citation, macro and environment completions
 appear as you type, or with **Ctrl+Space**. References are scoped to the selected
-node; bibliography candidates are shared by the branch. Completion inserts a
-qualified external key while showing the target's readable title.
+node; bibliography candidates are shared by the branch. Reference completion
+inserts only the original label while showing the target's readable title.
 
 Click a reference to open its node and scroll to the label in Preview. Opening
 the link in a new tab also targets that label. Citation links scroll to the
@@ -58,6 +58,11 @@ Proof environments retain optional captions, including through aliases:
 KaTeX Main font at 16px, a Computer Modern style web font, independently of the
 class's print fonts.
 
+Numbered theorem environments show their number in the heading. Each node starts
+at 1, retaining the class's independent or shared theorem counters. Section
+prefixes and section-based resets from `\newtheorem` are ignored. Starred
+environments stay unnumbered.
+
 Macro bodies are stored without executing them. For example, an unused title-page
 macro containing `\ifstrempty` does not require `etoolbox` support. Calling that
 macro in a node still reports an unsupported command; skipping a package does not
@@ -78,15 +83,24 @@ reports a diagnostic rather than being silently discarded.
 labels and labels exported by its **direct** dependencies. Unused dependencies
 are allowed. Source-level `\externaldocument` and filesystem `\input` are rejected.
 
-A local label is written normally, such as `\label{thm:main}`. External labels have
-stable qualified keys `NODE_UUID::thm:main`. An unqualified external label also
-works if it identifies exactly one permitted target; local labels take precedence.
-Ambiguous labels require a qualified key. Removing a dependency immediately
-removes access to its labels; transitive dependencies are not implicitly imported.
+A label is written normally, such as `\label{thm:main}`, and referenced as
+`\cref{thm:main}` even across nodes. It must identify exactly one target among
+the current node and its direct dependencies; collisions report an ambiguity
+instead of silently preferring the local label. Existing qualified references
+(`NODE_UUID::thm:main`) remain readable, but completion never inserts them.
+Removing a dependency immediately removes access to its labels; transitive
+dependencies are not implicitly imported.
 
-`\nameref` displays the theorem's optional title or the section title. For an
-unnamed target, it uses the node title and local label. `\ref`, `\cref`, `\Cref`
-and `\eqref` retain their usual number/type presentation with local numbering.
+Use `\cref` for numbered references: a local reference reads `Theorem 1`, and a
+cross-node reference reads `[12345678]::Theorem [1]`. The prefix is the target
+node's first eight UUID characters; navigation still uses its full UUID.
+External `\ref`, `\Cref` and `\eqref` also show the target type and number.
+Within a node, `\ref` displays the number and `\eqref` puts it in parentheses.
+
+`\nameref` retains the theorem's optional title or the section title, with a
+`[12345678]::` prefix for external targets. When an external target has no title,
+it falls back to the target type and number; an unnumbered target uses its node
+title and label.
 References carry the target UUID and label so the web client can navigate to the
 correct node without reading an `.aux` file or building a PDF.
 

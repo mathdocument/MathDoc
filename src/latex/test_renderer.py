@@ -56,6 +56,47 @@ class RendererTest(unittest.TestCase):
         self.assertEqual(parsed.diagnostics, [])
         self.assertIn('Erdős, Szemerédi, Müller, François &amp; Co. &amp; More', ''.join(parsed.parts))
 
+    def test_theorem_numbers_are_local_and_references_identify_the_node(self):
+        project = {'bibliography': '', 'preamble': r'''
+            \newtheorem{thm}{Theorem}[section]
+            \newtheorem{lem}[thm]{Lemma}
+            \newtheorem{defn}{Definition}[section]
+            \newtheorem*{setup}{Setup}
+        '''}
+        source = r'''
+            \section{First}
+            \begin{thm}[Main result]\label{main}First.\end{thm}
+            \begin{lem}\label{lemma}Second.\end{lem}
+            \begin{defn}\label{definition}Independent.\end{defn}
+            \section{Next}
+            \begin{thm}\label{next}Third.\end{thm}
+            \begin{setup}[Notation]\label{notation}Unnumbered.\end{setup}
+        '''
+        dependency = {'fnode': A, 'title': 'External node', 'source': source}
+        target = {'fnode': B, 'title': 'Current node', 'source': r'''
+            \begin{thm}\label{local}Local.\end{thm}
+            \cref{local,main,lemma,definition,next}, \ref{main}, \nameref{main}.
+        '''}
+        request = {'kind': 'preview', 'project': project, 'target': target, 'dependencies': [dependency]}
+        preview = renderer.handle(request)
+        self.assertEqual(preview['diagnostics'], [])
+        self.assertIn('>Theorem 1</div>', preview['html'])
+        self.assertIn('>Theorem 1</a>', preview['html'])
+        for text in ('Theorem [1]', 'Lemma [2]', 'Definition [1]', 'Theorem [3]', 'Main result'):
+            self.assertIn('>[11111111]::' + text + '</a>', preview['html'])
+        labels = renderer.parse(project['preamble'], source).labels
+        self.assertEqual({x['label']: x['number'] for x in labels},
+                         {'main': '1', 'lemma': '2', 'definition': '1', 'next': '3', 'notation': ''})
+        standalone = renderer.handle({**request, 'target': dependency, 'dependencies': []})
+        self.assertIn('>Theorem 1 (Main result)</div>', standalone['html'])
+        self.assertIn('>Lemma 2</div>', standalone['html'])
+        self.assertIn('>Setup (Notation)</div>', standalone['html'])
+        collision = renderer.handle({**request, 'target': {**target, 'source': r'''
+            \begin{thm}\label{main}Local.\end{thm}\cref{main}\nameref{main}
+        '''}})
+        self.assertIn('Ambiguous reference: main', collision['diagnostics'])
+        self.assertNotIn('data-latex-node=', collision['html'])
+
     def test_amsalpha_format_sorting_and_citation_set_cache(self):
         project = {**PROJECT, 'bibliography': r'''
             @article{GT2008, author={Green, Ben and Tao, Terence},
@@ -137,14 +178,14 @@ class RendererTest(unittest.TestCase):
                    'target': {'fnode': A, 'title': 'A', 'source': r'\section{Intro}\begin{thm}[Named]\label{t}$\cA$\end{thm}\nameref{t}, \cite{ref}. \chosen\wrap{Text}\begin{items}\item Item\end{items}'}}
         preview = renderer.handle(request)
         self.assertEqual(preview['diagnostics'], [])
-        self.assertIn('Theorem (Named)', preview['html'])
+        self.assertIn('Theorem 1 (Named)', preview['html'])
         self.assertIn('Default: Text', preview['html'])
         self.assertIn('Article', preview['html'])
         self.assertIn('Aut20', preview['html'])
         self.assertIn('data-tex="\\mathcal{A}"', preview['html'])
         self.assertIn('<ul><li>', preview['html'])
         self.assertEqual(preview['labels'][0]['type'], 'Theorem')
-        self.assertEqual(preview['labels'][0]['number'], '1.1')
+        self.assertEqual(preview['labels'][0]['number'], '1')
         catalog = renderer.handle({**request, 'kind': 'catalog'})
         self.assertTrue({'cA', 'confighead', 'chosen'} <= set(catalog['commands']))
         for name in ('leaked', 'engineLeak', 'bracedLeak', 'afterEnd'):

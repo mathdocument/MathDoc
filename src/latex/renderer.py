@@ -167,6 +167,13 @@ class NewTheorem(newtheorem):
     # protected macros into Python object addresses instead of their text.
     args = '* name:str [ shared:str ] header [ parent:str ]'
 
+    def parse(self, tex):
+        attrs = super().parse(tex)
+        # Each node is an independent document. Keep shared theorem counters,
+        # but neither prefix nor reset them when a section changes.
+        attrs['parent'] = None
+        return attrs
+
 
 class ProvideCommand(newcommand):
     def invoke(self, tex):
@@ -286,6 +293,15 @@ def parse(preamble, source):
         if name in seen:
             diagnostics.append(f"Duplicate label: {name}")
         seen.add(name)
+        # A starred theorem has no counter: plasTeX otherwise assigns its label
+        # to the preceding numbered object. Give it its own named anchor.
+        parent = node.parentNode
+        while parent is not None:
+            if getattr(parent, 'counter', None): break
+            if parent.nodeName == 'thmenv':
+                document.context.labels[name] = parent
+                break
+            parent = parent.parentNode
     labels = []
     targets = {}
     for name, target in document.context.labels.items():
@@ -355,8 +371,10 @@ def parse(preamble, source):
             return
         if name == 'thmenv':
             caption = plain(getattr(node, 'caption', 'Theorem'))
+            number = plain(getattr(node, 'ref', '')) if node.counter else ''
             title = attrs.get('title')
             parts.append(f'<section class="latex-statement"><div class="latex-statement-title">{esc(caption)}')
+            if number: parts.append(' ' + esc(number))
             if title:
                 parts.append(' (')
                 for child in title.childNodes: render(child, depth + 1)
@@ -545,7 +563,8 @@ def handle(request):
             output.append(part)
         elif 'ref' in part:
             key = part['ref']
-            matches = [exact[key]] if key in exact else [r for r in refs if r['label'] == key]
+            matches = [r for r in refs if r['label'] == key]
+            if not matches and key in exact: matches = [exact[key]]
             if len(matches) != 1:
                 message = ('Ambiguous' if matches else 'Unknown or undeclared') + f' reference: {key}'
                 diagnostics.append(message)
@@ -557,6 +576,10 @@ def handle(request):
             text = name if command == 'nameref' else ref['number'] or name
             if command in ('cref', 'Cref'): text = ref['type'] + ' ' + text
             if command == 'eqref': text = '(' + text + ')'
+            if ref['fnode'] != target['fnode']:
+                if command != 'nameref' or not ref['name']:
+                    text = ref['type'] + (f' [{ref["number"]}]' if ref['number'] else f' ({name})')
+                text = f'[{ref["fnode"][:8]}]::{text}'
             output.append(f'<a href="#{esc(ref["anchor"])}" data-latex-node="{esc(ref["fnode"])}" data-latex-label="{esc(ref["label"])}" title="{esc(ref["title"])}">{esc(text)}</a>')
         elif 'cite' in part:
             links = []

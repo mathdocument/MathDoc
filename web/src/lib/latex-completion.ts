@@ -10,7 +10,7 @@ export function latexCompletions(session: Pick<LatexSession, 'references' | 'cat
     const from = context.pos - fragment.trimStart().length;
     const options = reference[1] === 'cite'
       ? (session.catalog?.citations ?? []).map(cite => ({label: `${cite.key} ${cite.title} ${cite.authors} ${cite.year}`, displayLabel: cite.key, detail: [cite.title, cite.authors, cite.year].filter(Boolean).join(' · '), apply: cite.key, type: 'reference'}))
-      : session.references.map(ref => ({label: `${ref.key} ${ref.name} ${ref.title}`, displayLabel: ref.name || ref.label, detail: [ref.title, ref.label].filter(Boolean).join(' · '), apply: ref.key, type: 'reference'}));
+      : session.references.map(ref => ({label: `${ref.label} ${ref.name} ${ref.title}`, displayLabel: ref.name || ref.label, detail: [ref.title, ref.label].filter(Boolean).join(' · '), apply: ref.label, type: 'reference'}));
     return {from, options, validFor: /^[^{},]*$/};
   }
   const environment = /\\(?:begin|end)\{([A-Za-z*]*)$/.exec(before);
