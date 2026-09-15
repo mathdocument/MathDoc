@@ -106,10 +106,10 @@
           color: "var(--mdc-code-fg)",
         },
         "&.cm-focused": {
-          outline: "2px solid var(--mdc-accent)",
-          outlineOffset: "-2px",
+          outline: "none",
         },
         ".cm-content": { caretColor: "var(--mdc-accent)" },
+        ".cm-content:focus-visible": { outline: "none" },
         ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--mdc-accent)" },
         "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
           backgroundColor: "var(--mdc-editor-selection) !important",

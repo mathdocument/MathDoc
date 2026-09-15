@@ -9,13 +9,7 @@
     flex-shrink: 0;
     background: var(--mdc-code-bg);
     box-shadow: var(--mdc-shadow-sm);
-    transition: border-color var(--mdc-dur-fast) var(--mdc-ease),
-      box-shadow var(--mdc-dur-fast) var(--mdc-ease);
     container-type: inline-size;
-  }
-  .source-block:focus-within {
-    border-color: color-mix(in srgb, var(--block-accent) 40%, var(--mdc-border));
-    box-shadow: var(--mdc-shadow-md);
   }
   /* Per-srctype accent so block kinds are scannable at a glance. */
   .source-block[data-srctype="text"] { --block-accent: var(--mdc-block-text); }
