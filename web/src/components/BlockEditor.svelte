@@ -433,6 +433,7 @@
     line-height: 1.65;
   }
   .editor-host :global(.cm-editor .cm-scroller) { overflow:auto; overscroll-behavior:contain; font-family:var(--mdc-mono); }
+  .editor-host :global(.cm-content) { min-height:10rem; }
   .preview-loading {
     min-height: 9rem;
     display: grid;
