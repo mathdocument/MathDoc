@@ -60,6 +60,15 @@ jobs:
       - name: Test Rust
         run: cargo +stable test --locked
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Test LaTeX renderer
+        run: |
+          python -m pip install -r src/latex/requirements.txt
+          python -B -m unittest discover -s src/latex -p 'test_*.py'
+
       - name: Start local TerminusDB
         env:
           MDC_TERMINUS_PASSWORD: local-ci-mathdoc
@@ -81,7 +90,8 @@ jobs:
       - name: Test database and native Lean integration
         env:
           MDC_TERMINUS_PASSWORD: local-ci-mathdoc
-        run: cargo test --locked --test test_database --test test_service --test test_lean_service --test test_status -- --ignored --nocapture
+          MDC_LATEX_PYTHON: python3
+        run: cargo test --locked --test test_database --test test_service --test test_lean_service --test test_status --test test_latex_service -- --ignored --nocapture
 
       - name: Install browser for integration tests
         run: npx playwright install --with-deps --no-shell chromium
@@ -90,6 +100,7 @@ jobs:
       - name: Test browser with real backend
         env:
           MDC_TERMINUS_PASSWORD: local-ci-mathdoc
+          MDC_LATEX_PYTHON: python3
           MDC_E2E_ARTIFACTS: ${{ runner.temp }}/mdc-e2e-artifacts
         run: npm run test:e2e
         working-directory: web

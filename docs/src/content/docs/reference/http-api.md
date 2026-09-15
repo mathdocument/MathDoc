@@ -35,6 +35,9 @@ UUIDs; CLI references are resolved by exact name or UUID first.
 | `PUT /project/lean` | `project set` | Complete project object; updated revision and configuration. |
 | `GET /project/latex` | `project latex show` | `{revision, project}` with the shared macro file and bibliography. |
 | `PUT /project/latex` | `project latex set` | Replace `{preamble_name, preamble, bibliography_name, bibliography}` using the branch revision. |
+| `GET /project/latex/catalog` | — | Shared citations and macro completions; `?known=PROJECT_KEY` returns `unchanged` when current. |
+| `GET /node/:id/latex/context` | — | Direct imports and permitted labels; `?known=CONTEXT_KEY` avoids repeating unchanged context. |
+| `POST /node/:id/latex/preview` | — | Render `{source}` as HTML and return labels and diagnostics, without saving the draft. |
 | `GET /export` | `export` | `{nodes, project}` for the entire branch snapshot. |
 | `POST /import` | `import FILE` | Complete bundle into an empty branch; graph report. |
 | `GET /history` | `history` | Latest 50 TerminusDB commits. |

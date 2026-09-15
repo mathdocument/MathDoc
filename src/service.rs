@@ -21,6 +21,7 @@ pub struct Service {
     pub db: Database,
     pub snapshot: Mutex<Snapshot>,
     pub lean: crate::lean::LeanService,
+    pub latex: Arc<crate::latex::LatexService>,
     editors: Mutex<HashMap<String, EditorSession>>,
     editor_slots: Arc<tokio::sync::Semaphore>,
     pub(crate) token: String,
@@ -36,6 +37,7 @@ impl Service {
             db,
             snapshot: Mutex::new(snapshot),
             lean,
+            latex: crate::latex::LatexService::new(),
             editors: Mutex::new(HashMap::new()),
             editor_slots: Arc::new(tokio::sync::Semaphore::new(8)),
             token: uuid::Uuid::new_v4().to_string(),
@@ -58,6 +60,7 @@ impl Service {
             ).await;
         }
         self.lean.shutdown().await;
+        self.latex.shutdown().await;
     }
     pub async fn read(&self) -> Result<MutexGuard<'_, Snapshot>> {
         let mut snapshot = self.snapshot.lock().await;

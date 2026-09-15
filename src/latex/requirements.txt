@@ -1,0 +1,2 @@
+plasTeX==3.1
+pybtex==0.26.1

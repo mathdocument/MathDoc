@@ -1,0 +1,208 @@
+mod common;
+use axum::{
+    body::{to_bytes, Body},
+    http::Request,
+};
+use mathdoc::{
+    service::{self, Service},
+    store::{Block, Node},
+};
+use serde_json::{json, Value};
+use tower::ServiceExt;
+
+async fn call(
+    app: &axum::Router,
+    method: &str,
+    path: &str,
+    body: Value,
+    revision: Option<&str>,
+) -> (u16, Value) {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("host", "localhost")
+        .header("content-type", "application/json");
+    if let Some(rev) = revision {
+        request = request.header("if-match", format!("\"{rev}\""));
+    }
+    let response = app
+        .clone()
+        .oneshot(request.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    let body = serde_json::from_slice(
+        &to_bytes(response.into_body(), 16 * 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    (status, body)
+}
+
+#[tokio::test]
+#[ignore = "requires TerminusDB and Python with src/latex/requirements.txt"]
+async fn latex_project_previews_follow_dependencies_and_preserve_configuration() {
+    let fixture = common::TestDatabase::new("mdclatex").await;
+    let service = Service::open(fixture.db.clone()).await.unwrap();
+    let app = service::router(service.clone());
+    let (_, original) = call(&app, "GET", "/api/project/latex", Value::Null, None).await;
+    let project = json!({"preamble_name":"macros.cls", "preamble":"\\ProvidesClass{macros}\n\\newcommand{\\cA}{\\mathcal{A}}\n\\newtheorem{thm}{Theorem}",
+        "bibliography_name":"refs.bib", "bibliography":"@article{paper,title={A paper},author={Author, A.},journal={Journal},year={2020}}"});
+    let (status, configured) = call(
+        &app,
+        "PUT",
+        "/api/project/latex",
+        project.clone(),
+        original["revision"].as_str(),
+    )
+    .await;
+    assert_eq!(status, 200, "{configured}");
+    assert_eq!(configured["project"], project);
+    assert_eq!(
+        call(
+            &app,
+            "PUT",
+            "/api/project/latex",
+            project.clone(),
+            original["revision"].as_str()
+        )
+        .await
+        .0,
+        412
+    );
+    let mut a = Node::new("First result".into()).unwrap();
+    a.blocks.push(Block {
+        srctype: "latex".into(),
+        content: "\\begin{thm}[Named result]\\label{thm:main}$\\cA$\\end{thm}".into(),
+        ..Default::default()
+    });
+    let mut b = Node::new("Second result".into()).unwrap();
+    b.depens.push(a.fnode.clone());
+    b.blocks.push(Block {
+        srctype: "latex".into(),
+        content: "By \\nameref{thm:main}, see \\cite{paper}.".into(),
+        ..Default::default()
+    });
+    let mut outsider = Node::new("Unrelated result".into()).unwrap();
+    outsider.blocks.push(Block {
+        srctype: "latex".into(),
+        content: "\\section{Hidden}\\label{hidden}".into(),
+        ..Default::default()
+    });
+    fixture
+        .db
+        .put(
+            &[a.clone(), b.clone(), outsider.clone()],
+            configured["revision"].as_str().unwrap(),
+            "Create LaTeX nodes",
+        )
+        .await
+        .unwrap();
+    let preview_path = format!("/api/node/{}/latex/preview", b.fnode);
+    let context_path = format!("/api/node/{}/latex/context", b.fnode);
+    let draft = json!({"source": b.source("latex").unwrap()});
+    let (status, preview) = call(&app, "POST", &preview_path, draft.clone(), None).await;
+    assert_eq!(status, 200, "{preview}");
+    assert_eq!(preview["diagnostics"], json!([]));
+    assert!(preview["html"]
+        .as_str()
+        .unwrap()
+        .contains("Named result</a>"));
+    assert!(preview["html"].as_str().unwrap().contains("Aut20"));
+    let (_, context) = call(&app, "GET", &context_path, Value::Null, None).await;
+    assert_eq!(context["imports"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        context["references"][0]["key"],
+        format!("{}::thm:main", a.fnode)
+    );
+    let (_, unchanged) = call(
+        &app,
+        "GET",
+        &format!(
+            "{context_path}?known={}",
+            context["context_key"].as_str().unwrap()
+        ),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(unchanged["unchanged"], true);
+    let (_, catalog) = call(&app, "GET", "/api/project/latex/catalog", Value::Null, None).await;
+    assert_eq!(catalog["citations"][0]["key"], "paper");
+    assert!(catalog["commands"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("cA")));
+    let (status, _) = call(
+        &app,
+        "POST",
+        &preview_path,
+        json!({"source":"\\externaldocument{outside}"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 422);
+    assert_eq!(
+        call(&app, "POST", &preview_path, draft.clone(), None)
+            .await
+            .0,
+        200
+    );
+    let mut changed = a.clone();
+    changed.blocks[0].content = changed.blocks[0]
+        .content
+        .replace("Named result", "Updated result");
+    fixture
+        .db
+        .put(
+            &[changed],
+            &fixture.db.version().await.unwrap(),
+            "Update label title",
+        )
+        .await
+        .unwrap();
+    let (_, refreshed) = call(&app, "POST", &preview_path, draft.clone(), None).await;
+    assert!(refreshed["html"]
+        .as_str()
+        .unwrap()
+        .contains("Updated result</a>"));
+    b.depens.clear();
+    fixture
+        .db
+        .put(
+            &[b.clone()],
+            &fixture.db.version().await.unwrap(),
+            "Remove dependency",
+        )
+        .await
+        .unwrap();
+    let (_, missing) = call(&app, "POST", &preview_path, draft, None).await;
+    assert!(missing["diagnostics"][0]
+        .as_str()
+        .unwrap()
+        .contains("undeclared"));
+    assert!(!missing["html"]
+        .as_str()
+        .unwrap()
+        .contains("data-latex-node"));
+    let (_, exported) = call(&app, "GET", "/api/export", Value::Null, None).await;
+    assert_eq!(exported["latex_project"], project);
+    let restored = common::TestDatabase::new("mdclatexrestore").await;
+    let restored_service = Service::open(restored.db.clone()).await.unwrap();
+    let restored_app = service::router(restored_service.clone());
+    assert_eq!(
+        call(&restored_app, "POST", "/api/import", exported, None)
+            .await
+            .0,
+        200
+    );
+    let loaded = restored.db.load().await.unwrap();
+    assert_eq!(
+        serde_json::to_value(&*loaded.latex_project).unwrap(),
+        project
+    );
+    assert_eq!(loaded.nodes[&b.fnode].blocks, b.blocks);
+    service.latex.shutdown().await;
+    restored_service.latex.shutdown().await;
+}
