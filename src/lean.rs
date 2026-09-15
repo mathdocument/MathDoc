@@ -991,11 +991,6 @@ impl LeanService {
         let directory = tempfile::tempdir_in(drafts)?;
         let root = directory.path();
         prepare_project(root, &input.project).await?;
-        for (node, _) in &input.chain {
-            if let Some(source) = node.source("lean") {
-                write_source(root, node, source).await?;
-            }
-        }
         let canonical = self.root.join("projects").join(&input.project_key);
         // Package revisions and toolchain are pinned by the project key. Share that
         // cache; cloning Mathlib's entire file tree costs seconds even with APFS COW.
@@ -1034,6 +1029,8 @@ impl LeanService {
                 }
             }
         }
+        // Reconcile after copying artifacts so deleted blocks cannot regain an olean.
+        refresh_editor_sources(root, input, &mut SourceState::new()).await?;
         Ok(directory)
     }
 }
@@ -1055,6 +1052,18 @@ pub async fn refresh_editor_sources(
         }
         if let Some(source) = node.source("lean") {
             write_source(root, node, source).await?;
+        } else {
+            for file in [
+                module_path(root, &node.module)?,
+                root.join(".lake/build/lib/lean")
+                    .join(crate::store::module_file(&node.module, "olean")?),
+            ] {
+                match tokio::fs::remove_file(file).await {
+                    Ok(()) => (),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                    Err(error) => return Err(error.into()),
+                }
+            }
         }
         sources.insert(node.fnode.clone(), node.clone());
     }
@@ -1419,11 +1428,14 @@ mod tests {
     async fn editor_shares_libraries_without_waiting_for_the_compiler() {
         let cache = tempfile::tempdir().unwrap();
         let service = LeanService::new(cache.path().to_path_buf()).unwrap();
+        let deleted = Node::new("Deleted Lean block".into()).unwrap();
+        let deleted_artifact = PathBuf::from(".lake/build/lib/lean")
+            .join(crate::store::module_file(&deleted.module, "olean").unwrap());
         let input = Input {
             project: LeanProject::default().into(),
             project_key: LeanProject::default().key(),
             modules: Default::default(),
-            chain: vec![],
+            chain: vec![(Arc::new(deleted), "deleted".into())],
         };
         let canonical = cache.path().join("projects").join(&input.project_key);
         tokio::fs::create_dir_all(canonical.join(".lake/packages/example"))
@@ -1441,6 +1453,8 @@ mod tests {
         tokio::fs::write(canonical.join(".lake/build/local.olean"), "original")
             .await
             .unwrap();
+        std::fs::create_dir_all(canonical.join(&deleted_artifact).parent().unwrap()).unwrap();
+        std::fs::write(canonical.join(&deleted_artifact), "stale artifact").unwrap();
         let busy = service.manager.lock().await;
         let draft = tokio::time::timeout(Duration::from_secs(2), service.editor_project(&input))
             .await
@@ -1451,6 +1465,7 @@ mod tests {
         drop(draft);
         drop(busy);
         let draft = service.editor_project(&input).await.unwrap();
+        assert!(!draft.path().join(&deleted_artifact).exists());
         tokio::fs::write(draft.path().join(".lake/build/local.olean"), "draft")
             .await
             .unwrap();
@@ -1505,6 +1520,16 @@ mod tests {
             &sources[&input.chain[0].0.fnode],
             &input.chain[0].0
         ));
+        let artifact = root.path().join(".lake/build/lib/lean")
+            .join(crate::store::module_file(&input.chain[0].0.module, "olean").unwrap());
+        std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        std::fs::write(&artifact, "old compiled module").unwrap();
+        Arc::make_mut(&mut input.chain[0].0).blocks.clear();
+        refresh_editor_sources(root.path(), &input, &mut sources).await.unwrap();
+        assert!(!file.exists());
+        assert!(!artifact.exists());
+        // A fresh session may also encounter artifacts from before the deletion.
+        refresh_editor_sources(root.path(), &input, &mut SourceState::new()).await.unwrap();
     }
 
     #[tokio::test]
