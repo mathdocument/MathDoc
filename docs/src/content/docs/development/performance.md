@@ -124,6 +124,8 @@ The same run checks an 8,311-dependency list: bounded DOM size, scrolling to its
 end, keyboard navigation, node selection and scroll preservation across view
 switches. Its timings are recorded in `rawSamples.relations`. Canvas resize
 checks reject backing-size resets that leave a blank frame before painting.
+The large-list check also verifies dependency removal pagination, filtering,
+selection retention and the exact submitted dependency IDs.
 
 ```sh
 npm exec --prefix web -- playwright install --no-shell chromium

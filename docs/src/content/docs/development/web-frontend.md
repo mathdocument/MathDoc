@@ -19,6 +19,8 @@ the complete list. Switching views keeps the columns' scroll positions and the
 same editor session. Node snapshots are replaced atomically instead of deeply
 proxied. The graph component loads on first use and keeps its layout in memory;
 canvas backing-size changes and drawing run together in one animation frame.
+The dependency removal dialog filters by title or UUID and displays 50 results
+per page; selections remain active across pages and filters until submitted.
 
 Lean uses a lazy-loaded page embedding `lean4monaco` and upstream Infoview. Each
 page has an isolated native WebSocket session, with source on the left and

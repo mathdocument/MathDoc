@@ -372,6 +372,35 @@ async function runRelationsSample(context, url) {
     await page.getByRole("complementary", { name: "Referrers" }).locator(".card").click();
     await page.locator("h1.title", { hasText: "Performance fixture" }).waitFor();
     if (await list.evaluate(element => element.scrollTop) !== 0) throw new Error("new node retained the old list's scroll offset");
+    await page.getByRole("button", { name: "Remove dependency", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "remove dependencies", exact: true });
+    if (await dialog.locator(".row").count() !== 50) throw new Error("dependency removal rendered an unbounded list");
+    await dialog.locator(".row").first().click();
+    await dialog.getByRole("button", { name: "Next", exact: true }).press("Enter");
+    if (!await dialog.isVisible()) throw new Error("paging submitted dependency removal");
+    await dialog.locator(".row").first().click();
+    const filter = dialog.getByRole("searchbox", { name: "Filter dependencies" });
+    await filter.fill("node 8311");
+    if (await dialog.locator(".row").count() !== 1) throw new Error("dependency filter failed to find a node past the first page");
+    await filter.press("Enter");
+    if (!await dialog.isVisible()) throw new Error("search input submitted dependency removal");
+    await dialog.locator(".row").click();
+    if (!await dialog.getByRole("status").innerText().then(text => text.includes("3 selected"))) {
+      throw new Error("dependency selections were lost across pages and filtering");
+    }
+    let removed;
+    await page.route("**/api/node/perf-root/dep/rm", async route => {
+      removed = route.request().postDataJSON();
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        ...JSON.parse(apiBodies("relations").get("/api/node/perf-root/view")).node,
+        depens: [],
+      }) });
+    });
+    await dialog.getByRole("button", { name: "Remove selected", exact: true }).click();
+    await dialog.waitFor({ state: "hidden" });
+    if (JSON.stringify(removed?.dep_fnodes) !== JSON.stringify(["perf-node-00001", "perf-node-00051", lastId])) {
+      throw new Error(`dependency removal did not submit exactly the selected nodes: ${JSON.stringify(removed)}`);
+    }
     if (errors.length) throw new Error(errors.join("\n"));
     return { readyMs, renderedCards, switchMs: switches.map(round) };
   } finally {

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { Unlink2, X } from "@lucide/svelte";
+  import { Search, Unlink2, X } from "@lucide/svelte";
   import { api } from "../lib/api";
   import { errMsg, shortFnode } from "../lib/format";
   import type { NodeDetail, NodeInfo } from "../lib/types";
@@ -18,6 +18,16 @@
   let { disabled, targetFnode, targetRevision, children, onRemoved, onClose }: Props = $props();
 
   let selected = $state<string[]>([]);
+  let selection = $derived(new Set(selected));
+  let query = $state("");
+  let needle = $derived(query.trim().toLowerCase());
+  let page = $state(0);
+  const PAGE_SIZE = 50;
+  let matches = $derived(needle ? children.filter(child =>
+    `${child.title} ${child.fnode}`.toLowerCase().includes(needle)) : children);
+  let pages = $derived(Math.max(1, Math.ceil(matches.length / PAGE_SIZE)));
+  let visible = $derived(matches.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE));
+  let list = $state<HTMLUListElement>();
   let cursor = $state(0);
   let saving = $state(false);
   let error: string | null = $state(null);
@@ -32,34 +42,40 @@
   }
 
   function toggle(fnode: string) {
-    selected = selected.includes(fnode)
+    selected = selection.has(fnode)
       ? selected.filter((item) => item !== fnode)
       : [...selected, fnode];
   }
 
   $effect(() => {
-    if (cursor >= children.length) cursor = Math.max(0, children.length - 1);
+    if (page >= pages) page = pages - 1;
+    if (cursor >= visible.length) cursor = Math.max(0, visible.length - 1);
   });
 
+  function changePage(next: number) {
+    page = next;
+    cursor = 0;
+    if (list) list.scrollTop = 0;
+  }
+
   function onKey(e: KeyboardEvent) {
-    if (disabled) return;
-    if ((e.key === "Enter" || e.key === " ") &&
-      e.target instanceof Element && e.target.closest(".close-btn, .actions")) return;
-    if (saving) return;
+    if (disabled || saving || e.isComposing || e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.target instanceof Element && e.target.closest("input, .close-btn, .actions")) return;
     if (e.key === "ArrowDown" || e.key === "j") {
       e.preventDefault();
-      cursor = Math.min(cursor + 1, children.length - 1);
+      cursor = Math.max(0, Math.min(cursor + 1, visible.length - 1));
     } else if (e.key === "ArrowUp" || e.key === "k") {
       e.preventDefault();
       cursor = Math.max(cursor - 1, 0);
     } else if (e.key === " " || e.key === "x") {
       e.preventDefault();
-      const child = children[cursor];
+      const child = visible[cursor];
       if (child) toggle(child.fnode);
     } else if (e.key === "Enter") {
       e.preventDefault();
       void submit();
     }
+    if (["ArrowDown", "ArrowUp", "j", "k"].includes(e.key)) list?.children[cursor]?.scrollIntoView({ block: "nearest" });
   }
 
   function onCancel(event: Event) {
@@ -68,7 +84,7 @@
   }
 
   async function submit() {
-    const toRemove = children.filter((child) => selected.includes(child.fnode)).map((child) => child.fnode);
+    const toRemove = children.filter((child) => selection.has(child.fnode)).map((child) => child.fnode);
     if (toRemove.length === 0 || saving) {
       close();
       return;
@@ -108,24 +124,42 @@
     {#if children.length === 0}
       <div class="empty modal-empty">no direct dependencies to remove</div>
     {:else}
-      <ul class="list modal-list">
-        {#each children as c, i (c.fnode)}
+      <div class="modal-search-field">
+        <Search size={18} strokeWidth={1.8} />
+        <input type="search" bind:value={query} oninput={() => changePage(0)}
+          aria-label="Filter dependencies" placeholder="Filter by title or fnode…" disabled={saving} />
+      </div>
+      <ul class="list modal-list" bind:this={list}>
+        {#each visible as c, i (c.fnode)}
           <li>
             <button
               class="row modal-row"
               class:cursor={i === cursor}
-              class:checked={selected.includes(c.fnode)}
+              class:checked={selection.has(c.fnode)}
+              aria-pressed={selection.has(c.fnode)}
               onclick={() => { cursor = i; toggle(c.fnode); }}
               disabled={saving}
             >
-              <span class="check">{selected.includes(c.fnode) ? "✓" : " "}</span>
+              <span class="check">{selection.has(c.fnode) ? "✓" : " "}</span>
               <span class="depth">[{c.depth}]</span>
               <span class="fnode">{shortFnode(c.fnode)}</span>
               <span class="title">{c.title}</span>
             </button>
           </li>
+        {:else}
+          <li class="modal-empty">No matching dependencies</li>
         {/each}
       </ul>
+      <div class="pagination">
+        <span role="status">{matches.length} dependencies · {selected.length} selected</span>
+        {#if pages > 1}
+          <div class="actions" aria-label="Dependency pages">
+            <button class="secondary" onclick={() => changePage(page - 1)} disabled={saving || page === 0}>Previous</button>
+            <span>{page + 1} / {pages}</span>
+            <button class="secondary" onclick={() => changePage(page + 1)} disabled={saving || page === pages - 1}>Next</button>
+          </div>
+        {/if}
+      </div>
     {/if}
     {#if error}
       <div class="error-bar modal-error">{error}</div>
@@ -134,7 +168,7 @@
       <div class="hint"><span><kbd>Space</kbd> Toggle</span><span><kbd>Enter</kbd> Remove</span><span><kbd>Esc</kbd> Cancel</span></div>
       <div class="actions">
         <button class="secondary" onclick={close} disabled={saving}>Cancel</button>
-        <button class="danger" onclick={() => void submit()} disabled={saving || !children.some((child) => selected.includes(child.fnode))}>Remove selected</button>
+        <button class="danger" onclick={() => void submit()} disabled={saving || selected.length === 0}>Remove selected</button>
       </div>
     </footer>
   </dialog>
@@ -148,8 +182,11 @@
     margin-left: auto;
   }
   .row {
-    grid-template-columns: 1.4rem 3.5rem 6rem minmax(15rem, 1.5fr) minmax(8rem, 1fr);
+    grid-template-columns: 1.4rem 3.5rem 6rem minmax(0, 1fr);
   }
+  .row .title { overflow-wrap: anywhere; }
+  .pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.5rem 0.75rem; color: var(--mdc-muted); font-size: var(--mdc-text-xs); }
+  .pagination .actions { align-items: center; }
   .row.cursor {
     background: var(--mdc-card-hover);
   }
