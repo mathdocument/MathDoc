@@ -782,25 +782,33 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await put('Alpha', source);
       await put('Beta', String.raw`\begin{thm}[Named result]\label{thm:b}$\cA$ exists.\end{thm}`);
       await put('Gamma', String.raw`\section{Private result}\label{private}`);
+      const externalName = name => `[${ids.Beta.slice(0, 8)}]::${name}`;
       await page.reload();
       const block = page.locator('article[data-srctype="latex"]');
       await block.getByText('1 imported dependencies', {exact: false}).waitFor();
       await block.getByRole('button', {name: 'Render LaTeX preview'}).click();
-      await block.getByRole('link', {name: 'Named result', exact: true}).waitFor();
+      await block.getByRole('link', {name: externalName('Named result'), exact: true}).waitFor();
       await block.locator('.katex').first().waitFor();
       assert.equal(await block.locator('.katex-error').count(), 0);
       assert.match(await block.locator('.latex-preview').innerText(), /A paper/);
-      await block.getByRole('link', {name: 'Named result', exact: true}).click();
+      await block.getByRole('link', {name: externalName('Named result'), exact: true}).click();
       await title(page, 'Beta');
       await block.locator('.latex-preview .latex-statement').waitFor();
       assert.equal(await block.locator('[id="latex-thm%3Ab"]').count(), 1);
+      assert.equal(await block.locator('.latex-statement-title').innerText(), 'Theorem 1 (Named result)');
+      const headingGap = await block.locator('.latex-statement').evaluate(element => {
+        const title = element.querySelector('.latex-statement-title').getClientRects()[0];
+        const paragraph = element.querySelector('p').getClientRects()[0];
+        return Math.abs(title.y - paragraph.y);
+      });
+      assert.ok(headingGap < 4, 'theorem heading and first paragraph must share a line');
       await page.goBack();
       await title(page, 'Alpha');
       const input = block.locator('.cm-content');
       await input.fill('Use \\nameref{');
       await input.press('Control+Space');
       await page.getByRole('option').filter({hasText: 'Named result'}).click();
-      assert.match(await input.innerText(), new RegExp(`${ids.Beta}::thm:b`));
+      assert.equal(await input.innerText(), 'Use \\nameref{thm:b');
       assert.equal(await page.getByRole('option').filter({hasText: 'Private result'}).count(), 0);
       const draft = String.raw`\section{Draft title}\label{new}By \nameref{thm:b}, see \cite{paper}. $\cA$`;
       await input.fill(draft);
@@ -809,7 +817,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       assert.equal(JSON.parse((await cli('show', 'Alpha')).stdout).blocks[0].content, source);
       // A dependency rename is visible without reloading or saving the draft.
       await put('Beta', String.raw`\begin{thm}[Updated result]\label{thm:b}Updated.\end{thm}`);
-      await block.getByRole('link', {name: 'Updated result', exact: true}).waitFor({timeout: 10000});
+      await block.getByRole('link', {name: externalName('Updated result'), exact: true}).waitFor({timeout: 10000});
       await block.getByRole('button', {name: 'Save', exact: true}).click();
       await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
       assert.equal(JSON.parse((await cli('show', 'Alpha')).stdout).blocks[0].content, draft);

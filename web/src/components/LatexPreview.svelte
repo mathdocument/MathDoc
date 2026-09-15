@@ -60,7 +60,9 @@
   .latex-preview :global(h2), .latex-preview :global(h3), .latex-preview :global(h4) { margin:1em 0 .5em; line-height:1.35; }
   .latex-preview :global(a) { color:var(--mdc-accent); text-decoration:underline; text-underline-offset:3px; }
   .latex-preview :global(.latex-statement), .latex-preview :global(.latex-proof) { margin:1rem 0; padding:.6rem .9rem; border-left:2px solid var(--mdc-border-strong); }
-  .latex-preview :global(.latex-statement-title) { font-weight:700; }
+  .latex-preview :global(.latex-statement-title) { display:inline; font-weight:700; }
+  .latex-preview :global(.latex-statement-title::after) { content:'. '; }
+  .latex-preview :global(.latex-statement-title + p) { display:inline; }
   .latex-preview :global(.latex-anchor) { scroll-margin-block:1rem; }
   .latex-preview :global(.latex-math[data-display="true"]) { display:block; overflow-x:auto; }
   .latex-preview :global(.katex) { font-size:1.1em; }

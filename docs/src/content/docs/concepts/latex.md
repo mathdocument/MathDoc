@@ -61,7 +61,8 @@ class's print fonts.
 Numbered theorem environments show their number in the heading. Each node starts
 at 1, retaining the class's independent or shared theorem counters. Section
 prefixes and section-based resets from `\newtheorem` are ignored. Starred
-environments stay unnumbered.
+environments stay unnumbered. Theorem and proof headings run into the first
+paragraph; later paragraphs, lists and display equations retain their own layout.
 
 Macro bodies are stored without executing them. For example, an unused title-page
 macro containing `\ifstrempty` does not require `etoolbox` support. Calling that
