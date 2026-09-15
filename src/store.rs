@@ -548,7 +548,11 @@ impl Database {
                     )?);
                 }
                 Some("Project") if doc["name"] == "latex" => {
-                    latex_project = serde_json::from_str(doc["config"].as_str().context("invalid LaTeX project config")?)?;
+                    latex_project = serde_json::from_str(
+                        doc["config"]
+                            .as_str()
+                            .context("invalid LaTeX project config")?,
+                    )?;
                     latex_project.validate()?;
                 }
                 _ => {}
@@ -794,10 +798,17 @@ impl Snapshot {
             .nodes
             .values()
             .filter(|n| !ids.contains(&n.fnode))
-            .map(|n| (module_file(&n.module, "lean").expect("validated module"), n.fnode.clone()))
+            .map(|n| {
+                (
+                    module_file(&n.module, "lean").expect("validated module"),
+                    n.fnode.clone(),
+                )
+            })
             .collect();
         for node in &changes {
-            if let Some(owner) = modules.insert(module_file(&node.module, "lean")?, node.fnode.clone()) {
+            if let Some(owner) =
+                modules.insert(module_file(&node.module, "lean")?, node.fnode.clone())
+            {
                 if owner != node.fnode {
                     bail!("Lean module file is already assigned to another node");
                 }
@@ -971,7 +982,10 @@ mod tests {
         assert_eq!(Node::from_document(a.document()).unwrap(), a);
         let mut alias = Node::new("Alias".into()).unwrap();
         alias.module = format!("Lib.«{}»", a.module.split_once('.').unwrap().1);
-        assert_eq!(module_file(&alias.module, "lean").unwrap(), module_file(&a.module, "lean").unwrap());
+        assert_eq!(
+            module_file(&alias.module, "lean").unwrap(),
+            module_file(&a.module, "lean").unwrap()
+        );
         assert!(s.validate_changes([&alias]).is_err());
         let mut original = a.clone();
         original.fnode = uuid::Uuid::new_v4().to_string();

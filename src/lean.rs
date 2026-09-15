@@ -1,7 +1,6 @@
 //! Native Lean LSP sessions plus Lake's existing incremental artifact store.
 pub(crate) mod editor;
 mod transport;
-pub use transport::{command, spawn, Process, Server};
 use crate::store::{digest, LeanProject, Node, Snapshot};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -17,6 +16,7 @@ use tokio::{
     process::Command,
     sync::Mutex,
 };
+pub use transport::{command, spawn, Process, Server};
 
 fn timeout() -> Result<Duration> {
     let seconds = std::env::var("MDC_LEAN_TIMEOUT_SECONDS")
@@ -1319,16 +1319,22 @@ mod tests {
             &sources[&input.chain[0].0.fnode],
             &input.chain[0].0
         ));
-        let artifact = root.path().join(".lake/build/lib/lean")
+        let artifact = root
+            .path()
+            .join(".lake/build/lib/lean")
             .join(crate::store::module_file(&input.chain[0].0.module, "olean").unwrap());
         std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
         std::fs::write(&artifact, "old compiled module").unwrap();
         Arc::make_mut(&mut input.chain[0].0).blocks.clear();
-        refresh_editor_sources(root.path(), &input, &mut sources).await.unwrap();
+        refresh_editor_sources(root.path(), &input, &mut sources)
+            .await
+            .unwrap();
         assert!(!file.exists());
         assert!(!artifact.exists());
         // A fresh session may also encounter artifacts from before the deletion.
-        refresh_editor_sources(root.path(), &input, &mut SourceState::new()).await.unwrap();
+        refresh_editor_sources(root.path(), &input, &mut SourceState::new())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

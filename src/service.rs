@@ -53,11 +53,13 @@ impl Service {
         // or continue writing through this branch after shutdown returns.
         let _requests = self.requests.write().await;
         let closing = std::mem::take(&mut *self.editors.lock().await);
-        for session in closing.values() { let _ = session._cancel.send(()); }
         for session in closing.values() {
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(3), session._cancel.closed(),
-            ).await;
+            let _ = session._cancel.send(());
+        }
+        for session in closing.values() {
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(3), session._cancel.closed())
+                    .await;
         }
         self.lean.shutdown().await;
         self.latex.shutdown().await;
@@ -228,7 +230,9 @@ async fn local_origin(
     }
     let mut stopping = service.stopping.subscribe();
     let _request = service.requests.read().await;
-    if *stopping.borrow() { return stopped_response(); }
+    if *stopping.borrow() {
+        return stopped_response();
+    }
     let response = tokio::select! {
         biased;
         _ = stopping.changed() => return stopped_response(),
@@ -254,7 +258,11 @@ async fn local_origin(
 }
 
 fn stopped_response() -> Response {
-    (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"branch is stopping"}))).into_response()
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({"error":"branch is stopping"})),
+    )
+        .into_response()
 }
 
 pub(crate) fn allowed_origin(headers: &HeaderMap, public_origin: Option<&str>) -> bool {
@@ -426,7 +434,9 @@ pub(crate) async fn start(project: Option<&str>, port: Option<u16>) -> Result<Op
     let settings = crate::config::Settings::load()?;
     if let Some(project) = project {
         let (database, branch) = crate::config::project_parts(project)?;
-        Database::from_env(database.into(), branch.into())?.version().await?;
+        Database::from_env(database.into(), branch.into())?
+            .version()
+            .await?;
     }
     let server_root = settings.server_cache()?;
     let server = if let Some(info) = running_service(&server_root)? {
@@ -467,13 +477,12 @@ pub(crate) async fn start(project: Option<&str>, port: Option<u16>) -> Result<Op
             json!({"port":server.port,"pid":server.pid,"url":server.browser_url(),"log":server_root.join("service.log")}),
         ));
     };
-    Ok(Some(management_request(&server, Some(project), "start").await?))
+    Ok(Some(
+        management_request(&server, Some(project), "start").await?,
+    ))
 }
 
-async fn spawn_background(
-    port: u16,
-    root: &std::path::Path,
-) -> Result<RunningService> {
+async fn spawn_background(port: u16, root: &std::path::Path) -> Result<RunningService> {
     use std::{
         io::Write,
         os::unix::{fs::OpenOptionsExt, net::UnixStream},
@@ -542,15 +551,27 @@ async fn spawn_background(
     Ok(info)
 }
 
-async fn management_request(info: &RunningService, project: Option<&str>, action: &str) -> Result<Value> {
+async fn management_request(
+    info: &RunningService,
+    project: Option<&str>,
+    action: &str,
+) -> Result<Value> {
     let prefix = project.map(|p| format!("/p/{p}")).unwrap_or_default();
-    let response = reqwest::Client::builder().no_proxy()
-        .timeout(std::time::Duration::from_secs(180)).build()?
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(180))
+        .build()?
         .post(format!("{}{prefix}/api/service/{action}", info.url()))
-        .header("x-mdc-service", &info.token).send().await?;
+        .header("x-mdc-service", &info.token)
+        .send()
+        .await?;
     let status = response.status();
     let value: Value = response.json().await?;
-    anyhow::ensure!(status.is_success(), "{}", value["error"].as_str().unwrap_or("service request failed"));
+    anyhow::ensure!(
+        status.is_success(),
+        "{}",
+        value["error"].as_str().unwrap_or("service request failed")
+    );
     Ok(value)
 }
 

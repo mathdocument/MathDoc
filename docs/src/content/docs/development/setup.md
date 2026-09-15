@@ -16,6 +16,8 @@ npm --prefix web run build
 python3 -m venv /tmp/mdc-latex-venv
 /tmp/mdc-latex-venv/bin/pip install -r src/latex/requirements.txt
 /tmp/mdc-latex-venv/bin/python -B -m unittest discover -s src/latex -p 'test_*.py'
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo build --locked
 ```

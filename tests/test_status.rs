@@ -82,15 +82,21 @@ async fn explicit_paths_do_not_require_a_home_directory() {
     std::fs::write(&config, format!("cache_dir = '{}'", cache.path().display())).unwrap();
     for environment_cache in [true, false] {
         let mut child = command(cache.path());
-        child.env("MDC_CONFIG", &config)
+        child
+            .env("MDC_CONFIG", &config)
             .env_remove("HOME")
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("XDG_CACHE_HOME");
-        if !environment_cache { child.env_remove("MDC_CACHE_DIR"); }
+        if !environment_cache {
+            child.env_remove("MDC_CACHE_DIR");
+        }
         let output = child.arg("stop").output().await.unwrap();
         assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("entry server is not running"),
-            "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("entry server is not running"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
 
@@ -263,10 +269,18 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
     .await;
     let b = Started::start(root, &agent, Some(a.port())).await;
     assert_eq!(a.port(), b.port());
-    assert_eq!(a.info["pid"], b.info["pid"], "branches share one server process");
+    assert_eq!(
+        a.info["pid"], b.info["pid"],
+        "branches share one server process"
+    );
     for branch in ["main", "agent"] {
-        let path = mathdoc::store::Database::from_env(first.db.database.clone(), branch.into()).unwrap().with_cache_root(root.into()).cache_path().unwrap();
-        let record: Value = serde_json::from_slice(&std::fs::read(path.join("service.lock")).unwrap()).unwrap();
+        let path = mathdoc::store::Database::from_env(first.db.database.clone(), branch.into())
+            .unwrap()
+            .with_cache_root(root.into())
+            .cache_path()
+            .unwrap();
+        let record: Value =
+            serde_json::from_slice(&std::fs::read(path.join("service.lock")).unwrap()).unwrap();
         assert_eq!(record["port"], a.info["port"]);
         assert_eq!(record["pid"], a.info["pid"]);
     }
@@ -429,12 +443,7 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
         stopped_entry["projects"][&agent],
         serde_json::json!({"running":false,"url":null})
     );
-    reject(
-        root,
-        &["graph", "check", "-p", &agent],
-        "is not running",
-    )
-    .await;
+    reject(root, &["graph", "check", "-p", &agent], "is not running").await;
     let port = b.port().to_string();
     let args = ["start", "--port", &port];
     let (entry_a, entry_b) = tokio::join!(run(root, &args), run(root, &args));
@@ -464,7 +473,10 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
     })
     .await
     .unwrap();
-    assert!(!status(root).await[&main], "a server crash marks every branch stopped");
+    assert!(
+        !status(root).await[&main],
+        "a server crash marks every branch stopped"
+    );
     let c = Started::start(root, &agent, Some(b.port())).await;
     assert_eq!(
         run(root, &["graph", "--proj", &agent, "check"]).await["nodes"],

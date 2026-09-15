@@ -31,9 +31,21 @@ async fn terminus_atomic_revisions_and_persistence() {
         bibliography: "@book{sample,title={Example},year={2026}}".into(),
         ..Default::default()
     };
-    let configured = database.put_bundle(&[], None, Some(&latex), &snapshot.version, "Configure LaTeX").await.unwrap();
+    let configured = database
+        .put_bundle(
+            &[],
+            None,
+            Some(&latex),
+            &snapshot.version,
+            "Configure LaTeX",
+        )
+        .await
+        .unwrap();
     assert_eq!(*database.load().await.unwrap().latex_project, latex);
-    assert!(database.put_bundle(&[], None, Some(&latex), &snapshot.version, "Stale LaTeX").await.is_err());
+    assert!(database
+        .put_bundle(&[], None, Some(&latex), &snapshot.version, "Stale LaTeX")
+        .await
+        .is_err());
     assert_eq!(database.version().await.unwrap(), configured);
     database.create_branch("agent").await.unwrap();
     assert!(database.history().await.unwrap().as_array().unwrap().len() >= 3);

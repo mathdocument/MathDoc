@@ -197,10 +197,7 @@ async fn read_frame(reader: &mut (impl tokio::io::AsyncBufRead + Unpin)) -> Resu
     reader.read_exact(&mut data).await?;
     Ok(String::from_utf8(data)?)
 }
-async fn write_frame(
-    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
-    data: &str,
-) -> Result<()> {
+async fn write_frame(writer: &mut (impl tokio::io::AsyncWrite + Unpin), data: &str) -> Result<()> {
     if data.len() > MAX_MESSAGE {
         bail!("Lean request too large");
     }

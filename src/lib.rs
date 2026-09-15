@@ -9,11 +9,11 @@ pub use cli::run;
 pub mod config;
 #[cfg(unix)]
 pub mod core;
-pub mod lean;
 pub mod latex;
+pub mod lean;
 pub(crate) mod profile;
-pub mod service;
 pub(crate) mod server;
+pub mod service;
 pub mod store;
 #[cfg(unix)]
 pub mod web;

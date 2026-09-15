@@ -653,18 +653,41 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
                 .await?
         }
 
-        Commands::Project { command: Project::Latex { command } } => match command {
+        Commands::Project {
+            command: Project::Latex { command },
+        } => match command {
             LatexProjectCommand::Show => api.get("/project/latex").await?,
-            LatexProjectCommand::Set { preamble, bib, revision } => {
+            LatexProjectCommand::Set {
+                preamble,
+                bib,
+                revision,
+            } => {
                 let project = crate::latex::LatexProject {
-                    preamble_name: preamble.file_name().context("preamble filename required")?.to_str().context("invalid filename")?.into(),
+                    preamble_name: preamble
+                        .file_name()
+                        .context("preamble filename required")?
+                        .to_str()
+                        .context("invalid filename")?
+                        .into(),
                     preamble: std::fs::read_to_string(&preamble).context("read LaTeX preamble")?,
-                    bibliography_name: bib.file_name().context("bibliography filename required")?.to_str().context("invalid filename")?.into(),
+                    bibliography_name: bib
+                        .file_name()
+                        .context("bibliography filename required")?
+                        .to_str()
+                        .context("invalid filename")?
+                        .into(),
                     bibliography: std::fs::read_to_string(&bib).context("read bibliography")?,
                 };
                 project.validate()?;
                 let current = api.get("/project/latex").await?;
-                api.request(Method::PUT, "/project/latex", &[], Some(serde_json::to_value(project)?), revision.as_deref().or(current["revision"].as_str())).await?
+                api.request(
+                    Method::PUT,
+                    "/project/latex",
+                    &[],
+                    Some(serde_json::to_value(project)?),
+                    revision.as_deref().or(current["revision"].as_str()),
+                )
+                .await?
             }
         },
         Commands::Project {
