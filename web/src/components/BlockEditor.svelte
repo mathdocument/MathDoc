@@ -400,7 +400,6 @@
   {#if latex && expanded && !previewing}<LatexImports imports={latex.context?.imports ?? null} />{/if}
   <div
     class="editor-host"
-    class:expanded
     class:collapsed={!expanded || previewing}
     inert={deleting}
     bind:this={host}
@@ -423,17 +422,17 @@
 </article>
 
 <style>
-  .editor-host { background: var(--mdc-code-bg); }
-  .editor-host.expanded { height: auto; }
-  .editor-host.expanded :global(.cm-editor) { height: auto; }
-  .editor-host.expanded :global(.cm-scroller) { overflow: hidden; }
+  .editor-host { display:flex; min-height:0; background:var(--mdc-code-bg); }
   .editor-host.collapsed { display: none; }
   .editor-host :global(.cm-editor) {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
     font-family: var(--mdc-mono);
     font-size: var(--mdc-text-sm);
     line-height: 1.65;
   }
-  .editor-host :global(.cm-editor .cm-scroller) { font-family: var(--mdc-mono); }
+  .editor-host :global(.cm-editor .cm-scroller) { overflow:auto; overscroll-behavior:contain; font-family:var(--mdc-mono); }
   .preview-loading {
     min-height: 9rem;
     display: grid;
@@ -443,7 +442,7 @@
     font-family: var(--mdc-mono);
     font-size: var(--mdc-text-xs);
   }
-  .latex-diagnostics { padding:.5rem .75rem; color:var(--mdc-warning); font-size:var(--mdc-text-xs); }
+  .latex-diagnostics { flex-shrink:0; max-height:30cqh; overflow:auto; overscroll-behavior:contain; padding:.5rem .75rem; color:var(--mdc-warning); font-size:var(--mdc-text-xs); }
   .latex-diagnostics p { margin:.4rem 0; }
   .error-bar button { margin-left:.5rem; }
   .error-bar {

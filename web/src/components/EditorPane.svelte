@@ -404,6 +404,9 @@
   }
   .blocks {
     flex: 1;
+    min-height: 0;
+    /* Blocks use this visible content height, including in the graph sidebar. */
+    container-type: size;
     overflow-y: auto;
     padding: 1rem 1.25rem 1.5rem;
     display: flex;

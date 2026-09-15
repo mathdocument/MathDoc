@@ -167,10 +167,10 @@
   {#if validating && !dirty}<div class="status activity" role="status" aria-live="polite">Verifying saved version…</div>{/if}
   {#if !ready && !error}<div class="status" aria-busy="true">{session && runtimeReady ? "Opening Lean node…" : "Starting Lean editor…"}</div>{/if}
   {#if ready && progress}<div class="status" role="status">{progress}</div>{/if}
-  <div class="editor-surface">
+  <div class="editor-surface" class:collapsed={!expanded}>
     {#if !ready && expanded}<pre class="source-placeholder" aria-label="Lean source while editor loads">{content}</pre>{/if}
   {#if session}
-    <div class:pending={!ready} class:collapsed={!expanded} inert={!ready || !expanded}><iframe bind:this={frame} title="Lean source and Infoview" src={projectPath(`/lean.html?session=${encodeURIComponent(session)}&theme=${initialTheme}`)} allow="clipboard-write"></iframe></div>
+    <div class="native-editor" class:pending={!ready} inert={!ready || !expanded}><iframe bind:this={frame} title="Lean source and Infoview" src={projectPath(`/lean.html?session=${encodeURIComponent(session)}&theme=${initialTheme}`)} allow="clipboard-write"></iframe></div>
   {/if}
   </div>
   {#if error}<div class="error-bar" role="alert">{error}</div>{/if}
@@ -185,11 +185,12 @@
 </article>
 <style>
   .hidden, .collapsed { display: none; }
-  .module-import { padding: .5rem .65rem; color: var(--mdc-muted); font-size: var(--mdc-text-xs); border-bottom: 1px solid var(--mdc-border); }
+  .module-import { flex-shrink:0; padding: .5rem .65rem; color: var(--mdc-muted); font-size: var(--mdc-text-xs); border-bottom: 1px solid var(--mdc-border); }
   .module-import summary { cursor: pointer; }
   .module-import code { display: block; margin-top: .4rem; overflow-wrap: anywhere; user-select: all; }
-  .editor-surface { position: relative; }
-  .source-placeholder { box-sizing: border-box; height: 500px; overflow: auto; margin: 0; padding: 12px; font: 13px/1.6 monospace; white-space: pre-wrap; }
+  .editor-surface { position:relative; height:100cqh; min-height:0; }
+  .native-editor { height:100%; }
+  .source-placeholder { box-sizing:border-box; height:100%; overflow:auto; overscroll-behavior:contain; margin:0; padding:12px; font:13px/1.6 monospace; white-space:pre-wrap; }
   .pending { visibility: hidden; position: absolute; inset: 0; }
-  iframe { display: block; width: 100%; height: 500px; border: 0; }
+  iframe { display:block; width:100%; height:100%; border:0; }
 </style>

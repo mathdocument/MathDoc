@@ -32,6 +32,11 @@ node's bibliography. Dependency and project changes are checked every five
 seconds while the editor is visible; stale draft responses are discarded.
 No TeX language server is started.
 
+All source blocks, including Lean, are capped at the node pane's visible height.
+Long editors and LaTeX previews scroll inside their block, leaving its toolbar
+in place. Scrolling at the end of a block does not scroll the surrounding pane;
+use the space outside the block to move between blocks.
+
 ## Shared macros
 
 Use ordinary LaTeX definitions, for example:

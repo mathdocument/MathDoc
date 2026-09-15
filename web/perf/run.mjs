@@ -213,6 +213,27 @@ async function runEditorSample(context, url) {
     if (mobileLayout.editorWidth < 300 || mobileLayout.sidebarsVisible) {
       throw new Error("mobile editor layout is obstructed by relation columns");
     }
+    const block = page.locator('.source-block[data-srctype="latex"]');
+    const preview = block.locator('.latex-preview');
+    const bounded = await block.evaluate(element => {
+      const pane = element.closest('.blocks');
+      const style = getComputedStyle(pane);
+      const available = pane.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+      return element.getBoundingClientRect().height <= available + 1;
+    });
+    if (!bounded) throw new Error('source block exceeds the visible node pane');
+    await preview.hover();
+    const outerScroll = await page.locator('.blocks').evaluate(element => element.scrollTop);
+    await preview.evaluate(element => { element.scrollTop = element.scrollHeight; });
+    await page.mouse.wheel(0, 1000);
+    await page.waitForTimeout(100);
+    if (await page.locator('.blocks').evaluate(element => element.scrollTop) !== outerScroll) {
+      throw new Error('preview wheel scrolling escaped the source block');
+    }
+    await block.getByRole('button', {name: 'Return to LaTeX editor'}).click();
+    const scrollable = await block.locator('.cm-scroller').evaluate(element =>
+      element.clientHeight > 0 && element.scrollHeight > element.clientHeight);
+    if (!scrollable) throw new Error('long source must scroll inside CodeMirror');
     if (errors.length > 0) throw new Error(errors.join("\n"));
     return { editorReadyMs, editorHighlightMs, themeSwitchMs, latexPreviewMs };
   } finally {
