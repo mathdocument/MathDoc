@@ -75,6 +75,25 @@ async fn status(root: &Path) -> BTreeMap<String, bool> {
         .collect()
 }
 
+#[tokio::test]
+async fn explicit_paths_do_not_require_a_home_directory() {
+    let cache = tempfile::tempdir().unwrap();
+    let config = cache.path().join("client.toml");
+    std::fs::write(&config, format!("cache_dir = '{}'", cache.path().display())).unwrap();
+    for environment_cache in [true, false] {
+        let mut child = command(cache.path());
+        child.env("MDC_CONFIG", &config)
+            .env_remove("HOME")
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("XDG_CACHE_HOME");
+        if !environment_cache { child.env_remove("MDC_CACHE_DIR"); }
+        let output = child.arg("stop").output().await.unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("entry server is not running"),
+            "{}", String::from_utf8_lossy(&output.stderr));
+    }
+}
+
 struct Started {
     root: PathBuf,
     project: String,

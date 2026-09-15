@@ -72,10 +72,10 @@ impl Settings {
 
     pub fn load() -> Result<Self> {
         let explicit = std::env::var_os("MDC_CONFIG");
-        let path = explicit
-            .clone()
-            .map(PathBuf::from)
-            .unwrap_or(user_dir("XDG_CONFIG_HOME", ".config")?.join("config.toml"));
+        let path = match &explicit {
+            Some(path) => PathBuf::from(path),
+            None => user_dir("XDG_CONFIG_HOME", ".config")?.join("config.toml"),
+        };
         match std::fs::read_to_string(&path) {
             Ok(text) => {
                 toml::from_str(&text).with_context(|| format!("invalid config {}", path.display()))
@@ -90,7 +90,7 @@ impl Settings {
         let path = std::env::var_os("MDC_CACHE_DIR")
             .map(PathBuf::from)
             .or_else(|| self.cache_dir.clone())
-            .unwrap_or(user_dir("XDG_CACHE_HOME", ".cache")?);
+            .map_or_else(|| user_dir("XDG_CACHE_HOME", ".cache"), Ok)?;
         anyhow::ensure!(
             path.is_absolute(),
             "cache_dir / MDC_CACHE_DIR must be an absolute path"
