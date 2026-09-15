@@ -122,7 +122,7 @@ async fn latex_project_previews_follow_dependencies_and_preserve_configuration()
     assert!(preview["html"]
         .as_str()
         .unwrap()
-        .contains("Named result</a>"));
+        .contains(&format!("{}::Theorem 1</a>", &a.fnode[..8])));
     assert!(preview["html"].as_str().unwrap().contains("Aut20"));
     let (_, context) = call(&app, "GET", &context_path, Value::Null, None).await;
     assert_eq!(context["imports"].as_array().unwrap().len(), 1);
@@ -164,15 +164,16 @@ async fn latex_project_previews_follow_dependencies_and_preserve_configuration()
         200
     );
     let mut changed = a.clone();
-    changed.blocks[0].content = changed.blocks[0]
-        .content
-        .replace("Named result", "Updated result");
+    changed.blocks[0].content = format!(
+        "\\begin{{thm}}Earlier result.\\end{{thm}}{}",
+        changed.blocks[0].content
+    );
     fixture
         .db
         .put(
             &[changed],
             &fixture.db.version().await.unwrap(),
-            "Update label title",
+            "Update theorem numbering",
         )
         .await
         .unwrap();
@@ -180,7 +181,7 @@ async fn latex_project_previews_follow_dependencies_and_preserve_configuration()
     assert!(refreshed["html"]
         .as_str()
         .unwrap()
-        .contains("Updated result</a>"));
+        .contains(&format!("{}::Theorem 2</a>", &a.fnode[..8])));
     b.depens.clear();
     fixture
         .db

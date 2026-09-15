@@ -82,8 +82,9 @@ class RendererTest(unittest.TestCase):
         self.assertEqual(preview['diagnostics'], [])
         self.assertIn('>Theorem 1</div>', preview['html'])
         self.assertIn('>Theorem 1</a>', preview['html'])
-        for text in ('Theorem [1]', 'Lemma [2]', 'Definition [1]', 'Theorem [3]', 'Main result'):
-            self.assertIn('>[11111111]::' + text + '</a>', preview['html'])
+        for text in ('Theorem 1', 'Lemma 2', 'Definition 1', 'Theorem 3'):
+            self.assertIn('>11111111::' + text + '</a>', preview['html'])
+        self.assertEqual(preview['html'].count('>11111111::Theorem 1</a>'), 3)
         labels = renderer.parse(project['preamble'], source).labels
         self.assertEqual({x['label']: x['number'] for x in labels},
                          {'main': '1', 'lemma': '2', 'definition': '1', 'next': '3', 'notation': ''})
@@ -203,7 +204,7 @@ class RendererTest(unittest.TestCase):
         request = {'kind': 'preview', 'project': PROJECT, 'target': target, 'dependencies': [dependency]}
         preview = renderer.handle(request)
         self.assertEqual(preview['diagnostics'], [])
-        self.assertIn('Named result</a>', preview['html'])
+        self.assertIn('11111111::Theorem 1</a>', preview['html'])
         self.assertIn('data-latex-node="' + A, preview['html'])
         self.assertIn('data-tex="\\mathcal{A}"', preview['html'])
         self.assertIn('<ul><li>', preview['html'])

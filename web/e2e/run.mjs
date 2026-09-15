@@ -786,16 +786,16 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await put('Alpha', source);
       await put('Beta', String.raw`\begin{thm}[Named result]\label{thm:b}$\cA$ exists.\end{thm}`);
       await put('Gamma', String.raw`\section{Private result}\label{private}`);
-      const externalName = name => `[${ids.Beta.slice(0, 8)}]::${name}`;
+      const externalName = number => `${ids.Beta.slice(0, 8)}::Theorem ${number}`;
       await page.reload();
       const block = page.locator('article[data-srctype="latex"]');
       await block.getByText('1 imported dependencies', {exact: false}).waitFor();
       await block.getByRole('button', {name: 'Render LaTeX preview'}).click();
-      await block.getByRole('link', {name: externalName('Named result'), exact: true}).waitFor();
+      await block.getByRole('link', {name: externalName(1), exact: true}).waitFor();
       await block.locator('.katex').first().waitFor();
       assert.equal(await block.locator('.katex-error').count(), 0);
       assert.match(await block.locator('.latex-preview').innerText(), /A paper/);
-      await block.getByRole('link', {name: externalName('Named result'), exact: true}).click();
+      await block.getByRole('link', {name: externalName(1), exact: true}).click();
       await title(page, 'Beta');
       await block.locator('.latex-preview .latex-statement').waitFor();
       assert.equal(await block.locator('[id="latex-thm%3Ab"]').count(), 1);
@@ -819,9 +819,9 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await block.getByRole('button', {name: 'Render LaTeX preview'}).click();
       await block.getByRole('heading', {name: 'Draft title', exact: true}).waitFor();
       assert.equal(JSON.parse((await cli('show', 'Alpha')).stdout).blocks[0].content, source);
-      // A dependency rename is visible without reloading or saving the draft.
-      await put('Beta', String.raw`\begin{thm}[Updated result]\label{thm:b}Updated.\end{thm}`);
-      await block.getByRole('link', {name: externalName('Updated result'), exact: true}).waitFor({timeout: 10000});
+      // Dependency numbering refreshes without reloading or saving the draft.
+      await put('Beta', String.raw`\begin{thm}Earlier result.\end{thm}\begin{thm}[Updated result]\label{thm:b}Updated.\end{thm}`);
+      await block.getByRole('link', {name: externalName(2), exact: true}).waitFor({timeout: 10000});
       await block.getByRole('button', {name: 'Save', exact: true}).click();
       await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
       assert.equal(JSON.parse((await cli('show', 'Alpha')).stdout).blocks[0].content, draft);
@@ -829,7 +829,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       assert.doesNotMatch(saved, /externaldocument/);
       await page.goto("about:blank");
       await page.goto(`${url}/#ref=${ids.Beta}&label=thm%3Ab`);
-      await block.locator('.latex-preview .latex-statement').waitFor();
+      await block.getByText('Theorem 2 (Updated result)', {exact: true}).waitFor();
       if (process.env.MDC_E2E_ARTIFACTS) await page.screenshot({path: resolve(process.env.MDC_E2E_ARTIFACTS, `latex-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
     });
   } finally { await browser.close(); }

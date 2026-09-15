@@ -577,9 +577,9 @@ def handle(request):
             if command in ('cref', 'Cref'): text = ref['type'] + ' ' + text
             if command == 'eqref': text = '(' + text + ')'
             if ref['fnode'] != target['fnode']:
-                if command != 'nameref' or not ref['name']:
-                    text = ref['type'] + (f' [{ref["number"]}]' if ref['number'] else f' ({name})')
-                text = f'[{ref["fnode"][:8]}]::{text}'
+                if ref['number'] or command != 'nameref' or not ref['name']:
+                    text = ref['type'] + (f' {ref["number"]}' if ref['number'] else f' ({name})')
+                text = f'{ref["fnode"][:8]}::{text}'
             output.append(f'<a href="#{esc(ref["anchor"])}" data-latex-node="{esc(ref["fnode"])}" data-latex-label="{esc(ref["label"])}" title="{esc(ref["title"])}">{esc(text)}</a>')
         elif 'cite' in part:
             links = []

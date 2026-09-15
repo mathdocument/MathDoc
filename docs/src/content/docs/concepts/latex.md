@@ -100,15 +100,15 @@ Removing a dependency immediately removes access to its labels; transitive
 dependencies are not implicitly imported.
 
 Use `\cref` for numbered references: a local reference reads `Theorem 1`, and a
-cross-node reference reads `[12345678]::Theorem [1]`. The prefix is the target
+cross-node reference reads `12345678::Theorem 1`. The prefix is the target
 node's first eight UUID characters; navigation still uses its full UUID.
 External `\ref`, `\Cref` and `\eqref` also show the target type and number.
 Within a node, `\ref` displays the number and `\eqref` puts it in parentheses.
 
-`\nameref` retains the theorem's optional title or the section title, with a
-`[12345678]::` prefix for external targets. When an external target has no title,
-it falls back to the target type and number; an unnumbered target uses its node
-title and label.
+For numbered external targets, `\nameref` uses the same type and number as
+`\cref`. Within the current node, it retains the theorem's optional title or the
+section title. Unnumbered external targets retain their title (or their node
+title and label when unnamed), prefixed by `12345678::`.
 References carry the target UUID and label so the web client can navigate to the
 correct node without reading an `.aux` file or building a PDF.
 
