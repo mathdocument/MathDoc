@@ -1,4 +1,4 @@
-import { LeanMonaco, LeanMonacoEditor, type LeanClient } from "lean4monaco";
+import { LeanMonaco, type LeanClient } from "lean4monaco";
 import { CancellationTokenSource, Uri, KeyCode, KeyMod, editor as MonacoEditor } from "monaco-editor";
 import { createModelReference } from "vscode/monaco";
 import { FileUri } from "lean4monaco/dist/vscode-lean4/vscode-lean4/src/utils/exturi";
@@ -20,14 +20,14 @@ class BrowserLean extends LeanMonaco {
 interface Document { fnode: string; filename: string; source: string; revision: string; environment_key: string }
 interface OpenDocument {
   document: Document;
-  reference: LeanMonacoEditor["modelRef"];
+  reference: Awaited<ReturnType<typeof createModelReference>>;
   view: MonacoEditor.ICodeEditorViewState | null;
   progress: string;
   validating?: boolean;
   validated?: string;
 }
 const runtime = new BrowserLean();
-const editor = new LeanMonacoEditor();
+let editor: MonacoEditor.IStandaloneCodeEditor;
 const documents = new Map<string, OpenDocument>();
 let selected: OpenDocument | undefined;
 let shownFnode = "";
@@ -74,7 +74,7 @@ async function validate(entry: OpenDocument) {
   }
 }
 function showNode(fnode: string, source: string, generation: number) {
-  if (selected && !preview) selected.view = editor.editor.saveViewState();
+  if (selected && !preview) selected.view = editor.saveViewState();
   const oldPreview = preview;
   selected = [...documents.values()].find(entry => entry.document.fnode === fnode);
   shownFnode = fnode;
@@ -82,12 +82,12 @@ function showNode(fnode: string, source: string, generation: number) {
   // client's file/untitled selector. Typing need not wait for imports or LSP init.
   preview = selected ? undefined : MonacoEditor.createModel(source, "lean4", Uri.parse(`inmemory://mdc/${fnode}/${generation}.lean`));
   updating = true;
-  editor.editor.setModel(selected?.reference.object.textEditorModel ?? preview!);
-  if (editor.editor.getValue() !== source) editor.editor.setValue(source);
-  if (selected?.view) editor.editor.restoreViewState(selected.view);
+  editor.setModel(selected?.reference.object.textEditorModel ?? preview!);
+  if (editor.getValue() !== source) editor.setValue(source);
+  if (selected?.view) editor.restoreViewState(selected.view);
   updating = false;
   oldPreview?.dispose();
-  editor.editor.focus();
+  editor.focus();
   document.getElementById("infoview-pending")!.hidden = !preview;
   showProgress();
   send("lean-ready", undefined, generation);
@@ -147,23 +147,23 @@ async function selectNode(fnode: string, revision: string, generation: number, s
   documents.delete(next.filename);
   documents.set(next.filename, entry);
   entry.document = next;
-  const source = editor.editor.getValue();
-  const view = editor.editor.saveViewState();
+  const source = editor.getValue();
+  const view = editor.saveViewState();
   const model = entry.reference.object.textEditorModel;
   if (!model) throw new Error("Lean document closed while switching nodes");
   selected = entry;
   updating = true;
-  editor.editor.setModel(model);
+  editor.setModel(model);
   if (model.getValue() !== source) {
     model.pushStackElement();
     model.pushEditOperations([], [{ range: model.getFullModelRange(), text: source }], () => null);
     model.pushStackElement();
   }
-  if (view) editor.editor.restoreViewState(view);
+  if (view) editor.restoreViewState(view);
   updating = false;
   preview?.dispose(); preview = undefined;
   document.getElementById("infoview-pending")!.hidden = true;
-  editor.editor.focus();
+  editor.focus();
   if (restart) { entry.progress = "Reloading changed Lean dependencies…"; runtime.clientProvider!.restartActiveFile(); }
   showProgress();
   send("lean-ready", undefined, generation);
@@ -194,6 +194,9 @@ async function start() {
       "editor.fontSize": 13,
       "editor.tabSize": 2,
       "editor.wordWrap": "on",
+      // JuliaMono is monospace. LeanMonaco's advanced default measures the
+      // entire document in the DOM on every resize, blocking Safari's paint.
+      "editor.wrappingStrategy": "simple",
       "workbench.colorTheme": params.get("theme") === "light" ? "Default Light Modern" : "Default Dark Modern",
     },
   });
@@ -225,14 +228,23 @@ async function start() {
     });
   });
   applyTheme(params.get("theme") ?? "light");
-  await editor.start(document.getElementById("editor")!, session.filename, session.source);
-  editor.editor.updateOptions({ automaticLayout: false });
+  const reference = await createModelReference(Uri.parse(session.filename), session.source);
+  // Disable automatic layout at construction: changing the option later does
+  // not disconnect Monaco's observer, leaving two competing layout callbacks.
+  editor = MonacoEditor.create(document.getElementById("editor")!, {
+    model: reference.object.textEditorModel,
+    automaticLayout: false,
+    contextmenu: true,
+    lineNumbersMinChars: 1,
+    lineDecorationsWidth: 5,
+  });
+  editor.focus();
   shownFnode = session.fnode;
-  selected = { document: session, reference: editor.modelRef, view: null, progress: "Loading Lean imports…" };
+  selected = { document: session, reference, view: null, progress: "Loading Lean imports…" };
   documents.set(session.filename, selected);
-  editor.editor.onDidChangeModelContent(() => { if (!updating) send("lean-change", editor.editor.getValue()); });
-  editor.editor.addCommand(KeyMod.CtrlCmd | KeyCode.KeyS, () => send("lean-save"));
-  editor.editor.addCommand(KeyMod.CtrlCmd | KeyCode.Enter, () => send("lean-save"));
+  editor.onDidChangeModelContent(() => { if (!updating) send("lean-change", editor.getValue()); });
+  editor.addCommand(KeyMod.CtrlCmd | KeyCode.KeyS, () => send("lean-save"));
+  editor.addCommand(KeyMod.CtrlCmd | KeyCode.Enter, () => send("lean-save"));
   window.addEventListener("message", (event) => {
     if (event.origin !== location.origin || event.source !== parent) return;
     if (event.data?.type === "lean-theme") applyTheme(event.data.value);
@@ -258,14 +270,14 @@ async function start() {
       }).finally(() => clearTimeout(timer));
     }
     if (event.data?.type === "lean-cancel") selection.abort();
-    if (event.data?.type === "lean-source" && event.data.fnode === shownFnode && typeof event.data.value === "string" && editor.editor.getValue() !== event.data.value) {
-      editor.editor.setValue(event.data.value);
+    if (event.data?.type === "lean-source" && event.data.fnode === shownFnode && typeof event.data.value === "string" && editor.getValue() !== event.data.value) {
+      editor.setValue(event.data.value);
     }
   });
   new ResizeObserver(([entry]) => {
     // Hidden blocks have a zero viewport. Laying out there corrupts the saved
     // scroll position and can leave line-one diagnostics outside the visible area.
-    if (entry.contentRect.width && entry.contentRect.height) editor.editor.layout();
+    if (entry.contentRect.width && entry.contentRect.height) editor.layout({ width: entry.contentRect.width, height: entry.contentRect.height });
   }).observe(document.getElementById("editor")!);
   send("lean-runtime-ready");
 }
@@ -275,5 +287,5 @@ window.addEventListener("pagehide", () => {
   if (id) void fetch(projectPath(`/api/lean/session/${encodeURIComponent(id)}`), { method: "DELETE", keepalive: true }).catch(console.warn);
   preview?.dispose();
   for (const entry of documents.values()) entry.reference.dispose();
-  editor.editor?.dispose(); runtime.dispose();
+  editor?.dispose(); runtime.dispose();
 });

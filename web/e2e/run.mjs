@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { once } from "node:events";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { chromium } from "playwright";
+import { chromium, webkit } from "playwright";
 import { createServer } from "node:net";
 
 const run = promisify(execFile);
@@ -62,7 +63,7 @@ async function fixture(browser, body, extraNodes = [], expectedPageErrors = []) 
       ws.on("close", () => record("close", ws.url()));
     });
     page.on("console", message => { if (message.type() === "error") console.error("Browser console:", message.text()); });
-    page.on("pageerror", (error) => errors.push(error.stack ?? error.message));
+    page.on("pageerror", (error) => errors.push((error.stack || error.message).replace(/^Unhandled Promise Rejection: /, "")));
     page.on("dialog", (dialog) => void dialog.accept());
     try {
       await page.goto(server.url);
@@ -127,7 +128,9 @@ const beta = (page) => page.getByRole("complementary", { name: "Dependencies" })
   .getByRole("button", { name: /^Beta \(/ });
 
 await test("browser with the real MathDoc backend", { timeout: 240000 }, async (suite) => {
-  const browser = await chromium.launch({ headless: true, channel: "chromium" });
+  const browser = process.env.MDC_E2E_BROWSER === "webkit"
+    ? await webkit.launch()
+    : await chromium.launch({ headless: true, channel: "chromium" });
   try {
     await suite.test("external edits reject a stale save and preserve the browser draft", () =>
       fixture(browser, async ({ cli, page }) => {
@@ -232,7 +235,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           await otherPage.goto(`${started.url}#ref=${node.fnode}`);
           await otherPage.getByText("Lean editor ready", { exact: true }).waitFor();
           const otherSocket = await otherConnection;
-          await Promise.all([otherSocket.waitForEvent("close", { timeout: 10000 }), manage("stop", agent)]);
+          await Promise.all([once(otherSocket, "close", { signal: AbortSignal.timeout(10000) }), manage("stop", agent)]);
           agentRunning = false;
           await otherPage.close();
           assert.equal((await fetch(`${base}/p/${agent}/api/graph/check`)).status, 503);
@@ -255,7 +258,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           }
           await page.goto(`${url}/#ref=${node.fnode}`);
           await page.getByText("Lean editor ready", { exact: true }).waitFor();
-          await Promise.all([currentSocket.waitForEvent("close", { timeout: 10000 }), manage("stop")]);
+          await Promise.all([once(currentSocket, "close", { signal: AbortSignal.timeout(10000) }), manage("stop")]);
           const stopped = JSON.parse((await manage("status")).stdout);
           assert.equal(stopped.server.running, false);
           assert.equal(stopped.projects[project].running, false);
@@ -361,7 +364,8 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
       }, [node]);
     });
     await suite.test("native Lean editor renders goals, diagnostics and saves to the database", () => {
-      const source = "theorem demo : True ∧ True := by\n  constructor\n  · trivial\n  · trivial\n";
+      const source = "theorem demo : True ∧ True := by\n  constructor\n  · trivial\n  · trivial\n" +
+        "-- Resize fixture: ∀ n : ℕ, this long comment must wrap continuously as the editor gets narrower or wider.\n".repeat(500);
       // Imported modules can be nested and quoted; later nodes use the flat Lib directory.
       const a = { fnode: randomUUID(), title: "Lean Example", module: "Lib.EGA.«1-1.7.1»", depens: [], blocks: [{ srctype: "lean", content: source }, { srctype: "text", content: "A shared block header." }, { srctype: "rocq", content: "Check nat." }, { srctype: "latex", content: "A formula: $x^2$." }] };
       return fixture(browser, async ({ root, page, cli, url }) => {
@@ -440,6 +444,44 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         }
         await center(page).getByLabel("Lean: Verified", { exact: true }).waitFor();
         await page.screenshot({ path: resolve(root, "lean-editor.png"), fullPage: true });
+        const resizeSessionURL = await page.locator('iframe[title="Lean source and Infoview"]').getAttribute("src");
+        await page.getByRole("button", { name: "Graph", exact: true }).click();
+        {
+          const divider = page.getByRole("separator", { name: "Resize graph editor" });
+          const box = await divider.boundingBox();
+          const before = (await page.locator(".editor-wrap").boundingBox()).width;
+          await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+          const viewport = frame.locator("#editor");
+          const leanWidth = (await viewport.boundingBox()).width;
+          const wrapHeight = () => frame.locator(".view-lines").evaluate(el => el.scrollHeight);
+          const originalHeight = await wrapHeight();
+          await viewport.evaluate(() => {
+            window.__resizeRangeReads = 0;
+            const read = Range.prototype.getClientRects;
+            Range.prototype.getClientRects = function () { window.__resizeRangeReads++; return read.call(this); };
+          });
+          await page.mouse.down();
+          for (const distance of [140, 280]) {
+            await page.mouse.move(box.x + box.width / 2 - distance, box.y + box.height / 2, { steps: 8 });
+            await viewport.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+            const width = (await viewport.boundingBox()).width;
+            assert.ok(Math.abs(width - leanWidth - distance / 2) < 2, "Lean viewport must resize while the pointer is held");
+            assert.ok(Math.abs((await frame.locator(".monaco-editor").boundingBox()).width - width) < 2, "Monaco must lay out at the current width");
+            assert.ok(await wrapHeight() < originalHeight, "Lean text must rewrap before releasing the divider");
+          }
+          const rangeReads = await viewport.evaluate(() => window.__resizeRangeReads);
+          assert.ok(rangeReads < 10000, `resizing must not measure all 500 lines in the DOM (${rangeReads} range reads)`);
+          console.log("Live Lean resize range reads:", rangeReads);
+          await page.mouse.up();
+          const wider = (await page.locator(".editor-wrap").boundingBox()).width;
+          assert.ok(Math.abs(wider - before - 280) < 2, "dragging left widens the editor");
+          await divider.press("ArrowRight");
+          await page.waitForFunction(expected => document.getElementById("graph-editor").clientWidth === expected, Math.round(wider) - 32);
+          const narrower = (await page.locator(".editor-wrap").boundingBox()).width;
+          assert.ok(Math.abs(wider - narrower - 32) < 2, "the divider supports keyboard resizing");
+          assert.equal(await page.locator('iframe[title="Lean source and Infoview"]').getAttribute("src"), resizeSessionURL);
+        }
+        await page.getByRole("button", { name: "Knowledge", exact: true }).click();
         const badSource = "theorem demo : True := by\n  exact 42\n";
         const firstError = nativeError(badSource);
         await input.press("ControlOrMeta+A");
@@ -457,22 +499,6 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           assert.equal(await page.locator('iframe[title="Lean source and Infoview"]').getAttribute("src"), sessionURL);
           await page.getByText("Unsaved", { exact: true }).waitFor();
           switchTimes.push(Math.round(performance.now() - started));
-          if (i === 0) {
-            const divider = page.getByRole("separator", { name: "Resize graph editor" });
-            const box = await divider.boundingBox();
-            const before = (await page.locator(".editor-wrap").boundingBox()).width;
-            await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-            await page.mouse.down();
-            await page.mouse.move(box.x + box.width / 2 - 140, box.y + box.height / 2, { steps: 8 });
-            await page.mouse.up();
-            const wider = (await page.locator(".editor-wrap").boundingBox()).width;
-            assert.ok(Math.abs(wider - before - 140) < 2, "dragging left widens the editor");
-            await divider.press("ArrowRight");
-            await page.waitForFunction(expected => document.getElementById("graph-editor").clientWidth === expected, Math.round(wider) - 32);
-            const narrower = (await page.locator(".editor-wrap").boundingBox()).width;
-            assert.ok(Math.abs(wider - narrower - 32) < 2, "the divider supports keyboard resizing");
-            assert.equal(await page.locator('iframe[title="Lean source and Infoview"]').getAttribute("src"), sessionURL);
-          }
         }
         assert.equal(sessions, 1, "layout changes must reuse the Lean session, including a loading or dirty editor");
         console.log("Lean editor layout switch durations (ms):", switchTimes.join(", "));
@@ -592,7 +618,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await page.waitForFunction(() => document.body.innerText.includes("Lean connection closed;") && !document.body.innerText.includes("Reconnecting Lean…"));
         assert.equal(attempts, 2, "only one automatic reconnect is allowed");
         const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
-        await frame.getByRole("textbox", { name: /Editor content/ }).press("ControlOrMeta+End");
+        await frame.getByRole("textbox", { name: /Editor content/ }).press(await page.evaluate(() => /Mac/.test(navigator.platform)) ? "Meta+ArrowDown" : "Control+End");
         await page.keyboard.insertText("-- draft after failed startup\n");
         await page.getByText("Unsaved", { exact: true }).waitFor();
         fail = false;
@@ -604,7 +630,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         // Upstream emits shutdown rejections when initialize is interrupted.
         // Only this fault-injection fixture allows them; recovery is asserted above.
         /^Error: Client is not running and can't be stopped\. It's current state is: starting\n/,
-        /^\w+: Pending response rejected since connection got disposed\n/,
+        /^(?:\w+: )?Pending response rejected since connection got disposed(?:\n|$)/,
       ]));
     await suite.test("Lean cancels stale selections and recovers from preparation timeouts without losing drafts", () =>
       fixture(browser, async ({ root, cli, page, url, serverOutput }) => {

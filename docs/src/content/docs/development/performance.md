@@ -163,3 +163,10 @@ The lazy native Monaco/Infoview bundle is included in the recorded total of
 about 8.46 MB compressed, with a 9 MB absolute ceiling and an 8% regression
 budget. The initial shell has a separate 56 KiB ceiling. Runtime fixtures measure
 LaTeX and graph interaction; native Lean is checked by the real-server browser test.
+
+The native Lean integration test also drags the sidebar with a 500-line Lean document.
+It checks that Monaco and its wrapped text resize while the pointer is held,
+without measuring the entire document through DOM ranges. MathDoc uses Monaco's
+monospace wrapping algorithm and one size observer; hidden editors skip layout.
+Run the real-server suite with `MDC_E2E_BROWSER=webkit` to check Safari's engine
+as well as the default Chromium (see [test setup](../setup/)).
