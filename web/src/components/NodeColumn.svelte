@@ -29,9 +29,10 @@
   }
 
   let direction = $derived(accent === "up" ? "Upstream" : "Downstream");
+  let depthWidth = $derived(items.reduce((width, item) => Math.max(width, String(item.depth).length + 1), 4));
 </script>
 
-<aside class="column" data-accent={accent} aria-label={title}>
+<aside class="column" data-accent={accent} aria-label={title} style:--depth-width={`${depthWidth}ch`}>
   <header class="column-head" title={`${direction} — ${title.toLowerCase()}`}>
     <span class="relation-icon" aria-hidden="true">
       {#if accent === "up"}
@@ -61,6 +62,7 @@
           <span class="card-meta">
             <span class="fnode">{shortFnode(item.fnode)}</span>
             <span class="depth" title={`depth ${item.depth}`}>d{item.depth}</span>
+            <span class="meta-divider" aria-hidden="true"></span>
             <FormalStatus language="Lean" status={item.formalization.lean} compact />
             <FormalStatus language="Rocq" status={item.formalization.rocq} compact />
           </span>
@@ -233,13 +235,21 @@
   .fnode, .depth { font-family: var(--mdc-mono); }
   .fnode {
     flex: 0 0 auto;
+    width: 8ch;
     color: var(--mdc-accent);
   }
   .depth {
     flex: 0 0 auto;
+    width: var(--depth-width);
     color: var(--mdc-dim);
     font-variant-numeric: tabular-nums;
     opacity: 0.75;
+  }
+  .meta-divider {
+    flex: 0 0 1px;
+    height: 12px;
+    margin-inline-end: 0.5em;
+    background: var(--mdc-border-strong);
   }
   .empty {
     display: flex;
