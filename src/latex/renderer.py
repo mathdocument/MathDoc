@@ -12,7 +12,9 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from urllib.parse import quote, urlparse
 
-from plasTeX import Command, Context, Environment, TeXDocument
+from plasTeX import Command, Context, Environment, IfFalse, IfTrue, NewIf, TeXDocument
+from plasTeX.Base.TeX.Primitives import IfCommand
+from plasTeX.Packages.amsthm import newtheorem
 from plasTeX.TeX import TeX
 from pybtex.database import parse_string
 from pybtex.plugin import find_plugin
@@ -65,6 +67,100 @@ class SafeTeX(TeX):
 
     def loadPackage(self, file, options=None):
         raise ValueError("LaTeX preview cannot load files from the TeX installation")
+
+
+class PreambleTeX(SafeTeX):
+    def processIfContent(self, which, debug=False):
+        # Definitions and setup arguments are opaque here: an uncalled macro's
+        # \ifstrempty must not be mistaken for a nested primitive \if...\fi.
+        cases = [[]]
+        nesting = braces = 0
+        tokens = self.itertokens()
+        for token in tokens:
+            name = token.macroName
+            if token.catcode == token.CC_BGROUP:
+                braces += 1
+            elif token.catcode == token.CC_EGROUP:
+                braces -= 1
+            elif not braces:
+                if name == 'newif':
+                    cases[-1].extend([token, next(tokens)])
+                    continue
+                if name and name.startswith('if'):
+                    command = self.ownerDocument.context.get(name)
+                    if command is None:
+                        self.readOptionalSpaces()
+                        following = next(tokens, None)
+                        self.pushToken(following)
+                        primitive = following is not None and following.catcode != following.CC_BGROUP
+                    else:
+                        primitive = issubclass(command, (IfCommand, NewIf))
+                    if primitive:
+                        nesting += 1
+                elif name == 'fi':
+                    if not nesting:
+                        break
+                    nesting -= 1
+                elif not nesting and name in ('else', 'or'):
+                    cases.append([])
+                    continue
+            cases[-1].append(token)
+        else:
+            raise ValueError('Unterminated conditional in shared LaTeX preamble')
+        index = int(not which) if isinstance(which, bool) else which
+        if index is not None and 0 <= index < len(cases):
+            self.pushTokens(cases[index])
+
+
+def load_preamble(document, preamble):
+    """Import declarations without executing document setup or its arguments."""
+    if len(preamble.encode()) > MAX_SOURCE:
+        raise ValueError('LaTeX preamble exceeds 2 MiB')
+    tex = PreambleTeX(ownerDocument=document)
+    context = document.context
+    declarations = {
+        'newcommand', 'renewcommand', 'providecommand', 'DeclareRobustCommand',
+        'newenvironment', 'renewenvironment', 'newtheorem', 'theoremstyle',
+        'def', 'gdef', 'edef', 'xdef', 'let', 'newif', 'makeatletter', 'makeatother',
+        'newcounter', 'setcounter', 'DeclareMathOperator',
+    }
+    tex.input(preamble)
+    for token in tex.itertokens():
+        name = token.macroName
+        if token.catcode == token.CC_BGROUP or token == '[':
+            tex.pushToken(token)
+            tex.readArgument('[]' if token == '[' else None)
+        elif name == 'endinput':
+            tex.endInput()
+        elif name in ('RequirePackage', 'usepackage'):
+            # Print-only or unsupported packages neither load local .sty files
+            # nor prevent independent content macros from being imported.
+            tex.readArgument('[]')
+            for package in tex.readArgument(type='list', subtype='str'):
+                if package.removesuffix('.sty') in PACKAGES:
+                    context.loadPackage(tex, package)
+        elif name == '@ifclassloaded':
+            cls = tex.readArgument(type='str')
+            yes, no = tex.readArgument(), tex.readArgument()
+            # HTML uses article structure, independently of print class options.
+            tex.pushTokens(yes if cls == 'article' else no)
+        elif name in declarations or (name and context.get(name) and
+                issubclass(context.get(name), (IfCommand, NewIf, IfTrue, IfFalse))):
+            document.createElement(name).invoke(tex)
+        elif name and name.startswith('if'):
+            # Unknown braced tests are setup calls; unknown primitive conditionals
+            # have no trustworthy active branch, so import neither branch.
+            if tex.readArgument('{}') is None:
+                tex.processIfContent(None)
+    for name, cls in context.protected.items():
+        context.top.lets.pop(name, None)
+        context.addGlobal(name, cls)
+
+
+class NewTheorem(newtheorem):
+    # Keep expanded captions as fragments; plasTeX's header:str stringifies
+    # protected macros into Python object addresses instead of their text.
+    args = '* name:str [ shared:str ] header [ parent:str ]'
 
 
 class Ref(Command):
@@ -150,9 +246,11 @@ def parse(preamble, source):
     tex = SafeTeX(ownerDocument=document)
     document.context.loadPackage(tex, 'article')
     document.context.loadPackage(tex, 'amsmath')
+    document.context.loadPackage(tex, 'amsthm')
     definitions = {
         **{name: Ref for name in ('ref', 'cref', 'Cref', 'nameref', 'eqref')},
         'cite': Cite, 'label': Label, 'usepackage': UsePackage, 'RequirePackage': UsePackage,
+        'newtheorem': NewTheorem,
         'documentclass': ClassDeclaration, 'LoadClass': ClassDeclaration,
         'ProvidesClass': Provides, 'ProvidesPackage': Provides, 'NeedsTeXFormat': Provides,
         'DeclareOption': Options, 'ProcessOptions': ProcessOptions, 'PassOptionsToPackage': PassOptions,
@@ -161,12 +259,7 @@ def parse(preamble, source):
     document.context.protected = {name: type(name, (base,), {'nodeName': name}) for name, base in definitions.items()}
     for name, cls in document.context.protected.items():
         document.context.addGlobal(name, cls)
-    # A node has no implicit class-specific aliases. Standard newcommand,
-    # newenvironment and newtheorem definitions all use plasTeX's normal parser.
-    # A class/preamble is a separate TeX input: its standard endinput must not
-    # consume the node body that follows it. Macro context is shared normally.
-    tex.input(preamble)
-    tex.parse()
+    load_preamble(document, preamble)
     tex.input('\\begin{document}\n' + source + '\n\\end{document}')
     tex.parse()
     diagnostics = []

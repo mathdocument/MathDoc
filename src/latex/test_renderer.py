@@ -10,6 +10,66 @@ PROJECT = {
 }
 
 class RendererTest(unittest.TestCase):
+    def test_print_setup_is_not_executed_when_importing_content_macros(self):
+        project = {**PROJECT, 'preamble': r'''
+            \ProvidesClass{example}
+            \RequirePackage{etoolbox,geometry,fontspec,pythontex}
+            \geometry{left=20mm,unused={\input{must-not-be-read}}}
+            \newfontfamily\PrintFont{Unavailable Font}
+            \AtBeginDocument{\input{must-not-be-read}\newcommand{\leaked}{WRONG}}
+            \NewEnviron{layout}[1][]{\ifnum#1=0\input{bad}\fi}
+            \ifUnknownEngine
+                \newcommand{\engineLeak}{WRONG}
+            \else
+                \newcommand{\engineLeak}{ALSO WRONG}
+            \fi
+            \makeatletter
+            \@ifclassloaded{beamer}{\newcommand{\chosen}{WRONG}}{
+                \newcommand{\chosen}{Article}
+            }
+            \makeatother
+            \newif\iflocalized
+            \localizedtrue
+            \iflocalized
+                \def\statementName{Theorem}
+                \newcommand{\confighead}[1]{\ifstrempty{#1}{EMPTY}{TITLE}}
+                \ifstrempty{}{\newcommand{\bracedLeak}{WRONG}}{}
+            \else
+                \def\statementName{WRONG}
+            \fi
+            \confighead{\input{must-not-be-read}}
+            \RequirePackage{amsmath,amsthm}
+            \newcommand{\cA}{\mathcal{A}}
+            \newcommand{\wrap}[2][Default]{\textbf{#1: #2}}
+            \newenvironment{items}{\begin{itemize}}{\end{itemize}}
+            \newtheorem{thm}{\protect\statementName}[section]
+            \let\ref=X
+            \endinput
+            \newcommand{\afterEnd}{WRONG}
+        '''}
+        request = {'kind': 'preview', 'project': project, 'dependencies': [],
+                   'target': {'fnode': A, 'title': 'A', 'source': r'\section{Intro}\begin{thm}[Named]\label{t}$\cA$\end{thm}\nameref{t}, \cite{ref}. \chosen\wrap{Text}\begin{items}\item Item\end{items}'}}
+        preview = renderer.handle(request)
+        self.assertEqual(preview['diagnostics'], [])
+        self.assertIn('Theorem (Named)', preview['html'])
+        self.assertIn('Default: Text', preview['html'])
+        self.assertIn('Article', preview['html'])
+        self.assertIn('Aut20', preview['html'])
+        self.assertIn('data-tex="\\mathcal{A}"', preview['html'])
+        self.assertIn('<ul><li>', preview['html'])
+        self.assertEqual(preview['labels'][0]['type'], 'Theorem')
+        self.assertEqual(preview['labels'][0]['number'], '1.1')
+        catalog = renderer.handle({**request, 'kind': 'catalog'})
+        self.assertTrue({'cA', 'confighead', 'chosen'} <= set(catalog['commands']))
+        for name in ('leaked', 'engineLeak', 'bracedLeak', 'afterEnd'):
+            self.assertNotIn(name, catalog['commands'])
+        self.assertIn({'ref': 't', 'command': 'ref'}, renderer.parse(project['preamble'], r'\ref{t}').parts)
+        # A skipped package is not an implementation of its content commands.
+        invoked = renderer.handle({**request, 'target': {**request['target'], 'source': r'\confighead{Test}'}})
+        self.assertTrue(any('ifstrempty' in e for e in invoked['diagnostics']))
+        with self.assertRaisesRegex(ValueError, 'Unterminated conditional'):
+            renderer.parse(r'\iftrue\newcommand{\x}{X}', '')
+
     def test_macros_references_citations_and_isolated_drafts(self):
         dependency = {'fnode': A, 'title': 'A', 'source': r'\begin{thm}[Named result]\label{thm:a}$\cA$\end{thm}'}
         target = {'fnode': B, 'title': 'B', 'source': r'\section{Intro}\label{intro}By \nameref{thm:a}, see \cite[2]{ref}. \begin{items}\item $\cA$\end{items}'}
