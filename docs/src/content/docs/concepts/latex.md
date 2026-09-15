@@ -30,7 +30,9 @@ inserts only the original label while showing the target's readable title.
 Click a reference to open its node and scroll to the label in Preview. Opening
 the link in a new tab also targets that label. Citation links scroll to the
 node's bibliography. Dependency and project changes are checked every five
-seconds while the editor is visible; stale draft responses are discarded.
+seconds while the editor is visible; slow context requests are allowed to finish
+and stale draft responses are discarded. Completion catalogs must match the
+requested project version before they can be cached.
 No TeX language server is started.
 
 All source blocks, including Lean, are capped at the node pane's visible height.

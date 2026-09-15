@@ -306,10 +306,12 @@ def parse(preamble, source):
     diagnostics = []
     label_nodes = document.getElementsByTagName('label')
     seen = set()
+    duplicates = set()
     for node in label_nodes:
         name = node.attributes.get('label', '')
         if name in seen:
             diagnostics.append(f"Duplicate label: {name}")
+            duplicates.add(name)
         seen.add(name)
         # A starred theorem has no counter: plasTeX otherwise assigns its label
         # to the preceding numbered object. Give it its own named anchor.
@@ -323,6 +325,8 @@ def parse(preamble, source):
     labels = []
     targets = {}
     for name, target in document.context.labels.items():
+        if name in duplicates:
+            continue
         attrs = getattr(target, 'attributes', {})
         title = plain(attrs.get('title'))
         kind = plain(getattr(target, 'caption', '')) or target.nodeName
@@ -556,6 +560,8 @@ def handle(request):
             if node['fnode'] == target['fnode'] and request['kind'] != 'context': raise
             diagnostics.append(f'Node {node["title"]}: {error}')
             continue
+        if node['fnode'] != target['fnode'] or request['kind'] == 'context':
+            diagnostics.extend(f'Node {node["title"]}: {message}' for message in parsed.diagnostics)
         for label in parsed.labels:
             key = label['label'] if node['fnode'] == target['fnode'] else node['fnode'] + '::' + label['label']
             refs.append({**label, 'key': key, 'fnode': node['fnode'], 'title': node['title']})
@@ -572,13 +578,16 @@ def handle(request):
     citation_labels = {part['bibitem']: part['label_html'] for part in bib.parts
                        if isinstance(part, dict) and 'bibitem' in part} if bib else {}
     exact = {item['key']: item for item in refs}
+    by_label = {}
+    for item in refs:
+        by_label.setdefault(item['label'], []).append(item)
     output = []
     for part in current.parts + (bib.parts if bib else []):
         if isinstance(part, str):
             output.append(part)
         elif 'ref' in part:
             key = part['ref']
-            matches = [r for r in refs if r['label'] == key]
+            matches = by_label.get(key, [])
             if not matches and key in exact: matches = [exact[key]]
             if len(matches) != 1:
                 message = ('Ambiguous' if matches else 'Unknown or undeclared') + f' reference: {key}'

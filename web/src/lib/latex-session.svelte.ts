@@ -8,6 +8,7 @@ function catalog(key: string): Promise<LatexCatalog> {
   if (!pending) {
     pending = latexApi.catalog().then(result => {
       if ('unchanged' in result) throw new Error('Missing LaTeX project catalog');
+      if (result.project_key !== key) throw new Error('LaTeX project changed; retry loading completions');
       return result;
     });
     catalogs.set(key, pending);
@@ -57,6 +58,7 @@ export class LatexSession {
       this.poll = null;
       window.removeEventListener('mdc-latex-project-changed', this.changed);
       this.loading?.abort();
+      this.loading = null;
       this.rendering?.abort();
       if (this.timer) clearTimeout(this.timer);
       this.working = false;
@@ -64,7 +66,7 @@ export class LatexSession {
   }
 
   async refresh() {
-    this.loading?.abort();
+    if (this.loading) return;
     const request = this.loading = new AbortController();
     try {
       const result = await latexApi.context(this.fnode, this.context?.context_key, request.signal);
@@ -82,6 +84,8 @@ export class LatexSession {
       this.contextError = null;
     } catch (error) {
       if (this.live && !request.signal.aborted && !isAbortError(error)) this.contextError = errMsg(error);
+    } finally {
+      if (this.loading === request) this.loading = null;
     }
   }
 

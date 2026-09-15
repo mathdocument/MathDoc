@@ -123,6 +123,17 @@ class RendererTest(unittest.TestCase):
         '''}})
         self.assertIn('Ambiguous reference: main', collision['diagnostics'])
         self.assertNotIn('data-latex-node=', collision['html'])
+        duplicate = {**dependency, 'source': r'''
+            \begin{thm}\label{main}First.\end{thm}
+            \begin{thm}\label{main}Second.\end{thm}
+        '''}
+        for kind in ('context', 'preview'):
+            ambiguous = renderer.handle({**request, 'kind': kind, 'dependencies': [duplicate]})
+            self.assertIn('Node External node: Duplicate label: main', ambiguous['diagnostics'])
+            if kind == 'context':
+                self.assertFalse(any(ref['label'] == 'main' for ref in ambiguous['references']))
+            else:
+                self.assertNotIn('data-latex-label="main"', ambiguous['html'])
 
     def test_amsalpha_format_sorting_and_citation_set_cache(self):
         project = {**PROJECT, 'bibliography': r'''
