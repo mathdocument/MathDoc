@@ -853,13 +853,12 @@ mod tests {
     #[test]
     fn module_names_preserve_filename_boundaries() {
         let name = "Lib.EGA.«1-1.7.1»";
-        assert_eq!(name, "Lib.EGA.«1-1.7.1»");
         assert_eq!(
-            module_file(&name, "lean").unwrap(),
+            module_file(name, "lean").unwrap(),
             PathBuf::from("Lib/EGA/1-1.7.1.lean")
         );
         assert_eq!(
-            module_file(&name, "olean").unwrap(),
+            module_file(name, "olean").unwrap(),
             PathBuf::from("Lib/EGA/1-1.7.1.olean")
         );
         for invalid in [

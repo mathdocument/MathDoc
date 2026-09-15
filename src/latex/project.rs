@@ -61,8 +61,10 @@ mod tests {
 
     #[test]
     fn project_files_are_versioned_content_not_local_paths() {
-        let mut project = LatexProject::default();
-        project.preamble = "\\newcommand{\\cA}{\\mathcal{A}}".into();
+        let mut project = LatexProject {
+            preamble: "\\newcommand{\\cA}{\\mathcal{A}}".into(),
+            ..Default::default()
+        };
         let original_key = project.key();
         project.validate().unwrap();
         project.bibliography = "@book{sample,title={Example},year={2026}}".into();

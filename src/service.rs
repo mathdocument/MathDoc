@@ -481,7 +481,7 @@ async fn spawn_background(
         time::Duration,
     };
     use tokio::io::{AsyncBufReadExt, BufReader};
-    std::fs::create_dir_all(&root)?;
+    std::fs::create_dir_all(root)?;
     let log_path = root.join("service.log");
     let log = std::fs::OpenOptions::new()
         .create(true)
@@ -495,7 +495,7 @@ async fn spawn_background(
     let child_bootstrap: std::os::fd::OwnedFd = child_bootstrap.into();
     command
         .arg("start")
-        .current_dir(&root)
+        .current_dir(root)
         .stdin(Stdio::from(child_bootstrap))
         .stdout(Stdio::piped())
         .stderr(log);

@@ -61,7 +61,9 @@ reload costs therefore scale with total source size, even though ordinary
 commands no longer pay filesystem synchronization costs.
 
 `lean.rs` generates requested compiler inputs and manages native Lean Server and
-Lake. Browser drafts are isolated from each other and saved sources, while
+Lake. `lean/transport.rs` owns process groups, bounded LSP frames and shutdown;
+`lean/editor.rs` observes editor diagnostics and matches them to saved inputs.
+Browser drafts are isolated from each other and saved sources, while
 artifacts are shared within a branch. This is state separation, not an
 operating-system sandbox. See [Compiler internals](../compiler-internals/) and
 [Graph and compilation caches](../index-cache/).
