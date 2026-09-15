@@ -5,7 +5,7 @@ import renderer
 A = '11111111-1111-4111-8111-111111111111'
 B = '22222222-2222-4222-8222-222222222222'
 PROJECT = {
-    'preamble': r'\ProvidesClass{example}\RequirePackage{amsmath,amsthm}\newcommand{\cA}{\mathcal{A}}\newcommand{\wrap}[1]{\textbf{#1}}\newenvironment{items}{\begin{itemize}}{\end{itemize}}\newtheorem{thm}{Theorem}',
+    'preamble': r'\ProvidesClass{example}\RequirePackage{amsmath,amsthm}\newcommand{\cA}{\mathcal{A}}\newcommand{\wrap}[1]{\textbf{#1}}\newenvironment{items}{\begin{itemize}}{\end{itemize}}\newtheorem{thm}{Theorem}\endinput',
     'bibliography': '@article{ref,title={A paper},author={Author, A.},journal={Journal},year={2020}}',
 }
 

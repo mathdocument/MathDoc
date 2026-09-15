@@ -163,7 +163,11 @@ def parse(preamble, source):
         document.context.addGlobal(name, cls)
     # A node has no implicit class-specific aliases. Standard newcommand,
     # newenvironment and newtheorem definitions all use plasTeX's normal parser.
-    tex.input(preamble + '\n\\begin{document}\n' + source + '\n\\end{document}')
+    # A class/preamble is a separate TeX input: its standard endinput must not
+    # consume the node body that follows it. Macro context is shared normally.
+    tex.input(preamble)
+    tex.parse()
+    tex.input('\\begin{document}\n' + source + '\n\\end{document}')
     tex.parse()
     diagnostics = []
     label_nodes = document.getElementsByTagName('label')
