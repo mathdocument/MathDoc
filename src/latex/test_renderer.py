@@ -23,6 +23,9 @@ class RendererTest(unittest.TestCase):
         self.assertIn('Aut20', preview['html'])
         self.assertIn('A paper', preview['html'])
         self.assertEqual(preview['labels'][0]['label'], 'intro')
+        multiple = renderer.handle({**request, 'target': {**target, 'source': r'\cref{thm:a,thm:a}'}})
+        self.assertEqual(multiple['diagnostics'], [])
+        self.assertEqual(multiple['html'].count('data-latex-node='), 2)
         context = renderer.handle({**request, 'kind': 'context'})
         self.assertIn(A + '::thm:a', [r['key'] for r in context['references']])
         missing = renderer.handle({**request, 'dependencies': []})
@@ -35,6 +38,9 @@ class RendererTest(unittest.TestCase):
         for bad in [r'\input{/etc/passwd}', r'\externaldocument{other}', r'\usepackage{pythontex}']:
             with self.assertRaises(ValueError):
                 renderer.handle({**request, 'target': {**target, 'source': bad}})
+        broken = renderer.handle({**request, 'kind': 'context', 'target': {**target, 'source': r'\input{bad}'}})
+        self.assertTrue(any('not allowed' in e for e in broken['diagnostics']))
+        self.assertIn(A + '::thm:a', [r['key'] for r in broken['references']])
         hostile = renderer.handle({**request, 'target': {**target, 'source': '<script>alert(1)</script>'}})
         self.assertNotIn('<script>', hostile['html'])
         duplicate = renderer.handle({**request, 'target': {**target, 'source': r'\section{A}\label{x}\section{B}\label{x}'}})

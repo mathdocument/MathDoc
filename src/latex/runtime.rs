@@ -19,7 +19,7 @@ const MAX_FRAME: usize = 32 * 1024 * 1024;
 /// A disconnected browser drops its result, not the worker's protocol frame.
 pub struct LatexService {
     worker: Mutex<Option<Worker>>,
-    slots: Semaphore,
+    slots: Arc<Semaphore>,
     stopping: tokio::sync::watch::Sender<bool>,
 }
 
@@ -27,7 +27,7 @@ impl LatexService {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             worker: Mutex::new(None),
-            slots: Semaphore::new(8),
+            slots: Arc::new(Semaphore::new(8)),
             stopping: tokio::sync::watch::channel(false).0,
         })
     }
@@ -36,10 +36,12 @@ impl LatexService {
         let service = self.clone();
         let permit = self
             .slots
-            .try_acquire()
+            .clone()
+            .try_acquire_owned()
             .context("LaTeX preview is busy; retry shortly")?;
         let (sender, receiver) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
+            let _permit = permit;
             let mut stopping = service.stopping.subscribe();
             if *stopping.borrow() {
                 return;
@@ -76,7 +78,6 @@ impl LatexService {
             let _ = sender.send(result);
         });
         let mut response = receiver.await.context("LaTeX preview worker stopped")??;
-        drop(permit);
         if let Some(error) = response.get("error").and_then(Value::as_str) {
             bail!("{error}");
         }
@@ -190,4 +191,43 @@ async fn python() -> Result<PathBuf> {
         .await
         .context("LaTeX runtime installation timed out; retry with network access")??;
     Ok(python)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancelled_requests_keep_the_queue_bounded() {
+        let service = LatexService::new();
+        let worker = service.worker.lock().await;
+        let mut requests = Vec::new();
+        for _ in 0..8 {
+            let service = service.clone();
+            requests.push(tokio::spawn(
+                async move { service.request(Value::Null).await },
+            ));
+        }
+        while service.slots.available_permits() != 0 {
+            tokio::task::yield_now().await;
+        }
+        for request in requests {
+            request.abort();
+            let _ = request.await;
+        }
+        assert!(service
+            .request(Value::Null)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("busy"));
+        drop(worker);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while service.slots.available_permits() != 8 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
 }

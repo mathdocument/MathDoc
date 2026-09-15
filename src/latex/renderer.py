@@ -219,7 +219,11 @@ def parse(preamble, source):
             math_counter += 1
             return
         if name in ('ref', 'cref', 'Cref', 'nameref', 'eqref'):
-            parts.append({'ref': attrs.get('key', attrs.get('label', '')), 'command': name})
+            key = attrs.get('key', attrs.get('label', ''))
+            keys = key.split(',') if name in ('cref', 'Cref') else [key]
+            for index, key in enumerate(keys):
+                if index: parts.append(', ')
+                parts.append({'ref': key.strip(), 'command': name})
             return
         if name == 'cite':
             parts.append({'cite': attrs.get('keys', []), 'note': plain(attrs.get('note'))})
@@ -339,8 +343,8 @@ def handle(request):
         try:
             parsed = parse(preamble, node['source'])
         except Exception as error:
-            if node['fnode'] == target['fnode']: raise
-            diagnostics.append(f'Dependency {node["title"]}: {error}')
+            if node['fnode'] == target['fnode'] and request['kind'] != 'context': raise
+            diagnostics.append(f'Node {node["title"]}: {error}')
             continue
         for label in parsed.labels:
             key = label['label'] if node['fnode'] == target['fnode'] else node['fnode'] + '::' + label['label']
