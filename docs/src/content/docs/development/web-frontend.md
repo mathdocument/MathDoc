@@ -13,6 +13,13 @@ the project directory, editor and documentation site. The documentation theme
 maps Starlight surfaces to these tokens; its header retains native search and
 theme persistence.
 
+Relation columns render a viewport window for lists over 100 nodes, with two
+title lines reserved per row. Scrolling and Arrow/Home/End navigation can reach
+the complete list. Switching views keeps the columns' scroll positions and the
+same editor session. Node snapshots are replaced atomically instead of deeply
+proxied. The graph component loads on first use and keeps its layout in memory;
+canvas backing-size changes and drawing run together in one animation frame.
+
 Lean uses a lazy-loaded page embedding `lean4monaco` and upstream Infoview. Each
 page has an isolated native WebSocket session, with source on the left and
 Infoview on the right. LeanMonaco installs browser providers; its desktop

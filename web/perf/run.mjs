@@ -12,6 +12,7 @@ import {
   EDITOR_LINE_COUNT,
   GRAPH_EDGE_COUNT,
   GRAPH_NODE_COUNT,
+  RELATION_COUNT,
 } from "./fixtures.mjs";
 
 const perfDir = dirname(fileURLToPath(import.meta.url));
@@ -317,6 +318,67 @@ async function runGraphSample(context, url) {
   }
 }
 
+async function runRelationsSample(context, url) {
+  const { page, errors } = await preparePage(context, "relations");
+  try {
+    let graphRequests = 0;
+    page.on("request", request => { if (request.url().endsWith("/api/graph/full")) graphRequests++; });
+    await page.goto(`${url}/p/benchmark/main/`);
+    const column = page.getByRole("complementary", { name: "Dependencies" });
+    const cards = column.locator(".card");
+    await cards.first().waitFor();
+    await nextPaint(page);
+    const readyMs = await page.evaluate(() => performance.now() - window.__mdcPerfStart);
+    const renderedCards = await cards.count();
+    if (renderedCards > 50 || await column.locator(".count").innerText() !== String(RELATION_COUNT)) {
+      throw new Error(`large relation list rendered ${renderedCards} cards instead of a visible window`);
+    }
+    const list = column.locator(".cards");
+    await list.evaluate(element => { element.scrollTop = element.scrollHeight / 2; });
+    await nextPaint(page);
+    const position = await list.evaluate(element => element.scrollTop);
+    const firstIndex = await cards.first().getAttribute("data-index");
+    if (Number(firstIndex) < RELATION_COUNT / 3) throw new Error("relation window did not follow scrolling");
+    await page.getByTitle("Graph view", { exact: true }).click();
+    await page.locator(".graph-container canvas").waitFor();
+    await page.waitForFunction(() => !document.querySelector(".graph-loading"));
+    await nextPaint(page);
+    const switches = [];
+    for (let i = 0; i < 4; i++) {
+      await page.evaluate(() => window.__mdcPerfAction = performance.now());
+      await page.getByTitle(i % 2 ? "Graph view" : "Knowledge view", { exact: true }).click();
+      await nextPaint(page);
+      switches.push(await page.evaluate(() => performance.now() - window.__mdcPerfAction));
+      if (i % 2 === 0 && Math.abs(await list.evaluate(element => element.scrollTop) - position) > 1) {
+        throw new Error("view switching lost the relation scroll position");
+      }
+    }
+    if (graphRequests !== 1) throw new Error("view switching reloaded the graph");
+    await page.getByTitle("Knowledge view", { exact: true }).click();
+    await cards.first().press("End");
+    const lastId = `perf-node-${String(RELATION_COUNT).padStart(5, "0")}`;
+    await page.waitForFunction(id => document.activeElement?.getAttribute("data-fnode") === id, lastId);
+    const last = column.locator(`[data-fnode="${lastId}"]`);
+    if (await last.locator("..").getAttribute("aria-posinset") !== String(RELATION_COUNT)) {
+      throw new Error("virtual list lost accessible item positions");
+    }
+    await last.press("Home");
+    await page.waitForFunction(() => document.activeElement?.getAttribute("data-index") === "0");
+    for (let i = 0; i < 30; i++) await page.keyboard.press("ArrowDown");
+    await page.waitForFunction(() => document.activeElement?.getAttribute("data-index") === "30");
+    await page.keyboard.press("End");
+    await last.click();
+    await page.locator("h1.title", { hasText: `Deterministic graph node ${RELATION_COUNT}` }).waitFor();
+    await page.getByRole("complementary", { name: "Referrers" }).locator(".card").click();
+    await page.locator("h1.title", { hasText: "Performance fixture" }).waitFor();
+    if (await list.evaluate(element => element.scrollTop) !== 0) throw new Error("new node retained the old list's scroll offset");
+    if (errors.length) throw new Error(errors.join("\n"));
+    return { readyMs, renderedCards, switchMs: switches.map(round) };
+  } finally {
+    await page.close();
+  }
+}
+
 function metric(value, unit) {
   return { value: round(value), unit };
 }
@@ -388,6 +450,7 @@ async function main() {
       editorSamples.push(await runEditorSample(context, preview.url));
       graphSamples.push(await runGraphSample(context, preview.url));
     }
+    const relations = await runRelationsSample(context, preview.url);
     await context.close();
 
     const values = (name) => editorSamples.map((sample) => sample[name]);
@@ -422,6 +485,7 @@ async function main() {
         "runtime.graphZoomFrameP95Ms": metric(percentile(zoomFrames, 0.95), "ms"),
       },
       rawSamples: {
+        relations,
         editor: editorSamples.map((sample) => Object.fromEntries(
           Object.entries(sample).map(([name, value]) => [name, round(value)]),
         )),

@@ -67,8 +67,8 @@ describe("NodeSession", () => {
 
     await expect(syncing).resolves.toBe(true);
     expect(session.node).toBe(original);
-    expect(session.referrers.items).toEqual([relation]);
-    expect(session.children.items).toEqual([relation]);
+    expect(session.referrers).toEqual([relation]);
+    expect(session.children).toEqual([relation]);
     removeDraft(draft);
   });
 

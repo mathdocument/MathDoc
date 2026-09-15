@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import type { NodePreview } from "../lib/types";
   import FormalStatus from "./FormalStatus.svelte";
   import { shortFnode } from "../lib/format";
@@ -9,9 +10,9 @@
     title: string;
     accent: "up" | "down";
     lastVisitedFnode: string | null;
-    selected: number;
-    onSelect: (fnode: string, index: number) => void;
-    onHover?: (index: number) => void;
+    context: string | null;
+    active: boolean;
+    onSelect: (fnode: string) => void;
   }
 
   let {
@@ -19,9 +20,9 @@
     title,
     accent,
     lastVisitedFnode,
-    selected,
+    context,
+    active,
     onSelect,
-    onHover,
   }: Props = $props();
 
   function ariaLabel(n: NodePreview): string {
@@ -30,9 +31,44 @@
 
   let direction = $derived(accent === "up" ? "Upstream" : "Downstream");
   let depthWidth = $derived(items.reduce((width, item) => Math.max(width, String(item.depth).length + 1), 4));
+  // Large lists reserve two title lines per row, so offscreen cards need no DOM
+  // or measurement. Small lists retain their natural, compact row heights.
+  const ROW_HEIGHT = 76;
+  let list: HTMLUListElement;
+  let scrollTop = $state(0);
+  let height = $state(0);
+  let virtual = $derived(items.length > 100);
+  let start = $derived(virtual ? Math.max(0, Math.min(items.length - 1, Math.floor(scrollTop / ROW_HEIGHT) - 5)) : 0);
+  let end = $derived(virtual ? Math.min(items.length, start + Math.ceil(height / ROW_HEIGHT) + 11) : items.length);
+  let visible = $derived(items.slice(start, end));
+
+  $effect(() => {
+    void context;
+    scrollTop = 0;
+    if (list) list.scrollTop = 0;
+  });
+
+  async function moveFocus(event: KeyboardEvent, index: number) {
+    if (!virtual || event.altKey || event.ctrlKey || event.metaKey) return;
+    let target = { ArrowDown: index + 1, ArrowUp: index - 1, Home: 0, End: items.length - 1 }[event.key];
+    if (target === undefined) return;
+    event.preventDefault();
+    const step = event.key === "ArrowUp" || event.key === "End" ? -1 : 1;
+    while (target >= 0 && target < items.length && items[target]!.broken) target += step;
+    if (target < 0 || target >= items.length) return;
+    // A key can arrive just after showing the column, before ResizeObserver.
+    height = list.clientHeight;
+    const top = target * ROW_HEIGHT;
+    if (top < list.scrollTop || top + ROW_HEIGHT > list.scrollTop + height) {
+      list.scrollTop = Math.max(0, top - (height - ROW_HEIGHT) / 2);
+      scrollTop = list.scrollTop;
+    }
+    await tick();
+    list.querySelector<HTMLButtonElement>(`[data-index="${target}"]`)?.focus({ preventScroll: true });
+  }
 </script>
 
-<aside class="column" data-accent={accent} aria-label={title} style:--depth-width={`${depthWidth}ch`}>
+<aside class="column" class:hidden={!active} data-accent={accent} aria-label={title} style:--depth-width={`${depthWidth}ch`}>
   <header class="column-head" title={`${direction} — ${title.toLowerCase()}`}>
     <span class="relation-icon" aria-hidden="true">
       {#if accent === "up"}
@@ -44,18 +80,21 @@
     <strong>{title}</strong>
     <span class="count">{items.length}</span>
   </header>
-  <ul class="cards">
-    {#each items as item, i (item.fnode)}
-      <li>
+  <ul class="cards" class:virtual bind:this={list} bind:clientHeight={height}
+    onscroll={() => scrollTop = list.scrollTop} style:--row-height={`${ROW_HEIGHT}px`}>
+    {#if virtual}<li class="spacer" aria-hidden="true" style:height={`${items.length * ROW_HEIGHT}px`}></li>{/if}
+    {#each visible as item, i (item.fnode)}
+      <li aria-posinset={start + i + 1} aria-setsize={items.length}
+        style:top={virtual ? `calc(0.5rem + ${(start + i) * ROW_HEIGHT}px)` : null}>
         <button
           class="card"
           class:broken={item.broken}
-          class:selected={i === selected}
           class:last-visited={item.fnode === lastVisitedFnode}
           data-fnode={item.fnode}
+          data-index={start + i}
           aria-label={ariaLabel(item)}
-          onclick={() => onSelect(item.fnode, i)}
-          onmouseenter={() => onHover?.(i)}
+          onclick={() => onSelect(item.fnode)}
+          onkeydown={(event) => moveFocus(event, start + i)}
           disabled={item.broken}
         >
           <span class="title">{item.title}</span>
@@ -93,6 +132,7 @@
     background: var(--mdc-panel);
     box-shadow: var(--mdc-shadow-lg);
   }
+  .column.hidden { display: none; }
   /* Compact single-line header: direction is carried by the arrow, not a
      second stacked label. */
   .column-head {
@@ -150,10 +190,9 @@
     flex-direction: column;
     gap: 2px;
   }
-  .cards > li {
-    content-visibility: auto;
-    contain-intrinsic-size: auto 66px;
-  }
+  .cards.virtual { display: block; position: relative; overflow-anchor: none; }
+  .virtual > li:not(.spacer) { position: absolute; left: 0.5rem; right: 0.5rem; height: var(--row-height); padding-bottom: 2px; }
+  .virtual .card { height: 100%; justify-content: space-between; }
   /* Title first, metadata second: scanning a column is a title-reading task. */
   .card {
     display: flex;
@@ -193,10 +232,10 @@
   .card:hover:not(:disabled)::before {
     opacity: 0.55;
   }
-  .card.selected {
+  .card:focus-visible {
     background: var(--mdc-card-selected);
   }
-  .card.selected::before,
+  .card:focus-visible::before,
   .card.last-visited::before {
     opacity: 1;
   }

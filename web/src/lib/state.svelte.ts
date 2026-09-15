@@ -22,11 +22,6 @@ export type LoadState =
   | { kind: "ready"; node: NodeDetail }
   | { kind: "error"; message: string };
 
-export interface ColumnState {
-  items: NodePreview[];
-  selected: number; // -1 = none
-}
-
 interface NavigateOptions extends FocusedHistoryOptions {
   skipTransition?: boolean;
   skipUnsavedGuard?: boolean;
@@ -36,7 +31,7 @@ interface NavigateOptions extends FocusedHistoryOptions {
 export class NodeSession {
   constructor(private readonly browserHistory: BrowserHistoryAdapter = browserHistoryAdapter) {}
 
-  snapshot = $state<NodeView | null>(null);
+  snapshot = $state.raw<NodeView | null>(null);
   selectionCleared = $state(false);
   history = $state<string[]>([]);
   historyIdx = $state(-1);
@@ -45,8 +40,6 @@ export class NodeSession {
   lastVisitedFnode = $state<string | null>(null);
   navigationError = $state<string | null>(null);
   failedNavigationFnode = $state<string | null>(null);
-  referrersSelected = $state(-1);
-  childrenSelected = $state(-1);
   private loadError = $state<string | null>(null);
   private navigationRequest = 0;
   private syncRequest = 0;
@@ -68,12 +61,12 @@ export class NodeSession {
     return this.selectionCleared ? null : this.node?.fnode ?? null;
   }
 
-  get referrers(): ColumnState {
-    return { items: this.snapshot?.referrers ?? [], selected: this.referrersSelected };
+  get referrers(): NodePreview[] {
+    return this.snapshot?.referrers ?? [];
   }
 
-  get children(): ColumnState {
-    return { items: this.snapshot?.children ?? [], selected: this.childrenSelected };
+  get children(): NodePreview[] {
+    return this.snapshot?.children ?? [];
   }
 
   cancel(): void {
@@ -107,8 +100,6 @@ export class NodeSession {
         this.snapshot = view;
         this.selectionCleared = false;
         this.loadError = null;
-        this.referrersSelected = -1;
-        this.childrenSelected = -1;
         this.commitFocusedHistory(view.node.fnode, opts);
         this.navigationError = null;
         this.failedNavigationFnode = null;
@@ -162,8 +153,6 @@ export class NodeSession {
         throw new Error(`${fnode} changed externally; refresh before continuing`);
       }
       this.snapshot = { node, referrers: view.referrers, children: view.children };
-      this.referrersSelected = -1;
-      this.childrenSelected = -1;
       return true;
     } catch (error) {
       if (request !== this.syncRequest || this.node?.fnode !== fnode) return false;

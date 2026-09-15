@@ -1,6 +1,7 @@
 export const GRAPH_NODE_COUNT = 10_000;
 export const GRAPH_EDGE_COUNT = (GRAPH_NODE_COUNT - 1) + (GRAPH_NODE_COUNT - 6);
 export const EDITOR_LINE_COUNT = 500;
+export const RELATION_COUNT = 8_311;
 
 const rootFnode = "perf-root";
 
@@ -47,9 +48,16 @@ function graph() {
 }
 
 export function apiBodies(scenario) {
-  const fullGraph = scenario === "graph" ? graph() : { nodes: [summary()], edges: [] };
+  const fullGraph = scenario !== "editor" ? graph() : { nodes: [summary()], edges: [] };
   if (scenario === "graph" && fullGraph.edges.length !== GRAPH_EDGE_COUNT) {
     throw new Error("graph fixture edge count is stale");
+  }
+  const view = nodeView(scenario === "editor");
+  if (scenario === "relations") {
+    view.children = Array.from({ length: RELATION_COUNT }, (_, i) => ({
+      ...summary(i + 1), formalization: { lean: i % 2 ? "verified" : "unverified", rocq: "no_code" },
+    }));
+    view.node.depens = view.children.map(node => node.fnode);
   }
   const bodies = new Map([
     ["/api/graph/roots", [{ ...summary(), component_size: GRAPH_NODE_COUNT, topo_depth: 0 }]],
@@ -61,7 +69,11 @@ export function apiBodies(scenario) {
       cycles: [],
     }],
     ["/api/graph/full", fullGraph],
-    [`/api/node/${rootFnode}/view`, nodeView(scenario === "editor")],
+    [`/api/node/${rootFnode}/view`, view],
+    [`/api/node/${summary(RELATION_COUNT).fnode}/view`, {
+      node: { ...view.node, ...summary(RELATION_COUNT), depens: [], blocks: [] },
+      children: [], referrers: [view.node],
+    }],
   ]);
   return new Map([...bodies].map(([path, body]) => [path, JSON.stringify(body)]));
 }

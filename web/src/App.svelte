@@ -21,6 +21,7 @@
   } from "./lib/state.svelte";
   import { WorkspaceSession } from "./lib/workspace.svelte";
   import { api } from "./lib/api";
+  import { errMsg } from "./lib/format";
   import { projectName } from "./lib/project-path";
   import NodeColumn from "./components/NodeColumn.svelte";
   import EditorPane from "./components/EditorPane.svelte";
@@ -29,7 +30,6 @@
   import RmDepOverlay from "./components/RmDepOverlay.svelte";
   import NewNodeOverlay from "./components/NewNodeOverlay.svelte";
   import ProjectSettings from "./components/ProjectSettings.svelte";
-  import DepthGraph from "./components/DepthGraph.svelte";
   import type { NodeDetail } from "./lib/types";
   import {
     confirmDiscardDrafts,
@@ -65,6 +65,10 @@
 
   // Top-level view state: three-column layout vs. full-screen force graph.
   let view = $state<"columns" | "force">("columns");
+  let graphModule = $state<Promise<typeof import("./components/DepthGraph.svelte")> | null>(null);
+  $effect(() => {
+    if (view === "force" && !graphModule) graphModule = import("./components/DepthGraph.svelte");
+  });
   // Increment after dependency mutations to refresh the graph data.
   let graphRevision = $state(0);
   function cancelStartup() {
@@ -522,23 +526,31 @@
   <main class="layout" class:force-layout={view === "force"} class:resizing={resizePointer !== null}
     bind:clientWidth={layoutWidth} style:--graph-editor-width={editorWidth === null ? null : `${editorWidth}px`}>
     <div class="force-canvas-wrap" class:hidden={view !== "force"}>
-      <DepthGraph
-        active={view === "force"}
-        {theme}
-        onSelect={onForceSelect}
-        selectedFnode={nodeSession.selectedFnode}
-        revision={graphRevision}
-      />
+      {#if graphModule}
+        {#await graphModule}
+            <p role="status">Loading graph…</p>
+        {:then { default: DepthGraph }}
+          <DepthGraph
+            active={view === "force"}
+            {theme}
+            onSelect={onForceSelect}
+            selectedFnode={nodeSession.selectedFnode}
+            revision={graphRevision}
+          />
+        {:catch error}
+            <p role="alert">{errMsg(error)} <button onclick={() => graphModule = import("./components/DepthGraph.svelte")}>retry</button></p>
+        {/await}
+      {/if}
     </div>
-    {#if view === "columns" && !initialError}
+    {#if !initialError}
       <NodeColumn
         title="Referrers"
-        items={nodeSession.referrers.items}
-        selected={nodeSession.referrers.selected}
+        items={nodeSession.referrers}
+        context={nodeSession.node?.fnode ?? null}
+        active={view === "columns"}
         accent="up"
         lastVisitedFnode={nodeSession.lastVisitedFnode}
         onSelect={(fnode) => { cancelStartup(); return nodeSession.select(fnode); }}
-        onHover={(i) => (nodeSession.referrersSelected = i)}
       />
     {/if}
     {#if view === "force"}
@@ -577,15 +589,15 @@
           />
       {/if}
     </div>
-    {#if view === "columns" && !initialError}
+    {#if !initialError}
       <NodeColumn
         title="Dependencies"
-        items={nodeSession.children.items}
-        selected={nodeSession.children.selected}
+        items={nodeSession.children}
+        context={nodeSession.node?.fnode ?? null}
+        active={view === "columns"}
         accent="down"
         lastVisitedFnode={nodeSession.lastVisitedFnode}
         onSelect={(fnode) => { cancelStartup(); return nodeSession.select(fnode); }}
-        onHover={(i) => (nodeSession.childrenSelected = i)}
       />
     {/if}
   </main>
@@ -666,7 +678,7 @@
       disabled={historyNavigating}
       targetFnode={overlay.target}
       targetRevision={activeRevision!}
-      children={nodeSession.children.items}
+      children={nodeSession.children}
       onRemoved={afterDepMutation}
       onClose={() => (overlay = { kind: "none" })}
     />

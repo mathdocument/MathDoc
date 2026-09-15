@@ -120,6 +120,10 @@ The benchmark runs the production build in Chromium at 1440x900 against fixed,
 in-process API fixtures. It measures the shell and total compressed payload,
 a 500-line LaTeX editor, and a 10,000-node / 19,993-edge graph. Browser timings
 use a warm HTTP cache and report median values, except for the graph frame p95.
+The same run checks an 8,311-dependency list: bounded DOM size, scrolling to its
+end, keyboard navigation, node selection and scroll preservation across view
+switches. Its timings are recorded in `rawSamples.relations`. Canvas resize
+checks reject backing-size resets that leave a blank frame before painting.
 
 ```sh
 npm exec --prefix web -- playwright install --no-shell chromium
