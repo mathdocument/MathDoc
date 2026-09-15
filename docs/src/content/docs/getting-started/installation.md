@@ -5,6 +5,9 @@ title: Installation
 MathDoc runs on a Unix host. Install Rust to build `mdc`, Docker with Compose for
 the supplied TerminusDB deployment, and Elan for native Lean. Node.js is needed
 only to develop or rebuild the frontend; the repository includes browser assets.
+LaTeX previews require Python 3.9+ with venv support. On first use, mdc installs
+its pinned parser dependencies in a shared virtual environment. See
+[LaTeX runtime setup](../../concepts/latex/#runtime-and-caching) for offline use.
 
 ## Install the executable
 

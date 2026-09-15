@@ -1,5 +1,5 @@
 ---
-title: Service and Lean configuration
+title: Service and project configuration
 ---
 
 ## Host settings and credentials
@@ -31,6 +31,7 @@ Do not commit credentials or include them in graph exports.
 | `MDC_TERMINUS_USER` | `admin` |
 | `MDC_TERMINUS_PASSWORD` | Required for direct database operations. |
 | `MDC_CACHE_DIR` | `$XDG_CACHE_HOME/mdc` or `~/.cache/mdc` |
+| `MDC_LATEX_PYTHON` | Optional Python executable with the pinned LaTeX runtime installed. |
 | `MDC_LEAN_TIMEOUT_SECONDS` | 300; must be a positive integer. |
 
 `init`, `start`, `status` and `branch del` need TerminusDB credentials. Other
@@ -75,7 +76,7 @@ user. Only deploy shared access to trusted authors. Keep TerminusDB private.
 
 Lean environment settings live in the database branch, separate from host
 settings. Read them with `mdc project show -p myproject/main`; replace them through
-the browser's Lean project dialog or `mdc project set -p myproject/main` on stdin.
+the browser's Project settings → Lean tab or `mdc project set -p myproject/main` on stdin.
 
 A minimal complete input object is:
 
@@ -110,6 +111,16 @@ reload an open editor environment after changing it. Native Lean configurations
 require a manifest even without dependencies. They execute as the trusted local
 author; their library declarations and paths are evaluated by Lake, not a TOML
 validator. Keep the standard source and artifact directories for mdc checks.
+
+## Versioned LaTeX project
+
+The **Project settings → LaTeX** tab and `mdc project latex set` store one macro
+file (`.cls` or `.tex`) and one bibliography (`.bib`) in the branch. They are
+inherited by new branches and included in graph exports. See
+[LaTeX previews](../../concepts/latex/) for supported macros, reference scope,
+completion and runtime installation. Python dependencies are shared under
+`CACHE_ROOT/runtime/`; parsed document caches remain private to each branch's
+worker. There are no generated LaTeX files in a project workspace.
 
 ## Timing measurements
 

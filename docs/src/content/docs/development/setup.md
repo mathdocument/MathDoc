@@ -13,6 +13,9 @@ npm --prefix web ci
 npm --prefix web run check
 npm --prefix web test
 npm --prefix web run build
+python3 -m venv /tmp/mdc-latex-venv
+/tmp/mdc-latex-venv/bin/pip install -r src/latex/requirements.txt
+/tmp/mdc-latex-venv/bin/python -B -m unittest discover -s src/latex -p 'test_*.py'
 cargo test --locked
 cargo build --locked
 ```
@@ -29,8 +32,8 @@ Playwright Chromium once with `npm exec --prefix web -- playwright install
 --no-shell chromium`.
 
 ```sh
-cargo test --locked --test test_database --test test_service --test test_lean_service --test test_status -- --ignored --nocapture
-npm --prefix web run test:e2e
+cargo test --locked --test test_database --test test_service --test test_lean_service --test test_latex_service --test test_status -- --ignored --nocapture
+MDC_LATEX_PYTHON=/tmp/mdc-latex-venv/bin/python npm --prefix web run test:e2e
 ```
 
 These tests create disposable databases, project files and Lean caches in system
@@ -39,7 +42,10 @@ Do not use a production database or start a test project inside the checkout.
 `test_status` covers process lifecycle, branch deletion and CLI transactions;
 `test_service` and `test_lean_service` exercise real Lean and database behavior.
 The browser suite uses the actual backend and native editor, including draft
-preservation, revision conflicts, certification reuse and process cleanup.
+preservation, revision conflicts, certification reuse and process cleanup. The
+LaTeX case exercises uploads, scoped completions, macro expansion, bibliography,
+draft previews and cross-node navigation in Chromium or WebKit
+(`MDC_E2E_BROWSER=webkit`).
 `MDC_BIN` optionally selects a prebuilt binary for browser tests. The Lean cases
 also exercise bidirectional backpressure, superseded selections and a real
 30-second preparation timeout. Error checks require native diagnostics for the

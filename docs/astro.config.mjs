@@ -85,6 +85,7 @@ export default defineConfig({
             { label: 'Dependency Graph', slug: 'concepts/dependency-graph' },
             { label: 'Source Workflow', slug: 'concepts/source-workflow' },
             { label: 'Web Interface', slug: 'concepts/web-interface' },
+            { label: 'LaTeX & References', slug: 'concepts/latex' },
           ],
         },
         {

@@ -2,7 +2,7 @@
 title: Architecture
 ---
 
-`store.rs` maps typed node links and Lean project documents to TerminusDB HTTP
+`store.rs` maps typed node links and Lean/LaTeX project documents to TerminusDB HTTP
 transactions. Data-version guards protect graph and configuration writes.
 `server.rs` owns the single HTTP listener, branch registry and project directory.
 `service.rs` owns each branch's graph, JSON API and native Lean sessions.
@@ -65,3 +65,19 @@ Lake. Browser drafts are isolated from each other and saved sources, while
 artifacts are shared within a branch. This is state separation, not an
 operating-system sandbox. See [Compiler internals](../compiler-internals/) and
 [Graph and compilation caches](../index-cache/).
+
+## LaTeX rendering
+
+`latex/project.rs` defines the versioned macro/bibliography document;
+`latex/api.rs` captures the node and direct dependency context from a snapshot.
+`latex/runtime.rs` owns one lazy Python worker per branch, with bounded requests,
+timeouts and shutdown. `latex/renderer.py` uses plasTeX for standard macro
+expansion and document structure, and Pybtex for citations. It emits escaped HTML
+and math placeholders; browser KaTeX fills the latter with trusted commands
+disabled. No TeX executable, `.aux` exchange or TexLab process is involved.
+
+The browser's `latex-session.svelte.ts` owns draft requests and cancellation;
+`latex-completion.ts` supplies CodeMirror candidates. Common project catalogs
+are cached by configuration content, while reference context is node-specific.
+`LatexPreview.svelte` only renders math and handles node/label links. A new node
+gets a new draft session, so an older response cannot overwrite its preview.

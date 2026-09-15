@@ -7,6 +7,27 @@ branch's LaTeX project, configured with `mdc project latex set --preamble macros
 --bib references.bib -p myproject/main`. The macro file may also be a `.cls` file.
 Only filenames and content are stored; the service does not watch the source files.
 
+## Editing
+
+Open **Project settings → LaTeX**, select a `.cls` or `.tex` file and a `.bib`
+file, then save. The CLI command above performs the same operation. The two
+file contents are versioned in the branch; later changes to the local files
+require uploading them again.
+
+Each block has an **Edit / Preview** toggle. Preview preparation is debounced
+while typing and uses the unsaved draft; only **Save** writes the node. The
+read-only imported-dependency list is derived from `dep` and never inserted
+into the block source. Reference, citation, macro and environment completions
+appear as you type, or with **Ctrl+Space**. References are scoped to the selected
+node; bibliography candidates are shared by the branch. Completion inserts a
+qualified external key while showing the target's readable title.
+
+Click a reference to open its node and scroll to the label in Preview. Opening
+the link in a new tab also targets that label. Citation links scroll to the
+node's bibliography. Dependency and project changes are checked every five
+seconds while the editor is visible; stale draft responses are discarded.
+No TeX language server is started.
+
 ## Shared macros
 
 Use ordinary LaTeX definitions, for example:
@@ -51,7 +72,7 @@ are retained. The HTML citation style is independent of a print-only `.bst` file
 
 ## Runtime and caching
 
-Python 3 with venv support is required. First use installs the pinned plasTeX and
+Python 3.9+ with venv support is required. First use installs the pinned plasTeX and
 Pybtex dependencies into a shared virtual environment under the MDC cache root,
 then reuses it across branches. Initial installation requires network access.
 For preinstalled/offline deployments, install `src/latex/requirements.txt` into a
