@@ -1,5 +1,20 @@
 @import "./design.css";
 
+@view-transition { navigation: auto; }
+
+/* Keep the header present while the new document fades over the old one. */
+.app-header { view-transition-name: app-header; }
+html[data-vt-scope="force-editor"] .app-header { view-transition-name: none; }
+::view-transition-group(app-header) { animation: none; }
+::view-transition-old(app-header),
+::view-transition-old(root) { animation: none; mix-blend-mode: normal; }
+::view-transition-new(app-header),
+::view-transition-new(root) { animation: mdc-fade-in 180ms ease both; mix-blend-mode: normal; }
+
+@media (prefers-reduced-motion: reduce) {
+  @view-transition { navigation: none; }
+}
+
 * {
   box-sizing: border-box;
   scrollbar-width: thin;

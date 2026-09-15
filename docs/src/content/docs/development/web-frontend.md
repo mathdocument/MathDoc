@@ -13,6 +13,13 @@ the project directory, editor and documentation site. The documentation theme
 maps Starlight surfaces to these tokens; its header retains native search and
 theme persistence.
 
+Project-directory navigation uses native cross-document view transitions with
+a shared header snapshot. The render-blocking shell mounts either page before
+the first paint; project data and editors still load asynchronously. Navigation
+retains ordinary links, browser history and unsaved-draft guards. Reduced-motion
+preferences disable the page transition, and browsers without support use
+normal document navigation.
+
 Relation columns render a viewport window for lists over 100 nodes, with two
 title lines reserved per row. Scrolling and Arrow/Home/End navigation can reach
 the complete list. Switching views keeps the columns' scroll positions and the

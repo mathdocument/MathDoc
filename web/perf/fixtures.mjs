@@ -60,6 +60,7 @@ export function apiBodies(scenario) {
     view.node.depens = view.children.map(node => node.fnode);
   }
   const bodies = new Map([
+    ["/api/resolve", { fnode: rootFnode }],
     ["/api/graph/roots", [{ ...summary(), component_size: GRAPH_NODE_COUNT, topo_depth: 0 }]],
     ["/api/graph/check", {
       nodes: scenario === "graph" ? GRAPH_NODE_COUNT : 1,

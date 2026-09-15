@@ -129,6 +129,9 @@ dragging to preserve the exact bitmap with zero redraws. Window resizing must
 still update the backing surface.
 The large-list check also verifies dependency removal pagination, filtering,
 selection retention and the exact submitted dependency IDs.
+Navigation checks delay the shell script and require a header on the first
+frame, stable header geometry, directory/project transitions, browser back and
+forward, theme persistence and reduced-motion behavior.
 
 ```sh
 npm exec --prefix web -- playwright install --no-shell chromium

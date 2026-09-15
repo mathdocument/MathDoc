@@ -20,9 +20,10 @@
     />
     <title>MathDoc</title>
     <link rel="icon" type="image/svg+xml" href="/mdc-logo.svg" />
+    <!-- Mount the header before the first paint and incoming navigation snapshot. -->
+    <script type="module" blocking="render" src="/src/main.ts"></script>
   </head>
   <body>
     <div id="app"></div>
-    <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -58,6 +58,7 @@
   const workspaceSession = new WorkspaceSession();
   const project = projectName();
   async function showProjects(event: MouseEvent) {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     if (!confirmDiscardDrafts() || !await settlePendingMutations()) return;
     window.location.assign("/");
@@ -97,7 +98,10 @@
     fnode: string,
     clearedEntry: BrowserHistoryEntry | null = null,
   ): Promise<boolean> {
-    const committed = await nodeSession.select(fnode, nodeSession.initialHistoryOptions(fnode));
+    const committed = await nodeSession.select(fnode, {
+      ...nodeSession.initialHistoryOptions(fnode),
+      skipTransition: true,
+    });
     if (committed && clearedEntry) {
       nodeSession.commitClearedHistory({
         pushHistory: false,
@@ -1146,13 +1150,6 @@
     mix-blend-mode: normal;
     animation: mdc-vt-in 0.22s ease forwards;
   }
-  :global(::view-transition-old(root)) {
-    animation: none;
-  }
-  :global(::view-transition-new(root)) {
-    animation: mdc-vt-in 0.22s ease forwards;
-  }
-
   @keyframes mdc-vt-in {
     from { opacity: 0; }
     to { opacity: 1; }

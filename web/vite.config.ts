@@ -16,6 +16,15 @@ export default defineConfig({
   plugins: [
     {
       name: "project-editor-page",
+      transformIndexHtml: {
+        order: "post",
+        // Vite replaces entry scripts during build and drops blocking="render".
+        handler(html, ctx) {
+          return ctx.bundle && ctx.path === "/index.html"
+            ? html.replace('<script type="module"', '<script blocking="render" type="module"')
+            : html;
+        },
+      },
       configureServer(server) {
         server.middlewares.use((request, _response, next) => {
           request.url = request.url?.replace(/^\/p\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/(lean\.html(?:\?|$))/, "/$1");

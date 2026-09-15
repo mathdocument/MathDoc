@@ -149,14 +149,14 @@ async function stopPreview(child) {
   if (child.exitCode === null) child.kill("SIGKILL");
 }
 
-async function preparePage(context, scenario) {
+async function preparePage(context, scenario, resetTheme = true) {
   const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.addInitScript(() => {
-    localStorage.setItem("mdc-theme", "dark");
+  await page.addInitScript((resetTheme) => {
+    if (resetTheme) localStorage.setItem("mdc-theme", "dark");
     window.__mdcPerfStart = performance.now();
-  });
+  }, resetTheme);
   const bodies = apiBodies(scenario);
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname.replace(/^\/p\/benchmark\/main/, "");
@@ -363,6 +363,62 @@ async function checkRetinaResize(browser, url) {
   } finally { await context.close(); }
 }
 
+async function checkShellNavigation(browser, url) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: "dark", reducedMotion: "no-preference" });
+  const { page, errors } = await preparePage(context, "graph", false);
+  try {
+    await page.route("**/api/status", route => route.fulfill({ json: {
+      projects: { "benchmark/main": { running: true, url: `${url}/p/benchmark/main/` } },
+      server: { running: true, url },
+    } }));
+    // A cold/slow shell must still have its header on the first visible frame.
+    await page.route("**/assets/main-*.js", async route => {
+      await new Promise(resolve => setTimeout(resolve, 150));
+      await route.continue();
+    });
+    await page.addInitScript(() => {
+      requestAnimationFrame(() => { window.__firstFrameHeader = !!document.querySelector(".app-header"); });
+      addEventListener("pagereveal", event => {
+        window.__reveal = { transition: !!event.viewTransition, done: !event.viewTransition };
+        if (event.viewTransition) {
+          event.viewTransition.ready.catch(error => { window.__reveal.error = error.message; });
+          event.viewTransition.finished.finally(() => { window.__reveal.done = true; });
+        }
+      });
+    });
+    const geometry = () => page.evaluate(() => [".app-header", ".app-brand", ".header-theme"].map(selector => {
+      const rect = document.querySelector(selector).getBoundingClientRect();
+      return [rect.x, rect.y, rect.width, rect.height];
+    }));
+    const ready = async (transition) => {
+      await page.waitForFunction(() => window.__firstFrameHeader !== undefined && window.__reveal?.done);
+      const state = await page.evaluate(() => ({ first: window.__firstFrameHeader, ...window.__reveal }));
+      if (!state.first || state.error || state.transition !== transition) {
+        throw new Error(`navigation lost its first-frame header or transition: ${JSON.stringify(state)}`);
+      }
+    };
+    await page.goto(url);
+    await page.getByRole("link", { name: "Open benchmark/main" }).waitFor();
+    await ready(false);
+    const before = await geometry();
+    await page.getByRole("link", { name: "Open benchmark/main" }).click();
+    await page.locator("h1.title").waitFor();
+    await ready(true);
+    if (JSON.stringify(before) !== JSON.stringify(await geometry())) throw new Error("header geometry shifted between pages");
+    await page.getByRole("link", { name: "All projects" }).click();
+    await page.getByRole("link", { name: "Open benchmark/main" }).waitFor();
+    await ready(true);
+    await page.goBack(); await page.locator("h1.title").waitFor(); await ready(true);
+    await page.goForward(); await page.getByRole("link", { name: "Open benchmark/main" }).waitFor(); await ready(true);
+    await page.getByRole("button", { name: "Toggle theme" }).click();
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.getByRole("link", { name: "Open benchmark/main" }).click();
+    await page.locator("h1.title").waitFor(); await ready(false);
+    if (await page.locator("html").getAttribute("data-theme") !== "light") throw new Error("navigation lost the chosen theme");
+    if (errors.length) throw new Error(errors.join("\n"));
+  } finally { await context.close(); }
+}
+
 async function runRelationsSample(context, url) {
   const { page, errors } = await preparePage(context, "relations");
   try {
@@ -526,6 +582,7 @@ async function main() {
     }
     const relations = await runRelationsSample(context, preview.url);
     await checkRetinaResize(browser, preview.url);
+    await checkShellNavigation(browser, preview.url);
     await context.close();
 
     const values = (name) => editorSamples.map((sample) => sample[name]);

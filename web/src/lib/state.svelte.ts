@@ -259,6 +259,8 @@ export async function withViewTransition(
   try {
     const vt = document.startViewTransition(apply);
     activeViewTransition = vt;
+    // Superseded/hidden transitions reject ready even though the update succeeds.
+    void vt.ready.catch(() => {});
     void vt.finished.then(cleanup).catch(cleanup);
     await vt.updateCallbackDone;
   } catch {
