@@ -59,7 +59,8 @@
   .latex-preview :global(p) { margin:.6em 0; }
   .latex-preview :global(h2), .latex-preview :global(h3), .latex-preview :global(h4) { margin:1em 0 .5em; line-height:1.35; }
   .latex-preview :global(a) { color:var(--mdc-accent); text-decoration:underline; text-underline-offset:3px; }
-  .latex-preview :global(.latex-statement), .latex-preview :global(.latex-proof) { margin:1rem 0; padding:.6rem .9rem; border-left:2px solid var(--mdc-border-strong); }
+  .latex-preview :global(.latex-statement), .latex-preview :global(.latex-proof) { position:relative; margin:1rem 0; padding:.6rem .9rem; }
+  .latex-preview :global(.latex-statement::before), .latex-preview :global(.latex-proof::before) { content:''; position:absolute; inset:.6rem auto .6rem 0; width:2px; background:var(--mdc-border-strong); }
   .latex-preview :global(.latex-statement-title) { display:inline; font-weight:700; }
   .latex-preview :global(.latex-statement-title::after) { content:'. '; }
   .latex-preview :global(.latex-statement-title + p) { display:inline; }

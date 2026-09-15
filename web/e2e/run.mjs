@@ -790,7 +790,10 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await page.reload();
       const block = page.locator('article[data-srctype="latex"]');
       await block.getByText('1 imported dependencies', {exact: false}).waitFor();
+      await block.locator('.latex-imports summary').click();
       await block.getByRole('button', {name: 'Render LaTeX preview'}).click();
+      assert.equal(await block.locator('.latex-imports summary').innerText(), '1 imported dependencies');
+      await block.locator('.latex-imports li').getByText('Beta', {exact: true}).waitFor();
       await block.getByRole('link', {name: externalName(1), exact: true}).waitFor();
       await block.locator('.katex').first().waitFor();
       assert.equal(await block.locator('.katex-error').count(), 0);

@@ -5,7 +5,7 @@
   let matches = $derived(imports?.filter(item => `${item.title} ${item.fnode}`.toLowerCase().includes(query.toLowerCase())) ?? []);
 </script>
 <details class="latex-imports">
-  <summary>{imports ? `${imports.length} imported dependencies` : 'Loading reference scope…'}<span>read-only</span></summary>
+  <summary>{imports ? `${imports.length} imported dependencies` : 'Loading reference scope…'}</summary>
   <div class="imports-body">
     {#if (imports?.length ?? 0) > 20}<input aria-label="Filter LaTeX imports" placeholder="Filter dependencies…" bind:value={query} />{/if}
     <ul>
@@ -19,7 +19,6 @@
 <style>
   .latex-imports { flex-shrink:0; max-height:30cqh; overflow:auto; overscroll-behavior:contain; border-bottom:1px solid var(--mdc-border); background:var(--mdc-code-bg); color:var(--mdc-muted); font-size:var(--mdc-text-xs); }
   summary { padding:.55rem .75rem; cursor:pointer; }
-  summary span { float:right; opacity:.65; }
   .imports-body { padding:0 .75rem .55rem; }
   p { margin:.25rem 0 .6rem; }
   ul { list-style:none; margin:0; padding:0; }

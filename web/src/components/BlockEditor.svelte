@@ -397,7 +397,7 @@
     <button class="save" onclick={save} disabled={!dirty || saving || deleting} title="Save (Ctrl/⌘+S)" aria-label="Save"><SaveIcon size={13} strokeWidth={1.9} /><span class="btn-label">Save</span></button>
     <button class="delete" onclick={onDelete} disabled={saving || deleting} title="Delete block" aria-label="Delete block"><Trash2 size={14} strokeWidth={1.8} /></button>
   </header>
-  {#if latex && expanded && !previewing}<LatexImports imports={latex.context?.imports ?? null} />{/if}
+  {#if latex && expanded}<LatexImports imports={latex.context?.imports ?? null} />{/if}
   <div
     class="editor-host"
     class:collapsed={!expanded || previewing}

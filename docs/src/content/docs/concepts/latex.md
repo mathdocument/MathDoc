@@ -20,10 +20,11 @@ be saved. Parsing errors are reported when loading completions or previews.
 
 Each block has an **Edit / Preview** toggle. Preview preparation is debounced
 while typing and uses the unsaved draft; only **Save** writes the node. The
-read-only imported-dependency list is derived from `dep` and never inserted
-into the block source. Reference, citation, macro and environment completions
-appear as you type, or with **Ctrl+Space**. References are scoped to the selected
-node; bibliography candidates are shared by the branch. Reference completion
+imported-dependency list stays visible in both Edit and Preview, is derived
+from `dep`, and never enters the block source. Reference, citation, macro and
+environment completions appear as you type, or with **Ctrl+Space**. References
+are scoped to the selected node; bibliography candidates are shared by the
+branch. Reference completion
 inserts only the original label while showing the target's readable title.
 
 Click a reference to open its node and scroll to the label in Preview. Opening
