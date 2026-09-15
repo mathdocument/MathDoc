@@ -47,6 +47,15 @@
     | { kind: "project" };
 
   let overlay = $state<Overlay>({ kind: "none" });
+  let latexTarget = $state<{fnode: string; label: string} | null>(null);
+  async function navigateLatex(fnode: string, label: string) {
+    cancelStartup();
+    if (await nodeSession.select(fnode)) latexTarget = {fnode, label};
+  }
+  $effect(() => {
+    const current = view === "force" ? nodeSession.selectedFnode : nodeSession.node?.fnode;
+    if (latexTarget && current && latexTarget.fnode !== current) latexTarget = null;
+  });
   let theme = $state<Theme>(currentTheme());
   let startupRequest = 0;
   let initialNavigationRetry: { fnode: string; clearedEntry: BrowserHistoryEntry | null } | null = null;
@@ -228,6 +237,7 @@
           const resolved = await api.resolve(ref);
           if (!isCurrent()) return;
           const committed = await navigateInitial(resolved.fnode, clearedEntry);
+          if (isCurrent() && committed && params.get("label")) latexTarget = {fnode: resolved.fnode, label: params.get("label")!};
           if (isCurrent() && !committed) {
             initialNavigationRetry = { fnode: resolved.fnode, clearedEntry };
           }
@@ -452,7 +462,7 @@
         ><Network size={15} strokeWidth={1.8} /><span>Graph</span></button>
       </div>
       <span class="toolbar-divider"></span>
-      <button class="tool icon-only" onclick={() => overlay = { kind: "project" }} title="Lean project" aria-label="Lean project"><Settings size={16} /></button>
+      <button class="tool icon-only" onclick={() => overlay = { kind: "project" }} title="Project settings" aria-label="Project settings"><Settings size={16} /></button>
       <button
         class="tool icon-only"
         class:spinning={refreshing}
@@ -541,6 +551,8 @@
             selection={nodeSession.editorRevision}
             {theme}
             onRefresh={refreshNode}
+            {latexTarget}
+            onLatexNavigate={navigateLatex}
           />
       {/if}
     </div>

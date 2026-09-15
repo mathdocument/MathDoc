@@ -751,3 +751,74 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
       }));
   } finally { await browser.close(); }
 });
+
+await test('LaTeX macros, scoped completion, citations and draft previews', {timeout: 90000}, async () => {
+  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  try {
+    await fixture(browser, async ({root, cli, page, url}) => {
+      const ids = {};
+      const put = async (name, content) => {
+        const node = JSON.parse((await cli('show', name)).stdout);
+        ids[name] = node.fnode;
+        const response = await fetch(`${url}/api/node/${node.fnode}/block/latex`, {
+          method: 'PUT', headers: {'content-type': 'application/json', 'if-match': `"${node.revision}"`}, body: JSON.stringify({content}),
+        });
+        assert.equal(response.status, 200);
+      };
+      await page.getByRole('button', {name: 'Project settings', exact: true}).click();
+      await page.getByRole('tab', {name: 'LaTeX', exact: true}).click();
+      const preamble = resolve(root, 'macros.tex'), bib = resolve(root, 'references.bib');
+      await writeFile(preamble, String.raw`\usepackage{amsthm}\newcommand{\cA}{\mathcal{A}}\newenvironment{items}{\begin{itemize}}{\end{itemize}}\newtheorem{thm}{Theorem}`);
+      await writeFile(bib, '@article{paper,title={A paper},author={Author, A.},journal={Journal},year={2020}}');
+      await page.getByRole('button', {name: 'Save LaTeX project', exact: true}).waitFor();
+      await page.getByLabel('Class or preamble').setInputFiles(preamble);
+      await page.getByLabel('Bibliography', {exact: true}).setInputFiles(bib);
+      await page.getByRole('button', {name: 'Save LaTeX project', exact: true}).click();
+      await page.getByRole('dialog').waitFor({state: 'hidden'});
+      const settings = JSON.parse((await cli('project', 'latex', 'show')).stdout).project;
+      assert.match(settings.preamble, /newcommand/);
+      assert.match(settings.bibliography, /A paper/);
+      const source = String.raw`\section{Introduction}\label{intro}By \nameref{thm:b}, see \cite{paper}. $\cA$\begin{items}\item One\end{items}`;
+      await put('Alpha', source);
+      await put('Beta', String.raw`\begin{thm}[Named result]\label{thm:b}$\cA$ exists.\end{thm}`);
+      await put('Gamma', String.raw`\section{Private result}\label{private}`);
+      await page.reload();
+      const block = page.locator('article[data-srctype="latex"]');
+      await block.getByText('1 imported dependencies', {exact: false}).waitFor();
+      await block.getByRole('button', {name: 'Render LaTeX preview'}).click();
+      await block.getByRole('link', {name: 'Named result', exact: true}).waitFor();
+      await block.locator('.katex').first().waitFor();
+      assert.equal(await block.locator('.katex-error').count(), 0);
+      assert.match(await block.locator('.latex-preview').innerText(), /A paper/);
+      await block.getByRole('link', {name: 'Named result', exact: true}).click();
+      await title(page, 'Beta');
+      await block.locator('.latex-preview .latex-statement').waitFor();
+      assert.equal(await block.locator('[id="latex-thm%3Ab"]').count(), 1);
+      await page.goBack();
+      await title(page, 'Alpha');
+      const input = block.locator('.cm-content');
+      await input.fill('Use \\nameref{');
+      await input.press('Control+Space');
+      await page.getByRole('option').filter({hasText: 'Named result'}).click();
+      assert.match(await input.innerText(), new RegExp(`${ids.Beta}::thm:b`));
+      assert.equal(await page.getByRole('option').filter({hasText: 'Private result'}).count(), 0);
+      const draft = String.raw`\section{Draft title}\label{new}By \nameref{thm:b}, see \cite{paper}. $\cA$`;
+      await input.fill(draft);
+      await block.getByRole('button', {name: 'Render LaTeX preview'}).click();
+      await block.getByRole('heading', {name: 'Draft title', exact: true}).waitFor();
+      assert.equal(JSON.parse((await cli('show', 'Alpha')).stdout).blocks[0].content, source);
+      // A dependency rename is visible without reloading or saving the draft.
+      await put('Beta', String.raw`\begin{thm}[Updated result]\label{thm:b}Updated.\end{thm}`);
+      await block.getByRole('link', {name: 'Updated result', exact: true}).waitFor({timeout: 10000});
+      await block.getByRole('button', {name: 'Save', exact: true}).click();
+      await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
+      assert.equal(JSON.parse((await cli('show', 'Alpha')).stdout).blocks[0].content, draft);
+      const saved = JSON.parse((await cli('show', 'Alpha')).stdout).blocks[0].content;
+      assert.doesNotMatch(saved, /externaldocument/);
+      await page.goto("about:blank");
+      await page.goto(`${url}/#ref=${ids.Beta}&label=thm%3Ab`);
+      await block.locator('.latex-preview .latex-statement').waitFor();
+      if (process.env.MDC_E2E_ARTIFACTS) await page.screenshot({path: resolve(process.env.MDC_E2E_ARTIFACTS, `latex-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
+    });
+  } finally { await browser.close(); }
+});

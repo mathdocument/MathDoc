@@ -202,7 +202,7 @@ async function runEditorSample(context, url) {
     await page.locator(".latex-preview .katex").first().waitFor({ state: "visible" });
     await nextPaint(page);
     const latexPreviewMs = await page.evaluate(() => performance.now() - window.__mdcPerfAction);
-    const proofText = await page.locator(".latex-statement.proof .latex-statement-body").innerText();
+    const proofText = await page.locator(".latex-proof p").innerText();
     if (proofText.trim() !== "Inline proof.") throw new Error("inline proof environment did not close");
     await page.setViewportSize({ width: 375, height: 667 });
     const mobileLayout = await page.evaluate(() => ({

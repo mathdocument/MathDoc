@@ -22,8 +22,10 @@
     selection?: number;
     onRefresh?: (node: NodeDetail, graphChanged?: boolean) => void;
     onReady?: () => void;
+    latexTarget?: {fnode: string; label: string} | null;
+    onLatexNavigate?: (fnode: string, label: string) => void;
   }
-  let { load, theme, active = true, selection = 0, onRefresh, onReady }: Props = $props();
+  let { load, theme, active = true, selection = 0, onRefresh, onReady, latexTarget, onLatexNavigate }: Props = $props();
   let node = $derived(load.kind === "ready" ? load.node : null);
 
   // Inline title editing.
@@ -229,6 +231,8 @@
             {block}
             {theme}
             {active}
+            focusLabel={latexTarget?.fnode === node.fnode ? latexTarget.label : undefined}
+            {onLatexNavigate}
             onDeleted={(updated) => applyBlockUpdate(updated)}
             onSaved={applyBlockUpdate}
             onReady={() => reportBlockReady(block.srctype)}

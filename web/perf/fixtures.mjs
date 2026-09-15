@@ -4,6 +4,11 @@ export const EDITOR_LINE_COUNT = 500;
 export const RELATION_COUNT = 8_311;
 
 const rootFnode = "perf-root";
+// Fixed server response: this benchmark measures browser layout and KaTeX,
+// while renderer correctness and latency are covered by the native API tests.
+const latexHtml = '<section class="latex-proof"><div class="latex-statement-title">Proof</div><p>Inline proof.</p></section><p>Outside proof.</p>' + Array.from(
+  {length: EDITOR_LINE_COUNT - 1}, (_, i) => `<h5>Case ${i + 2}.</h5><p>If <span class="latex-math" data-display="false" data-tex="x_{${i + 2}} \\in \\mathbb{R}"></span>, then <span class="latex-math" data-display="false" data-tex="x_{${i + 2}}^2 \\ge 0"></span>.</p>`,
+).join('');
 
 const latexSource = Array.from(
   { length: EDITOR_LINE_COUNT },
@@ -60,6 +65,9 @@ export function apiBodies(scenario) {
     view.node.depens = view.children.map(node => node.fnode);
   }
   const bodies = new Map([
+    ["/api/project/latex/catalog", {project_key: "perf-latex", citations: [], commands: [], environments: [], diagnostics: []}],
+    [`/api/node/${rootFnode}/latex/context`, {context_key: "perf-context", project_key: "perf-latex", references: [], imports: [], diagnostics: []}],
+    [`/api/node/${rootFnode}/latex/preview`, {project_key: "perf-latex", html: latexHtml, labels: [], diagnostics: []}],
     ["/api/resolve", { fnode: rootFnode }],
     ["/api/graph/roots", [{ ...summary(), component_size: GRAPH_NODE_COUNT, topo_depth: 0 }]],
     ["/api/graph/check", {

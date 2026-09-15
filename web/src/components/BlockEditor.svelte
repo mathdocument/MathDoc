@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy, tick, type Component } from "svelte";
+  import { onMount, onDestroy, tick } from "svelte";
   import {
     AlertTriangle,
     ChevronDown,
@@ -10,7 +10,7 @@
     Trash2,
     Zap,
   } from "@lucide/svelte";
-  import { Compartment, EditorState, Text, type Extension } from "@codemirror/state";
+  import { Compartment, EditorState, StateEffect, Text, type Extension } from "@codemirror/state";
   import {
     EditorView,
     keymap,
@@ -30,6 +30,8 @@
   import { shikiHighlight } from "../lib/cm-shiki";
   import { getHighlighter, srctypeToLang } from "../lib/shiki";
   import type { Theme } from "../lib/theme";
+  import { LatexSession } from "../lib/latex-session.svelte";
+  import LatexImports from "./LatexImports.svelte";
   import { removeDraft, setDraftDirty, trackMutation } from "../lib/unsaved";
 
   interface Props {
@@ -41,8 +43,10 @@
     onDeleted?: (node: NodeDetail, srctype: string) => void;
     onSaved?: (node: NodeDetail) => void;
     onReady?: () => void;
+    focusLabel?: string;
+    onLatexNavigate?: (fnode: string, label: string) => void;
   }
-  let { fnode, revision, block, theme, active = true, onDeleted, onSaved, onReady }: Props = $props();
+  let { fnode, revision, block, theme, active = true, onDeleted, onSaved, onReady, focusLabel, onLatexNavigate }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
   let editorView: EditorView | null = null;
@@ -54,10 +58,10 @@
   let expanded = $state(true);
   let shikiError: string | null = $state(null);
   let previewing = $state(false);
-  let previewSource = $state("");
+  let latex = $state<LatexSession | null>(null);
   let previewError: string | null = $state(null);
-  let LatexPreviewComponent = $state<Component<{ source: string }> | null>(null);
-  let latexPreviewPromise: Promise<Component<{ source: string }>> | null = null;
+  let LatexPreviewComponent = $state<typeof import("./LatexPreview.svelte").default | null>(null);
+  let latexPreviewPromise: Promise<typeof import("./LatexPreview.svelte").default> | null = null;
   let previewRequest = 0;
   let alive = false;
   const draftId = Symbol("block draft");
@@ -121,6 +125,7 @@
       EditorView.updateListener.of((u) => {
         if (u.docChanged) {
           setDirty(lastSavedDoc === null || !u.state.doc.eq(lastSavedDoc));
+          latex?.schedule(u.state.doc.toString());
         }
       }),
     ];
@@ -207,6 +212,13 @@
       state: initialState,
       parent: host!,
     });
+    if (block.srctype === "latex") {
+      const session = new LatexSession(fnode, block.content);
+      latex = session;
+      void import("../lib/latex-completion").then(({latexAutocomplete}) => {
+        if (alive && editorView) editorView.dispatch({effects: StateEffect.appendConfig.of(latexAutocomplete(session))});
+      }).catch(e => { if (alive) previewError = errMsg(e); });
+    }
     reportReadyAfterMeasure(editorView);
   });
 
@@ -215,6 +227,16 @@
     if (!alive) return;
     if (active && expanded && !previewing) ensureSyntaxHighlighting();
     else suspendSyntaxHighlighting();
+  });
+
+  $effect(() => { latex?.setActive(active && expanded); });
+  let focusedLabel: string | undefined;
+  $effect(() => {
+    if (focusLabel && latex && focusedLabel !== focusLabel) {
+      focusedLabel = focusLabel;
+      expanded = true;
+      if (!previewing) void toggleLatexPreview();
+    }
   });
 
   async function save() {
@@ -295,7 +317,6 @@
       editorView?.requestMeasure();
       return;
     }
-    previewSource = editorView?.state.doc.toString() ?? block.content;
     previewing = true;
     previewError = null;
     if (LatexPreviewComponent) return;
@@ -315,6 +336,7 @@
 
   onDestroy(() => {
     alive = false;
+    latex?.destroy();
     syntaxRequest++;
     previewRequest++;
     if (syntaxRetryTimer) clearTimeout(syntaxRetryTimer);
@@ -336,7 +358,6 @@
           changes: { from: 0, to: editorView.state.doc.length, insert: nextContent },
         });
       }
-      if (previewing && editorView.state.doc.eq(lastSavedDoc)) previewSource = nextContent;
     }
     setDirty(editorView !== null && !editorView.state.doc.eq(lastSavedDoc));
   });
@@ -347,6 +368,7 @@
     <span class="srctype">{block.srctype}</span>
     <span class="spacer"></span>
     {#if dirty}<span class="dirty" title="Unsaved changes"><span class="dirty-dot"></span><span class="btn-label">Unsaved</span></span>{/if}
+    {#if latex?.working}<span class="saving">rendering…</span>{/if}
     {#if saving}<span class="saving">saving…</span>{/if}
     {#if deleting}<span class="saving">deleting…</span>{/if}
     {#if error || previewError}<span class="error" title={error ?? previewError ?? "error"}><AlertTriangle size={14} strokeWidth={1.9} /></span>{/if}
@@ -371,6 +393,7 @@
     <button class="save" onclick={save} disabled={!dirty || saving || deleting} title="Save (Ctrl/⌘+S)" aria-label="Save"><SaveIcon size={13} strokeWidth={1.9} /><span class="btn-label">Save</span></button>
     <button class="delete" onclick={onDelete} disabled={saving || deleting} title="Delete block" aria-label="Delete block"><Trash2 size={14} strokeWidth={1.8} /></button>
   </header>
+  {#if latex && expanded && !previewing}<LatexImports imports={latex.context?.imports ?? null} />{/if}
   <div
     class="editor-host"
     class:expanded
@@ -379,12 +402,18 @@
     bind:this={host}
   >
   </div>
-  {#if LatexPreviewComponent}
-    <div class:preview-hidden={!previewing || !expanded} aria-hidden={!previewing || !expanded}>
-      <LatexPreviewComponent source={previewSource} />
-    </div>
-  {:else if previewing && expanded}
-    <div class="preview-loading" aria-busy="true">Loading renderer…</div>
+  {#if previewing && expanded}
+    {#if LatexPreviewComponent && latex?.preview}
+      <LatexPreviewComponent html={latex.preview.html} labels={latex.preview.labels} {fnode} {focusLabel} onNavigate={onLatexNavigate} />
+    {:else if !latex?.error}
+      <div class="preview-loading" aria-busy="true">Preparing preview…</div>
+    {/if}
+  {/if}
+  {#if latex?.error || latex?.contextError}<div class="error-bar" role="alert">{latex.error ?? latex.contextError}<button onclick={() => { void latex?.refresh(); void latex?.render(); }}>Retry</button></div>{/if}
+  {#if latex?.preview?.diagnostics.length}
+    <details class="latex-diagnostics"><summary>{latex.preview.diagnostics.length} LaTeX diagnostic(s)</summary>
+      {#each latex.preview.diagnostics as message}<p>{message}</p>{/each}
+    </details>
   {/if}
   {#if error || previewError}<div class="error-bar">{error ?? previewError}</div>{/if}
 </article>
@@ -410,7 +439,9 @@
     font-family: var(--mdc-mono);
     font-size: var(--mdc-text-xs);
   }
-  .preview-hidden { display: none; }
+  .latex-diagnostics { padding:.5rem .75rem; color:var(--mdc-warning); font-size:var(--mdc-text-xs); }
+  .latex-diagnostics p { margin:.4rem 0; }
+  .error-bar button { margin-left:.5rem; }
   .error-bar {
     padding: 0.45rem 0.65rem;
     background: color-mix(in srgb, var(--mdc-error) 10%, transparent);
