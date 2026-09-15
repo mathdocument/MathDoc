@@ -1,5 +1,5 @@
 import { autocompletion, type CompletionContext, type CompletionResult } from '@codemirror/autocomplete';
-import { EditorView } from '@codemirror/view';
+import { EditorView, tooltips } from '@codemirror/view';
 import type { LatexSession } from './latex-session.svelte';
 
 export function latexCompletions(session: Pick<LatexSession, 'references' | 'catalog'>, context: CompletionContext): CompletionResult | null {
@@ -22,6 +22,8 @@ export function latexCompletions(session: Pick<LatexSession, 'references' | 'cat
 
 export function latexAutocomplete(session: LatexSession) {
   return [
+    // Keep fixed tooltips outside the source block's clipping/container context.
+    tooltips({parent: document.body}),
     autocompletion({override: [context => latexCompletions(session, context)], maxRenderedOptions: 30, icons: false}),
     EditorView.theme({
       '.cm-tooltip.cm-tooltip-autocomplete': {
