@@ -556,7 +556,7 @@ impl Database {
         }
         let mut snapshot = Snapshot {
             version,
-            nodes,
+            nodes: BTreeMap::new(),
             project: project.context("database has no Lean project")?,
             latex_project: latex_project.into(),
             project_key: String::new(),
@@ -567,24 +567,8 @@ impl Database {
             referrers: HashMap::new(),
         };
         snapshot.project.validate()?;
-        let nodes: Vec<_> = snapshot
-            .nodes
-            .values()
-            .map(|n| n.as_ref().clone())
-            .collect();
-        let empty = Snapshot {
-            version: String::new(),
-            nodes: BTreeMap::new(),
-            project: snapshot.project.clone(),
-            latex_project: snapshot.latex_project.clone(),
-            project_key: String::new(),
-            modules: Default::default(),
-            lean_prefixes: HashMap::new(),
-            depths: HashMap::new(),
-            lean_keys: HashMap::new(),
-            referrers: HashMap::new(),
-        };
-        empty.validate_changes(&nodes)?;
+        snapshot.validate_changes(nodes.values().map(AsRef::as_ref))?;
+        snapshot.nodes = nodes;
         snapshot.recompute();
         Ok(snapshot)
     }
@@ -788,10 +772,11 @@ impl Snapshot {
         }
         Ok(node)
     }
-    pub fn validate_changes(&self, changes: &[Node]) -> Result<()> {
-        self.project.validate_modules(changes.iter())?;
+    pub fn validate_changes<'a>(&self, changes: impl IntoIterator<Item = &'a Node>) -> Result<()> {
+        let changes: Vec<_> = changes.into_iter().collect();
+        self.project.validate_modules(changes.iter().copied())?;
         let mut ids = BTreeSet::new();
-        for node in changes {
+        for node in &changes {
             node.validate()?;
             if !ids.insert(&node.fnode) {
                 bail!("duplicate UUID in transaction");
@@ -808,18 +793,18 @@ impl Snapshot {
         let mut modules: BTreeMap<_, _> = self
             .nodes
             .values()
-            .map(|n| (n.module.clone(), n.fnode.clone()))
+            .filter(|n| !ids.contains(&n.fnode))
+            .map(|n| (module_file(&n.module, "lean").expect("validated module"), n.fnode.clone()))
             .collect();
-        for node in changes {
-            node.validate()?;
-            if let Some(owner) = modules.insert(node.module.clone(), node.fnode.clone()) {
+        for node in &changes {
+            if let Some(owner) = modules.insert(module_file(&node.module, "lean")?, node.fnode.clone()) {
                 if owner != node.fnode {
-                    bail!("Lean module name is already assigned to another node");
+                    bail!("Lean module file is already assigned to another node");
                 }
             }
             graph.insert(node.fnode.clone(), node.depens.clone());
         }
-        for node in changes {
+        for node in &changes {
             for dep in &node.depens {
                 if !graph.contains_key(dep) {
                     bail!("dependency node does not exist: {dep}");
@@ -985,6 +970,15 @@ mod tests {
         changed.depens.push(b.fnode);
         assert!(s.validate_changes(&[changed]).is_err());
         assert_eq!(Node::from_document(a.document()).unwrap(), a);
+        let mut alias = Node::new("Alias".into()).unwrap();
+        alias.module = format!("Lib.«{}»", a.module.split_once('.').unwrap().1);
+        assert_eq!(module_file(&alias.module, "lean").unwrap(), module_file(&a.module, "lean").unwrap());
+        assert!(s.validate_changes([&alias]).is_err());
+        let mut original = a.clone();
+        original.fnode = uuid::Uuid::new_v4().to_string();
+        original.module = "Lib.Other".into();
+        alias.module = "Lib.«Other»".into();
+        assert!(s.validate_changes([&original, &alias]).is_err());
     }
     #[test]
     fn incremental_hashes_preserve_certificates_and_captured_sources() {
