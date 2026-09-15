@@ -402,6 +402,10 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await page.getByPlaceholder("Search by title or fnode…").fill("Lean Example");
         await page.getByRole("button", { name: /Lean Example/ }).click();
         await page.getByText("Starting Lean editor…").waitFor();
+        await page.locator('[data-srctype="latex"] .cm-editor').waitFor();
+        assert.deepEqual(await center(page).locator('.source-block:not(.hidden)').evaluateAll(
+          blocks => blocks.map(block => block.dataset.srctype),
+        ), ["text", "latex", "lean", "rocq"]);
         for (const name of ["Graph", "Knowledge"]) {
           await page.getByRole("button", { name, exact: true }).click();
           await page.getByRole("button", { name, exact: true }).and(page.locator('[aria-pressed="true"]')).waitFor({ timeout: 1000 });

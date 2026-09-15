@@ -2,8 +2,9 @@
 title: Source workflow
 ---
 
-Each node has at most one block of each supported type: `text`, `lean`, `rocq`
-and `latex`. Edit in the browser or send a complete block on stdin:
+Each node has at most one block of each supported type. The browser always
+displays them in `text`, `latex`, `lean`, `rocq` order, regardless of when they
+were added. Edit in the browser or send a complete block on stdin:
 
 ```sh
 printf 'Explanation.\n' | mdc edit Example -p myproject/main --type text

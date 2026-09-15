@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import { Check, FileText, Hash, Layers3, X } from "@lucide/svelte";
-  import type { NodeDetail } from "../lib/types";
+  import { SOURCE_TYPES, type NodeDetail } from "../lib/types";
   import type { LoadState } from "../lib/state.svelte";
   import type { Theme } from "../lib/theme";
   import { errMsg, shortFnode } from "../lib/format";
@@ -223,8 +223,16 @@
         </div>
       {:else if !BlockEditorComponent}
         <div class="editor-loading" aria-busy="true">Loading editor…</div>
-      {:else}
-        {#each node.blocks.filter(block => block.srctype !== "lean") as block (`${node.fnode}:${block.srctype}`)}
+      {/if}
+      {/if}
+      {#each SOURCE_TYPES as srctype (srctype)}
+        {@const block = node?.blocks.find(block => block.srctype === srctype)}
+        {#if srctype === "lean"}
+          <!-- Keep Lean mounted across node changes to preserve its editor runtime. -->
+          <LeanBlock fnode={node?.fnode ?? ""} revision={node?.revision ?? ""} module={node?.module} {block} {theme} {active} {selection}
+            onDeleted={(updated) => applyBlockUpdate(updated, true)} onSaved={(updated) => applyBlockUpdate(updated, true)} onReady={() => reportBlockReady("lean")} />
+        {:else if node && block && BlockEditorComponent && !editorLoadError}
+          {#key `${node.fnode}:${srctype}`}
           <BlockEditorComponent
             fnode={node.fnode}
             revision={node.revision}
@@ -237,11 +245,9 @@
             onSaved={applyBlockUpdate}
             onReady={() => reportBlockReady(block.srctype)}
           />
-        {/each}
-      {/if}
-      {/if}
-      <LeanBlock fnode={node?.fnode ?? ""} revision={node?.revision ?? ""} module={node?.module} block={node?.blocks.find(block => block.srctype === "lean")} {theme} {active} {selection}
-        onDeleted={(updated) => applyBlockUpdate(updated, true)} onSaved={(updated) => applyBlockUpdate(updated, true)} onReady={() => reportBlockReady("lean")} />
+          {/key}
+        {/if}
+      {/each}
       {#if node}
       {#key node.fnode}
       <AddBlockControl

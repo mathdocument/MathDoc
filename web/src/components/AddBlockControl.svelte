@@ -3,7 +3,7 @@
   import { Braces, Plus } from "@lucide/svelte";
   import { api } from "../lib/api";
   import { errMsg } from "../lib/format";
-  import type { NodeDetail } from "../lib/types";
+  import { SOURCE_TYPES, type NodeDetail } from "../lib/types";
   import { trackMutation } from "../lib/unsaved";
 
   interface Props {
@@ -13,8 +13,6 @@
     onAdded?: (node: NodeDetail) => void;
   }
   let { fnode, revision, existingSrctypes, onAdded }: Props = $props();
-
-  const ALL_SRCTYPES = ["text", "lean", "rocq", "latex"] as const;
 
   let open = $state(false);
   let adding: string | null = $state(null);
@@ -26,7 +24,7 @@
   onDestroy(() => { alive = false; });
 
   let available = $derived(
-    ALL_SRCTYPES.filter((s) => !existingSrctypes.includes(s)),
+    SOURCE_TYPES.filter((s) => !existingSrctypes.includes(s)),
   );
 
   function toggle() {
