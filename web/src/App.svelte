@@ -768,8 +768,9 @@
   .tool-cluster .tool.icon-only {
     min-height: 26px;
     width: 28px;
-    border-radius: 6px;
   }
+  .graph-resizer:focus-visible { outline: none; }
+  .graph-resizer:focus-visible::after { outline: 2px solid var(--mdc-accent); outline-offset: 2px; }
   /* Reads as an input, behaves as a command trigger. */
   .search-tool {
     display: inline-flex;

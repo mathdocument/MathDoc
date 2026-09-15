@@ -220,6 +220,29 @@ async function runEditorSample(context, url) {
 async function runGraphSample(context, url) {
   const { page, errors } = await preparePage(context, "graph");
   try {
+    await page.addInitScript(() => {
+      window.__canvasResizes = { total: 0, unpainted: 0 };
+      const paints = new WeakMap();
+      const fill = CanvasRenderingContext2D.prototype.fill;
+      CanvasRenderingContext2D.prototype.fill = function (...args) {
+        paints.set(this.canvas, (paints.get(this.canvas) ?? 0) + 1);
+        return fill.apply(this, args);
+      };
+      for (const key of ["width", "height"]) {
+        const descriptor = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, key);
+        Object.defineProperty(HTMLCanvasElement.prototype, key, { ...descriptor, set(value) {
+          descriptor.set.call(this, value);
+          if (!this.closest(".graph-container") || value <= 1) return;
+          const before = paints.get(this);
+          window.__canvasResizes.total++;
+          queueMicrotask(() => {
+            if (this.width > 1 && this.height > 1 && paints.get(this) === before) {
+              window.__canvasResizes.unpainted++;
+            }
+          });
+        } });
+      }
+    });
     await page.goto(`${url}/p/benchmark/main/`, { waitUntil: "domcontentloaded" });
     await page.locator("h1.title", { hasText: "Performance fixture" }).waitFor();
     const graphResponse = page.waitForResponse((response) =>
@@ -264,6 +287,29 @@ async function runGraphSample(context, url) {
     await page.mouse.move(canvasBounds.x + canvasBounds.width / 2 + 30, canvasBounds.y + canvasBounds.height / 2 + 20);
     await page.mouse.up();
     await nextPaint(page);
+    const divider = page.getByRole("separator", { name: "Resize graph editor" });
+    const bounds = await divider.boundingBox();
+    const beforeWidth = await page.locator("canvas").getAttribute("width");
+    await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + 100);
+    await page.mouse.down();
+    await page.mouse.move(bounds.x - 180, bounds.y + 100, { steps: 20 });
+    await page.mouse.up();
+    await nextPaint(page);
+    if (await page.locator("canvas").getAttribute("width") === beforeWidth) {
+      throw new Error("sidebar drag did not resize the graph");
+    }
+    const resizes = await page.evaluate(() => window.__canvasResizes);
+    if (resizes.total < 2 || resizes.unpainted !== 0) {
+      throw new Error(`canvas resize exposed an empty frame: ${JSON.stringify(resizes)}`);
+    }
+    await divider.press("ArrowRight");
+    const focus = await divider.evaluate(element => ({
+      outer: getComputedStyle(element).outlineStyle,
+      handle: getComputedStyle(element, "::after").outlineStyle,
+    }));
+    if (focus.outer !== "none" || focus.handle !== "solid") {
+      throw new Error("splitter keyboard focus should outline only the middle handle");
+    }
     if (errors.length > 0) throw new Error(errors.join("\n"));
     return { graphReadyMs, zoomFrames };
   } finally {

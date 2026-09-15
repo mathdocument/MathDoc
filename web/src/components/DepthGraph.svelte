@@ -256,6 +256,9 @@
     rafId = requestAnimationFrame(() => {
       rafId = 0;
       if (!running || !active) return;
+      // Changing the backing size clears the bitmap. Resize and paint in the
+      // same frame; a ResizeObserver reset would expose a blank frame first.
+      resizeCanvas();
       render();
     });
   }
@@ -490,12 +493,6 @@
     const canvas = canvasEl;
     const container = containerEl;
     if (!canvas || !container) return;
-    if (!active) {
-      canvasDpr = 1;
-      canvas.width = 1;
-      canvas.height = 1;
-      return;
-    }
     const rect = container.getBoundingClientRect();
     const cssPixels = Math.max(1, rect.width * rect.height);
     const dpr = Math.min(
@@ -508,18 +505,13 @@
     const height = Math.max(1, Math.round(rect.height * dpr));
     if (canvas.width !== width) canvas.width = width;
     if (canvas.height !== height) canvas.height = height;
-    canvas.style.width = `${rect.width}px`;
-    canvas.style.height = `${rect.height}px`;
-    // Redraw on the next frame so showing the view is not blocked by an
-    // O(nodes + edges) paint. The grid remains visible beneath the canvas.
-    requestRender();
   }
 
   function watchDevicePixelRatio() {
     dprQuery?.removeEventListener("change", watchDevicePixelRatio);
     dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
     dprQuery.addEventListener("change", watchDevicePixelRatio);
-    resizeCanvas();
+    requestRender();
   }
 
   // ── Interaction ─────────────────────────────────────────────────────────────
@@ -761,7 +753,6 @@
         if (wasEmpty && nodes.length > 0) fitGraphWhenMeasurable();
       }
       if (!running) return;
-      resizeCanvas();
       requestRender();
     })().finally(() => {
       graphLoadPromise = null;
@@ -780,7 +771,7 @@
     }
     if (containerEl) {
       resizeObserver = new ResizeObserver(() => {
-        resizeCanvas();
+        requestRender();
         // Fit after any layout change that gives the canvas usable dimensions.
         if (needsFit && canvasEl && canvasEl.clientWidth > 0 && canvasEl.clientHeight > 0) {
           needsFit = false;
@@ -812,7 +803,6 @@
   $effect(() => {
     if (active) {
       void ensureGraphLoaded();
-      resizeCanvas();
       requestRender();
     } else {
       abortGraphRequest();
