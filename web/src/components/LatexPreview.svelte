@@ -55,18 +55,19 @@
 <div class="latex-preview" bind:this={host} onclick={navigate}>{@html html}</div>
 
 <style>
-  .latex-preview { padding:1.2rem 1.4rem; color:var(--mdc-fg); font-size:var(--mdc-text-sm); line-height:1.8; overflow-wrap:anywhere; }
+  .latex-preview { padding:1.2rem 1.4rem; color:var(--mdc-fg); font-family:KaTeX_Main, "Latin Modern Roman", "Songti SC", serif; font-size:1.0625rem; line-height:1.75; overflow-wrap:anywhere; }
   .latex-preview :global(p) { margin:.6em 0; }
   .latex-preview :global(h2), .latex-preview :global(h3), .latex-preview :global(h4) { margin:1em 0 .5em; line-height:1.35; }
   .latex-preview :global(a) { color:var(--mdc-accent); text-decoration:underline; text-underline-offset:3px; }
   .latex-preview :global(.latex-statement), .latex-preview :global(.latex-proof) { margin:1rem 0; padding:.6rem .9rem; border-left:2px solid var(--mdc-border-strong); }
-  .latex-preview :global(.latex-statement-title) { font-weight:650; }
+  .latex-preview :global(.latex-statement-title) { font-weight:700; }
   .latex-preview :global(.latex-anchor) { scroll-margin-block:1rem; }
   .latex-preview :global(.latex-math[data-display="true"]) { display:block; overflow-x:auto; }
   .latex-preview :global(.katex) { font-size:1.1em; }
   .latex-preview :global(.latex-error) { color:var(--mdc-error); }
   .latex-preview :global(pre) { overflow-x:auto; white-space:pre; }
+  .latex-preview :global(pre), .latex-preview :global(code) { font-family:var(--mdc-mono); font-size:.85em; }
   .latex-preview :global(.latex-bibliography) { border-top:1px solid var(--mdc-border); margin-top:1.5rem; font-size:.9em; }
-  .latex-preview :global(dt) { font-weight:600; }
+  .latex-preview :global(dt) { font-weight:700; }
   .latex-preview :global(dd) { margin:0 0 .8rem 1rem; }
 </style>
