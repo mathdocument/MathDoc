@@ -1,5 +1,5 @@
 import { autocompletion, completionKeymap, type CompletionContext, type CompletionResult } from '@codemirror/autocomplete';
-import { keymap } from '@codemirror/view';
+import { EditorView, keymap } from '@codemirror/view';
 import type { LatexSession } from './latex-session.svelte';
 
 export function latexCompletions(session: Pick<LatexSession, 'references' | 'catalog'>, context: CompletionContext): CompletionResult | null {
@@ -21,5 +21,13 @@ export function latexCompletions(session: Pick<LatexSession, 'references' | 'cat
 }
 
 export function latexAutocomplete(session: LatexSession) {
-  return [autocompletion({override: [context => latexCompletions(session, context)], maxRenderedOptions: 50}), keymap.of(completionKeymap)];
+  return [
+    autocompletion({override: [context => latexCompletions(session, context)], maxRenderedOptions: 50}),
+    keymap.of(completionKeymap),
+    EditorView.theme({
+      '.cm-tooltip': {backgroundColor: 'var(--mdc-panel)', color: 'var(--mdc-fg)', border: '1px solid var(--mdc-border)'},
+      '.cm-tooltip-autocomplete ul li[aria-selected]': {backgroundColor: 'var(--mdc-accent-soft)', color: 'var(--mdc-accent)'},
+      '.cm-completionDetail': {color: 'var(--mdc-muted)'},
+    }),
+  ];
 }
