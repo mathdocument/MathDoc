@@ -14,6 +14,10 @@ file, then save. The CLI command above performs the same operation. The two
 file contents are versioned in the branch; later changes to the local files
 require uploading them again.
 
+Saving stores the uploaded text without parsing or formatting it. Only filenames,
+size limits and the branch revision are checked; incomplete LaTeX or BibTeX can
+be saved. Parsing errors are reported when loading completions or previews.
+
 Each block has an **Edit / Preview** toggle. Preview preparation is debounced
 while typing and uses the unsaved draft; only **Save** writes the node. The
 read-only imported-dependency list is derived from `dep` and never inserted
@@ -84,6 +88,11 @@ correct node without reading an `.aux` file or building a PDF.
 labels and formatted bibliography entries; only the entries cited by this node
 appear in its preview. Optional citation notes, such as `\cite[Theorem 2]{key}`,
 are retained. The HTML citation style is independent of a print-only `.bst` file.
+Missing fields such as `editor`, `author` or `year` do not block citations. If an
+entry cannot use the standard style, its available metadata is displayed instead;
+other entries retain their normal formatting. No missing metadata is invented.
+Completion reads entry metadata without formatting the whole library. Preview
+formats only the cited entries and caches their results.
 
 ## Runtime and caching
 

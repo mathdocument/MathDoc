@@ -31,10 +31,6 @@ async fn put_project(
 ) -> Result<Json<Value>, ApiError> {
     let expected_revision = expected(&headers)?.to_string();
     project.validate()?;
-    service
-        .latex
-        .request(json!({"kind":"catalog","project":project}))
-        .await?;
     let mut snapshot = service.read().await?;
     if expected_revision != snapshot.version {
         return Err(ApiError(

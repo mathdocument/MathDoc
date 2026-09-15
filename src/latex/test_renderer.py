@@ -1,5 +1,7 @@
 """Run with: python -B -m unittest discover -s src/latex -p 'test_*.py'."""
 import unittest
+from unittest.mock import patch
+from pybtex.style.formatting import BaseStyle
 import renderer
 
 A = '11111111-1111-4111-8111-111111111111'
@@ -10,6 +12,29 @@ PROJECT = {
 }
 
 class RendererTest(unittest.TestCase):
+    def test_incomplete_bibliography_entries_remain_citable(self):
+        project = {**PROJECT, 'bibliography': PROJECT['bibliography'] + r'''
+            @book{Fox1957, title={A title}, year={1957}}
+            @article{Empty}
+            @customtype{Custom, title={<script>unsafe</script>}, url={https://example.org}}
+            @book{FoxOther1957, title={Another title}, year={1957}}
+        '''}
+        with patch.object(BaseStyle, 'format_entry', side_effect=AssertionError('Completion must not format entries')):
+            catalog = renderer.handle({'kind': 'catalog', 'project': project})
+        citations = {entry['key']: entry for entry in catalog['citations']}
+        self.assertEqual(len(citations), 5)
+        self.assertNotEqual(citations['Fox1957']['label'], citations['FoxOther1957']['label'])
+        self.assertEqual(citations['Empty']['text'], 'Empty')
+        preview = renderer.handle({'kind': 'preview', 'project': project, 'dependencies': [],
+            'target': {'fnode': A, 'title': 'A', 'source': r'\cite{Fox1957,Empty,Custom,ref}'}})
+        self.assertEqual(preview['diagnostics'], [])
+        self.assertIn('A title', preview['html'])
+        self.assertIn('1957', preview['html'])
+        self.assertIn('Aut20', preview['html'])
+        self.assertIn('A paper', preview['html'])
+        self.assertIn('&lt;script&gt;', preview['html'])
+        self.assertNotIn('<script>', preview['html'])
+
     def test_print_setup_is_not_executed_when_importing_content_macros(self):
         project = {**PROJECT, 'preamble': r'''
             \ProvidesClass{example}

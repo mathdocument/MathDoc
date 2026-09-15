@@ -47,6 +47,20 @@ async fn latex_project_previews_follow_dependencies_and_preserve_configuration()
     let service = Service::open(fixture.db.clone()).await.unwrap();
     let app = service::router(service.clone());
     let (_, original) = call(&app, "GET", "/api/project/latex", Value::Null, None).await;
+    // Configuration stores editable source, even before it can be rendered.
+    let unfinished = json!({"preamble_name":"macros.cls", "preamble":"\\iftrue",
+        "bibliography_name":"refs.bib", "bibliography":"@book{unfinished"});
+    let (status, original) = call(
+        &app,
+        "PUT",
+        "/api/project/latex",
+        unfinished.clone(),
+        original["revision"].as_str(),
+    )
+    .await;
+    assert_eq!(status, 200, "{original}");
+    let (_, saved) = call(&app, "GET", "/api/project/latex", Value::Null, None).await;
+    assert_eq!(saved["project"], unfinished);
     let project = json!({"preamble_name":"macros.cls", "preamble":"\\ProvidesClass{macros}\n\\newcommand{\\cA}{\\mathcal{A}}\n\\newtheorem{thm}{Theorem}",
         "bibliography_name":"refs.bib", "bibliography":"@article{paper,title={A paper},author={Author, A.},journal={Journal},year={2020}}"});
     let (status, configured) = call(

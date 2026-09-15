@@ -17,6 +17,7 @@ from plasTeX.Base.TeX.Primitives import IfCommand
 from plasTeX.Packages.amsthm import newtheorem
 from plasTeX.TeX import TeX
 from pybtex.database import parse_string
+from pybtex.exceptions import PybtexError
 from pybtex.plugin import find_plugin
 
 for name in ("plasTeX", "status", "parse", "context", "packages"):
@@ -406,22 +407,38 @@ def parse(preamble, source):
     return result
 
 
-def bibliography(source):
-    if source in BIB:
-        BIB.move_to_end(source)
-        return BIB[source]
-    result = []
-    if source.strip():
+def bibliography(source, cited_keys=()):
+    style = find_plugin('pybtex.style.formatting', 'alpha')()
+    if source not in BIB:
         data = parse_string(source, 'bibtex')
-        formatted = {entry.key: entry for entry in find_plugin('pybtex.style.formatting', 'alpha')().format_bibliography(data)}
+        entries = style.sort(list(data.entries.values()))
+        labels = dict(zip((entry.key for entry in entries), style.format_labels(entries)))
+        citations = {}
         for key, entry in data.entries.items():
-            rendered = formatted[key]
-            result.append({'key': key, 'label': rendered.label, 'title': entry.fields.get('title', ''),
-                           'authors': ', '.join(str(p) for p in entry.persons.get('author', [])),
-                           'year': entry.fields.get('year', ''), 'text': rendered.text.render_as('text')})
-    BIB[source] = result
+            authors = ', '.join(str(p) for p in entry.persons.get('author', []))
+            text = '. '.join(value for value in (
+                authors or ', '.join(str(p) for p in entry.persons.get('editor', [])),
+                entry.fields.get('title'), entry.fields.get('year'),
+                entry.fields.get('doi') or entry.fields.get('url'),
+            ) if value) or key
+            citations[key] = {'key': key, 'label': labels[key], 'title': entry.fields.get('title', ''),
+                              'authors': authors, 'year': entry.fields.get('year', ''), 'text': text}
+        BIB[source] = data, citations, set()
+    BIB.move_to_end(source)
     while len(BIB) > 2: BIB.popitem(last=False)
-    return result
+    data, citations, formatted = BIB[source]
+    # Completion needs metadata only. Format just the cited entries, once each.
+    for key in set(cited_keys) - formatted:
+        if key not in citations:
+            continue
+        try:
+            citations[key]['text'] = style.format_entry(citations[key]['label'], data.entries[key], bib_data=data).text.render_as('text')
+        except (PybtexError, AttributeError):
+            # Retain available metadata when a print style requires missing fields
+            # or does not implement this entry type; never invent bibliographic data.
+            pass
+        formatted.add(key)
+    return list(citations.values())
 
 
 def handle(request):
@@ -450,7 +467,8 @@ def handle(request):
         return {'imports': imports, 'references': refs, 'diagnostics': diagnostics}
     current = parse(preamble, target['source'])
     diagnostics += current.diagnostics
-    citations = {entry['key']: entry for entry in bibliography(project['bibliography'])}
+    cited_keys = [key for part in current.parts if isinstance(part, dict) for key in part.get('cite', [])]
+    citations = {entry['key']: entry for entry in bibliography(project['bibliography'], cited_keys)}
     used_citations = []
     exact = {item['key']: item for item in refs}
     output = []
