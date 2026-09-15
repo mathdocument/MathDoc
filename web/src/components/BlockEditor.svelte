@@ -100,6 +100,9 @@
       EditorState.tabSize.of(4),
       indentUnit.of("    "),
       EditorView.lineWrapping,
+      EditorView.editorAttributes.of(view => ({
+        "data-selection": view.state.selection.ranges.some(range => !range.empty) ? "range" : "cursor",
+      })),
       EditorView.theme({
         "&": {
           backgroundColor: "var(--mdc-code-bg)",
@@ -111,7 +114,7 @@
         ".cm-content": { caretColor: "var(--mdc-accent)" },
         ".cm-content:focus-visible": { outline: "none" },
         ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--mdc-accent)" },
-        "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
+        "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": {
           backgroundColor: "var(--mdc-editor-selection) !important",
         },
         ".cm-gutters": {
@@ -120,6 +123,7 @@
           color: "var(--mdc-code-dim)",
         },
         ".cm-activeLine": { backgroundColor: "var(--mdc-editor-active)" },
+        '&[data-selection="range"] .cm-activeLine': { backgroundColor: "transparent" },
         ".cm-activeLineGutter": { backgroundColor: "var(--mdc-editor-active)" },
       }),
       EditorView.updateListener.of((u) => {

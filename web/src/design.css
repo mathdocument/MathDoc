@@ -51,8 +51,8 @@
   --mdc-body-glow: rgba(94, 112, 200, 0.13);
   --mdc-grid: rgba(124, 140, 255, 0.03);
   --mdc-selection: rgba(124, 140, 255, 0.3);
-  --mdc-editor-selection: rgba(124, 140, 255, 0.26);
-  --mdc-editor-active: rgba(124, 140, 255, 0.055);
+  --mdc-editor-selection: rgba(124, 140, 255, 0.38);
+  --mdc-editor-active: rgba(124, 140, 255, 0.09);
   --mdc-ring: rgba(124, 140, 255, 0.55);
 
   --mdc-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.32);
@@ -139,8 +139,8 @@
   --mdc-body-glow: rgba(77, 91, 217, 0.08);
   --mdc-grid: rgba(77, 91, 217, 0.05);
   --mdc-selection: rgba(77, 91, 217, 0.2);
-  --mdc-editor-selection: rgba(77, 91, 217, 0.17);
-  --mdc-editor-active: #f4f6fa;
+  --mdc-editor-selection: rgba(77, 91, 217, 0.26);
+  --mdc-editor-active: rgba(77, 91, 217, 0.055);
   --mdc-ring: rgba(77, 91, 217, 0.5);
 
   --mdc-shadow-sm: 0 1px 2px rgba(19, 30, 51, 0.07);

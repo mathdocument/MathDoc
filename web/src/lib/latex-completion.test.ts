@@ -13,6 +13,10 @@ test('completions insert scoped keys while searching titles and citation authors
   const citation = '\\cite[Theorem 1]{old, Aut';
   expect(complete(citation)?.from).toBe(citation.length - 3);
   expect(complete('\\cite{Aut')?.options[0].label).toContain('Author');
+  expect(complete('\\cite{Aut')?.options[0].detail).toContain('Article');
+  expect(complete('\\cite{Aut')?.options[0].info).toBeUndefined();
+  expect(complete('\\cref{Main')?.options[0].detail).toContain('Dependency');
+  expect(complete('\\cref{Main')?.options[0].info).toBeUndefined();
   expect(complete('\\begin{it')?.options[0].label).toBe('items');
   expect(complete('\\c')?.options[0].label).toBe('cA');
   session.references = [];
