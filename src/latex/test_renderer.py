@@ -56,6 +56,32 @@ class RendererTest(unittest.TestCase):
         self.assertEqual(parsed.diagnostics, [])
         self.assertIn('Erdős, Szemerédi, Müller, François &amp; Co. &amp; More', ''.join(parsed.parts))
 
+    def test_independent_preambles_preserve_ordinary_macro_semantics(self):
+        cases = [
+            (r'\newcommand{\pair}[2][first]{#1/#2}\providecommand{\pair}{wrong}',
+             r'\pair{second}; \pair[other]{last}', 'first/second; other/last'),
+            (r'\def\word{before}\def\message{Hello \word}\def\word{after}',
+             r'\message', 'Hello after'),
+            (r'\newif\ifdraft\draftfalse\ifdraft\def\chosen{wrong}\else\def\chosen{right}\fi',
+             r'\chosen', 'right'),
+            (r'\newif\ifdraft\drafttrue\ifdraft\def\chosen{right}\else\def\chosen{wrong}\fi',
+             r'\chosen', 'right'),
+            (r'\newenvironment{argument}[1][Proof]{\begin{proof}[#1]}{\end{proof}}',
+             r'\begin{argument}[Sketch]Complete.\end{argument}', '>Sketch</div>'),
+            (r'\DeclareMathOperator{\rank}{rank}\newcommand{\norm}[1]{\left\lVert#1\right\rVert}',
+             r'$\rank A+\norm{x}$', r'\operatorname{rank}'),
+        ]
+        for preamble, source, expected in cases:
+            with self.subTest(preamble=preamble):
+                parsed = renderer.parse(preamble, source)
+                self.assertEqual(parsed.diagnostics, [])
+                self.assertIn(expected, ''.join(parsed.parts))
+        for declaration in ('edef', 'xdef'):
+            preamble = r'\def\word{before}' + '\\' + declaration + r'\message{Hello \word}\def\word{after}'
+            self.assertEqual(renderer.parse(preamble, 'Unrelated content.').diagnostics, [])
+            with self.assertRaisesRegex(ValueError, 'unsupported'):
+                renderer.parse(preamble, r'\message')
+
     def test_theorem_numbers_are_local_and_references_identify_the_node(self):
         project = {'bibliography': '', 'preamble': r'''
             \newtheorem{thm}{Theorem}[section]

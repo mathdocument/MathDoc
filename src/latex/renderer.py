@@ -14,7 +14,7 @@ from io import StringIO
 from urllib.parse import quote, urlparse
 
 from plasTeX import Command, Context, Environment, IfFalse, IfTrue, NewIf, TeXDocument
-from plasTeX.Base.TeX.Primitives import IfCommand
+from plasTeX.Base.TeX.Primitives import DefCommand, IfCommand
 from plasTeX.Base.LaTeX.Definitions import newcommand
 from plasTeX.Packages.amsthm import newtheorem
 from plasTeX.TeX import TeX
@@ -185,6 +185,23 @@ class ProvideCommand(newcommand):
             context.newcommand(a['name'], a['nargs'], a['definition'], opt=a['opt'])
 
 
+class UnsupportedExpansion(Command):
+    def invoke(self, tex):
+        raise ValueError(f'\\{self.nodeName} uses unsupported \\{self.declaration} expansion; use an ordinary \\newcommand or \\def')
+
+
+class ExpandedDefinition(DefCommand):
+    def invoke(self, tex):
+        # plasTeX implements edef/xdef as def, silently changing TeX semantics.
+        # Retain unused print definitions, but never render a wrong expansion.
+        attrs = self.parse(tex)
+        name = attrs['name'].nodeName
+        macro = type(name, (UnsupportedExpansion,), {'declaration': self.nodeName})
+        context = self.ownerDocument.context
+        (context.addGlobal if self.nodeName == 'xdef' else context.addLocal)(name, macro)
+        return []
+
+
 class Ref(Command):
     args = '* key:str'
 
@@ -274,6 +291,7 @@ def parse(preamble, source):
         **{name: Ref for name in ('ref', 'cref', 'Cref', 'nameref', 'eqref')},
         'cite': Cite, 'label': Label, 'usepackage': UsePackage, 'RequirePackage': UsePackage,
         'newtheorem': NewTheorem, 'providecommand': ProvideCommand,
+        'edef': ExpandedDefinition, 'xdef': ExpandedDefinition,
         'documentclass': ClassDeclaration, 'LoadClass': ClassDeclaration,
         'ProvidesClass': Provides, 'ProvidesPackage': Provides, 'NeedsTeXFormat': Provides,
         'DeclareOption': Options, 'ProcessOptions': ProcessOptions, 'PassOptionsToPackage': PassOptions,
@@ -314,14 +332,12 @@ def parse(preamble, source):
         targets.setdefault(id(target), []).append(item)
 
     parts = []
-    math_counter = 0
     ignored = {'label', 'documentclass', 'LoadClass', 'ProvidesClass', 'ProvidesPackage', 'NeedsTeXFormat', 'DeclareOption', 'ProcessOptions', 'PassOptionsToPackage', 'usepackage', 'RequirePackage', 'newcommand', 'renewcommand', 'providecommand', 'newenvironment', 'renewenvironment', 'newtheorem', 'theoremstyle', 'makeatletter', 'makeatother', 'parindent', 'parskip', 'pagestyle', 'thispagestyle'}
     tags = {'par': 'p', 'itemize': 'ul', 'enumerate': 'ol', 'item': 'li', 'description': 'dl', 'textbf': 'strong', 'textit': 'em', 'emph': 'em', 'texttt': 'code', 'textsc': 'span', 'underline': 'u', 'quote': 'blockquote', 'quotation': 'blockquote', 'center': 'div', 'flushleft': 'div', 'flushright': 'div'}
     sections = {'part': 'h2', 'chapter': 'h2', 'section': 'h2', 'subsection': 'h3', 'subsubsection': 'h4', 'paragraph': 'h5', 'subparagraph': 'h6'}
     math_names = {'math', 'displaymath', 'equation', 'equation*', 'align', 'align*', 'gather', 'gather*', 'multline', 'multline*', 'eqnarray', 'eqnarray*'}
 
     def render(node, depth=0):
-        nonlocal math_counter
         if depth > 60:
             raise ValueError("LaTeX nesting limit exceeded")
         name = node.nodeName
@@ -350,7 +366,6 @@ def parse(preamble, source):
                 env = {'align': 'aligned', 'gather': 'gathered', 'eqnarray': 'aligned'}.get(name.rstrip('*'))
                 if env: source = '\\begin{' + env + '}' + source + '\\end{' + env + '}'
             parts.append(f'<span class="latex-math" data-display="{str(name != "math").lower()}" data-tex="{esc(source)}"></span>')
-            math_counter += 1
             return
         if name in ('ref', 'cref', 'Cref', 'nameref', 'eqref'):
             key = attrs.get('key', attrs.get('label', ''))
