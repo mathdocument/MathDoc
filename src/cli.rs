@@ -47,7 +47,7 @@ enum Commands {
         #[command(subcommand)]
         command: Graph,
     },
-    /// Export the entire branch graph and Lean project configuration as JSON.
+    /// Export the entire branch graph and its project configurations as JSON.
     Export,
     /// Restore a complete graph JSON bundle into an empty branch.
     Import { input: std::path::PathBuf },
@@ -58,7 +58,7 @@ enum Commands {
         #[command(subcommand)]
         command: Branch,
     },
-    /// Manage the branch's Lean toolchain and library configuration.
+    /// Manage the branch's Lean and LaTeX project configurations.
     Project {
         #[command(subcommand)]
         command: Project,
@@ -199,11 +199,33 @@ enum Lean {
 }
 #[derive(Subcommand)]
 enum Project {
+    /// Read or configure shared LaTeX macros and bibliography.
+    Latex {
+        #[command(subcommand)]
+        command: LatexProjectCommand,
+    },
     /// Read the branch's Lean toolchain, Lake configuration and dependency lockfile.
     Show,
     /// Replace the branch's Lean toolchain, Lake configuration and lockfile from stdin JSON.
     Set {
         /// Require the branch revision returned by project show.
+        #[arg(long)]
+        revision: Option<String>,
+    },
+}
+#[derive(Subcommand)]
+enum LatexProjectCommand {
+    /// Read the shared LaTeX preamble or class and bibliography.
+    Show,
+    /// Upload a .tex/.cls macro file and a .bib bibliography.
+    Set {
+        /// Shared preamble (.tex) or document class (.cls).
+        #[arg(long)]
+        preamble: std::path::PathBuf,
+        /// Shared bibliography (.bib).
+        #[arg(long)]
+        bib: std::path::PathBuf,
+        /// Require the branch revision returned by project latex show.
         #[arg(long)]
         revision: Option<String>,
     },
@@ -631,6 +653,20 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
                 .await?
         }
 
+        Commands::Project { command: Project::Latex { command } } => match command {
+            LatexProjectCommand::Show => api.get("/project/latex").await?,
+            LatexProjectCommand::Set { preamble, bib, revision } => {
+                let project = crate::latex::LatexProject {
+                    preamble_name: preamble.file_name().context("preamble filename required")?.to_str().context("invalid filename")?.into(),
+                    preamble: std::fs::read_to_string(&preamble).context("read LaTeX preamble")?,
+                    bibliography_name: bib.file_name().context("bibliography filename required")?.to_str().context("invalid filename")?.into(),
+                    bibliography: std::fs::read_to_string(&bib).context("read bibliography")?,
+                };
+                project.validate()?;
+                let current = api.get("/project/latex").await?;
+                api.request(Method::PUT, "/project/latex", &[], Some(serde_json::to_value(project)?), revision.as_deref().or(current["revision"].as_str())).await?
+            }
+        },
         Commands::Project {
             command: Project::Show,
         } => api.get("/project/lean").await?,

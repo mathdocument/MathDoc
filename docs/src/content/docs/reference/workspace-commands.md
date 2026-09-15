@@ -159,3 +159,16 @@ This configures Lean and external libraries. It does not create or select a
 database. See [Configuration](../configuration/) for the input shape and library
 pinning rules. Whole-graph [export and import](../../concepts/import-export/)
 include these project settings, without compilation caches or other branches.
+
+## LaTeX project files
+
+```sh
+mdc project latex show -p myproject/main
+mdc project latex set -p myproject/main --preamble macros.tex --bib references.bib
+```
+
+`--preamble` accepts a `.tex` preamble or `.cls` file; `--bib` accepts a `.bib`
+file. Both files are stored as text in the selected branch. Local paths are used
+only to read the upload, never as ongoing workspace dependencies. `--revision`
+accepts the branch revision returned by `project latex show`. The settings are
+included in full-graph export and inherited by new branches.

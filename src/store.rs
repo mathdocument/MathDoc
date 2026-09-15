@@ -535,6 +535,7 @@ impl Database {
         let docs: Vec<Value> = response.json().await?;
         let mut nodes = BTreeMap::new();
         let mut project = None;
+        let mut latex_project = crate::latex::LatexProject::default();
         for doc in docs {
             match doc["@type"].as_str() {
                 Some("Node") => {
@@ -546,6 +547,10 @@ impl Database {
                         doc["config"].as_str().context("invalid project config")?,
                     )?);
                 }
+                Some("Project") if doc["name"] == "latex" => {
+                    latex_project = serde_json::from_str(doc["config"].as_str().context("invalid LaTeX project config")?)?;
+                    latex_project.validate()?;
+                }
                 _ => {}
             }
         }
@@ -553,6 +558,7 @@ impl Database {
             version,
             nodes,
             project: project.context("database has no Lean project")?,
+            latex_project: latex_project.into(),
             project_key: String::new(),
             modules: Default::default(),
             lean_prefixes: HashMap::new(),
@@ -570,6 +576,7 @@ impl Database {
             version: String::new(),
             nodes: BTreeMap::new(),
             project: snapshot.project.clone(),
+            latex_project: snapshot.latex_project.clone(),
             project_key: String::new(),
             modules: Default::default(),
             lean_prefixes: HashMap::new(),
@@ -582,18 +589,23 @@ impl Database {
         Ok(snapshot)
     }
     pub async fn put(&self, nodes: &[Node], version: &str, message: &str) -> Result<String> {
-        self.put_bundle(nodes, None, version, message).await
+        self.put_bundle(nodes, None, None, version, message).await
     }
     pub async fn put_bundle(
         &self,
         nodes: &[Node],
         project: Option<&LeanProject>,
+        latex_project: Option<&crate::latex::LatexProject>,
         version: &str,
         message: &str,
     ) -> Result<String> {
         let mut documents: Vec<Value> = nodes.iter().map(Node::document).collect();
         if let Some(project) = project {
             documents.push(json!({"@id":"Project/lean","@type":"Project","name":"lean","config":serde_json::to_string(project)?}));
+        }
+        if let Some(project) = latex_project {
+            project.validate()?;
+            documents.push(json!({"@id":"Project/latex","@type":"Project","name":"latex","config":serde_json::to_string(project)?}));
         }
         let response = self
             .server
@@ -678,6 +690,7 @@ pub struct Snapshot {
     pub version: String,
     pub nodes: BTreeMap<String, Arc<Node>>,
     pub project: Arc<LeanProject>,
+    pub latex_project: Arc<crate::latex::LatexProject>,
     pub project_key: String,
     pub modules: Arc<BTreeMap<PathBuf, String>>,
     pub lean_prefixes: HashMap<String, Sha256>,
@@ -950,6 +963,7 @@ mod tests {
                 .map(|n| (n.fnode.clone(), n.into()))
                 .collect(),
             project: LeanProject::default().into(),
+            latex_project: Default::default(),
             project_key: String::new(),
             modules: Default::default(),
             lean_prefixes: HashMap::new(),
@@ -989,6 +1003,7 @@ mod tests {
                 .map(|n| (n.fnode.clone(), Arc::new(n.clone())))
                 .collect(),
             project: LeanProject::default().into(),
+            latex_project: Default::default(),
             project_key: String::new(),
             modules: Default::default(),
             lean_prefixes: HashMap::new(),

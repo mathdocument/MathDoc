@@ -19,6 +19,7 @@ fn load_snapshot() -> Snapshot {
             .map(|n| (n.fnode.clone(), n.into()))
             .collect(),
         project: bundle.project.into(),
+        latex_project: Default::default(),
         project_key: String::new(),
         modules: Default::default(),
         lean_prefixes: HashMap::new(),

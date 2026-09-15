@@ -10,6 +10,7 @@ pub mod config;
 #[cfg(unix)]
 pub mod core;
 pub mod lean;
+pub mod latex;
 pub(crate) mod profile;
 pub mod service;
 pub(crate) mod server;

@@ -102,7 +102,7 @@ impl IntoResponse for ApiError {
     }
 }
 type ApiResult<T> = std::result::Result<T, ApiError>;
-fn expected(headers: &HeaderMap) -> ApiResult<&str> {
+pub(crate) fn expected(headers: &HeaderMap) -> ApiResult<&str> {
     headers
         .get("if-match")
         .and_then(|v| v.to_str().ok())
@@ -158,6 +158,7 @@ pub fn graph_report(snapshot: &Snapshot) -> Value {
 
 pub fn router(service: Arc<Service>) -> Router {
     let api = Router::new()
+        .merge(crate::latex::routes())
         .route("/graph/check", get(graph_check))
         .route("/graph/roots", get(roots))
         .route("/graph/full", get(full))
@@ -948,7 +949,7 @@ async fn put_project(
 async fn export(State(s): State<Arc<Service>>) -> ApiResult<Json<Value>> {
     let snapshot = s.read().await?;
     Ok(Json(
-        json!({"nodes":snapshot.nodes.values().collect::<Vec<_>>(),"project":snapshot.project}),
+        json!({"nodes":snapshot.nodes.values().collect::<Vec<_>>(),"project":snapshot.project,"latex_project":snapshot.latex_project}),
     ))
 }
 #[derive(Deserialize)]
@@ -956,6 +957,8 @@ async fn export(State(s): State<Arc<Service>>) -> ApiResult<Json<Value>> {
 pub struct Import {
     pub nodes: Vec<Node>,
     pub project: LeanProject,
+    #[serde(default)]
+    pub latex_project: crate::latex::LatexProject,
 }
 async fn import(State(s): State<Arc<Service>>, Json(body): Json<Import>) -> ApiResult<Json<Value>> {
     let mut snapshot = s.read().await?;
@@ -967,17 +970,20 @@ async fn import(State(s): State<Arc<Service>>, Json(body): Json<Import>) -> ApiR
     }
     // Project configuration is validated before any data is imported.
     body.project.validate()?;
+    body.latex_project.validate()?;
     body.project.validate_modules(body.nodes.iter())?;
     snapshot.validate_changes(&body.nodes)?;
     let version =
         s.db.put_bundle(
             &body.nodes,
             Some(&body.project),
+            Some(&body.latex_project),
             &snapshot.version,
             "Import graph",
         )
         .await?;
     snapshot.project = body.project.into();
+    snapshot.latex_project = body.latex_project.into();
     snapshot.nodes = body
         .nodes
         .into_iter()

@@ -33,6 +33,8 @@ UUIDs; CLI references are resolved by exact name or UUID first.
 | `POST /node/ID/lean/goals` | `lean goals` | Body `{line, character}` in zero-based LSP coordinates. |
 | `GET /project/lean` | `project show` | `{revision, project}`. |
 | `PUT /project/lean` | `project set` | Complete project object; updated revision and configuration. |
+| `GET /project/latex` | `project latex show` | `{revision, project}` with the shared macro file and bibliography. |
+| `PUT /project/latex` | `project latex set` | Replace `{preamble_name, preamble, bibliography_name, bibliography}` using the branch revision. |
 | `GET /export` | `export` | `{nodes, project}` for the entire branch snapshot. |
 | `POST /import` | `import FILE` | Complete bundle into an empty branch; graph report. |
 | `GET /history` | `history` | Latest 50 TerminusDB commits. |

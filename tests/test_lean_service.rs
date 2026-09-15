@@ -39,6 +39,7 @@ async fn native_project_keeps_module_names_configuration_and_dependency_guards()
             .map(|n| (n.fnode.clone(), n.into()))
             .collect(),
         project: project.into(),
+        latex_project: Default::default(),
         project_key: String::new(),
         modules: Default::default(),
         lean_prefixes: HashMap::new(),
@@ -136,6 +137,7 @@ async fn pinned_external_library_builds_and_reuses_artifacts() {
         version: "library".into(),
         nodes: [(node.fnode.clone(), node.clone().into())].into(),
         project: project.into(),
+        latex_project: Default::default(),
         project_key: String::new(),
         modules: Default::default(),
         lean_prefixes: HashMap::new(),
@@ -211,6 +213,7 @@ async fn native_lean_incremental_diagnostics_goals_and_imports() {
         version: "test".into(),
         nodes: [(a.fnode.clone(), a.clone().into())].into(),
         project: LeanProject::default().into(),
+        latex_project: Default::default(),
         project_key: String::new(),
         modules: Default::default(),
         lean_prefixes: HashMap::new(),
