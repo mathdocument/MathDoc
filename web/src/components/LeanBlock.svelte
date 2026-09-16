@@ -190,7 +190,7 @@
   .module-import code { display: block; margin-top: .4rem; overflow-wrap: anywhere; user-select: all; }
   .editor-surface { position:relative; height:100cqh; min-height:0; }
   .native-editor { height:100%; }
-  .source-placeholder { box-sizing:border-box; height:100%; overflow:auto; overscroll-behavior:contain; margin:0; padding:12px; font:13px/1.6 monospace; white-space:pre-wrap; }
+  .source-placeholder { box-sizing:border-box; height:100%; overflow:auto; margin:0; padding:12px; font:13px/1.6 monospace; white-space:pre-wrap; }
   .pending { visibility: hidden; position: absolute; inset: 0; }
   iframe { display:block; width:100%; height:100%; border:0; }
 </style>

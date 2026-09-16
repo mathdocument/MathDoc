@@ -956,6 +956,59 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
   } finally { await browser.close(); }
 });
 
+await test('editors and previews pass scrolling to the node pane at both boundaries', {timeout: 90000}, async () => {
+  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const lines = Array.from({length: 100}, (_, i) => `Line ${i + 1}.`);
+  const node = {fnode: randomUUID(), title: 'Scrolling', module: 'Lib.Scrolling', depens: [], blocks: [
+    {srctype: 'text', content: lines.join('\n')},
+    {srctype: 'latex', content: lines.join('\n\n')},
+    {srctype: 'lean', content: lines.map(line => `-- ${line}`).join('\n') + '\nexample : True := by trivial\n'},
+    {srctype: 'rocq', content: lines.join('\n')},
+  ]};
+  try {
+    await fixture(browser, async ({page, url}) => {
+      await page.goto(`${url}/?scroll#ref=${node.fnode}`);
+      const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
+      await frame.locator('.view-line').first().waitFor();
+      await page.locator('.native-editor:not(.pending)').waitFor();
+      const pane = page.locator('.blocks');
+      const outerScroll = () => pane.evaluate(el => el.scrollTop);
+      const check = async (block, surface, position) => {
+        for (const direction of [1, -1]) {
+          await position(direction);
+          await block.evaluate(el => {
+            const pane = el.closest('.blocks');
+            pane.scrollTop += el.getBoundingClientRect().top - pane.getBoundingClientRect().top - 20;
+          });
+          const bounds = await surface.boundingBox();
+          await page.mouse.move(bounds.x + 80, bounds.y + 100);
+          const before = await outerScroll();
+          await page.mouse.wheel(0, direction * 80);
+          await page.waitForTimeout(200);
+          assert.ok(Math.abs(await outerScroll() - before) < 1, 'scroll stays inside until the editor reaches its boundary');
+          // Monaco normalizes Chromium's synthetic wheel ticks to smaller steps.
+          for (let step = 0; step < 60 && Math.abs(await outerScroll() - before) < 1; step++) {
+            await page.mouse.wheel(0, direction * 500);
+            await page.waitForTimeout(100);
+          }
+          assert.ok((await outerScroll() - before) * direction > 1, `scroll continues in the outer pane at the ${direction > 0 ? 'bottom' : 'top'}`);
+        }
+      };
+      const latex = page.locator('[data-srctype="latex"]');
+      const code = latex.locator('.cm-scroller');
+      await check(latex, code, direction => code.evaluate((el, direction) => { el.scrollTop = direction > 0 ? 0 : el.scrollHeight; }, direction));
+      await latex.getByRole('button', {name: 'Render LaTeX preview'}).click();
+      const preview = latex.locator('.latex-preview');
+      await preview.waitFor();
+      await check(latex, preview, direction => preview.evaluate((el, direction) => { el.scrollTop = direction > 0 ? 0 : el.scrollHeight; }, direction));
+      const input = frame.getByRole('textbox', {name: /Editor content/});
+      await check(page.locator('[data-srctype="lean"]'), frame.locator('.monaco-editor'), async direction => {
+        await input.press(direction > 0 ? 'ControlOrMeta+Home' : 'ControlOrMeta+End');
+      });
+    }, [node]);
+  } finally { await browser.close(); }
+});
+
 await test('view changes reveal measured editors and loaded pages without intermediate frames', {timeout: 60000}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   try {

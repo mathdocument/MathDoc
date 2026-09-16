@@ -235,6 +235,7 @@ async function start() {
     model: reference.object.textEditorModel,
     automaticLayout: false,
     contextmenu: true,
+    scrollbar: { alwaysConsumeMouseWheel: false },
     lineNumbersMinChars: 1,
     lineDecorationsWidth: 5,
   });

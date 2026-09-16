@@ -432,7 +432,7 @@
     font-size: var(--mdc-text-sm);
     line-height: 1.65;
   }
-  .editor-host :global(.cm-editor .cm-scroller) { overflow:auto; overscroll-behavior:contain; font-family:var(--mdc-mono); }
+  .editor-host :global(.cm-editor .cm-scroller) { overflow:auto; font-family:var(--mdc-mono); }
   .editor-host :global(.cm-content) { min-height:10rem; }
   .preview-loading {
     min-height: 9rem;
@@ -443,7 +443,7 @@
     font-family: var(--mdc-mono);
     font-size: var(--mdc-text-xs);
   }
-  .latex-diagnostics { flex-shrink:0; max-height:30cqh; overflow:auto; overscroll-behavior:contain; padding:.5rem .75rem; color:var(--mdc-warning); font-size:var(--mdc-text-xs); }
+  .latex-diagnostics { flex-shrink:0; max-height:30cqh; overflow:auto; padding:.5rem .75rem; color:var(--mdc-warning); font-size:var(--mdc-text-xs); }
   .latex-diagnostics p { margin:.4rem 0; }
   .error-bar button { margin-left:.5rem; }
   .error-bar {

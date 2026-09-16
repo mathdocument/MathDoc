@@ -17,7 +17,7 @@
   </div>
 </details>
 <style>
-  .latex-imports { flex-shrink:0; max-height:30cqh; overflow:auto; overscroll-behavior:contain; border-bottom:1px solid var(--mdc-border); background:var(--mdc-code-bg); color:var(--mdc-muted); font-size:var(--mdc-text-xs); }
+  .latex-imports { flex-shrink:0; max-height:30cqh; overflow:auto; border-bottom:1px solid var(--mdc-border); background:var(--mdc-code-bg); color:var(--mdc-muted); font-size:var(--mdc-text-xs); }
   summary { padding:.55rem .75rem; cursor:pointer; }
   .imports-body { padding:0 .75rem .55rem; }
   p { margin:.25rem 0 .6rem; }
