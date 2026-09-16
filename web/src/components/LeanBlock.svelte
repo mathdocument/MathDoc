@@ -184,12 +184,14 @@
   {/if}
 </article>
 <style>
-  .hidden, .collapsed { display: none; }
+  .hidden { display: none; }
   .module-import { flex-shrink:0; padding: .5rem .65rem; color: var(--mdc-muted); font-size: var(--mdc-text-xs); border-bottom: 1px solid var(--mdc-border); }
   .module-import summary { cursor: pointer; }
   .module-import code { display: block; margin-top: .4rem; overflow-wrap: anywhere; user-select: all; }
   .editor-surface { position:relative; height:100cqh; min-height:0; }
-  .native-editor { height:100%; }
+  /* Keep the iframe viewport valid when reloading a collapsed editor. */
+  .editor-surface.collapsed { height:0; overflow:hidden; visibility:hidden; }
+  .native-editor { height:100cqh; }
   .source-placeholder { box-sizing:border-box; height:100%; overflow:auto; margin:0; padding:12px; font:13px/1.6 monospace; white-space:pre-wrap; }
   .pending { visibility: hidden; position: absolute; inset: 0; }
   iframe { display:block; width:100%; height:100%; border:0; }

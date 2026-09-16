@@ -956,6 +956,30 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
   } finally { await browser.close(); }
 });
 
+await test('collapsed Lean editors reload without a zero-sized browser viewport', {timeout: 60000}, async () => {
+  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const node = {fnode: randomUUID(), title: 'Collapsed reload', module: 'Lib.Collapsed', depens: [], blocks: [
+    {srctype: 'lean', content: 'example : True := by trivial\n'},
+  ]};
+  try {
+    await fixture(browser, async ({page, url}) => {
+      await page.goto(`${url}/?collapsed-reload#ref=${node.fnode}`);
+      const block = page.locator('.lean-block');
+      const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
+      await page.getByText('Lean editor ready', {exact: true}).waitFor();
+      await block.getByRole('button', {name: 'Collapse block'}).click();
+      await block.getByRole('button', {name: 'Reload environment'}).click();
+      await page.getByText('Lean editor ready', {exact: true}).waitFor();
+      assert.equal(await block.getByRole('button', {name: 'Expand block'}).count(), 1, 'reload preserves the collapsed state');
+      assert.equal(await frame.locator('#error').textContent(), '');
+      await block.getByRole('button', {name: 'Expand block'}).click();
+      await frame.locator('.view-line').first().waitFor();
+      const dimensions = await frame.locator('.monaco-editor').evaluate(el => ({width: el.clientWidth, height: el.clientHeight}));
+      assert.ok(dimensions.width > 100 && dimensions.height > 100, 'expanded editor has a usable viewport');
+    }, [node]);
+  } finally { await browser.close(); }
+});
+
 await test('editors and previews pass scrolling to the node pane at both boundaries', {timeout: 180000}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   const lines = Array.from({length: 100}, (_, i) => `Line ${i + 1}.`);
