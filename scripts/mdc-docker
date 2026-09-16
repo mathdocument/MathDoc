@@ -1,0 +1,5 @@
+#!/bin/sh
+# Invoke the server deployment's CLI from any working directory; preserve stdin.
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec docker compose --project-directory "$root" -f "$root/compose.server.yaml" exec -T mdc mdc "$@"

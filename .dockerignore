@@ -1,0 +1,11 @@
+**
+!Cargo.toml
+!Cargo.lock
+!src/
+!src/**
+!web/
+web/*
+!web/dist/
+!web/dist/**
+**/__pycache__/
+**/*.pyc

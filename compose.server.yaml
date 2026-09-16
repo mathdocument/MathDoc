@@ -1,0 +1,49 @@
+name: mathdoc-server
+services:
+  terminusdb:
+    image: terminusdb/terminusdb-server@sha256:385faf298ad77aaf2d4d6df5e84a4cbe3596d01dab2e3b991af905639ae56388
+    restart: unless-stopped
+    environment:
+      TERMINUSDB_ADMIN_PASS: ${MDC_TERMINUS_PASSWORD:?Set MDC_TERMINUS_PASSWORD in .env}
+      TERMINUSDB_SERVER_PORT: "6363"
+    volumes:
+      - terminus-data:/app/terminusdb/storage
+    healthcheck:
+      test: ["CMD", "swipl", "-q", "-g", "use_module(library(http/http_open)),setup_call_cleanup(http_open('http://127.0.0.1:6363/api/ok', S, [timeout(5)]),read_string(S,_,_),close(S)),halt", "-t", "halt(1)"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+    logging:
+      driver: local
+  mdc:
+    build: .
+    image: mathdoc-runtime:local
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 60s
+    depends_on:
+      terminusdb:
+        condition: service_healthy
+    command: ["start", "--foreground", "--port", "${MDC_PORT:-17843}"]
+    environment:
+      MDC_TERMINUS_URL: http://terminusdb:6363
+      MDC_TERMINUS_PASSWORD: ${MDC_TERMINUS_PASSWORD:?Set MDC_TERMINUS_PASSWORD in .env}
+      MDC_LISTEN_ADDRESS: 0.0.0.0
+    ports:
+      - "127.0.0.1:${MDC_PORT:-17843}:${MDC_PORT:-17843}"
+    volumes:
+      - mdc-cache:/var/lib/mdc/cache
+      - lean-toolchains:/var/lib/mdc/elan
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--output", "/dev/null", "http://127.0.0.1:${MDC_PORT:-17843}/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    logging:
+      driver: local
+volumes:
+  terminus-data:
+  mdc-cache:
+  lean-toolchains:
