@@ -968,7 +968,7 @@ await test('editors and previews pass scrolling to the node pane at both boundar
   const singles = ['latex', 'lean'].map(srctype => ({fnode: randomUUID(), title: `Single ${srctype}`, module: `Lib.Single${srctype}`, depens: [],
     blocks: [{srctype, content: srctype === 'lean' ? 'example : True := by trivial\n' : 'A short LaTeX block.'}]}));
   try {
-    await fixture(browser, async ({page, url}) => {
+    await fixture(browser, async ({page, url, cli}) => {
       await page.goto(`${url}/?scroll#ref=${node.fnode}`);
       const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
       await frame.locator('.view-line').first().waitFor();
@@ -1077,7 +1077,8 @@ await test('editors and previews pass scrolling to the node pane at both boundar
         try {
           const probe = resolve(root, 'probe');
           await run('swiftc', [resolve(webRoot, 'e2e/native-scroll.swift'), '-module-cache-path', resolve(root, 'modules'), '-o', probe]);
-          const result = await run(probe, [url, node.fnode, ...singles.map(n => n.fnode)], {timeout: 90000});
+          const empty = JSON.parse((await cli('show', 'Alpha')).stdout).fnode;
+          const result = await run(probe, [url, node.fnode, ...singles.map(n => n.fnode), empty], {timeout: 90000});
           console.log(result.stdout);
         } finally { await rm(root, {recursive: true, force: true}); }
       }

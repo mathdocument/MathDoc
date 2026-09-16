@@ -411,17 +411,29 @@
     font-weight: 620;
   }
   .blocks {
+    position: relative;
     flex: 1;
     min-height: 0;
     /* Blocks use this visible content height, including in the graph sidebar. */
     container-type: size;
     overflow-y: auto;
+    scrollbar-width: none;
     /* End the scroll chain here, including gestures that start at an edge. */
     overscroll-behavior-y: contain;
     padding: 1rem 1.25rem 1.5rem;
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
+  }
+  .blocks::-webkit-scrollbar { display: none; }
+  /* WebKit needs an actual scroll range to rubber-band short or collapsed content. */
+  .blocks::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    width: 1px;
+    height: 1px;
+    pointer-events: none;
   }
   .placeholder {
     flex: 1;

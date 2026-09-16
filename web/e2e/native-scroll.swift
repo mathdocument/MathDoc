@@ -120,6 +120,25 @@ import WebKit
                 """) as! Bool
             try require(ok, "Gesture scrolled another editor or failed to reach the outer pane")
         }
+        // Short content must still bounce: one collapsed block, all four, or none.
+        for id in [args[3], args[4], args[2], args[5]] {
+            let loaded = id == args[5] ? "document.querySelector('.blocks .empty-state')" : id == args[3] ? "document.querySelector('.cm-scroller')" : ready
+            try await load("\(base)/?native-scroll#ref=\(id)", loaded)
+            _ = try await js("document.querySelectorAll('.blocks button[title=\"Collapse\"]').forEach(b=>b.click()); undefined;")
+            await pause(250)
+            let limit = try await js("document.querySelector('.blocks').scrollHeight - document.querySelector('.blocks').clientHeight") as! Double
+            try require(limit <= 1, "Collapsed fixture should fit inside the pane")
+            for direction in [1, -1] {
+                let point = try await record("document.querySelector('.blocks')", setup: "pane.scrollTop = \(direction > 0 ? "pane.scrollHeight" : "0");")
+                await gesture(point, direction)
+                let excursion = try await js("""
+                    recording = false;
+                    \(direction) > 0 ? Math.max(...samples.map(s=>s[0])) - (pane.scrollHeight-pane.clientHeight) : -Math.min(...samples.map(s=>s[0]));
+                    """) as! Double
+                print("short pane", id, direction, "bounce", excursion)
+                try require(excursion > 3, "No native bounce with collapsed or empty content")
+            }
+        }
     }
 }
 MainActor.assumeIsolated {
