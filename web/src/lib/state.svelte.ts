@@ -236,9 +236,11 @@ let activeViewTransition: ViewTransition | null = null;
 export async function withViewTransition(
   mutate: () => void,
   scope?: string,
+  ready?: () => Promise<void>,
 ): Promise<void> {
   if (typeof document === "undefined" || typeof document.startViewTransition !== "function") {
     mutate();
+    await ready?.();
     return;
   }
   activeViewTransition?.skipTransition();
@@ -263,7 +265,13 @@ export async function withViewTransition(
     void vt.ready.catch(() => {});
     void vt.finished.then(cleanup).catch(cleanup);
     await vt.updateCallbackDone;
+    if (ready) {
+      await ready();
+      vt.skipTransition();
+      await vt.finished;
+    }
   } catch {
+    if (token === viewTransitionToken) activeViewTransition?.skipTransition();
     cleanup();
     apply();
   }

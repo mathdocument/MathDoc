@@ -837,3 +837,55 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
     });
   } finally { await browser.close(); }
 });
+
+await test('view changes reveal measured LaTeX editors without intermediate frames', {timeout: 60000}, async () => {
+  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  try {
+    await fixture(browser, async ({cli, page, url}) => {
+      const node = JSON.parse((await cli('show', 'Alpha')).stdout);
+      const content = Array.from({length: 100}, (_, i) => `Line ${i + 1}: ${'long text with wrapping '.repeat(i % 4 + 1)}`).join('\n');
+      const saved = await fetch(`${url}/api/node/${node.fnode}/block/latex`, {
+        method: 'PUT', headers: {'content-type': 'application/json', 'if-match': `"${node.revision}"`}, body: JSON.stringify({content}),
+      });
+      assert.equal(saved.status, 200);
+      await page.reload();
+      await page.locator('.cm-lineNumbers .cm-gutterElement').nth(2).waitFor();
+      await page.waitForFunction(() => document.querySelector('.latex-imports') || document.querySelector('.source-block .cm-line'));
+      await page.evaluate(() => { window.originalEditor = document.querySelector('.cm-editor'); });
+      let release, entered;
+      const gate = new Promise(resolve => { release = resolve; });
+      const requested = new Promise(resolve => { entered = resolve; });
+      await page.route('**/api/graph/full', async route => { entered(); await gate; await route.continue(); });
+      await page.getByRole('button', {name: 'Graph', exact: true}).click();
+      await requested;
+      try {
+        await page.waitForFunction(() => document.getAnimations().some(a => a.animationName === 'mdc-hold'));
+        assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement, '::view-transition-new(root)').visibility), 'hidden');
+      } finally { release(); }
+      await page.waitForFunction(() => !document.documentElement.dataset.vtScope);
+      await page.unroute('**/api/graph/full');
+      // Sample the first frame exposed after each width change, before another measure can mask a bad gutter.
+      for (const name of ['Knowledge', 'Graph', 'Knowledge', 'Graph']) {
+        await page.evaluate(() => {
+          window.firstLayout = new Promise(resolve => {
+            let changing = false;
+            const sample = () => {
+              changing ||= document.documentElement.dataset.vtScope === 'ready';
+              if (!changing || document.documentElement.dataset.vtScope) return requestAnimationFrame(sample);
+              const editor = document.querySelector('.cm-editor');
+              const lines = [...editor.querySelectorAll('.cm-line')];
+              const gutters = [...editor.querySelectorAll('.cm-lineNumbers .cm-gutterElement')].filter(el => el.textContent.trim() && getComputedStyle(el).visibility !== 'hidden');
+              resolve(gutters.map((g, i) => ({number: g.textContent, difference: Math.abs(g.getBoundingClientRect().top - lines[i].getBoundingClientRect().top)})));
+            };
+            requestAnimationFrame(sample);
+          });
+        });
+        await page.getByRole('button', {name, exact: true}).click();
+        const rows = await page.evaluate(() => window.firstLayout);
+        assert.ok(rows.length > 3);
+        assert.ok(rows.every(row => row.difference < 1), JSON.stringify(rows));
+      }
+      assert.equal(await page.evaluate(() => window.originalEditor === document.querySelector('.cm-editor')), true);
+    });
+  } finally { await browser.close(); }
+});

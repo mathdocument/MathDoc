@@ -11,6 +11,12 @@ html[data-vt-scope="force-editor"] .app-header { view-transition-name: none; }
 ::view-transition-new(app-header),
 ::view-transition-new(root) { animation: mdc-fade-in 180ms ease both; mix-blend-mode: normal; }
 
+/* Keep the outgoing snapshot until async content and editor measurements finish. */
+html[data-vt-scope="ready"]::view-transition-group(*) { animation: none; }
+html[data-vt-scope="ready"]::view-transition-old(*) { animation: mdc-hold 1s infinite; }
+html[data-vt-scope="ready"]::view-transition-new(*) { visibility: hidden; }
+@keyframes mdc-hold { from, to { opacity: 1; } }
+
 @media (prefers-reduced-motion: reduce) {
   @view-transition { navigation: none; }
 }

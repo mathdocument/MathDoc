@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import {
     Columns3,
     Link2,
@@ -14,12 +14,14 @@
   } from "@lucide/svelte";
   import {
     nodeSession,
+    withViewTransition,
     browserHistoryEntry,
     browserHistoryTarget,
     type BrowserHistoryEntry,
     type FocusedHistoryOptions,
   } from "./lib/state.svelte";
   import { WorkspaceSession } from "./lib/workspace.svelte";
+  import { settleEditorLayout } from "./lib/editor-layout";
   import { api } from "./lib/api";
   import { errMsg } from "./lib/format";
   import { projectName } from "./lib/project-path";
@@ -75,10 +77,9 @@
 
   // Top-level view state: three-column layout vs. full-screen force graph.
   let view = $state<"columns" | "force">("columns");
+  let changingView = $state(false);
+  let depthGraph: { prepare: () => Promise<void> } | undefined = $state();
   let graphModule = $state<Promise<typeof import("./components/DepthGraph.svelte")> | null>(null);
-  $effect(() => {
-    if (view === "force" && !graphModule) graphModule = import("./components/DepthGraph.svelte");
-  });
   // Increment after dependency mutations to refresh the graph data.
   let graphRevision = $state(0);
   function cancelStartup() {
@@ -382,29 +383,40 @@
     return fnode ? nodeSession.select(fnode, opts) : nodeSession.clearSelection(opts);
   }
 
-  function toggleGraphView() {
-    if (refreshing || historyNavigating) return;
+  async function toggleGraphView() {
+    if (refreshing || historyNavigating || changingView) return;
     cancelStartup();
     nodeSession.cancel();
-    // Both layouts use the same editor, including its unsaved buffer and LSP.
-    // A layout change never waits for Lean or discards drafts.
-    if (view === "columns") {
-      const entry = browserHistoryEntry(window.history.state);
-      nodeSession.selectionCleared = entry?.fnode === null &&
-        browserHistoryTarget(entry) === nodeSession.node?.fnode;
-      view = "force";
-    } else {
-      nodeSession.selectionCleared = false;
-      view = "columns";
-    }
+    changingView = true;
+    try {
+      if (view === "columns") await (graphModule ??= import("./components/DepthGraph.svelte"));
+      // Retain the same editor and LSP; reveal only after the new width is measured.
+      await withViewTransition(() => {
+        if (view === "columns") {
+          const entry = browserHistoryEntry(window.history.state);
+          nodeSession.selectionCleared = entry?.fnode === null &&
+            browserHistoryTarget(entry) === nodeSession.node?.fnode;
+          view = "force";
+        } else {
+          nodeSession.selectionCleared = false;
+          view = "columns";
+        }
+      }, "ready", async () => {
+        await tick();
+        if (view === "force") await depthGraph?.prepare();
+        await settleEditorLayout();
+      });
+    } catch (error) {
+      refreshError = errMsg(error);
+    } finally { changingView = false; }
   }
 
 </script>
 
 <div
   class="app"
-  inert={refreshing || historyNavigating}
-  aria-busy={refreshing || historyNavigating}
+  inert={refreshing || historyNavigating || changingView}
+  aria-busy={refreshing || historyNavigating || changingView}
 >
   <header class="app-header">
     <div class="bar-zone bar-start">
@@ -520,6 +532,7 @@
             <p role="status">Loading graph…</p>
         {:then { default: DepthGraph }}
           <DepthGraph
+            bind:this={depthGraph}
             active={view === "force"}
             {theme}
             onSelect={onForceSelect}

@@ -766,6 +766,10 @@
     return graphLoadPromise;
   }
 
+  export function prepare(): Promise<void> {
+    return ensureGraphLoaded();
+  }
+
   onMount(() => {
     watchDevicePixelRatio();
     if (canvasEl) {
