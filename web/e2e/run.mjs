@@ -994,13 +994,34 @@ await test('editors and previews pass scrolling to the node pane at both boundar
           assert.ok((await outerScroll() - before) * direction > 1, `scroll continues in the outer pane at the ${direction > 0 ? 'bottom' : 'top'}`);
         }
       };
+      const immediateBoundary = async surface => {
+        for (const direction of [1, -1]) {
+          const state = await surface.evaluate((el, direction) => {
+            const pane = el.closest('.blocks');
+            pane.scrollTop += el.closest('article').getBoundingClientRect().top - pane.getBoundingClientRect().top - 20;
+            const limit = el.scrollHeight - el.clientHeight;
+            el.scrollTop = direction > 0 ? limit - 5 : 5;
+            const before = pane.scrollTop;
+            const event = new WheelEvent('wheel', {deltaY: direction * 40, bubbles: true, cancelable: true});
+            el.dispatchEvent(event);
+            return {cancelled: event.defaultPrevented, inner: el.scrollTop, edge: direction > 0 ? limit : 0,
+              outer: (pane.scrollTop - before) * direction, overscroll: getComputedStyle(el).overscrollBehaviorY};
+          }, direction);
+          assert.equal(state.overscroll, 'none', 'native edge bounce is disabled');
+          assert.equal(state.cancelled, true);
+          assert.equal(state.inner, state.edge);
+          assert.ok(Math.abs(state.outer - 35) < 1, 'excess movement reaches the outer pane in the same event, without waiting for bounce');
+        }
+      };
       const latex = page.locator('[data-srctype="latex"]');
       const code = latex.locator('.cm-scroller');
       await check(latex, code, direction => code.evaluate((el, direction) => { el.scrollTop = direction > 0 ? 0 : el.scrollHeight; }, direction));
+      await immediateBoundary(code);
       await latex.getByRole('button', {name: 'Render LaTeX preview'}).click();
       const preview = latex.locator('.latex-preview');
       await preview.waitFor();
       await check(latex, preview, direction => preview.evaluate((el, direction) => { el.scrollTop = direction > 0 ? 0 : el.scrollHeight; }, direction));
+      await immediateBoundary(preview);
       const input = frame.getByRole('textbox', {name: /Editor content/});
       await check(page.locator('[data-srctype="lean"]'), frame.locator('.monaco-editor'), async direction => {
         await input.press(direction > 0 ? 'ControlOrMeta+Home' : 'ControlOrMeta+End');

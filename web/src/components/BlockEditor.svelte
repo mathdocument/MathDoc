@@ -33,6 +33,7 @@
   import { LatexSession } from "../lib/latex-session.svelte";
   import LatexImports from "./LatexImports.svelte";
   import { removeDraft, setDraftDirty, trackMutation } from "../lib/unsaved";
+  import { chainEditorScroll } from "../lib/editor-scroll";
 
   interface Props {
     fnode: string;
@@ -224,6 +225,7 @@
       }).catch(e => { if (alive) previewError = errMsg(e); });
     }
     reportReadyAfterMeasure(editorView);
+    return chainEditorScroll(editorView.scrollDOM).destroy;
   });
 
   $effect(() => {
@@ -432,7 +434,7 @@
     font-size: var(--mdc-text-sm);
     line-height: 1.65;
   }
-  .editor-host :global(.cm-editor .cm-scroller) { overflow:auto; font-family:var(--mdc-mono); }
+  .editor-host :global(.cm-editor .cm-scroller) { overflow:auto; overscroll-behavior-y:none; font-family:var(--mdc-mono); }
   .editor-host :global(.cm-content) { min-height:10rem; }
   .preview-loading {
     min-height: 9rem;
