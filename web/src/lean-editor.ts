@@ -4,6 +4,7 @@ import { createModelReference } from "vscode/monaco";
 import { FileUri } from "lean4monaco/dist/vscode-lean4/vscode-lean4/src/utils/exturi";
 import { CloseAction, ErrorAction } from "vscode-languageclient/lib/common/client.js";
 import { projectPath } from "./lib/project-path";
+import { chainEditorScroll } from "./lib/editor-scroll";
 
 const params = new URLSearchParams(location.search);
 const id = params.get("session");
@@ -174,7 +175,13 @@ async function start() {
   const response = await fetch(projectPath(`/api/lean/session/${encodeURIComponent(id)}`));
   const session: Document & { error?: string } = await response.json();
   if (!response.ok) throw new Error(session.error ?? "Lean session unavailable");
-  runtime.setInfoviewElement(document.getElementById("infoview")!);
+  const infoview = document.getElementById("infoview")!;
+  infoview.addEventListener('load', event => {
+    if (!(event.target instanceof HTMLIFrameElement)) return;
+    const scroller = event.target.contentDocument?.scrollingElement as HTMLElement | null;
+    if (scroller) chainEditorScroll(scroller);
+  }, true);
+  runtime.setInfoviewElement(infoview);
   await runtime.start({
     websocket: { url: `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}${projectPath(`/api/lean/session/${encodeURIComponent(id)}/ws`)}` },
     // The parent recreates the session and restores drafts. Retrying this consumed
@@ -236,6 +243,7 @@ async function start() {
     automaticLayout: false,
     contextmenu: true,
     scrollbar: { alwaysConsumeMouseWheel: false },
+    scrollBeyondLastLine: false,
     lineNumbersMinChars: 1,
     lineDecorationsWidth: 5,
   });

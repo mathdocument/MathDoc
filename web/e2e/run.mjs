@@ -965,6 +965,8 @@ await test('editors and previews pass scrolling to the node pane at both boundar
     {srctype: 'lean', content: lines.map(line => `-- ${line}`).join('\n') + '\nexample : True := by trivial\n'},
     {srctype: 'rocq', content: lines.join('\n')},
   ]};
+  const singles = ['latex', 'lean'].map(srctype => ({fnode: randomUUID(), title: `Single ${srctype}`, module: `Lib.Single${srctype}`, depens: [],
+    blocks: [{srctype, content: srctype === 'lean' ? 'example : True := by trivial\n' : 'A short LaTeX block.'}]}));
   try {
     await fixture(browser, async ({page, url}) => {
       await page.goto(`${url}/?scroll#ref=${node.fnode}`);
@@ -994,39 +996,81 @@ await test('editors and previews pass scrolling to the node pane at both boundar
           assert.ok((await outerScroll() - before) * direction > 1, `scroll continues in the outer pane at the ${direction > 0 ? 'bottom' : 'top'}`);
         }
       };
-      const immediateBoundary = async surface => {
+      const nativeBoundary = async surface => {
         for (const direction of [1, -1]) {
-          const state = await surface.evaluate((el, direction) => {
+          const before = await surface.evaluate((el, direction) => {
             const pane = el.closest('.blocks');
             pane.scrollTop += el.closest('article').getBoundingClientRect().top - pane.getBoundingClientRect().top - 20;
-            const limit = el.scrollHeight - el.clientHeight;
-            el.scrollTop = direction > 0 ? limit - 5 : 5;
-            const before = pane.scrollTop;
-            const event = new WheelEvent('wheel', {deltaY: direction * 40, bubbles: true, cancelable: true});
-            el.dispatchEvent(event);
-            return {cancelled: event.defaultPrevented, inner: el.scrollTop, edge: direction > 0 ? limit : 0,
-              outer: (pane.scrollTop - before) * direction, overscroll: getComputedStyle(el).overscrollBehaviorY};
+            el.scrollTop = direction > 0 ? el.scrollHeight : 0;
+            window.boundaryWheel = null;
+            window.addEventListener('wheel', event => {
+              window.boundaryWheel = {cancelled: event.defaultPrevented, trusted: event.isTrusted};
+            }, {once: true});
+            return pane.scrollTop;
           }, direction);
-          assert.equal(state.overscroll, 'none', 'native edge bounce is disabled');
-          assert.equal(state.cancelled, true);
-          assert.equal(state.inner, state.edge);
-          assert.ok(Math.abs(state.outer - 35) < 1, 'excess movement reaches the outer pane in the same event, without waiting for bounce');
+          const bounds = await surface.boundingBox();
+          await page.mouse.move(bounds.x + 80, bounds.y + 100);
+          await page.mouse.wheel(0, direction * 40);
+          await page.waitForFunction(({before, direction}) => (document.querySelector('.blocks').scrollTop - before) * direction > 1, {before, direction});
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          const state = await surface.evaluate(el => ({
+            wheel: window.boundaryWheel, inner: el.scrollTop, limit: el.scrollHeight - el.clientHeight,
+            overflow: getComputedStyle(el).overflowY,
+          }));
+          assert.deepEqual(state.wheel, {cancelled: false, trusted: true}, 'the original wheel reaches the native outer scroller');
+          assert.ok(Math.abs(state.inner - (direction > 0 ? state.limit : 0)) < 1, 'no inner overshoot');
+          assert.equal(state.overflow, 'auto', 'restore the native scrollbar before painting');
         }
       };
       const latex = page.locator('[data-srctype="latex"]');
       const code = latex.locator('.cm-scroller');
       await check(latex, code, direction => code.evaluate((el, direction) => { el.scrollTop = direction > 0 ? 0 : el.scrollHeight; }, direction));
-      await immediateBoundary(code);
+      await nativeBoundary(code);
       await latex.getByRole('button', {name: 'Render LaTeX preview'}).click();
       const preview = latex.locator('.latex-preview');
       await preview.waitFor();
       await check(latex, preview, direction => preview.evaluate((el, direction) => { el.scrollTop = direction > 0 ? 0 : el.scrollHeight; }, direction));
-      await immediateBoundary(preview);
+      await nativeBoundary(preview);
       const input = frame.getByRole('textbox', {name: /Editor content/});
       await check(page.locator('[data-srctype="lean"]'), frame.locator('.monaco-editor'), async direction => {
         await input.press(direction > 0 ? 'ControlOrMeta+Home' : 'ControlOrMeta+End');
       });
-    }, [node]);
+      for (const reducedMotion of ['no-preference', 'reduce']) {
+        await page.emulateMedia({reducedMotion});
+        for (const single of singles) {
+          const kind = single.blocks[0].srctype;
+          await page.goto(`${url}/?scroll=${kind}#ref=${single.fnode}`);
+          await title(page, single.title);
+          const surfaces = [];
+          if (kind === 'latex') surfaces.push(page.locator('.cm-scroller'));
+          else {
+            await page.locator('.native-editor:not(.pending)').waitFor();
+            surfaces.push(frame.locator('.monaco-editor'));
+            await frame.frameLocator('#infoview iframe').getByText('All Messages', {exact: true}).waitFor();
+            surfaces.push(frame.frameLocator('#infoview iframe').locator('html'));
+          }
+          for (const surface of surfaces) {
+            for (const direction of [1, -1]) {
+              await pane.evaluate((el, direction) => { el.scrollTop = direction > 0 ? el.scrollHeight : 0; }, direction);
+              await surface.evaluate(el => {
+                const win = el.ownerDocument.defaultView;
+                win.boundaryWheel = null;
+                win.addEventListener('wheel', event => {
+                  win.boundaryWheel = {cancelled: event.defaultPrevented, trusted: event.isTrusted};
+                }, {once: true});
+              });
+              const bounds = await surface.boundingBox();
+              await page.mouse.move(bounds.x + 80, bounds.y + 80);
+              await page.mouse.wheel(0, direction * 40);
+              await surface.evaluate(el => new Promise(resolve => el.ownerDocument.defaultView.requestAnimationFrame(() => requestAnimationFrame(resolve))));
+              const wheel = await surface.evaluate(el => el.ownerDocument.defaultView.boundaryWheel);
+              assert.deepEqual(wheel, {cancelled: false, trusted: true}, `${kind} preserves native boundary handling with ${reducedMotion}`);
+              assert.equal(await pane.evaluate(el => getComputedStyle(el).overscrollBehaviorY), 'auto', 'preserve the original outer native scroll chain');
+            }
+          }
+        }
+      }
+    }, [node, ...singles]);
   } finally { await browser.close(); }
 });
 
