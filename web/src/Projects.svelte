@@ -4,6 +4,8 @@
   import { fetchJson, isAbortError, type ServiceStatus } from "./lib/api";
   import { applyTheme, currentTheme, observeTheme, type Theme } from "./lib/theme";
 
+  let { onReady }: { onReady?: () => void } = $props();
+
   let status = $state<ServiceStatus | null>(null);
   let error = $state<string | null>(null);
   let refreshing = $state(false);
@@ -40,7 +42,7 @@
       error = null;
     } catch (e) {
       if (!isAbortError(e)) error = e instanceof Error ? e.message : String(e);
-    } finally { refreshing = false; }
+    } finally { refreshing = false; onReady?.(); }
   }
   function toggleTheme() {
     theme = theme === "dark" ? "light" : "dark";

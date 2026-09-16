@@ -13,12 +13,13 @@ the project directory, editor and documentation site. The documentation theme
 maps Starlight surfaces to these tokens; its header retains native search and
 theme persistence.
 
-Project-directory navigation uses native cross-document view transitions with
-a shared header snapshot. The render-blocking shell mounts either page before
-the first paint; project data and editors still load asynchronously. Navigation
-retains ordinary links, browser history and unsaved-draft guards. Reduced-motion
-preferences disable the page transition, and browsers without support use
-normal document navigation.
+Project-directory navigation retains the outgoing native view-transition snapshot
+until the destination has loaded its data and initialized its editors (or has an
+error to display). CodeMirror wrapping and gutters are measured before revealing
+the page in one step. Knowledge/Graph switches use the same readiness rule,
+including the first graph fetch. There is no fade for these switches, including
+with reduced motion enabled. Ordinary links, browser history and unsaved-draft
+guards are preserved; browsers without View Transitions use normal navigation.
 
 Relation columns render a viewport window for lists over 100 nodes, with two
 title lines reserved per row. Scrolling and Arrow/Home/End navigation can reach

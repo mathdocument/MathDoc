@@ -523,7 +523,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.equal(opened, 2);
         const warmed = performance.now();
         await select("Lean Example");
-        await frame.getByText("constructor", { exact: true }).waitFor();
+        await frame.locator(".view-line").getByText("constructor", { exact: true }).waitFor();
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
         assert.equal(messages.filter(m => m.method === "initialize").length, initialized);
         assert.equal(messages.filter(m => m.method === "textDocument/didOpen").length, opened, "warm navigation must retain the native worker");
@@ -838,7 +838,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
   } finally { await browser.close(); }
 });
 
-await test('view changes reveal measured LaTeX editors without intermediate frames', {timeout: 60000}, async () => {
+await test('view changes reveal measured editors and loaded pages without intermediate frames', {timeout: 60000}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   try {
     await fixture(browser, async ({cli, page, url}) => {
@@ -886,6 +886,35 @@ await test('view changes reveal measured LaTeX editors without intermediate fram
         assert.ok(rows.every(row => row.difference < 1), JSON.stringify(rows));
       }
       assert.equal(await page.evaluate(() => window.originalEditor === document.querySelector('.cm-editor')), true);
+      // Cross-document transitions also hold the old view while project and node data are pending.
+      // Reduced motion still needs readiness gating, without a fade animation.
+      await page.emulateMedia({reducedMotion: 'reduce'});
+      const held = async (pattern, navigate) => {
+        let release, entered;
+        const gate = new Promise(resolve => { release = resolve; });
+        const started = new Promise(resolve => { entered = resolve; });
+        await page.route(pattern, async route => { entered(); await gate; await route.continue(); });
+        try {
+          await navigate();
+          await Promise.race([started, new Promise((_, reject) => setTimeout(() => reject(new Error(`request not observed: ${pattern}`)), 5000))]);
+          await page.waitForFunction(() => document.getAnimations().some(a => a.animationName === 'mdc-hold'));
+          assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement, '::view-transition-new(root)').visibility), 'hidden');
+        } finally { release(); }
+        await page.waitForFunction(() => !document.documentElement.dataset.vtScope);
+        await page.unroute(pattern);
+      };
+      await held('**/api/status', () => page.getByRole('link', {name: 'All projects', exact: true}).click());
+      await page.getByRole('heading', {name: 'Projects', exact: true}).waitFor();
+      const project = new URL(url).pathname.replace(/^\/p\//, '').replace(/\/$/, '');
+      await held('**/api/node/*/view', () => page.getByRole('link', {name: `Open ${project}`, exact: true}).click());
+      assert.equal(await page.locator('.editor-loading').count(), 0);
+      await page.locator('.cm-lineNumbers .cm-gutterElement').nth(2).waitFor();
+      // A failed destination must reveal its error/retry UI instead of freezing the old page forever.
+      await page.route('**/api/status', route => route.fulfill({status: 503, contentType: 'application/json', body: JSON.stringify({error: 'fixture: status unavailable'})}));
+      await page.getByRole('link', {name: 'All projects', exact: true}).click();
+      await page.waitForFunction(() => !document.documentElement.dataset.vtScope);
+      await page.getByRole('alert').filter({hasText: 'fixture: status unavailable'}).waitFor();
+
     });
   } finally { await browser.close(); }
 });

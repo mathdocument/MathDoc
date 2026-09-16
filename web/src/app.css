@@ -17,10 +17,6 @@ html[data-vt-scope="ready"]::view-transition-old(*) { animation: mdc-hold 1s inf
 html[data-vt-scope="ready"]::view-transition-new(*) { visibility: hidden; }
 @keyframes mdc-hold { from, to { opacity: 1; } }
 
-@media (prefers-reduced-motion: reduce) {
-  @view-transition { navigation: none; }
-}
-
 * {
   box-sizing: border-box;
   scrollbar-width: thin;

@@ -40,6 +40,10 @@
   } from "./lib/unsaved";
   import { applyTheme, currentTheme, observeTheme, type Theme } from "./lib/theme";
 
+  let { onReady }: { onReady?: () => void } = $props();
+  let editorReady = $state(false);
+  let workspaceReady = $state(false);
+
   type Overlay =
     | { kind: "none" }
     | { kind: "search" }
@@ -134,7 +138,7 @@
     // Global shortcuts: "/" opens search, "g" toggles the workspace view.
     // Ignored while typing (inputs, textareas, contenteditable e.g. CodeMirror).
     const onKeyDown = (event: KeyboardEvent) => {
-      if (overlay.kind !== "none" || refreshing || historyNavigating) return;
+      if (overlay.kind !== "none" || refreshing || historyNavigating || changingView) return;
       const target = event.target;
       if (target instanceof HTMLElement) {
         const tag = target.tagName;
@@ -257,12 +261,14 @@
       } catch (e) {
         if (isCurrent()) initialError = e instanceof Error ? e.message : String(e);
       } finally {
-        void workspaceSession.refresh();
+        await workspaceSession.refresh();
+        workspaceReady = true;
       }
     })();
   });
 
   $effect(() => {
+    if (workspaceReady && (initialError || editorReady)) onReady?.();
     if (nodeSession.load.kind === "ready") {
       initialError = null;
       initialNavigationRetry = null;
@@ -564,6 +570,7 @@
             selection={nodeSession.editorRevision}
             {theme}
             onRefresh={refreshNode}
+            onReady={() => { editorReady = true; }}
             {latexTarget}
             onLatexNavigate={navigateLatex}
           />

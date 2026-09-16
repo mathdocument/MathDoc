@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy } from "svelte";
   import { Check, FileText, Hash, Layers3, X } from "@lucide/svelte";
   import { SOURCE_TYPES, type NodeDetail } from "../lib/types";
   import type { LoadState } from "../lib/state.svelte";
@@ -76,8 +76,8 @@
     });
   }
 
-  onMount(() => {
-    if (load.kind !== "ready" || load.node.blocks.length === 0) {
+  $effect(() => {
+    if (load.kind === "error" || (load.kind === "ready" && load.node.blocks.length === 0)) {
       reportReady();
     }
   });
@@ -87,10 +87,12 @@
   });
 
   // Reset title editing state when the displayed node changes.
-  $effect(() => {
+  $effect.pre(() => {
     const fnode = load.kind === "ready" ? load.node.fnode : null;
     if (fnode === displayedFnode) return;
     displayedFnode = fnode;
+    readyReported = false;
+    readyBlocks.clear();
     titleRequest++;
     editingTitle = false;
     titleSaving = false;
