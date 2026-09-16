@@ -24,7 +24,7 @@ budget. Each loaded branch owns its cache using an OS file lock.
 | Nodes, source blocks, graph links, Lean project settings, history | TerminusDB storage; durable and independent of service processes. |
 | Database credentials and host settings | Private user configuration or environment; outside graph exports. |
 | Generated Lean sources, libraries, artifacts, certificates, branch record | Local cache, separated by endpoint/database/branch; disposable after stopping the service. |
-| Server record and shared runtime log | `CACHE_ROOT/ENDPOINT_HASH/.server/`; no durable graph or compiler state. |
+| Server record, background runtime log and foreground branch restore list | `CACHE_ROOT/ENDPOINT_HASH/.server/`; no durable graph data. Foreground logs use stdout/stderr. |
 | Unsaved browser drafts | Browser/editor session; save before closing or restarting. |
 
 The supplied Compose deployment mounts Docker volume `mathdoc-terminus-data` at
@@ -43,7 +43,10 @@ Use one cache root consistently for all commands on a host. Service discovery an
 the lock are scoped to that root; a different root cannot see or stop the old
 service. `stop DATABASE/BRANCH` unloads just that branch and retains its cache.
 Bare `mdc stop` shuts down the server and all loaded branches, including their
-Lean workers. `mdc start` starts an empty server; load desired branches explicitly.
+Lean workers. Ordinary `mdc start` starts an empty server; load desired branches explicitly.
+`mdc start --foreground` restores the branches remembered by earlier foreground
+runs. Preserve `active-projects.json` in the server cache to retain that selection;
+deleting it forgets which branches to start but does not delete database content.
 Save drafts before stopping their branch or the whole server. `branch del` requires a stopped branch and removes
 its cache contents, leaving only the service lock for coordination.
 

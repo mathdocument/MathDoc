@@ -100,6 +100,89 @@ async fn explicit_paths_do_not_require_a_home_directory() {
     }
 }
 
+#[tokio::test]
+#[ignore = "requires local TerminusDB and MDC_TERMINUS_PASSWORD"]
+async fn foreground_server_restores_started_branches_after_shutdown_and_crash() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let fixture = common::TestDatabase::new("mdcforeground").await;
+    fixture.db.create_branch("paused").await.unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = cache.path();
+    let main = format!("{}/main", fixture.db.database);
+    let paused = format!("{}/paused", fixture.db.database);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port().to_string();
+    drop(listener);
+
+    for round in 0..4 {
+        let mut child = command(root)
+            .env("MDC_LISTEN_ADDRESS", "0.0.0.0")
+            .args(["start", "--foreground", "--port", &port])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut ready = String::new();
+        tokio::time::timeout(
+            Duration::from_secs(40),
+            BufReader::new(child.stdout.take().unwrap()).read_line(&mut ready),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let ready: Value = serde_json::from_str(&ready).unwrap();
+        assert!(
+            ready.get("token").is_none(),
+            "do not put private tokens in container logs"
+        );
+        let states = status(root).await;
+        assert_eq!(states[&main], matches!(round, 1 | 2));
+        assert!(!states[&paused]);
+        if round == 0 {
+            run(root, &["start", &main]).await;
+            run(root, &["start", &paused]).await;
+            run(root, &["stop", &paused]).await;
+            run(root, &["new", "-p", &main, "-t", "Survives restart"]).await;
+        } else if round < 3 {
+            assert_eq!(
+                run(root, &["graph", "check", "-p", &main]).await["nodes"],
+                1
+            );
+        }
+        if round == 2 {
+            run(root, &["stop", &main]).await;
+        }
+        if round == 3 {
+            run(root, &["stop"]).await;
+        } else {
+            let signal = if round == 1 {
+                libc::SIGKILL
+            } else {
+                libc::SIGTERM
+            };
+            assert_eq!(unsafe { libc::kill(child.id().unwrap() as i32, signal) }, 0);
+        }
+        let exit = tokio::time::timeout(Duration::from_secs(10), child.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(exit.success(), round != 1);
+    }
+    reject(
+        root,
+        &["start", &main, "--foreground"],
+        "cannot be used with",
+    )
+    .await;
+    let invalid = command(root)
+        .env("MDC_LISTEN_ADDRESS", "192.0.2.1")
+        .args(["start", "--foreground", "--port", &port])
+        .output()
+        .await
+        .unwrap();
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("MDC_LISTEN_ADDRESS"));
+}
+
 struct Started {
     root: PathBuf,
     project: String,

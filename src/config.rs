@@ -27,6 +27,15 @@ fn user_dir(variable: &str, fallback: &str) -> Result<PathBuf> {
 }
 
 impl Settings {
+    pub fn listen_address(&self) -> Result<std::net::Ipv4Addr> {
+        let value = std::env::var("MDC_LISTEN_ADDRESS").unwrap_or_else(|_| "127.0.0.1".into());
+        anyhow::ensure!(
+            matches!(value.as_str(), "127.0.0.1" | "0.0.0.0"),
+            "MDC_LISTEN_ADDRESS must be 127.0.0.1 or 0.0.0.0"
+        );
+        Ok(value.parse()?)
+    }
+
     pub fn server_port(&self) -> Result<u16> {
         let port = self.port.unwrap_or(17843);
         anyhow::ensure!(port != 0, "port must be between 1 and 65535");

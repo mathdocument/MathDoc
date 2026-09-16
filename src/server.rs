@@ -13,7 +13,9 @@ use axum::{
 };
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
+    io::Write,
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -34,6 +36,8 @@ struct Server {
     operations: RwLock<()>,
     closing: AtomicBool,
     stop: tokio::sync::Notify,
+    restore_path: Option<PathBuf>,
+    remembered: Mutex<BTreeSet<String>>,
 }
 
 pub(crate) async fn status() -> Result<Value> {
@@ -62,6 +66,25 @@ pub(crate) async fn status() -> Result<Value> {
 }
 
 impl Server {
+    async fn remember(&self, project: &str, running: bool) -> Result<()> {
+        let Some(path) = &self.restore_path else {
+            return Ok(());
+        };
+        let mut remembered = self.remembered.lock().await;
+        let mut next = remembered.clone();
+        if running {
+            next.insert(project.into());
+        } else {
+            next.remove(project);
+        }
+        let mut file = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
+        serde_json::to_writer(&mut file, &next)?;
+        file.as_file().sync_all()?;
+        file.persist(path)?;
+        *remembered = next;
+        Ok(())
+    }
+
     async fn start_branch(&self, project: String) -> Result<Value> {
         let _operation = self.operations.read().await;
         anyhow::ensure!(!self.closing.load(Ordering::Acquire), "server is stopping");
@@ -88,6 +111,7 @@ impl Server {
                 public_origin: self.info.public_origin.clone(),
             };
             std::fs::write(root.join("service.lock"), serde_json::to_vec(&info)?)?;
+            self.remember(&project, true).await?;
             Ok::<_, anyhow::Error>(Branch {
                 router: crate::service::router(service.clone()),
                 service,
@@ -122,6 +146,7 @@ impl Server {
                 .ok_or_else(|| stopped(&project))?;
             let branch = slot.as_ref().ok_or_else(|| stopped(&project))?;
             authorize_token(&token, &branch.service.token)?;
+            self.remember(&project, false).await?;
             slot.take().unwrap()
         };
         branch.service.shutdown().await;
@@ -141,14 +166,27 @@ impl Server {
     }
 }
 
-pub(crate) async fn serve(port: u16) -> Result<()> {
+pub(crate) async fn serve(port: u16, foreground: bool) -> Result<()> {
     let settings = Settings::load()?;
     let root = settings.server_cache()?;
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
+    let listener = tokio::net::TcpListener::bind((settings.listen_address()?, port))
         .await
         .with_context(|| format!("cannot bind port {port} (it may already be in use)"))?;
     let _lease = crate::service::acquire_lease(&root)?;
     crate::store::Terminus::from_env()?.projects().await?;
+    let restore_path = foreground.then(|| root.join("active-projects.json"));
+    let remembered: BTreeSet<String> = match restore_path.as_ref().map(std::fs::read) {
+        Some(Ok(bytes)) => {
+            serde_json::from_slice(&bytes).context("invalid active-projects.json")?
+        }
+        Some(Err(error)) if error.kind() != std::io::ErrorKind::NotFound => {
+            return Err(error.into())
+        }
+        _ => BTreeSet::new(),
+    };
+    for project in &remembered {
+        crate::config::project_parts(project)?;
+    }
     let state = Arc::new(Server {
         info: RunningService {
             port: listener.local_addr()?.port(),
@@ -160,7 +198,14 @@ pub(crate) async fn serve(port: u16) -> Result<()> {
         operations: RwLock::new(()),
         closing: AtomicBool::new(false),
         stop: tokio::sync::Notify::new(),
+        restore_path,
+        remembered: Mutex::new(remembered.clone()),
     });
+    for project in remembered {
+        if let Err(error) = state.start_branch(project.clone()).await {
+            eprintln!("could not restore {project}: {error:#}");
+        }
+    }
     let router = Router::new()
         .route(
             "/api/status",
@@ -176,8 +221,15 @@ pub(crate) async fn serve(port: u16) -> Result<()> {
             check_origin,
         ));
     std::fs::write(root.join("service.lock"), serde_json::to_vec(&state.info)?)?;
-    use std::io::Write;
-    writeln!(std::io::stdout(), "{}", serde_json::to_string(&state.info)?)?;
+    if foreground {
+        writeln!(
+            std::io::stdout(),
+            "{}",
+            json!({"port":state.info.port,"pid":state.info.pid,"url":state.info.browser_url()})
+        )?;
+    } else {
+        writeln!(std::io::stdout(), "{}", serde_json::to_string(&state.info)?)?;
+    }
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     axum::serve(listener, router).with_graceful_shutdown(async move {
         tokio::select! { _ = state.stop.notified() => {}, _ = terminate.recv() => {}, _ = tokio::signal::ctrl_c() => {} }

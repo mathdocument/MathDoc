@@ -44,6 +44,7 @@ JSON result. No command performs a source-workspace refresh.
 | `mdc status` | Return entry server status and all database branches, including stopped branches. |
 | `mdc init DATABASE` | Create a database with default `main` branch and Lean settings. |
 | `mdc start [DATABASE/BRANCH] [--port PORT]` | Start/reuse the entry server; optionally start one branch. Return URL, entry port, process PID and log path. |
+| `mdc start --foreground [--port PORT]` | Run a supervised server in the current process and restore its previously started branches. |
 | `mdc stop [DATABASE/BRANCH]` | Unload one branch and stop its Lean workers, or stop the entire server and all branches when no branch is given. Retain graph data and caches. |
 
 An optional branch must already exist and be stopped; missing branches and
@@ -52,8 +53,18 @@ The entry server defaults to port **17843**, configurable with TOML `port` or
 `--port`. Explicit ports are 1–65535 and must be free. If the entry server is
 already running, it is reused; requesting a different port fails until you stop
 it with `mdc stop`. There is one process and one HTTP listener, bound to
-`127.0.0.1`; branches have no separate HTTP ports or backend processes. Stopping an inactive service is an error.
-Commands work from any directory; `start` encapsulates background launch.
+`127.0.0.1` by default; branches have no separate HTTP ports or backend processes. Stopping an inactive service is an error.
+Commands work from any directory; ordinary `start` encapsulates background launch.
+
+`--foreground` is for Docker or another process supervisor and cannot take a
+branch argument. It emits readiness JSON without private tokens, logs to the
+process streams, and exits cleanly on SIGTERM, Ctrl-C or `mdc stop`. Start and stop
+individual branches using other CLI invocations. Their desired running state is
+saved atomically in `CACHE_ROOT/ENDPOINT_HASH/.server/active-projects.json` and
+restored after a foreground restart, including after a crash. Stopping an
+individual branch removes it from that set; stopping the whole server preserves
+the set. Failed restores are reported on stderr without preventing other branches
+from starting. Ordinary background starts retain their existing empty-server behavior.
 
 Open `http://127.0.0.1:17843/` for the project list and
 `http://127.0.0.1:17843/p/DATABASE/BRANCH/` for a running branch. Starting or

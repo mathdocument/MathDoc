@@ -33,6 +33,7 @@ Do not commit credentials or include them in graph exports.
 | `MDC_CACHE_DIR` | `$XDG_CACHE_HOME/mdc` or `~/.cache/mdc` |
 | `MDC_LATEX_PYTHON` | Optional Python executable with the pinned LaTeX runtime installed. |
 | `MDC_LEAN_TIMEOUT_SECONDS` | 300; must be a positive integer. |
+| `MDC_LISTEN_ADDRESS` | `127.0.0.1`; use `0.0.0.0` inside a container. Only these two addresses are accepted. |
 
 `init`, `start`, `status` and `branch del` need TerminusDB credentials. Other
 clients and `stop` need the same endpoint setting and cache root as the service;
@@ -57,7 +58,10 @@ port selects a project implicitly.
 
 ## Access through a reverse proxy
 
-The entry server listens on loopback. For browser access from another machine,
+The entry server listens on loopback by default. Container deployments can set
+`MDC_LISTEN_ADDRESS=0.0.0.0`, while publishing the port only on the host's loopback
+interface. This does not enable authentication or change the Host/Origin checks.
+For browser access from another machine,
 place an authenticated HTTPS reverse proxy on the same host and forward the
 whole site to `127.0.0.1:17843`, preserving paths, queries and the public Host.
 Enable WebSocket upgrades and long-lived connections for Lean. All projects use

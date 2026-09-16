@@ -22,13 +22,16 @@ enum Commands {
     Status,
     /// Create a new project database on the configured TerminusDB instance.
     Init { database: String },
-    /// Start the entry server and optionally a project branch in the background.
+    /// Start the entry server and optionally a project branch.
     Start {
         #[arg(value_name = "DATABASE/BRANCH", value_parser = parse_project)]
         project: Option<String>,
         /// Entry server port; defaults to the configured port or 17843.
         #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
         port: Option<u16>,
+        /// Run the server in the foreground and restore branches after restarts.
+        #[arg(long, conflicts_with = "project")]
+        foreground: bool,
     },
     /// Stop one branch, or the server and all branches when omitted.
     Stop {
@@ -444,8 +447,13 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
                 .await?;
             Some(json!({"initialized":true}))
         }
-        Commands::Start { project, port } => {
-            let Some(info) = crate::service::start(project.as_deref(), *port).await? else {
+        Commands::Start {
+            project,
+            port,
+            foreground,
+        } => {
+            let Some(info) = crate::service::start(project.as_deref(), *port, *foreground).await?
+            else {
                 return Ok(0);
             };
             Some(info)

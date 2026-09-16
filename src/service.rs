@@ -394,12 +394,21 @@ pub(crate) async fn delete_branch(project: &str) -> Result<Value> {
     Ok(json!({"project":project,"deleted":true}))
 }
 
-pub(crate) async fn start(project: Option<&str>, port: Option<u16>) -> Result<Option<Value>> {
+pub(crate) async fn start(
+    project: Option<&str>,
+    port: Option<u16>,
+    foreground: bool,
+) -> Result<Option<Value>> {
     use std::{
         io::{Read, Write},
         os::{fd::AsFd, unix::net::UnixStream},
         time::Duration,
     };
+    if foreground {
+        let settings = crate::config::Settings::load()?;
+        crate::server::serve(port.unwrap_or(settings.server_port()?), true).await?;
+        return Ok(None);
+    }
     // Node.js also uses anonymous sockets for ordinary child stdin. Only the
     // marker queued before spawn identifies our child; never wait for user stdin.
     // Re-exec keeps Tokio initialization out of the post-fork child.
@@ -418,7 +427,7 @@ pub(crate) async fn start(project: Option<&str>, port: Option<u16>) -> Result<Op
                 drop(channel);
                 let result = async {
                     anyhow::ensure!(project.is_none(), "invalid server bootstrap");
-                    crate::server::serve(listen_port).await
+                    crate::server::serve(listen_port, false).await
                 }
                 .await;
                 if let Err(error) = &result {
