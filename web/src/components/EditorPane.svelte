@@ -416,6 +416,8 @@
     /* Blocks use this visible content height, including in the graph sidebar. */
     container-type: size;
     overflow-y: auto;
+    /* End the scroll chain here, including gestures that start at an edge. */
+    overscroll-behavior-y: contain;
     padding: 1rem 1.25rem 1.5rem;
     display: flex;
     flex-direction: column;

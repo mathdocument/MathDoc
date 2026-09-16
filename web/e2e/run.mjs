@@ -956,7 +956,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
   } finally { await browser.close(); }
 });
 
-await test('editors and previews pass scrolling to the node pane at both boundaries', {timeout: 90000}, async () => {
+await test('editors and previews pass scrolling to the node pane at both boundaries', {timeout: 180000}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   const lines = Array.from({length: 100}, (_, i) => `Line ${i + 1}.`);
   const node = {fnode: randomUUID(), title: 'Scrolling', module: 'Lib.Scrolling', depens: [], blocks: [
@@ -1019,7 +1019,8 @@ await test('editors and previews pass scrolling to the node pane at both boundar
           }));
           assert.deepEqual(state.wheel, {cancelled: false, trusted: true}, 'the original wheel reaches the native outer scroller');
           assert.ok(Math.abs(state.inner - (direction > 0 ? state.limit : 0)) < 1, 'no inner overshoot');
-          assert.equal(state.overflow, 'auto', 'restore the native scrollbar before painting');
+          await page.waitForTimeout(180);
+          assert.equal(await surface.evaluate(el => getComputedStyle(el).overflowY), 'auto', 'restore inner scrolling after the gesture');
         }
       };
       const latex = page.locator('[data-srctype="latex"]');
@@ -1065,10 +1066,20 @@ await test('editors and previews pass scrolling to the node pane at both boundar
               await surface.evaluate(el => new Promise(resolve => el.ownerDocument.defaultView.requestAnimationFrame(() => requestAnimationFrame(resolve))));
               const wheel = await surface.evaluate(el => el.ownerDocument.defaultView.boundaryWheel);
               assert.deepEqual(wheel, {cancelled: false, trusted: true}, `${kind} preserves native boundary handling with ${reducedMotion}`);
-              assert.equal(await pane.evaluate(el => getComputedStyle(el).overscrollBehaviorY), 'auto', 'preserve the original outer native scroll chain');
+              assert.equal(await pane.evaluate(el => getComputedStyle(el).overscrollBehaviorY), 'contain', 'the outer pane terminates the chain and keeps native bounce');
             }
           }
         }
+      }
+      if (process.env.MDC_E2E_NATIVE_SCROLL === '1') {
+        assert.equal(process.platform, 'darwin', 'native scroll checks require macOS');
+        const root = await mkdtemp(resolve(tmpdir(), 'mdc-native-scroll-'));
+        try {
+          const probe = resolve(root, 'probe');
+          await run('swiftc', [resolve(webRoot, 'e2e/native-scroll.swift'), '-module-cache-path', resolve(root, 'modules'), '-o', probe]);
+          const result = await run(probe, [url, node.fnode, ...singles.map(n => n.fnode)], {timeout: 90000});
+          console.log(result.stdout);
+        } finally { await rm(root, {recursive: true, force: true}); }
       }
     }, [node, ...singles]);
   } finally { await browser.close(); }

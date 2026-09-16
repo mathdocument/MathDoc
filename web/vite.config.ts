@@ -4,6 +4,7 @@ import { nodePolyfills } from "vite-plugin-node-polyfills";
 import { viteStaticCopy } from "vite-plugin-static-copy";
 import importMetaUrlPlugin from "@codingame/esbuild-import-meta-url-plugin";
 import path from "node:path";
+import { monacoWheel, monacoWheelDeps } from "./build/monaco-wheel";
 
 // Proxy the project APIs and directory to the shared entry server.
 const apiTarget = process.env.MDC_API_PROXY ?? "http://127.0.0.1:17843";
@@ -14,6 +15,7 @@ sveltePlugins.push({ name: "vite-plugin-svelte:config", api: sveltePlugins[0]!.a
 
 export default defineConfig({
   plugins: [
+    monacoWheel,
     {
       name: "project-editor-page",
       transformIndexHtml: {
@@ -62,6 +64,6 @@ export default defineConfig({
       "^/p/[^/]+/[^/]+/api(?:/|$)": { target: apiTarget, changeOrigin: false, ws: true },
     },
   },
-  optimizeDeps: { esbuildOptions: { plugins: [importMetaUrlPlugin] } },
+  optimizeDeps: { esbuildOptions: { plugins: [monacoWheelDeps, importMetaUrlPlugin] } },
   build: { rollupOptions: { input: { main: path.resolve("index.html"), lean: path.resolve("lean.html") } } },
 });

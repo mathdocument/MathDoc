@@ -43,6 +43,16 @@ extension entry is disabled in the browser manifest. Save reuses the editor's
 native result for the exact saved source and imports. CLI `lean check --build`
 requests target artifacts when required.
 
+All block scrollers share a native gesture handoff, including the same-origin
+Lean and Infoview frames. At a boundary, inner scrolling is suspended until the
+gesture ends; clicks and selection remain enabled. The node pane uses
+`overscroll-behavior-y: contain` so gestures starting at its boundary can still
+rubber-band on macOS. There is no scripted outer scrolling or bounce animation.
+Monaco renders a native scrolling viewport. Its disabled wheel-zoom observer is
+made passive by `web/build/monaco-wheel.ts`, in both Vite builds and dependency
+prebundling; the build fails if the upstream listener changes shape. This avoids
+Safari's synchronous wheel path, which otherwise suppresses boundary feedback.
+
 ## Development server
 
 Create a disposable development database once, then start its branch. Keep the
@@ -76,3 +86,9 @@ certification reuse and explicit `.olean` builds. Run it using
 [Development setup](../setup/). The frontend performance fixture measures graph
 and non-Lean interaction; native Lean behavior is covered by the real-server
 suite.
+
+On macOS, set `MDC_E2E_NATIVE_SCROLL=1` and run the integration test matching
+`pass scrolling` to additionally open a native WebKit test window. It sends
+phased trackpad events and verifies actual overscroll and gesture ownership.
+Ordinary Playwright wheel events cannot verify macOS rubber-banding. This check
+uses the suite's disposable database and requires the Xcode command-line tools.

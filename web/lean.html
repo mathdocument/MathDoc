@@ -8,7 +8,10 @@
       html, body { margin: 0; height: 100%; overflow: hidden; }
       body { background: #181a20; color: #ddd; font: 13px system-ui; }
       #layout { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); height: 100%; }
-      #editor, #infoview { min-width: 0; height: 100%; overflow: hidden; }
+      #editor-scroll, #infoview { min-width: 0; height: 100%; overflow: hidden; }
+      #editor-scroll { overflow: auto; }
+      #editor-size { min-width: 100%; min-height: 100%; }
+      #editor { position: sticky; top: 0; left: 0; overflow: hidden; }
       #infoview { position: relative; border-left: 1px solid #454854; }
       #infoview-pending { position: absolute; inset: 0; z-index: 1; padding: 16px; background: var(--vscode-editor-background, #fff); color: var(--vscode-editor-foreground, #333); }
       #infoview iframe { width: 100%; height: 100%; border: 0; }
@@ -16,7 +19,7 @@
     </style>
   </head>
   <body>
-    <main id="layout"><div id="editor" aria-label="Lean source"></div><div id="infoview" aria-label="Lean goals and messages"><div id="infoview-pending" role="status" hidden>Preparing Lean environment…</div></div></main>
+    <main id="layout"><div id="editor-scroll"><div id="editor-size"><div id="editor" aria-label="Lean source"></div></div></div><div id="infoview" aria-label="Lean goals and messages"><div id="infoview-pending" role="status" hidden>Preparing Lean environment…</div></div></main>
     <pre id="error" role="alert"></pre>
     <script type="module" src="/src/lean-editor.ts"></script>
   </body>

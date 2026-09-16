@@ -5,6 +5,7 @@ import { FileUri } from "lean4monaco/dist/vscode-lean4/vscode-lean4/src/utils/ex
 import { CloseAction, ErrorAction } from "vscode-languageclient/lib/common/client.js";
 import { projectPath } from "./lib/project-path";
 import { chainEditorScroll } from "./lib/editor-scroll";
+import { nativeMonacoScroll } from "./lib/monaco-scroll";
 
 const params = new URLSearchParams(location.search);
 const id = params.get("session");
@@ -29,6 +30,7 @@ interface OpenDocument {
 }
 const runtime = new BrowserLean();
 let editor: MonacoEditor.IStandaloneCodeEditor;
+let disposeScroll: (() => void) | undefined;
 const documents = new Map<string, OpenDocument>();
 let selected: OpenDocument | undefined;
 let shownFnode = "";
@@ -242,11 +244,13 @@ async function start() {
     model: reference.object.textEditorModel,
     automaticLayout: false,
     contextmenu: true,
-    scrollbar: { alwaysConsumeMouseWheel: false },
+    scrollbar: { handleMouseWheel: false, vertical: 'hidden', horizontal: 'hidden' },
+    mouseWheelZoom: false,
     scrollBeyondLastLine: false,
     lineNumbersMinChars: 1,
     lineDecorationsWidth: 5,
   });
+  disposeScroll = nativeMonacoScroll(editor, document.getElementById("editor-scroll")!);
   editor.focus();
   shownFnode = session.fnode;
   selected = { document: session, reference, view: null, progress: "Loading Lean imports…" };
@@ -283,11 +287,6 @@ async function start() {
       editor.setValue(event.data.value);
     }
   });
-  new ResizeObserver(([entry]) => {
-    // Hidden blocks have a zero viewport. Laying out there corrupts the saved
-    // scroll position and can leave line-one diagnostics outside the visible area.
-    if (entry.contentRect.width && entry.contentRect.height) editor.layout({ width: entry.contentRect.width, height: entry.contentRect.height });
-  }).observe(document.getElementById("editor")!);
   send("lean-runtime-ready");
 }
 void start().catch(error);
@@ -295,6 +294,7 @@ window.addEventListener("pagehide", () => {
   selection.abort();
   if (id) void fetch(projectPath(`/api/lean/session/${encodeURIComponent(id)}`), { method: "DELETE", keepalive: true }).catch(console.warn);
   preview?.dispose();
+  disposeScroll?.();
   for (const entry of documents.values()) entry.reference.dispose();
   editor?.dispose(); runtime.dispose();
 });
