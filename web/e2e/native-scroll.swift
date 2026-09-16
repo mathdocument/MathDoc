@@ -50,6 +50,7 @@ import WebKit
         _ = try await js("""
             window.pane = document.querySelector('.blocks'); window.target = \(target);
             \(setup)
+            undefined;
             """)
         await pause(250)
         return try await js("""
@@ -101,6 +102,23 @@ import WebKit
         for kind in ["text", "latex", "rocq"] {
             _ = try await js("document.querySelector('[data-srctype=\"\(kind)\"]').scrollIntoView({block:'center'}); undefined;")
             await pause(200)
+        }
+        let source = "\(lean)?.querySelector('#editor-scroll')"
+        for direction in [1, -1] {
+            let point = try await record(source, setup: direction > 0 ? """
+                pane.scrollTop += document.querySelector('.lean-block').getBoundingClientRect().top - pane.getBoundingClientRect().top - 20;
+                target.scrollTop = 0;
+                """ : "")
+            await gesture(point, direction, ticks: direction > 0 ? 6 : 3)
+            let result = try await js("""
+                recording = false;
+                ({inner: (target.scrollTop-initial[surfaces.indexOf(target)])*\(direction), outer: Math.abs(pane.scrollTop-samples[0][0]),
+                  stable: surfaces.every((s,i)=>s===target || samples.every(row=>Math.abs(row[i+1]-initial[i])<1))});
+                """) as! [String: Any]
+            print("Lean inner scroll", direction, result)
+            try require((result["inner"] as! Double) > 50, "Lean source did not scroll inside its viewport")
+            try require((result["outer"] as! Double) < 1, "Outer pane moved before the Lean source reached its edge")
+            try require(result["stable"] as! Bool, "Scrolling Lean moved another editor")
         }
         for direction in [1, -1] {
             let target = "document.querySelector('[data-srctype=\"\(direction > 0 ? "text" : "rocq")\"] .cm-scroller')"

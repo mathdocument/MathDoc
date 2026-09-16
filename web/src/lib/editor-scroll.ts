@@ -2,6 +2,14 @@
 const paneScroll = Symbol.for('mdc.paneScroll');
 type ScrollPane = HTMLElement & { [paneScroll]?: ReturnType<typeof createPaneScroll> };
 
+function containsWheelTarget(surface: Element, target: Node | null) {
+  // WebKit also delivers a frame's wheel to its parent, targeting the iframe.
+  for (let host: Element | null = surface; host; host = host.ownerDocument.defaultView?.frameElement ?? null) {
+    if (host.contains(target)) return true;
+  }
+  return false;
+}
+
 function createPaneScroll(pane: ScrollPane) {
   const win = pane.ownerDocument.defaultView!;
   const surfaces = new Map<HTMLElement, string>();
@@ -26,7 +34,7 @@ function createPaneScroll(pane: ScrollPane) {
   };
   const wheel = (event: WheelEvent) => {
     if (event.ctrlKey || event.shiftKey || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
-    if (active || ![...surfaces.keys()].some(surface => surface.contains(event.target as Node))) handoff();
+    if (active || ![...surfaces.keys()].some(surface => containsWheelTarget(surface, event.target as Node))) handoff();
   };
   pane.addEventListener('wheel', wheel, {passive: true});
   pane.addEventListener('scrollend', release);
