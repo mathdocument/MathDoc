@@ -132,6 +132,53 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
     ? await webkit.launch()
     : await chromium.launch({ headless: true, channel: "chromium" });
   try {
+    await suite.test("node deletion detaches referrers and dependency dialogs share their layout", () =>
+      fixture(browser, async ({ cli, page, url }) => {
+        const alpha = JSON.parse((await cli("show", "Alpha")).stdout);
+        const toolbar = page.locator(".bar-end");
+        const positions = await Promise.all(["Create node", "Add dependency", "Remove dependency", "Delete node"].map(async name =>
+          (await toolbar.getByRole("button", { name, exact: true }).boundingBox()).x));
+        assert.deepEqual(positions, [...positions].sort((a, b) => a - b));
+        assert.equal(await toolbar.getByRole("button", { name: "Create node", exact: true }).innerText(), "");
+        await toolbar.getByRole("button", { name: "Add dependency", exact: true }).click();
+        const add = page.getByRole("dialog", { name: "add dependency", exact: true });
+        const addHeader = await add.locator(".dialog-head").evaluate(el => ({width: el.offsetWidth, height: el.offsetHeight}));
+        await add.getByRole("searchbox").fill("Gamma");
+        await add.getByRole("button", { name: /Gamma/ }).click();
+        await toolbar.getByRole("button", { name: "Remove dependency", exact: true }).click();
+        const remove = page.getByRole("dialog", { name: "remove dependencies", exact: true });
+        const removeHeader = await remove.locator(".dialog-head").evaluate(el => ({width: el.offsetWidth, height: el.offsetHeight}));
+        assert.equal(addHeader.width, removeHeader.width);
+        assert.equal(addHeader.height, removeHeader.height);
+        await remove.getByRole("button", { name: /Gamma/ }).click();
+        await remove.getByRole("button", { name: "Remove selected", exact: true }).click();
+        await cli("dep", "add", "Gamma", "--target", "Beta");
+        await beta(page).click();
+        await title(page, "Beta");
+        await cli("rename", "Beta", "Renamed Beta");
+        await toolbar.getByRole("button", { name: "Delete node", exact: true }).click();
+        await page.getByText("node changed; reload and retry", { exact: true }).waitFor();
+        assert.equal(JSON.parse((await cli("show", "Alpha")).stdout).depens.length, 1);
+        await toolbar.getByRole("button", { name: "Refresh database view", exact: true }).click();
+        await title(page, "Renamed Beta");
+        await toolbar.getByRole("button", { name: "Delete node", exact: true }).click();
+        await page.waitForFunction(() => document.querySelector(".graph-stats")?.textContent.includes("2 nodes · 0 edges"));
+        assert.deepEqual(JSON.parse((await cli("show", "Alpha")).stdout).depens, []);
+        assert.deepEqual(JSON.parse((await cli("show", "Gamma")).stdout).depens, []);
+        const deleted = JSON.parse((await cli("del", "Gamma")).stdout);
+        assert.equal(deleted.deleted, true);
+        await page.goto(`${url}/#${alpha.fnode}`);
+        await title(page, "Alpha");
+        await toolbar.getByRole("button", { name: "Delete node", exact: true }).click();
+        await page.getByText("This project has no nodes. Create one with the + button.", { exact: true }).waitFor();
+        assert.equal(await toolbar.getByRole("button", { name: "Delete node", exact: true }).isDisabled(), true);
+        await toolbar.getByRole("button", { name: "Create node", exact: true }).click();
+        const create = page.getByRole("dialog", { name: "new node", exact: true });
+        await create.getByPlaceholder("New Lemma").fill("Recreated");
+        await create.getByRole("button", { name: "Create node", exact: true }).click();
+        await title(page, "Recreated");
+      }));
+
     await suite.test("external edits reject a stale save and preserve the browser draft", () =>
       fixture(browser, async ({ cli, page }) => {
         await rename(page, "Browser Alpha");
@@ -414,7 +461,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
         await frame.locator(".monaco-editor").waitFor();
         const input = frame.getByRole("textbox", { name: /Editor content/ });
-        await frame.getByText("constructor", { exact: true }).click();
+        await frame.locator(".view-line").getByText("constructor", { exact: true }).click();
         await frame.frameLocator("#infoview iframe").getByText("True", { exact: true }).first().waitFor();
         await page.locator('article[data-srctype] .block-head').nth(3).waitFor();
         const headers = await page.locator('article[data-srctype] .block-head').evaluateAll(elements => elements.map(el => {
@@ -548,7 +595,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.ok(messages.some(m => m.method === "textDocument/didClose"), "eviction must release a native Lean worker");
         await select("Lean Example");
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
-        await frame.getByText("constructor", { exact: true }).waitFor();
+        await frame.locator(".view-line").getByText("constructor", { exact: true }).waitFor();
         assert.equal(await page.getByText("Unsaved", { exact: true }).count(), 0);
         for (let i = 0; i < 3; i++) {
           const old = new URL(await page.locator('iframe[title="Lean source and Infoview"]').getAttribute("src"), url).searchParams.get("session");

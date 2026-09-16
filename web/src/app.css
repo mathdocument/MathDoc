@@ -237,6 +237,13 @@ dialog.modal-dialog .modal-result-row:disabled {
   cursor: not-allowed;
 }
 
+dialog.dependency-dialog .close-btn { margin-left: auto; }
+dialog.dependency-dialog .modal-row { grid-template-columns: 1.4rem 3.5rem 8ch minmax(0, 1fr); }
+dialog.dependency-dialog .modal-row.selected { background: var(--mdc-card-selected); }
+dialog.dependency-dialog .modal-row:disabled { opacity: 0.45; cursor: not-allowed; }
+dialog.dependency-dialog .hint { gap: 1rem; font-size: var(--mdc-text-2xs); }
+dialog.dependency-dialog kbd { padding: 0.12rem 0.3rem; font-size: 0.6rem; }
+
 dialog.modal-dialog .modal-row .depth {
   color: var(--mdc-muted);
   font-size: var(--mdc-text-2xs);

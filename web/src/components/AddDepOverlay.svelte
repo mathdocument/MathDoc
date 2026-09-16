@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { Link2, Plus, X } from "@lucide/svelte";
+  import { Link2, Plus, Search, X } from "@lucide/svelte";
   import { api, isAbortError } from "../lib/api";
   import { errMsg, shortFnode } from "../lib/format";
   import type { DependencyCandidatesEmpty, NodeDetail, NodeInfo } from "../lib/types";
@@ -28,6 +28,7 @@
   let error: string | null = $state(null);
   let saving = $state(false);
   let inputEl = $state<HTMLInputElement | null>(null);
+  let list = $state<HTMLUListElement>();
   let createMode = $state(false);
   const draftId = Symbol("add dependency creation draft");
   let alive = true;
@@ -36,7 +37,10 @@
     const index = direction === 1
       ? results.findIndex((item, index) => index > selected && !item.broken)
       : results.findLastIndex((item, index) => index < selected && !item.broken);
-    if (index >= 0) selected = index;
+    if (index >= 0) {
+      selected = index;
+      list?.children[index]?.scrollIntoView({ block: "nearest" });
+    }
   }
   let candidateEmpty = $state<DependencyCandidatesEmpty | null>(null);
 
@@ -177,7 +181,7 @@
   function onKey(e: KeyboardEvent) {
     if (disabled || saving || e.isComposing) return;
     if ((e.key === "Enter" || e.key === " ") &&
-      e.target instanceof Element && e.target.closest(".close-btn")) return;
+      e.target instanceof Element && e.target.closest(".close-btn, .actions, .create-confirm")) return;
     switch (e.key) {
       case "Enter":
         e.preventDefault();
@@ -214,26 +218,32 @@
 <svelte:window onkeydown={onKey} />
 
 <dialog
-    class="dialog modal-dialog modal-wide"
+    class="dialog modal-dialog modal-wide dependency-dialog"
     aria-label="add dependency"
     use:modal
     oncancel={onCancel}
     onclick={(event) => { if (event.target === event.currentTarget) close(); }}
   >
-    <div class="search-field modal-search-field">
-      <Link2 size={18} strokeWidth={1.8} />
+    <header class="dialog-head">
+      <span class="head-icon"><Link2 size={16} strokeWidth={1.8} /></span>
+      <span><small>Current node</small><h2>Add dependency</h2></span>
+      <button class="close-btn" onclick={close} title="Close" aria-label="Close add dependency"><X size={17} strokeWidth={1.8} /></button>
+    </header>
+    <div class="modal-search-field">
+      <Search size={18} strokeWidth={1.8} />
       <input
+        type="search"
         bind:this={inputEl}
         bind:value={query}
+        aria-label="Search dependencies"
         placeholder="Search for a dependency…"
         autocomplete="off"
         spellcheck="false"
         disabled={saving}
       />
       {#if loading}<span class="loading-label">Searching</span>{/if}
-      <button class="close-btn" onclick={close} title="Close" aria-label="Close add dependency"><X size={17} strokeWidth={1.8} /></button>
     </div>
-    <ul class="results modal-list modal-results">
+    <ul class="results modal-list modal-results" bind:this={list}>
       {#if createMode}
         <li class="create-form">
           <div class="create-title"><Plus size={15} strokeWidth={2} />Create new: {query}</div>
@@ -249,11 +259,12 @@
         {#each results as r, i (r.fnode)}
           <li>
             <button
-              class="row modal-row modal-result-row"
+              class="row modal-row"
               class:selected={i === selected}
               onclick={() => { selected = i; void submit(); }}
               disabled={r.broken || saving}
             >
+              <span class="choice"><Plus size={15} strokeWidth={1.8} /></span>
               <span class="depth">[{r.depth}]</span>
               <span class="fnode">{shortFnode(r.fnode)}</span>
               <span class="title">{r.title}</span>
@@ -263,7 +274,7 @@
           {#if canCreate}
             <li>
               <button
-                class="row modal-row modal-result-row create"
+                class="row modal-row create"
                 onclick={() => startCreate()}
                 disabled={saving}
               >
@@ -272,6 +283,8 @@
             </li>
           {:else if emptyMessage}
             <li class="empty modal-empty">{emptyMessage}</li>
+          {:else}
+            <li class="empty modal-empty">{loading ? "Searching…" : "Search by title or fnode"}</li>
           {/if}
         {/each}
       {/if}
@@ -279,13 +292,24 @@
     {#if error}
       <div class="error-bar modal-error">{error}</div>
     {/if}
-    <div class="hint modal-search-hint"><span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span><span><kbd>Enter</kbd> Add</span><span><kbd>Esc</kbd> Cancel</span></div>
+    <footer class="dialog-footer">
+      <div class="hint"><span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span><span><kbd>Enter</kbd> Add</span><span><kbd>Esc</kbd> Cancel</span></div>
+      <div class="actions">
+        <button class="secondary" onclick={close} disabled={saving}>Cancel</button>
+        {#if !createMode}
+          <button class="primary" onclick={() => void submit()} disabled={saving || !results[selected] || results[selected]?.broken}>Add selected</button>
+        {/if}
+      </div>
+    </footer>
   </dialog>
 
 <style>
-  .search-field {
+  .head-icon {
     color: var(--mdc-accent-down);
+    background: color-mix(in srgb, var(--mdc-accent-down) 12%, transparent);
   }
+  .choice { display: grid; place-items: center; color: var(--mdc-muted); }
+  .primary { color: var(--mdc-on-accent); background: var(--mdc-accent); border: 1px solid var(--mdc-accent); }
   .row.create .create-label {
     display: flex;
     align-items: center;

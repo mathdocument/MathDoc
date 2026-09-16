@@ -6,7 +6,7 @@ use axum::{
     extract::{DefaultBodyLimit, Path, Query, Request, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -170,6 +170,7 @@ pub fn router(service: Arc<Service>) -> Router {
         .route("/search", get(search))
         .route("/resolve", get(resolve))
         .route("/node/new", post(new_node))
+        .route("/node/:id", delete(delete_node))
         .route("/node/:id/view", get(view))
         .route("/node/:id/lean/check", post(lean_check))
         .route("/node/:id/lean/goals", post(lean_goals))
@@ -732,6 +733,23 @@ async fn new_node(
 #[serde(deny_unknown_fields)]
 struct Title {
     title: String,
+}
+async fn delete_node(
+    State(s): State<Arc<Service>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> ApiResult<Json<Value>> {
+    let mut snapshot = s.read().await?;
+    let node = snapshot.resolve(&id)?;
+    check_revision(&headers, node)?;
+    let id = node.fnode.clone();
+    let referrers = &snapshot.referrers[&id];
+    let removed_edges = node.depens.len() + referrers.len();
+    let version = s.db.delete_node(&id, referrers, &snapshot.version).await?;
+    snapshot.remove(&id, version);
+    Ok(Json(
+        json!({"fnode": id, "deleted": true, "removed_edges": removed_edges}),
+    ))
 }
 async fn title(
     State(s): State<Arc<Service>>,

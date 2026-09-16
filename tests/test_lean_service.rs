@@ -32,6 +32,7 @@ async fn native_project_keeps_module_names_configuration_and_dependency_guards()
         content: "import Mathlib.A\ntheorem derived : supportValue = 7 := base\n".into(),
         ..Default::default()
     });
+    let deleted_id = a.fnode.clone();
     let mut snapshot = Snapshot {
         version: "native".into(),
         nodes: [a, b.clone()]
@@ -72,6 +73,24 @@ async fn native_project_keeps_module_names_configuration_and_dependency_guards()
         .await
         .unwrap();
     assert!(checked.passed && !checked.certified, "missing managed edge must be detected even when a previous build left the imported module on disk: {checked:?}");
+    snapshot.remove(&deleted_id, "delete dependency".into());
+    service.shutdown().await;
+    drop(service);
+    // Restart with the old on-disk artifacts still present. They must never
+    // turn a deleted node into an implicitly trusted external dependency.
+    let service = LeanService::new(temp.path().to_path_buf()).unwrap();
+    let checked = service
+        .check(Input::capture(&snapshot, &b.fnode).unwrap(), false)
+        .await
+        .unwrap();
+    assert!(!checked.certified, "{checked:?}");
+    assert!(
+        checked
+            .dependency_errors
+            .iter()
+            .any(|e| e.contains("no longer a graph node")),
+        "{checked:?}"
+    );
     service.shutdown().await;
 }
 

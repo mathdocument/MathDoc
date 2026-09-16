@@ -10,6 +10,7 @@
     Search,
     Settings,
     Sun,
+    Trash2,
     Unlink2,
   } from "@lucide/svelte";
   import {
@@ -37,6 +38,7 @@
     confirmDiscardDrafts,
     hasUnsavedDrafts,
     settlePendingMutations,
+    trackMutation,
   } from "./lib/unsaved";
   import { applyTheme, currentTheme, observeTheme, type Theme } from "./lib/theme";
 
@@ -251,7 +253,7 @@
         const defaultFnode = await findDefaultFnode();
         if (!isCurrent()) return;
         if (!defaultFnode) {
-          initialError = "workspace has no valid nodes — create one with New node";
+          initialError = "This project has no nodes. Create one with the + button.";
           return;
         }
         const committed = await navigateInitial(defaultFnode);
@@ -306,7 +308,7 @@
               browserHistory: "replace",
             });
           } else {
-            initialError = "workspace has no valid nodes — create one with New node";
+            initialError = "This project has no nodes. Create one with the + button.";
           }
         }
       } else {
@@ -318,7 +320,7 @@
             skipUnsavedGuard: true,
           });
         } else {
-          initialError = "workspace has no valid nodes — create one with New node";
+          initialError = "This project has no nodes. Create one with the + button.";
         }
       }
       if (selectionWasCleared && view === "force") nodeSession.selectionCleared = true;
@@ -358,6 +360,36 @@
     if (historyNavigating) return;
     if (view === "force") void onForceSelect(fnode, { skipUnsavedGuard });
     else void nodeSession.select(fnode, { skipUnsavedGuard });
+  }
+
+  async function deleteActiveNode() {
+    const node = activeNode;
+    if (!node || refreshing) return;
+    if (!window.confirm(`Delete “${node.title}”? This removes the node and all dependencies pointing to it. Unsaved edits to this node will also be discarded.`)) return;
+    refreshing = true;
+    refreshError = null;
+    let clearMutation: (() => void) | undefined;
+    try {
+      if (!await settlePendingMutations()) return;
+      cancelStartup();
+      clearMutation = trackMutation();
+      const result = await api.deleteNode(node.fnode, activeNode?.revision ?? node.revision);
+      clearMutation();
+      nodeSession.removeNode(node.fnode);
+      graphRevision++;
+      workspaceSession.applyDelta(-1, -result.removed_edges);
+      const next = await findDefaultFnode();
+      if (next) {
+        await nodeSession.select(next, { skipUnsavedGuard: true, browserHistory: "replace" });
+      } else {
+        initialError = "This project has no nodes. Create one with the + button.";
+      }
+    } catch (error) {
+      refreshError = errMsg(error);
+    } finally {
+      clearMutation?.();
+      refreshing = false;
+    }
   }
 
   // The fnode that toolbar actions operate on, regardless of view.
@@ -441,8 +473,14 @@
       </button>
     </div>
 
-    <!-- Zone 3: actions, ordered secondary → primary, then view and app controls. -->
+    <!-- Node actions, followed by view and app controls. -->
     <div class="bar-zone bar-end">
+      <button
+        class="tool primary icon-only"
+        onclick={() => { overlay = { kind: "new-node" }; }}
+        title="Create node"
+        aria-label="Create node"
+      ><Plus size={15} strokeWidth={2.1} /></button>
       <div class="tool-cluster" aria-label="dependency actions">
         <button
           class="tool icon-only"
@@ -460,10 +498,12 @@
         ><Unlink2 size={15} strokeWidth={1.8} /></button>
       </div>
       <button
-        class="tool primary"
-        onclick={() => { overlay = { kind: "new-node" }; }}
-        title="Create node"
-      ><Plus size={15} strokeWidth={2.1} /><span>New node</span></button>
+        class="tool danger icon-only"
+        onclick={deleteActiveNode}
+        disabled={!activeReady}
+        title="Delete node"
+        aria-label="Delete node"
+      ><Trash2 size={15} strokeWidth={1.8} /></button>
       <span class="toolbar-divider"></span>
       <div class="view-switch" aria-label="workspace view">
         <button
@@ -754,6 +794,11 @@
     color: var(--mdc-on-accent);
     box-shadow: var(--mdc-shadow-md);
   }
+  .tool.danger { color: var(--mdc-error); }
+  .tool.danger:hover:not(:disabled) {
+    color: var(--mdc-error);
+    background: color-mix(in srgb, var(--mdc-error) 12%, transparent);
+  }
   /* Related icon actions share one recessed well instead of floating apart. */
   .tool-cluster {
     display: flex;
@@ -1043,16 +1088,6 @@
       width: 32px;
       padding: 0;
       justify-content: center;
-    }
-  }
-
-  @media (max-width: 820px) {
-    .tool.primary span {
-      display: none;
-    }
-    .tool.primary {
-      width: 32px;
-      padding: 0;
     }
   }
 

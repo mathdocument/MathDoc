@@ -21,6 +21,7 @@ UUIDs; CLI references are resolved by exact name or UUID first.
 | `GET /resolve?ref=NAME_OR_UUID` | Used by node commands | `{fnode, title}`. |
 | `GET /node/ID/view` | `show` and `dep` reads | `{node, referrers, children}`; all include `formalization: {lean, rocq}` status. CLI `show` returns `node`. |
 | `POST /node/new` | `new -t TITLE [--parent REF]` | Body `{title, parent_fnode?}`; optionally creates an edge atomically. |
+| `DELETE /node/ID` | `del SOURCE` | Atomically delete the node and detach all referrers; `{fnode, deleted: true, removed_edges}`. |
 | `PUT /node/ID/title` | `rename` | Body `{title}`; updated node. |
 | `PUT /node/ID/block/TYPE` | `edit --type TYPE` | Body `{content}`; updated node. |
 | `DELETE /node/ID/block/TYPE` | `edit --type TYPE --delete` | Delete text/lean/rocq/latex block; updated node. |
@@ -46,7 +47,8 @@ UUIDs; CLI references are resolved by exact name or UUID first.
 For linked creation, the HTTP response is the updated parent, as used by the
 browser. The CLI identifies its newly added dependency and returns the created
 node, keeping `new` output consistent. A normal unlinked creation returns the
-new node directly. There is no node-deletion API.
+new node directly. Deleting a node retains all other nodes and their source
+blocks; only dependency edges incident to the deleted node are removed.
 
 ## Local management and editor sessions
 

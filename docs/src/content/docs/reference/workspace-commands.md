@@ -10,7 +10,7 @@ title: CLI commands
 | --- | --- |
 | Project and service management | `status`, `init`, `start`, `stop` |
 | Entire branch | `search`, `graph`, `export`, `import`, `history`, `branch`, `project` |
-| Single node | `new`, `dep`, `show`, `edit`, `rename`, `metric`, `lean` |
+| Single node | `new`, `del`, `dep`, `show`, `edit`, `rename`, `metric`, `lean` |
 
 Use `mdc COMMAND -h` or `mdc COMMAND SUBCOMMAND --help`. There is no `help`
 subcommand. The root accepts only `-h/--help`; command help places `-h/--help` and
@@ -123,6 +123,7 @@ mdc show -p myproject/main 'Lemma'
 mdc rename -p myproject/main 'Lemma' 'Renamed lemma' --revision NODE_REV
 printf 'Explanation.\n' | mdc edit -p myproject/main 'Renamed lemma' --type text --revision NODE_REV
 mdc edit -p myproject/main 'Renamed lemma' --type text --delete --revision NODE_REV
+mdc del -p myproject/main 'Renamed lemma' --revision NODE_REV
 ```
 
 `new` returns the created node. With `--parent`, node creation and adding the edge
@@ -136,7 +137,13 @@ changes only its display title, preserving its UUID and Lean module identity.
 `lean` (default), `rocq` and `latex`. `--delete` removes that block and reads no
 stdin; an empty source without `--delete` remains an existing block.
 
-Use the revision returned by `show` on edits, renames and dependency mutations.
+`del SOURCE` deletes the node and removes all incoming dependency edges in one
+commit. Referrer nodes and the deleted node’s dependencies remain; their source
+blocks are not rewritten. Affected Lean certifications become stale. The JSON
+result is `{fnode, deleted: true, removed_edges}`, counting incoming and outgoing
+edges. The web toolbar offers the same deletion with confirmation.
+
+Use the revision returned by `show` on edits, renames, deletions and dependency mutations.
 If omitted, the CLI fetches the latest revision immediately before its write.
 Explicit revisions protect work based on an earlier read; stale writes fail
 without overwriting newer data. This is separate from compilation.

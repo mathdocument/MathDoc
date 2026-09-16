@@ -139,6 +139,12 @@ export const api = {
     req<ResolveResponse>(`/api/resolve?ref=${encodeURIComponent(ref)}`),
   nodeView: (fnode: string) =>
     req<NodeView>(`/api/node/${encodeURIComponent(fnode)}/view`),
+  deleteNode: async (fnode: string, expectedRevision: string) => {
+    const revision = await (nodeMutationTails.get(fnode) ?? Promise.resolve(expectedRevision));
+    return req<{ fnode: string; deleted: true; removed_edges: number }>(`/api/node/${encodeURIComponent(fnode)}`, {
+      method: "DELETE", headers: { "if-match": `"${revision}"` },
+    });
+  },
   dependencyCandidates: (fnode: string, q: string, n = 50, signal?: AbortSignal) =>
     req<DependencyCandidates>(
       `/api/node/${encodeURIComponent(fnode)}/dep/candidates?q=${encodeURIComponent(q)}&n=${n}`,

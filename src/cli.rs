@@ -74,6 +74,13 @@ enum Commands {
         #[arg(long, requires = "parent")]
         revision: Option<String>,
     },
+    /// Delete a node and remove it from every referrer's dependencies.
+    Del {
+        source: String,
+        /// Require the node revision returned by show.
+        #[arg(long)]
+        revision: Option<String>,
+    },
     /// Manage or traverse dependencies and referrers of a node.
     Dep {
         #[command(subcommand)]
@@ -323,7 +330,7 @@ fn stdin() -> Result<String> {
 fn command_group(name: &str) -> u8 {
     match name {
         "status" | "init" | "start" | "stop" => 0,
-        "new" | "show" | "edit" | "rename" | "dep" | "metric" | "lean" => 2,
+        "new" | "del" | "show" | "edit" | "rename" | "dep" | "metric" | "lean" => 2,
         _ => 1,
     }
 }
@@ -523,6 +530,17 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
             }
         }
         Commands::Show { source } => api.node(&source).await?,
+        Commands::Del { source, revision } => {
+            let node = api.node(&source).await?;
+            api.request(
+                Method::DELETE,
+                &format!("/node/{}", node["fnode"].as_str().unwrap()),
+                &[],
+                None,
+                revision.as_deref().or_else(|| node["revision"].as_str()),
+            )
+            .await?
+        }
         Commands::Edit {
             source,
             language,
@@ -837,7 +855,7 @@ mod tests {
             [
                 vec!["status", "init", "start", "stop"],
                 vec!["search", "graph", "export", "import", "history", "branch", "project"],
-                vec!["new", "dep", "show", "edit", "rename", "metric", "lean"],
+                vec!["new", "del", "dep", "show", "edit", "rename", "metric", "lean"],
             ]
         );
         assert!(!short.contains("__run"));

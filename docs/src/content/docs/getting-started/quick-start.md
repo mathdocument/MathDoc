@@ -9,7 +9,7 @@ mdc init myproject
 mdc start myproject/main
 ```
 
-Open the printed `/p/myproject/main/` URL and use **New node**. The root page
+Open the printed `/p/myproject/main/` URL and use the **+** button (**Create node**). The root page
 `http://127.0.0.1:17843/` lists all projects and their branch service states.
 Add text, Lean, Rocq or LaTeX blocks.
 Lean opens the source editor and native Infoview side by side. The toolbar's Lean

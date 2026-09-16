@@ -110,7 +110,7 @@
 <svelte:window onkeydown={onKey} />
 
 <dialog
-    class="dialog modal-dialog modal-wide"
+    class="dialog modal-dialog modal-wide dependency-dialog"
     aria-label="remove dependencies"
     use:modal
     oncancel={onCancel}
@@ -129,12 +129,12 @@
         <input type="search" bind:value={query} oninput={() => changePage(0)}
           aria-label="Filter dependencies" placeholder="Filter by title or fnode…" disabled={saving} />
       </div>
-      <ul class="list modal-list" bind:this={list}>
+      <ul class="list modal-list modal-results" bind:this={list}>
         {#each visible as c, i (c.fnode)}
           <li>
             <button
               class="row modal-row"
-              class:cursor={i === cursor}
+              class:selected={i === cursor}
               class:checked={selection.has(c.fnode)}
               aria-pressed={selection.has(c.fnode)}
               onclick={() => { cursor = i; toggle(c.fnode); }}
@@ -178,25 +178,11 @@
     color: var(--mdc-error);
     background: color-mix(in srgb, var(--mdc-error) 12%, transparent);
   }
-  .close-btn {
-    margin-left: auto;
-  }
-  .row {
-    grid-template-columns: 1.4rem 3.5rem 6rem minmax(0, 1fr);
-  }
-  .row .title { overflow-wrap: anywhere; }
   .pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.5rem 0.75rem; color: var(--mdc-muted); font-size: var(--mdc-text-xs); }
   .pagination .actions { align-items: center; }
-  .row.cursor {
-    background: var(--mdc-card-hover);
-  }
   .row.checked {
     color: var(--mdc-fg);
     background: color-mix(in srgb, var(--mdc-error) 9%, transparent);
-  }
-  .row:disabled {
-    opacity: 0.6;
-    cursor: default;
   }
   .check {
     display: grid;
@@ -219,17 +205,6 @@
   .error-bar {
     padding: 0.55rem 0.75rem;
     border-top: 1px solid color-mix(in srgb, var(--mdc-error) 22%, transparent);
-  }
-  .dialog-footer {
-    min-height: 56px;
-  }
-  .hint {
-    gap: 1rem;
-    font-size: var(--mdc-text-2xs);
-  }
-  kbd {
-    padding: 0.12rem 0.3rem;
-    font-size: 0.6rem;
   }
   .danger {
     color: var(--mdc-on-error);

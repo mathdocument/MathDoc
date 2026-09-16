@@ -351,6 +351,8 @@ fn dependency_errors(
     known: &BTreeMap<PathBuf, String>,
     keys: &BTreeMap<String, String>,
     results: &HashMap<String, CheckResult>,
+    root: &Path,
+    project: &LeanProject,
 ) -> Result<Vec<String>> {
     let mut errors = vec![];
     let mut imported = BTreeSet::new();
@@ -358,8 +360,23 @@ fn dependency_errors(
         let module = import["module"]["name"]
             .as_str()
             .context("Lean import omitted module name")?;
-        if let Some(id) = known.get(&crate::store::module_file(module, "lean")?) {
+        let source = crate::store::module_file(module, "lean")?;
+        if let Some(id) = known.get(&source) {
             imported.insert(id.clone());
+        } else if !project
+            .files
+            .contains_key(&source.to_string_lossy().to_string())
+            && (root.join(&source).is_file()
+                || root
+                    .join(".lake/build/lib/lean")
+                    .join(source.with_extension("olean"))
+                    .is_file())
+        {
+            // A deleted node's old files are not an external library, even if
+            // a warm worker or a concurrent build can still import them.
+            errors.push(format!(
+                "local Lean import {module} is no longer a graph node or project file"
+            ));
         }
     }
     if imported != node.depens.iter().cloned().collect() {
@@ -502,8 +519,15 @@ impl LeanService {
                 continue;
             };
             let passed = !diagnostics.iter().any(|d| d["severity"] == 1);
-            let errors =
-                dependency_errors(node, &imports, known, &keys, &self.results.read().unwrap())?;
+            let errors = dependency_errors(
+                node,
+                &imports,
+                known,
+                &keys,
+                &self.results.read().unwrap(),
+                root,
+                &input.project,
+            )?;
             let result = CheckResult {
                 fnode: node.fnode.clone(),
                 revision: node.revision(),

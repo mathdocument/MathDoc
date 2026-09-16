@@ -33,6 +33,108 @@ async fn call(
 }
 
 #[tokio::test]
+#[ignore = "requires local TerminusDB and MDC_TERMINUS_PASSWORD"]
+async fn delete_node_atomically_detaches_referrers_and_invalidates_affected_keys() {
+    use mathdoc::store::Node;
+    let fixture = common::TestDatabase::new("mdcdelete").await;
+    let db = &fixture.db;
+    let before = db.load().await.unwrap();
+    let dependency = Node::new("Dependency".into()).unwrap();
+    let mut target = Node::new("Target".into()).unwrap();
+    target.depens.push(dependency.fnode.clone());
+    let mut parent = Node::new("Parent".into()).unwrap();
+    parent.depens = vec![target.fnode.clone(), dependency.fnode.clone()];
+    let mut ancestor = Node::new("Ancestor".into()).unwrap();
+    ancestor.depens = vec![parent.fnode.clone(), target.fnode.clone()];
+    db.put(
+        &[
+            dependency.clone(),
+            target.clone(),
+            parent.clone(),
+            ancestor.clone(),
+        ],
+        &before.version,
+        "Deletion fixture",
+    )
+    .await
+    .unwrap();
+    let before = db.load().await.unwrap();
+    db.create_branch("preserved").await.unwrap();
+    let service = Service::open(db.clone()).await.unwrap();
+    let app = service::router(service.clone());
+    let path = format!("/api/node/{}", target.fnode);
+    assert_eq!(call(&app, "DELETE", &path, Value::Null, None).await.0, 428);
+    assert_eq!(
+        call(&app, "DELETE", &path, Value::Null, Some("stale"))
+            .await
+            .0,
+        412
+    );
+    assert_eq!(db.version().await.unwrap(), before.version);
+    let commits = db.history().await.unwrap().as_array().unwrap().len();
+    let (status, result) = call(&app, "DELETE", &path, Value::Null, Some(&target.revision())).await;
+    assert_eq!(status, 200, "{result}");
+    assert_eq!(result["removed_edges"], 3);
+    assert_eq!(
+        db.history().await.unwrap().as_array().unwrap().len(),
+        commits + 1
+    );
+    let after = db.load().await.unwrap();
+    let live = service.read().await.unwrap();
+    assert!(!after.nodes.contains_key(&target.fnode));
+    assert_eq!(
+        after.nodes[&parent.fnode].depens,
+        *std::slice::from_ref(&dependency.fnode)
+    );
+    assert_eq!(after.nodes[&ancestor.fnode].depens, [parent.fnode.clone()]);
+    assert_eq!(after.nodes, live.nodes);
+    assert_eq!(after.lean_keys, live.lean_keys);
+    assert_eq!(after.depths, live.depths);
+    assert_eq!(after.modules, live.modules);
+    assert_eq!(
+        after.lean_keys[&dependency.fnode],
+        before.lean_keys[&dependency.fnode]
+    );
+    for id in [&parent.fnode, &ancestor.fnode] {
+        assert_ne!(after.lean_keys[id], before.lean_keys[id]);
+        assert_ne!(after.nodes[id].revision(), before.nodes[id].revision());
+    }
+    drop(live);
+    assert!(db
+        .delete_node(
+            &dependency.fnode,
+            std::slice::from_ref(&parent.fnode),
+            &before.version
+        )
+        .await
+        .is_err());
+    assert_eq!(db.version().await.unwrap(), after.version);
+    assert_eq!(
+        call(&app, "DELETE", &path, Value::Null, Some(&target.revision()))
+            .await
+            .0,
+        404
+    );
+    let mut branch = db.clone();
+    branch.branch = "preserved".into();
+    assert_eq!(branch.load().await.unwrap().nodes, before.nodes);
+    for id in [&ancestor.fnode, &parent.fnode, &dependency.fnode] {
+        let snapshot = db.load().await.unwrap();
+        let (status, result) = call(
+            &app,
+            "DELETE",
+            &format!("/api/node/{id}"),
+            Value::Null,
+            Some(&snapshot.nodes[id].revision()),
+        )
+        .await;
+        assert_eq!(status, 200, "{result}");
+    }
+    assert!(service.read().await.unwrap().nodes.is_empty());
+    assert!(db.load().await.unwrap().nodes.is_empty());
+}
+
+#[tokio::test]
 #[ignore = "requires TerminusDB and native Lean v4.33.1"]
 async fn api_mutations_use_database_revisions_without_workspace_files() {
     let fixture = common::TestDatabase::new("mdcapi").await;

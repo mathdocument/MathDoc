@@ -579,6 +579,40 @@ impl Database {
     pub async fn put(&self, nodes: &[Node], version: &str, message: &str) -> Result<String> {
         self.put_bundle(nodes, None, None, version, message).await
     }
+    pub async fn delete_node(
+        &self,
+        id: &str,
+        referrers: &[String],
+        version: &str,
+    ) -> Result<String> {
+        let mut queries: Vec<Value> = referrers
+            .iter()
+            .map(|parent| {
+                json!({
+                    "@type": "DeleteTriple",
+                    "subject": {"@type": "NodeValue", "node": format!("Node/{parent}")},
+                    "predicate": {"@type": "NodeValue", "node": "depens"},
+                    "object": {"@type": "Value", "node": format!("Node/{id}")}
+                })
+            })
+            .collect();
+        queries.push(json!({"@type": "DeleteDocument",
+            "identifier": {"@type": "NodeValue", "node": format!("Node/{id}")}}));
+        let response = self
+            .server
+            .request(
+                Method::POST,
+                &format!("woql/{}", self.path()),
+                &[],
+                Some(
+                    json!({"commit_info": {"author": "mdc", "message": "Delete node"},
+                "query": {"@type": "And", "and": queries}}),
+                ),
+                Some(version),
+            )
+            .await?;
+        Self::response_version(&response)
+    }
     pub async fn put_bundle(
         &self,
         nodes: &[Node],
@@ -855,6 +889,20 @@ impl Snapshot {
             self.recompute_graph();
         }
         self.refresh_lean_keys(lean_changed);
+    }
+    pub fn remove(&mut self, id: &str, version: String) {
+        let referrers = self.referrers.get(id).cloned().unwrap_or_default();
+        for parent in &referrers {
+            Arc::make_mut(self.nodes.get_mut(parent).expect("existing referrer"))
+                .depens
+                .retain(|dep| dep != id);
+        }
+        self.nodes.remove(id);
+        self.lean_keys.remove(id);
+        self.lean_prefixes.remove(id);
+        self.version = version;
+        self.recompute_graph();
+        self.refresh_lean_keys(referrers.into_iter().collect());
     }
 }
 

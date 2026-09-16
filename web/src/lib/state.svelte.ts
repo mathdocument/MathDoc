@@ -80,6 +80,22 @@ export class NodeSession {
     this.snapshot = { ...this.snapshot, node };
   }
 
+  removeNode(fnode: string): void {
+    this.cancel();
+    this.historyIdx -= this.history.slice(0, this.historyIdx + 1).filter(id => id === fnode).length;
+    this.history = this.history.filter(id => id !== fnode);
+    if (this.lastVisitedFnode === fnode) this.lastVisitedFnode = null;
+    if (this.node?.fnode === fnode) {
+      this.snapshot = null;
+      this.selectionCleared = false;
+      this.loadError = null;
+      this.editorRevision++;
+      this.browserHistory.commit("replace", null, null);
+    }
+    this.navigationError = null;
+    this.failedNavigationFnode = null;
+  }
+
   async select(fnode: string, opts: NavigateOptions = {}): Promise<boolean> {
     if (!opts.skipUnsavedGuard && !confirmDiscardDrafts()) return false;
     const request = ++this.navigationRequest;
