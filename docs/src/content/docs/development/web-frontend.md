@@ -21,9 +21,12 @@ including the first graph fetch. There is no fade for these switches, including
 with reduced motion enabled. Ordinary links, browser history and unsaved-draft
 guards are preserved; browsers without View Transitions use normal navigation.
 
-Relation columns render a viewport window for lists over 100 nodes, with two
-title lines reserved per row. Scrolling and Arrow/Home/End navigation can reach
-the complete list. Switching views keeps the columns' scroll positions and the
+Relation columns filter locally by title or UUID and render only a viewport
+window for more than 100 matches. Cards use natural one- or two-line titles at
+every list size. ResizeObserver measures mounted rows; cached heights and
+estimated offscreen heights position the window without rendering the full
+list. Scrolling and Arrow/Home/End navigation reach all matches. Filters reset
+when selecting another node. Switching views keeps the columns' scroll positions and the
 same editor session. Node snapshots are replaced atomically instead of deeply
 proxied. The graph component loads on first use and keeps its layout in memory;
 the desktop layout uses fixed 5:3 grid columns for the graph and editor.

@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { onDestroy, tick, untrack } from "svelte";
   import type { NodePreview } from "../lib/types";
   import FormalStatus from "./FormalStatus.svelte";
   import { shortFnode } from "../lib/format";
-  import { ArrowDownRight, ArrowUpRight } from "@lucide/svelte";
+  import { ArrowDownRight, ArrowUpRight, Search } from "@lucide/svelte";
 
   interface Props {
     items: NodePreview[];
@@ -31,40 +31,124 @@
 
   let direction = $derived(accent === "up" ? "Upstream" : "Downstream");
   let depthWidth = $derived(items.reduce((width, item) => Math.max(width, String(item.depth).length + 1), 4));
-  // Large lists reserve two title lines per row, so offscreen cards need no DOM
-  // or measurement. Small lists retain their natural, compact row heights.
-  const ROW_HEIGHT = 76;
+  let query = $state("");
+  let needle = $derived(query.trim().toLowerCase());
+  let matches = $derived(needle ? items.filter(item =>
+    item.title.toLowerCase().includes(needle) || item.fnode.toLowerCase().includes(needle)) : items);
+  // Only visible cards are measured. Unvisited rows use an estimate, never a
+  // fixed CSS height, so both small and large lists keep natural title wrapping.
+  const ESTIMATED_HEIGHT = 58;
+  const measurements = new Map<string, number>();
+  let measured = $state(0);
   let list: HTMLUListElement;
   let scrollTop = $state(0);
   let height = $state(0);
-  let virtual = $derived(items.length > 100);
-  let start = $derived(virtual ? Math.max(0, Math.min(items.length - 1, Math.floor(scrollTop / ROW_HEIGHT) - 5)) : 0);
-  let end = $derived(virtual ? Math.min(items.length, start + Math.ceil(height / ROW_HEIGHT) + 11) : items.length);
-  let visible = $derived(items.slice(start, end));
+  let width = $state(0);
+  let virtual = $derived(matches.length > 100);
+  let offsets = $derived.by(() => {
+    void measured;
+    const values = [0];
+    for (const item of matches) values.push(values[values.length - 1]! + (measurements.get(item.fnode) ?? ESTIMATED_HEIGHT));
+    return values;
+  });
+
+  function rowAt(position: number): number {
+    let low = 0, high = matches.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (offsets[middle + 1]! <= position) low = middle + 1;
+      else high = middle;
+    }
+    return Math.min(low, Math.max(0, matches.length - 1));
+  }
+
+  let start = $derived(virtual ? Math.max(0, rowAt(scrollTop) - 5) : 0);
+  let end = $derived(virtual ? Math.min(matches.length, rowAt(scrollTop + height) + 6) : matches.length);
+  let visible = $derived(matches.slice(start, end));
+
+  const pendingMeasurements = new Map<HTMLLIElement, number>();
+  let measureFrame = 0;
+  function flushMeasurements() {
+    measureFrame = 0;
+    const anchor = rowAt(scrollTop);
+    let correction = 0, changed = false;
+    for (const [row, size] of pendingMeasurements) {
+      if (!row.isConnected || size === 0) continue;
+      const id = row.dataset.fnode!;
+      const previous = measurements.get(id) ?? ESTIMATED_HEIGHT;
+      if (Math.abs(size - previous) < 0.1) continue;
+      if (Number(row.dataset.index) < anchor) correction += size - previous;
+      measurements.set(id, size);
+      changed = true;
+    }
+    pendingMeasurements.clear();
+    if (changed) measured++;
+    if (virtual && correction && list) {
+      // Keep the first visible card in place when overscan rows are measured.
+      list.scrollTop += correction;
+      scrollTop = list.scrollTop;
+    }
+  }
+  const observer = new ResizeObserver(entries => {
+    for (const entry of entries) {
+      const row = entry.target as HTMLLIElement;
+      pendingMeasurements.set(row, entry.borderBoxSize[0]?.blockSize ?? row.getBoundingClientRect().height);
+    }
+    // Updating the virtual window during ResizeObserver delivery can mount
+    // more observed rows and trigger WebKit's resize-loop error.
+    if (!measureFrame) measureFrame = requestAnimationFrame(flushMeasurements);
+  });
+  onDestroy(() => { observer.disconnect(); cancelAnimationFrame(measureFrame); });
+  function measure(row: HTMLLIElement) {
+    observer.observe(row);
+    return { destroy: () => { observer.unobserve(row); pendingMeasurements.delete(row); } };
+  }
 
   $effect(() => {
     void context;
+    query = "";
+  });
+
+  let measuredWidth = 0;
+  $effect(() => {
+    if (!width || width === measuredWidth) return;
+    measuredWidth = width;
+    untrack(() => {
+      measurements.clear();
+      // Retain exact heights for mounted rows even if their height did not
+      // change; ResizeObserver only reports rows whose dimensions changed.
+      for (const row of list.querySelectorAll<HTMLLIElement>("li[data-fnode]")) {
+        measurements.set(row.dataset.fnode!, row.getBoundingClientRect().height);
+      }
+      measured++;
+    });
+  });
+
+  $effect(() => {
+    void context;
+    void needle;
     scrollTop = 0;
     if (list) list.scrollTop = 0;
   });
 
   async function moveFocus(event: KeyboardEvent, index: number) {
     if (!virtual || event.altKey || event.ctrlKey || event.metaKey) return;
-    let target = { ArrowDown: index + 1, ArrowUp: index - 1, Home: 0, End: items.length - 1 }[event.key];
+    let target = { ArrowDown: index + 1, ArrowUp: index - 1, Home: 0, End: matches.length - 1 }[event.key];
     if (target === undefined) return;
     event.preventDefault();
     const step = event.key === "ArrowUp" || event.key === "End" ? -1 : 1;
-    while (target >= 0 && target < items.length && items[target]!.broken) target += step;
-    if (target < 0 || target >= items.length) return;
+    while (target >= 0 && target < matches.length && matches[target]!.broken) target += step;
+    if (target < 0 || target >= matches.length) return;
     // A key can arrive just after showing the column, before ResizeObserver.
     height = list.clientHeight;
-    const top = target * ROW_HEIGHT;
-    if (top < list.scrollTop || top + ROW_HEIGHT > list.scrollTop + height) {
-      list.scrollTop = Math.max(0, top - (height - ROW_HEIGHT) / 2);
+    const top = offsets[target]!;
+    const rowHeight = offsets[target + 1]! - top;
+    if (top < list.scrollTop || top + rowHeight > list.scrollTop + height) {
+      list.scrollTop = Math.max(0, top - (height - rowHeight) / 2);
       scrollTop = list.scrollTop;
     }
     await tick();
-    list.querySelector<HTMLButtonElement>(`[data-index="${target}"]`)?.focus({ preventScroll: true });
+    list.querySelector<HTMLButtonElement>(`button[data-index="${target}"]`)?.focus({ preventScroll: true });
   }
 </script>
 
@@ -78,14 +162,20 @@
       {/if}
     </span>
     <strong>{title}</strong>
-    <span class="count">{items.length}</span>
+    <span class="count">{needle ? `${matches.length}/${items.length}` : items.length}</span>
   </header>
-  <ul class="cards" class:virtual bind:this={list} bind:clientHeight={height}
-    onscroll={() => scrollTop = list.scrollTop} style:--row-height={`${ROW_HEIGHT}px`}>
-    {#if virtual}<li class="spacer" aria-hidden="true" style:height={`${items.length * ROW_HEIGHT}px`}></li>{/if}
+  <label class="filter">
+    <Search size={13} strokeWidth={1.8} aria-hidden="true" />
+    <input type="search" bind:value={query} aria-label={`Filter ${title.toLowerCase()}`}
+      placeholder="Filter by title or fnode…" spellcheck="false" />
+  </label>
+  <ul class="cards" class:virtual bind:this={list} bind:clientHeight={height} bind:clientWidth={width}
+    onscroll={() => scrollTop = list.scrollTop}>
+    {#if virtual}<li class="spacer" aria-hidden="true" style:height={`${offsets[matches.length]}px`}></li>{/if}
     {#each visible as item, i (item.fnode)}
-      <li aria-posinset={start + i + 1} aria-setsize={items.length}
-        style:top={virtual ? `calc(0.5rem + ${(start + i) * ROW_HEIGHT}px)` : null}>
+      <li use:measure data-fnode={item.fnode} data-index={start + i}
+        aria-posinset={start + i + 1} aria-setsize={matches.length}
+        style:top={virtual ? `calc(0.5rem + ${offsets[start + i]}px)` : null}>
         <button
           class="card"
           class:broken={item.broken}
@@ -108,10 +198,10 @@
         </button>
       </li>
     {/each}
-    {#if items.length === 0}
+    {#if matches.length === 0}
       <li class="empty">
         <span class="empty-rule" aria-hidden="true"></span>
-        No direct {title.toLowerCase()}
+        {needle ? "No matching nodes" : `No direct ${title.toLowerCase()}`}
       </li>
     {/if}
   </ul>
@@ -188,11 +278,15 @@
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 2px;
   }
+  .filter { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; margin: 0.5rem 0.65rem 0; padding: 0.35rem 0.45rem; border: 1px solid var(--mdc-border); border-radius: var(--mdc-radius-sm); color: var(--mdc-muted); }
+  .filter:focus-within { border-color: var(--mdc-border-strong); }
+  .filter input { flex: 1; min-width: 0; width: 100%; padding: 0; background: transparent; border: 0; color: var(--mdc-fg); font: inherit; font-size: var(--mdc-text-xs); }
+  .filter input:focus-visible { outline: none; }
+  .filter input::placeholder { color: var(--mdc-muted); }
+  .cards > li[data-fnode] { flex-shrink: 0; padding-bottom: 2px; }
   .cards.virtual { display: block; position: relative; overflow-anchor: none; }
-  .virtual > li:not(.spacer) { position: absolute; left: 0.5rem; right: 0.5rem; height: var(--row-height); padding-bottom: 2px; }
-  .virtual .card { height: 100%; justify-content: space-between; }
+  .virtual > li[data-fnode] { position: absolute; left: 0.5rem; right: 0.5rem; }
   /* Title first, metadata second: scanning a column is a title-reading task. */
   .card {
     display: flex;

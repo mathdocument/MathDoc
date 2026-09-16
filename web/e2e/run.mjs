@@ -66,7 +66,7 @@ async function fixture(browser, body, extraNodes = [], expectedPageErrors = []) 
     page.on("pageerror", (error) => errors.push((error.stack || error.message).replace(/^Unhandled Promise Rejection: /, "")));
     page.on("dialog", (dialog) => void dialog.accept());
     try {
-      await page.goto(server.url);
+      await page.goto(`${server.url}/#ref=${bundle.nodes[0].fnode}`);
       await title(page, "Alpha");
       await body({ root, cli, page, url: server.url, serverOutput: server.output });
       await cli("graph", "check");
@@ -127,6 +127,77 @@ async function rename(page, value) {
 const beta = (page) => page.getByRole("complementary", { name: "Dependencies" })
   .getByRole("button", { name: /^Beta \(/ });
 
+await test("large relation lists filter and retain natural card heights", { timeout: 90000 }, async () => {
+  const browser = process.env.MDC_E2E_BROWSER === "webkit" ? await webkit.launch() : await chromium.launch({ headless: true, channel: "chromium" });
+  const node = (title, fnode = randomUUID(), depens = []) => ({ fnode, title, module: `Lib.N_${fnode.replaceAll("-", "")}`, depens, blocks: [] });
+  const hub = node("Shared foundation");
+  const leaves = Array.from({length: 8500}, (_, i) => node(
+    `Entry ${String(i).padStart(5, "0")}${i % 3 === 0 ? " with a deliberately long mathematical title that wraps across two lines" : ""}`,
+    `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`, [hub.fnode]));
+  const root = node("Large collection", undefined, leaves.map(n => n.fnode));
+  try {
+    await fixture(browser, async ({page, url}) => {
+      const started = performance.now();
+      await page.goto(`${url}/?relations#ref=${root.fnode}`);
+      await title(page, root.title);
+      const column = page.getByRole("complementary", {name: "Dependencies", exact: true});
+      const cards = column.locator("button.card");
+      const card = (id) => column.locator(`button.card[data-fnode="${id}"]`);
+      await card(leaves[1].fnode).waitFor();
+      assert.ok(await cards.count() < 80, "large columns only mount a viewport of cards");
+      const measure = async locator => locator.evaluate(el => el.getBoundingClientRect().height);
+      const shortHeight = await measure(card(leaves[1].fnode));
+      const longHeight = await measure(card(leaves[0].fnode));
+      assert.ok(longHeight > shortHeight + 10, `${longHeight} vs ${shortHeight}: short titles do not reserve an empty second line`);
+      const filter = column.getByRole("searchbox", {name: "Filter dependencies"});
+      await filter.fill("ENTRY 00001");
+      await page.waitForFunction(() => document.querySelector('[aria-label="Dependencies"] .count')?.textContent === "1/8500");
+      assert.equal(await cards.count(), 1);
+      assert.ok(Math.abs(await measure(card(leaves[1].fnode)) - shortHeight) < 0.5, "small and virtual lists share the same card height");
+      await filter.fill(leaves.at(-1).fnode);
+      await card(leaves.at(-1).fnode).waitFor();
+      assert.equal(await cards.count(), 1);
+      await filter.fill("no such node");
+      await column.getByText("No matching nodes", {exact: true}).waitFor();
+      await filter.fill("");
+      await card(leaves[0].fnode).focus();
+      await page.keyboard.press("End");
+      await page.waitForFunction(id => document.activeElement?.getAttribute("data-fnode") === id, leaves.at(-1).fnode);
+      const contiguous = async () => {
+        await page.waitForFunction(() => {
+          const rows = [...document.querySelectorAll('[aria-label="Dependencies"] li[data-fnode]')].map(el => el.getBoundingClientRect());
+          return rows.length > 1 && rows.slice(1).every((row, i) => Math.abs(row.top - rows[i].bottom) < 0.5);
+        });
+      };
+      await contiguous();
+      await page.keyboard.press("Home");
+      await page.waitForFunction(id => document.activeElement?.getAttribute("data-fnode") === id, leaves[0].fnode);
+      await page.setViewportSize({width: 1100, height: 800});
+      await contiguous();
+      await page.setViewportSize({width: 1440, height: 900});
+      await contiguous();
+      await page.getByRole("button", {name: "Graph", exact: true}).click();
+      await page.getByRole("button", {name: "Knowledge", exact: true}).click();
+      await page.waitForFunction(() => !document.documentElement.dataset.vtScope);
+      await card(leaves[0].fnode).waitFor();
+      assert.ok(await cards.count() < 80);
+      await contiguous();
+      await page.screenshot({path: resolve(tmpdir(), "mdc-large-node-lists.png")});
+      console.log("Large-list rendering, filtering, scrolling and view-switch checks (ms):", Math.round(performance.now() - started));
+      await card(leaves[1].fnode).click();
+      await title(page, leaves[1].title);
+      assert.equal(await filter.inputValue(), "", "filters reset on node navigation");
+      await column.getByRole("button", {name: /^Shared foundation /}).click();
+      await title(page, hub.title);
+      const refs = page.getByRole("complementary", {name: "Referrers", exact: true});
+      assert.ok(await refs.locator("button.card").count() < 80);
+      await refs.getByRole("searchbox", {name: "Filter referrers"}).fill("ENTRY 08499");
+      await refs.locator(`button.card[data-fnode="${leaves.at(-1).fnode}"]`).waitFor();
+      assert.equal(await refs.locator("button.card").count(), 1);
+    }, [hub, root, ...leaves]);
+  } finally { await browser.close(); }
+});
+
 await test("browser with the real MathDoc backend", { timeout: 240000 }, async (suite) => {
   const browser = process.env.MDC_E2E_BROWSER === "webkit"
     ? await webkit.launch()
@@ -167,7 +238,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.deepEqual(JSON.parse((await cli("show", "Gamma")).stdout).depens, []);
         const deleted = JSON.parse((await cli("del", "Gamma")).stdout);
         assert.equal(deleted.deleted, true);
-        await page.goto(`${url}/#${alpha.fnode}`);
+        await page.goto(`${url}/?after-deletion#ref=${alpha.fnode}`);
         await title(page, "Alpha");
         await toolbar.getByRole("button", { name: "Delete node", exact: true }).click();
         await page.getByText("This project has no nodes. Create one with the + button.", { exact: true }).waitFor();
