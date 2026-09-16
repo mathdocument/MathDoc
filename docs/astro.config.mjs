@@ -74,6 +74,7 @@ export default defineConfig({
           items: [
             { label: 'Overview', slug: 'index' },
             { label: 'Installation', slug: 'getting-started/installation' },
+            { label: 'Server Deployment', slug: 'getting-started/server-deployment' },
             { label: 'Quick Start', slug: 'getting-started/quick-start' },
           ],
         },

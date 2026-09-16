@@ -127,3 +127,13 @@ jobs:
         run: rustup toolchain install stable --profile minimal --no-self-update
       - name: Test macOS library and graph algorithms
         run: cargo +stable test --locked
+
+  container-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build Linux server runtime
+        run: docker build -t mathdoc-runtime:local .
+      - name: Test isolated Docker deployment
+        run: python3 tests/docker-smoke.py

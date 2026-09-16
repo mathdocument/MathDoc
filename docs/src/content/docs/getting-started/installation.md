@@ -2,6 +2,9 @@
 title: Installation
 ---
 
+For a server with only Docker and Git, use [Docker and SSH deployment](../server-deployment/).
+The instructions below describe native installation and local development.
+
 MathDoc runs on a Unix host. Install Rust to build `mdc`, Docker with Compose for
 the supplied TerminusDB deployment, and Elan for native Lean. Node.js is needed
 only to develop or rebuild the frontend; the repository includes browser assets.
