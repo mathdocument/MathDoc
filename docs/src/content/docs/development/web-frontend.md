@@ -36,9 +36,14 @@ frame.
 The dependency removal dialog filters by title or UUID and displays 50 results
 per page; selections remain active across pages and filters until submitted.
 
-Lean uses a lazy-loaded page embedding `lean4monaco` and upstream Infoview. Each
-page has an isolated native WebSocket session, with source on the left and
-Infoview on the right. LeanMonaco installs browser providers; its desktop
+Lean uses a lazy-loaded page embedding `lean4monaco` and upstream Infoview. By
+default it uses in-memory Monaco models, with native client creation disabled:
+highlighting, edits and saves require no Lean session or WebSocket. **Start Lean
+server** creates the session and remounts the iframe with its ID, retaining the
+parent-owned draft. The same runtime supplies identical syntax, themes and fonts
+in both modes. After startup, the page has an isolated native WebSocket session,
+with source on the left and Infoview on the right. The start button becomes
+**Reload environment**. LeanMonaco installs browser providers; its desktop
 extension entry is disabled in the browser manifest. Save reuses the editor's
 native result for the exact saved source and imports. CLI `lean check --build`
 requests target artifacts when required.

@@ -8,6 +8,8 @@
       html, body { margin: 0; height: 100%; overflow: hidden; }
       body { background: #181a20; color: #ddd; font: 13px system-ui; }
       #layout { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); height: 100%; }
+      body.static #layout { grid-template-columns: minmax(0,1fr); }
+      body.static #infoview { display: none; }
       #editor-scroll, #infoview { min-width: 0; height: 100%; overflow: hidden; }
       #editor-scroll { overflow: auto; }
       #editor-size { min-width: 100%; min-height: 100%; }

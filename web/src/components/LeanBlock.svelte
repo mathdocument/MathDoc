@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, untrack } from "svelte";
-  import { ChevronDown, ChevronRight, Save, Trash2, RotateCcw } from "@lucide/svelte";
+  import { ChevronDown, ChevronRight, Save, Trash2, RotateCcw, Play } from "@lucide/svelte";
   import type { NodeDetail, SrcBlock } from "../lib/types";
   import type { Theme } from "../lib/theme";
   import { api } from "../lib/api";
@@ -15,6 +15,7 @@
   let { fnode, revision, module, block, theme, selection = 0, onDeleted, onSaved, onReady }: Props = $props();
   let frame = $state<HTMLIFrameElement>();
   let session = $state<string | null>(null);
+  let mounted = $state(false);
   let content = $state("");
   let baseline = $state("");
   let dirty = $derived(content !== baseline);
@@ -49,8 +50,8 @@
       generation++; ready = false; error = null; result = null; progress = ""; validating = false;
       content = block?.content ?? ""; baseline = content;
       if (node) {
-        if (!session && !opening) void open();
-        else selectNode();
+        if (!mounted && !opening) { initialTheme = theme; mounted = true; }
+        selectNode();
       } else frame?.contentWindow?.postMessage({ type: "lean-cancel" }, location.origin);
     });
   });
@@ -73,12 +74,13 @@
     clearTimeout(reconnectTimer); reconnectTimer = undefined;
     const current = ++connection;
     closeSession();
+    mounted = false;
     opening = true; runtimeReady = false; ready = false; error = null; result = null; initialTheme = theme;
     try {
       const response = await api.leanSession(fnode, revision);
-      if (alive && connection === current) session = response.id;
+      if (alive && connection === current) { session = response.id; mounted = true; }
       else void api.closeLeanSession(response.id).catch(console.warn);
-    } catch (e) { if (alive && connection === current) { error = errMsg(e); onReady?.(); } }
+    } catch (e) { if (alive && connection === current) { error = errMsg(e); mounted = true; onReady?.(); } }
     finally { if (connection === current) opening = false; }
   }
   function reload() { reconnects = 0; void open(); }
@@ -154,9 +156,9 @@
     <span class="srctype">lean</span><span class="spacer"></span>
     {#if dirty}<span class="dirty" title="Unsaved changes"><span class="dirty-dot"></span><span class="btn-label">Unsaved</span></span>{/if}
     <div class="block-actions">
-      <button class="icon-btn expand" onclick={reload} disabled={opening || busy} aria-label="Reload environment" title="Reload environment"><RotateCcw size={14} strokeWidth={1.8}/></button>
+      <button class="icon-btn expand" onclick={reload} disabled={opening || busy} aria-label={session ? "Reload environment" : "Start Lean server"} title={session ? "Reload environment" : "Start Lean server"}>{#if session}<RotateCcw size={14} strokeWidth={1.8}/>{:else}<Play size={14} strokeWidth={1.8}/>{/if}</button>
       <button class="icon-btn expand" onclick={() => expanded = !expanded} aria-expanded={expanded} aria-label={expanded ? "Collapse block" : "Expand block"} title={expanded ? "Collapse" : "Expand"}>{#if expanded}<ChevronDown size={15}/>{:else}<ChevronRight size={15}/>{/if}</button>
-      <button class="save" onclick={() => void save()} disabled={busy || !dirty} aria-busy={action === "save"} aria-label="Save" title="Save; validation updates automatically (Ctrl/⌘+S or Ctrl/⌘+Enter)"><Save size={13} strokeWidth={1.9}/><span class="btn-label">Save</span></button>
+      <button class="save" onclick={() => void save()} disabled={busy || !dirty} aria-busy={action === "save"} aria-label="Save" title="Save (Ctrl/⌘+S or Ctrl/⌘+Enter); start Lean server for automatic validation"><Save size={13} strokeWidth={1.9}/><span class="btn-label">Save</span></button>
       <button class="delete" onclick={() => void remove()} disabled={busy} aria-label="Delete block" title="Delete block"><Trash2 size={14} strokeWidth={1.8}/></button>
     </div>
   </header>
@@ -165,12 +167,12 @@
   {/if}
   {#if action}<div class="status activity" role="status" aria-live="polite">{{ save: "Saving…", delete: "Deleting…" }[action]}</div>{/if}
   {#if validating && !dirty}<div class="status activity" role="status" aria-live="polite">Verifying saved version…</div>{/if}
-  {#if !ready && !error}<div class="status" aria-busy="true">{session && runtimeReady ? "Opening Lean node…" : "Starting Lean editor…"}</div>{/if}
+  {#if !ready && !error}<div class="status" aria-busy="true">{opening || session ? "Starting Lean editor…" : "Loading Lean editor…"}</div>{/if}
   {#if ready && progress}<div class="status" role="status">{progress}</div>{/if}
   <div class="editor-surface" class:collapsed={!expanded}>
     {#if !ready && expanded}<pre class="source-placeholder" aria-label="Lean source while editor loads">{content}</pre>{/if}
-  {#if session}
-    <div class="native-editor" class:pending={!ready} inert={!ready || !expanded}><iframe bind:this={frame} title="Lean source and Infoview" src={projectPath(`/lean.html?session=${encodeURIComponent(session)}&theme=${initialTheme}`)} allow="clipboard-write"></iframe></div>
+  {#if mounted}
+    <div class="native-editor" class:pending={!ready} inert={!ready || !expanded}><iframe bind:this={frame} title="Lean source and Infoview" src={projectPath(`/lean.html?${session ? `session=${encodeURIComponent(session)}&` : ""}theme=${initialTheme}`)} allow="clipboard-write"></iframe></div>
   {/if}
   </div>
   {#if error}<div class="error-bar" role="alert">{error}</div>{/if}

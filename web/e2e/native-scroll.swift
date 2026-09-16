@@ -27,6 +27,7 @@ import WebKit
         web.load(URLRequest(url: URL(string: url)!))
         for _ in 0..<400 {
             await pause(100)
+            _ = try? await js("if (location.href === '\(url)') document.querySelector('button[aria-label=\"Start Lean server\"]:not(:disabled)')?.click()")
             if (try? await js("location.href === '\(url)' && !!(\(ready))")) as? Bool == true { return }
         }
         let state = try? await js("JSON.stringify([location.href, document.body.innerText, ...[...document.querySelectorAll('iframe')].map(f=>f.contentDocument?.body?.innerText)]).slice(0,6000)")

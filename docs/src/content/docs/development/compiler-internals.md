@@ -19,7 +19,10 @@ independently through bounded queues, including while custom requests prepare
 files or certify saved inputs. A blocked write cannot prevent output from draining.
 A browser that stops reading messages is disconnected after 30 seconds.
 
-Monaco displays the selected source before waiting for Lean initialization or
+Opening a node initializes only browser-side Monaco with an in-memory model.
+The user must click **Start Lean server** to create a session and connect the
+native bridge; local highlighting, editing and saving need no native process.
+Once started, Monaco displays the selected source before waiting for Lean initialization or
 environment preparation. New files temporarily use an in-memory Lean model,
 which does not start another Lean worker. When preparation finishes, the native
 file model takes over with the current draft and cursor intact. Superseded

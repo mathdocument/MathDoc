@@ -8,6 +8,8 @@
       html, body { margin: 0; height: 100%; overflow: hidden; }
       body { background: #181a20; color: #ddd; font: 13px system-ui; }
       #layout { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); height: 100%; }
+      body.static #layout { grid-template-columns: minmax(0,1fr); }
+      body.static #infoview { display: none; }
       #editor-scroll, #infoview { min-width: 0; height: 100%; overflow: hidden; }
       #editor-scroll { overflow: auto; }
       #editor-size { min-width: 100%; min-height: 100%; }
@@ -17,7 +19,7 @@
       #infoview iframe { width: 100%; height: 100%; border: 0; }
       #error { position: fixed; bottom: 0; margin: 0; color: #ffb4ab; background: #251b1b; max-width: 100%; white-space: pre-wrap; }
     </style>
-    <script type="module" crossorigin src="/assets/lean-fz9mdvA1.js"></script>
+    <script type="module" crossorigin src="/assets/lean-xVNvA0hw.js"></script>
     <link rel="modulepreload" crossorigin href="/assets/project-path-DdQoG5fJ.js">
     <link rel="modulepreload" crossorigin href="/assets/index-BAMY2Nnw.js">
     <link rel="modulepreload" crossorigin href="/assets/editor-scroll-DqsPlCuy.js">

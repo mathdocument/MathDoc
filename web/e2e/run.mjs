@@ -347,10 +347,12 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           await page.getByRole("button", { name: /Search nodes/ }).click();
           await page.getByPlaceholder("Search by title or fnode…").fill(node.title);
           await page.getByRole("dialog").getByRole("button", { name: new RegExp(node.title) }).click();
+          await page.getByRole("button", { name: "Start Lean server", exact: true }).click();
           await page.getByText("Lean editor ready", { exact: true }).waitFor();
           const otherPage = await page.context().newPage();
           const otherConnection = otherPage.waitForEvent("websocket");
           await otherPage.goto(`${started.url}#ref=${node.fnode}`);
+          await otherPage.getByRole("button", { name: "Start Lean server", exact: true }).click();
           await otherPage.getByText("Lean editor ready", { exact: true }).waitFor();
           const otherSocket = await otherConnection;
           await Promise.all([once(otherSocket, "close", { signal: AbortSignal.timeout(10000) }), manage("stop", agent)]);
@@ -375,6 +377,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
             await page.screenshot({ path: resolve(process.env.MDC_E2E_ARTIFACTS, "projects-mobile.png"), fullPage: true });
           }
           await page.goto(`${url}/#ref=${node.fnode}`);
+          await page.getByRole("button", { name: "Start Lean server", exact: true }).click();
           await page.getByText("Lean editor ready", { exact: true }).waitFor();
           await Promise.all([once(currentSocket, "close", { signal: AbortSignal.timeout(10000) }), manage("stop")]);
           const stopped = JSON.parse((await manage("status")).stdout);
@@ -519,6 +522,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await page.getByRole("button", { name: /Search nodes/ }).click();
         await page.getByPlaceholder("Search by title or fnode…").fill("Lean Example");
         await page.getByRole("button", { name: /Lean Example/ }).click();
+        await page.getByRole("button", { name: "Start Lean server", exact: true }).click();
         await page.getByText("Starting Lean editor…").waitFor();
         await page.locator('[data-srctype="latex"] .cm-editor').waitFor();
         assert.deepEqual(await center(page).locator('.source-block:not(.hidden)').evaluateAll(
@@ -697,6 +701,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           });
         });
         await page.reload();
+        await page.getByRole("button", { name: "Start Lean server", exact: true }).click();
         await page.getByText(/Lean connection closed;/).first().waitFor({ timeout: 10000 });
         await page.waitForFunction(() => document.body.innerText.includes("Lean connection closed;") && !document.body.innerText.includes("Reconnecting Lean…"));
         assert.equal(attempts, 2, "only one automatic reconnect is allowed");
@@ -745,6 +750,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           });
         });
         await page.reload();
+        await page.getByRole("button", { name: "Start Lean server", exact: true }).click();
         await initializeSeen;
         const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
         const input = frame.getByRole("textbox", { name: /Editor content/ });
@@ -851,6 +857,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           await title(page, name);
         };
         await select("Lean Dependent");
+        await page.getByRole("button", { name: "Start Lean server", exact: true }).click();
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
         await center(page).getByLabel("Lean: Verified", { exact: true }).waitFor();
         const leanStatus = async id => (await (await fetch(`${url}/api/node/${id}/view`)).json()).node.formalization.lean;
@@ -956,6 +963,74 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
   } finally { await browser.close(); }
 });
 
+await test('Lean browsing stays offline until explicitly started and preserves static drafts', {timeout: 90000}, async () => {
+  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const nodes = ['First', 'Second'].map((title, i) => ({fnode: randomUUID(), title, module: `Lib.Offline${i}`, depens: [], blocks: [
+    {srctype: 'lean', content: `-- A highlighted comment\ntheorem offline${i} : True := by trivial\n`},
+  ]}));
+  try {
+    await fixture(browser, async ({page, url, cli, root}) => {
+      let sessions = 0, sockets = 0;
+      page.on('request', request => { if (request.method() === 'POST' && request.url().endsWith('/lean/session')) sessions++; });
+      page.on('websocket', () => sockets++);
+      await page.goto(`${url}/?offline#ref=${nodes[0].fnode}`);
+      const block = page.locator('.lean-block');
+      const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
+      const input = frame.getByRole('textbox', {name: /Editor content/});
+      const styled = async () => {
+        const keyword = frame.locator('.view-line').getByText('theorem', {exact: true});
+        await keyword.waitFor();
+        return keyword.evaluate(el => ({color: getComputedStyle(el).color, font: getComputedStyle(el).fontFamily, size: getComputedStyle(el).fontSize}));
+      };
+      await page.locator('.native-editor:not(.pending)').waitFor();
+      const light = await styled();
+      await page.getByRole('button', {name: 'Switch to dark mode'}).click();
+      await frame.locator('.monaco-editor.vs-dark').waitFor();
+      const dark = await styled();
+      assert.notEqual(light.color, dark.color, 'offline syntax responds to the theme');
+      assert.equal(await frame.locator('#infoview').isVisible(), false);
+      await input.press('ControlOrMeta+End');
+      await page.keyboard.insertText('-- saved without a server\n');
+      await block.getByRole('button', {name: 'Save', exact: true}).click();
+      await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
+      assert.match(JSON.parse((await cli('show', nodes[0].fnode)).stdout).blocks[0].content, /saved without a server/);
+      const select = async name => {
+        await page.getByRole('button', {name: /Search nodes/}).click();
+        await page.getByPlaceholder('Search by title or fnode…').fill(name);
+        await page.getByRole('dialog').getByRole('button', {name: new RegExp(name)}).click();
+        await title(page, name);
+        await page.locator('.native-editor:not(.pending)').waitFor();
+      };
+      await select('Second');
+      await frame.getByText('offline1', {exact: true}).waitFor();
+      await select('First');
+      await frame.getByText('-- saved without a server', {exact: true}).waitFor();
+      assert.equal(sessions, 0); assert.equal(sockets, 0);
+      const processes = (await run('ps', ['-axo', 'command='])).stdout.split('\n');
+      assert.equal(processes.filter(line => line.includes(root) && /--worker|lake serve/.test(line)).length, 0);
+      await input.press('ControlOrMeta+End');
+      await page.keyboard.insertText('-- draft before startup\n');
+      await block.getByText('Unsaved', {exact: true}).waitFor();
+      await block.getByRole('button', {name: 'Collapse block'}).click();
+      await block.getByRole('button', {name: 'Start Lean server', exact: true}).click();
+      await page.getByText('Lean editor ready', {exact: true}).waitFor();
+      assert.equal(sessions, 1); assert.equal(sockets, 1);
+      assert.equal(await block.getByRole('button', {name: 'Expand block'}).count(), 1);
+      await block.getByRole('button', {name: 'Expand block'}).click();
+      await frame.getByText('-- draft before startup', {exact: true}).waitFor();
+      assert.deepEqual(await styled(), dark, 'the same grammar, theme and font apply after startup');
+      assert.doesNotMatch(JSON.parse((await cli('show', nodes[0].fnode)).stdout).blocks[0].content, /draft before startup/);
+      await block.getByRole('button', {name: 'Reload environment', exact: true}).click();
+      await page.getByText('Lean editor ready', {exact: true}).waitFor();
+      await frame.getByText('-- draft before startup', {exact: true}).waitFor();
+      assert.equal(sessions, 2);
+      await select('Second');
+      await page.getByText('Lean editor ready', {exact: true}).waitFor();
+      assert.equal(sessions, 2, 'explicitly started sessions are reused across nodes');
+    }, nodes);
+  } finally { await browser.close(); }
+});
+
 await test('collapsed Lean editors reload without a zero-sized browser viewport', {timeout: 60000}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   const node = {fnode: randomUUID(), title: 'Collapsed reload', module: 'Lib.Collapsed', depens: [], blocks: [
@@ -964,6 +1039,7 @@ await test('collapsed Lean editors reload without a zero-sized browser viewport'
   try {
     await fixture(browser, async ({page, url}) => {
       await page.goto(`${url}/?collapsed-reload#ref=${node.fnode}`);
+      await page.getByRole('button', {name: 'Start Lean server', exact: true}).click();
       const block = page.locator('.lean-block');
       const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
       await page.getByText('Lean editor ready', {exact: true}).waitFor();
@@ -994,6 +1070,7 @@ await test('editors and previews pass scrolling to the node pane at both boundar
   try {
     await fixture(browser, async ({page, url, cli}) => {
       await page.goto(`${url}/?scroll#ref=${node.fnode}`);
+      await page.getByRole('button', {name: 'Start Lean server', exact: true}).click();
       const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
       await frame.locator('.view-line').first().waitFor();
       await page.locator('.native-editor:not(.pending)').waitFor();
@@ -1069,6 +1146,7 @@ await test('editors and previews pass scrolling to the node pane at both boundar
           const surfaces = [];
           if (kind === 'latex') surfaces.push(page.locator('.cm-scroller'));
           else {
+            await page.getByRole('button', {name: 'Start Lean server', exact: true}).click();
             await page.locator('.native-editor:not(.pending)').waitFor();
             surfaces.push(frame.locator('.monaco-editor'));
             await frame.frameLocator('#infoview iframe').getByText('All Messages', {exact: true}).waitFor();
