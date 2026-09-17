@@ -22,6 +22,8 @@ enum Commands {
     Status,
     /// Create a new project database on the configured TerminusDB instance.
     Init { database: String },
+    /// Delete a project database, all branches, history and local caches.
+    Remove { database: String },
     /// Start the entry server and optionally a project branch.
     Start {
         #[arg(value_name = "DATABASE/BRANCH", value_parser = parse_project)]
@@ -244,7 +246,7 @@ enum LatexProjectCommand {
 enum Branch {
     /// Fork a new branch from the selected branch head.
     New { name: String },
-    /// Delete the selected branch and its Lean caches; stop its service first.
+    /// Delete a non-main branch and its Lean caches; stop its service first.
     Del,
 }
 
@@ -332,7 +334,7 @@ fn stdin() -> Result<String> {
 
 fn command_group(name: &str) -> u8 {
     match name {
-        "status" | "init" | "start" | "stop" => 0,
+        "status" | "init" | "remove" | "start" | "stop" => 0,
         "new" | "del" | "show" | "edit" | "rename" | "dep" | "metric" | "lean" => 2,
         _ => 1,
     }
@@ -447,6 +449,7 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
                 .await?;
             Some(json!({"initialized":true}))
         }
+        Commands::Remove { database } => Some(crate::service::remove(database).await?),
         Commands::Start {
             project,
             port,
@@ -494,6 +497,7 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
     let value = match cli.command {
         Commands::Status
         | Commands::Init { .. }
+        | Commands::Remove { .. }
         | Commands::Start { .. }
         | Commands::Stop { .. }
         | Commands::Branch {
@@ -861,7 +865,7 @@ mod tests {
         assert_eq!(
             names,
             [
-                vec!["status", "init", "start", "stop"],
+                vec!["status", "init", "remove", "start", "stop"],
                 vec!["search", "graph", "export", "import", "history", "branch", "project"],
                 vec!["new", "del", "dep", "show", "edit", "rename", "metric", "lean"],
             ]
@@ -998,6 +1002,7 @@ mod tests {
         for args in [
             vec!["mdc", "status"],
             vec!["mdc", "init", "db"],
+            vec!["mdc", "remove", "db"],
             vec!["mdc", "start", "db/main"],
             vec!["mdc", "stop", "db/main"],
         ] {

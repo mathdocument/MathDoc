@@ -47,8 +47,13 @@ Lean workers. Ordinary `mdc start` starts an empty server; load desired branches
 `mdc start --foreground` restores the branches remembered by earlier foreground
 runs. Preserve `active-projects.json` in the server cache to retain that selection;
 deleting it forgets which branches to start but does not delete database content.
-Save drafts before stopping their branch or the whole server. `branch del` requires a stopped branch and removes
+Save drafts before stopping their branch or the whole server. `branch del` requires a stopped non-`main` branch and removes
 its cache contents, leaving only the service lock for coordination.
+TerminusDB protects `main`; neither the browser nor CLI can delete it.
+It remains a normal working branch for editing, checking and forking. To delete
+the entire project, `mdc remove DATABASE` stops all its branches and deletes the
+database, its history and local branch caches. Other projects and shared Elan
+toolchains are unaffected; empty cache lock files remain for coordination.
 
 No project folder or source mirror is required. Generated Lean files are owned
 by the service: editing them does not edit nodes. Import/export are explicit

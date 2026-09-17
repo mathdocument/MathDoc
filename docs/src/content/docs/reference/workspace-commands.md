@@ -8,7 +8,7 @@ title: CLI commands
 
 | Scope | Commands |
 | --- | --- |
-| Project and service management | `status`, `init`, `start`, `stop` |
+| Project and service management | `status`, `init`, `remove`, `start`, `stop` |
 | Entire branch | `search`, `graph`, `export`, `import`, `history`, `branch`, `project` |
 | Single node | `new`, `del`, `dep`, `show`, `edit`, `rename`, `metric`, `lean` |
 
@@ -28,7 +28,7 @@ mdc status --meas
 
 There is no default project, `--url` option or `MDC_URL` setting. The entry server
 defaults to port 17843; clients discover it through its local lease. The root and
-`status/init/start/stop` do not accept `-p/--proj`.
+`status/init/remove/start/stop` do not accept `-p/--proj`.
 `mdc -m`, `mdc -m graph check` and `mdc -p myproject/main graph check` are invalid.
 
 Successful operations print JSON to stdout; lists such as search and history can
@@ -43,6 +43,7 @@ JSON result. No command performs a source-workspace refresh.
 | --- | --- |
 | `mdc status` | Return entry server status and all database branches, including stopped branches. |
 | `mdc init DATABASE` | Create a database with default `main` branch and Lean settings. |
+| `mdc remove DATABASE` | Stop all branches of this project and delete its database, all branch history and local branch caches. |
 | `mdc start [DATABASE/BRANCH] [--port PORT]` | Start/reuse the entry server; optionally start one branch. Return URL, entry port, process PID and log path. |
 | `mdc start --foreground [--port PORT]` | Run a supervised server in the current process and restore its previously started branches. |
 | `mdc stop [DATABASE/BRANCH]` | Unload one branch and stop its Lean workers, or stop the entire server and all branches when no branch is given. Retain graph data and caches. |
@@ -55,6 +56,17 @@ already running, it is reused; requesting a different port fails until you stop
 it with `mdc stop`. There is one process and one HTTP listener, bound to
 `127.0.0.1` by default; branches have no separate HTTP ports or backend processes. Stopping an inactive service is an error.
 Commands work from any directory; ordinary `start` encapsulates background launch.
+
+`remove DATABASE` executes without an interactive prompt. It accepts a database
+name, not `DATABASE/BRANCH`, and works with or without a running entry server.
+With a server, it stops only this project's branches and their editor sessions;
+other projects remain running. Save any drafts you intend to keep first.
+Removal deletes every branch, including `main`, and the database history. It
+clears the project's local caches (retaining empty branch lock files), removes
+its foreground restore entries, and leaves shared Elan toolchains installed.
+If a branch cache is owned by another process, removal fails before deleting the
+database. A database deletion failure leaves compiler caches intact; a later
+cleanup failure explicitly reports that the database was already deleted.
 
 `--foreground` is for Docker or another process supervisor and cannot take a
 branch argument. It emits readiness JSON without private tokens, logs to the
@@ -115,15 +127,17 @@ Each loaded branch keeps its own graph, Lean environment and cache; `status` ide
 `history` returns the latest 50 TerminusDB commits.
 
 `branch del` deletes the branch selected by `-p` directly in TerminusDB. It must
-already be stopped; a running or starting service blocks deletion. The command
+already be stopped; a running or starting service blocks deletion. TerminusDB
+protects `main`, so both CLI and browser reject its deletion before touching
+its caches, regardless of how many other branches exist. The command
 cleans that branch's Lean artifacts, certificates, editor workspaces, libraries
 and logs in the configured cache root. Only an empty service lock remains for
 coordination. Other branches and caches are unaffected. Immutable database
 commits remain after their branch reference is removed.
 
-There is no CLI merge, rebase, checkout, or database-deletion command. These
-administrative operations use TerminusDB directly. Deleting the last branch does
-not delete its database. See [Storage](../../concepts/workspaces/).
+There is no CLI merge, rebase, or checkout command. These operations use
+TerminusDB directly. Branch deletion does not delete its database; use
+`mdc remove DATABASE` to remove the entire project. See [Storage](../../concepts/workspaces/).
 
 ## Nodes
 

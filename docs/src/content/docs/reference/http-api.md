@@ -64,6 +64,13 @@ Stop waits for the relevant cache lease to be released. All calls use the same
 listening port; no branch HTTP process or forwarding hop exists. None of these
 operations require a hidden CLI command.
 
+`remove DATABASE` calls `POST /api/service/remove/DATABASE` with the server token
+when the entry server is running. Removal excludes concurrent lifecycle changes,
+stops all of this project's branches, then deletes the database and clears its
+local caches. With no server, the CLI holds the entry server lease and performs
+the same deletion directly. It also removes this project's foreground restore
+entries. The result is `{database, deleted: true}`.
+
 The project directory sends JSON to `POST /api/projects`. This endpoint requires
 a same-origin browser `Origin` header and supports these bodies:
 
@@ -73,10 +80,12 @@ a same-origin browser `Origin` header and supports these bodies:
 | `{action: "start", project: "DATABASE/BRANCH"}` | Load a branch into the existing entry server. |
 | `{action: "stop", project}` | Stop that branch, including its editor sessions. |
 | `{action: "new_branch", project, name}` | Fork the specified branch's current head, including a stopped source. The new branch is stopped. |
-| `{action: "delete_branch", project}` | Delete an already stopped branch and its compiler caches, using the same exclusive cache lease as CLI deletion. |
+| `{action: "delete_branch", project}` | Delete an already stopped non-`main` branch and its compiler caches, using the same exclusive cache lease as CLI deletion. |
 
 Browser management does not disclose or replace the private CLI service tokens.
-The database and immutable history remain when its last branch is deleted.
+TerminusDB protects `main`: neither the browser nor CLI can delete it, regardless
+of how many branches exist. Rejected `main` deletions leave its caches intact.
+Deleting another branch preserves the database and immutable history.
 
 The following endpoints maintain browser draft sessions rather than saved graph
 objects. CLI agents use `lean check` and `lean goals` instead of managing sessions.

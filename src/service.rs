@@ -370,6 +370,10 @@ impl RunningService {
 
 pub(crate) async fn delete_branch(project: &str) -> Result<Value> {
     let (database, branch) = crate::config::project_parts(project)?;
+    anyhow::ensure!(
+        branch != "main",
+        "cannot delete the main branch; use mdc remove {database} to delete the entire project"
+    );
     let db = Database::from_env(database.into(), branch.into())?;
     let root = db.cache_path()?;
     // Use the service's exclusive lease, including during startup before a port is recorded.
@@ -379,7 +383,13 @@ pub(crate) async fn delete_branch(project: &str) -> Result<Value> {
     db.version().await?;
     // Clean disposable files first so a filesystem error leaves branch data intact.
     // Keep the lock inode: unlinking it would let a concurrent start bypass our lease.
-    for entry in std::fs::read_dir(&root)? {
+    clear_branch_cache(&root)?;
+    db.delete_branch().await?;
+    Ok(json!({"project":project,"deleted":true}))
+}
+
+fn clear_branch_cache(root: &std::path::Path) -> Result<()> {
+    for entry in std::fs::read_dir(root)? {
         let entry = entry?;
         if entry.file_name() == "service.lock" {
             continue;
@@ -390,8 +400,70 @@ pub(crate) async fn delete_branch(project: &str) -> Result<Value> {
             std::fs::remove_file(entry.path())?;
         }
     }
-    db.delete_branch().await?;
-    Ok(json!({"project":project,"deleted":true}))
+    Ok(())
+}
+
+/// Call with the entry server lease or its exclusive management lock held.
+pub(crate) async fn delete_database(database: &str) -> Result<Value> {
+    let db = Database::from_env(database.into(), "main".into())?;
+    db.version().await?;
+    let root = db.cache_path()?.parent().unwrap().to_path_buf();
+    let entries = match std::fs::read_dir(&root) {
+        Ok(entries) => entries.collect::<std::io::Result<Vec<_>>>()?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error.into()),
+    };
+    // Lock every cached branch before deleting anything, including stale caches
+    // whose branch references have already been removed from the database.
+    let mut leases = Vec::new();
+    for entry in &entries {
+        if entry.file_type()?.is_dir() {
+            leases.push(
+                acquire_lease(&entry.path())
+                    .with_context(|| format!("cannot lock cache {}", entry.path().display()))?,
+            );
+        }
+    }
+    db.delete_database().await?;
+    let cleanup = || -> Result<()> {
+        for entry in entries {
+            if entry.file_type()?.is_dir() {
+                clear_branch_cache(&entry.path())?;
+            } else {
+                std::fs::remove_file(entry.path())?;
+            }
+        }
+        Ok(())
+    };
+    cleanup()
+        .with_context(|| format!("database {database} was deleted, but cache cleanup failed"))?;
+    Ok(json!({"database":database,"deleted":true}))
+}
+
+pub(crate) async fn remove(database: &str) -> Result<Value> {
+    crate::config::validate_name(database)?;
+    let root = crate::config::Settings::load()?.server_cache()?;
+    if let Some(server) = running_service(&root)? {
+        return management_request(&server, None, &format!("remove/{database}")).await;
+    }
+    // Prevent an entry server from starting halfway through offline removal.
+    let _lease = acquire_lease(&root)?;
+    let path = root.join("active-projects.json");
+    let remembered = match std::fs::read(&path) {
+        Ok(bytes) => Some(serde_json::from_slice::<BTreeSet<String>>(&bytes)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    let result = delete_database(database).await?;
+    if let Some(mut remembered) = remembered {
+        remembered.retain(|project| !project.starts_with(&format!("{database}/")));
+        let mut file = tempfile::NamedTempFile::new_in(&root)?;
+        serde_json::to_writer(&mut file, &remembered)?;
+        file.as_file().sync_all()?;
+        file.persist(path)
+            .context("database was deleted, but updating the restore list failed")?;
+    }
+    Ok(result)
 }
 
 pub(crate) async fn start(

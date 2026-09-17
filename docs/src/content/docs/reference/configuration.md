@@ -35,7 +35,7 @@ Do not commit credentials or include them in graph exports.
 | `MDC_LEAN_TIMEOUT_SECONDS` | 300; must be a positive integer. |
 | `MDC_LISTEN_ADDRESS` | `127.0.0.1`; use `0.0.0.0` inside a container. Only these two addresses are accepted. |
 
-`init`, `start`, `status` and `branch del` need TerminusDB credentials. Other
+`init`, `start`, `status`, offline `remove` and `branch del` need TerminusDB credentials. Other
 clients and `stop` need the same endpoint setting and cache root as the service;
 they discover it locally and do not query TerminusDB themselves. Use the same
 endpoint spelling: it is part of the cache identity. The timeout applies to

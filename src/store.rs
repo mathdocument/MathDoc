@@ -694,6 +694,18 @@ impl Database {
             .await?;
         Ok(())
     }
+    pub(crate) async fn delete_database(&self) -> Result<()> {
+        self.server
+            .request(
+                Method::DELETE,
+                &format!("db/admin/{}", self.database),
+                &[],
+                None,
+                None,
+            )
+            .await?;
+        Ok(())
+    }
     pub fn with_cache_root(mut self, root: PathBuf) -> Self {
         self.server.cache_root = root;
         self

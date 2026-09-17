@@ -11,6 +11,10 @@ transactions. Data-version guards protect graph and configuration writes.
 The CLI uses the shared server for branch and node operations. `init`, `status`
 and stopped-branch deletion access TerminusDB directly. See the
 [CLI/API mapping](../../reference/http-api/).
+`remove` uses the running entry server to stop the project's branches and delete
+their database and caches. Without a server it takes the entry server lease and
+removes the database directly. Both paths retain branch lock inodes and remove
+the project's foreground restore entries.
 
 ## Server and branch lifecycle
 

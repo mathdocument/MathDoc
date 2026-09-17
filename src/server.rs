@@ -6,7 +6,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use axum::{
-    extract::{Request, State},
+    extract::{Path, Request, State},
     http::{HeaderMap, Method, StatusCode},
     response::{IntoResponse, Redirect, Response},
     routing::{any, get, post},
@@ -140,6 +140,14 @@ impl Server {
 
     async fn stop_branch(&self, project: String, token: Option<String>) -> Result<Value, ApiError> {
         let _operation = self.operations.read().await;
+        self.stop_branch_locked(project, token).await
+    }
+
+    async fn stop_branch_locked(
+        &self,
+        project: String,
+        token: Option<String>,
+    ) -> Result<Value, ApiError> {
         let branch = {
             let mut branches = self.branches.lock().await;
             let slot = branches
@@ -156,6 +164,43 @@ impl Server {
         drop(branch);
         self.branches.lock().await.remove(&project);
         Ok(json!({"project":project,"stopped":true}))
+    }
+
+    async fn remove_database(&self, database: String) -> Result<Value, ApiError> {
+        crate::config::validate_name(&database)?;
+        // Exclude branch starts/forks and server shutdown throughout removal.
+        let _operation = self.operations.write().await;
+        if self.closing.load(Ordering::Acquire) {
+            return Err(stopped("server"));
+        }
+        crate::store::Database::from_env(database.clone(), "main".into())?
+            .version()
+            .await?;
+        let prefix = format!("{database}/");
+        let projects: Vec<_> = self
+            .branches
+            .lock()
+            .await
+            .keys()
+            .filter(|p| p.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for project in projects {
+            self.stop_branch_locked(project, None).await?;
+        }
+        // Also forget branches whose earlier foreground restore failed.
+        let remembered: Vec<_> = self
+            .remembered
+            .lock()
+            .await
+            .iter()
+            .filter(|p| p.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for project in remembered {
+            self.remember(&project, false).await?;
+        }
+        Ok(crate::service::delete_database(&database).await?)
     }
 
     async fn shutdown(&self) {
@@ -215,6 +260,7 @@ pub(crate) async fn serve(port: u16, foreground: bool) -> Result<()> {
             get(|| async { status().await.map(Json).map_err(ApiError::from) }),
         )
         .route("/api/service/stop", post(stop))
+        .route("/api/service/remove/:database", post(remove))
         .route("/api/projects", get(projects::list).post(projects::manage))
         // Dispatch before branch path matching, retaining the native WebSocket
         // upgrade extension. There is no HTTP client or second TCP listener.
@@ -288,6 +334,18 @@ async fn stop(
     authorize_token(token(&headers), &state.info.token)?;
     state.stop.notify_one();
     Ok(Json(json!({"stopping":true})))
+}
+
+async fn remove(
+    State(state): State<Arc<Server>>,
+    Path(database): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    authorize_token(token(&headers), &state.info.token)?;
+    tokio::spawn(async move { state.remove_database(database).await })
+        .await
+        .map_err(anyhow::Error::from)?
+        .map(Json)
 }
 
 async fn project_request(

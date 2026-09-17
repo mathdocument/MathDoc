@@ -76,6 +76,145 @@ async fn status(root: &Path) -> BTreeMap<String, bool> {
 }
 
 #[tokio::test]
+async fn main_branch_deletion_is_rejected_without_database_access() {
+    let cache = tempfile::tempdir().unwrap();
+    let config = cache.path().join("no-database.toml");
+    std::fs::write(&config, "terminus_url = 'http://127.0.0.1:1'").unwrap();
+    let output = command(cache.path())
+        .env("MDC_CONFIG", config)
+        .env_remove("MDC_TERMINUS_PASSWORD")
+        .args(["branch", "del", "-p", "demo/main"])
+        .output()
+        .await
+        .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("cannot delete the main branch"), "{error}");
+    assert!(error.contains("mdc remove demo"), "{error}");
+}
+
+#[tokio::test]
+#[ignore = "requires local TerminusDB and MDC_TERMINUS_PASSWORD"]
+async fn remove_database_offline_guards_leases_and_cleans_all_branch_caches() {
+    let fixture = common::TestDatabase::new("mdcremove").await;
+    fixture.db.create_branch("agent").await.unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = cache.path();
+    let main_cache = fixture
+        .db
+        .clone()
+        .with_cache_root(root.into())
+        .cache_path()
+        .unwrap();
+    let database_cache = main_cache.parent().unwrap();
+    let outside = root.join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("keep"), "other project").unwrap();
+    for branch in ["main", "agent", "obsolete"] {
+        let dir = database_cache.join(branch);
+        std::fs::create_dir_all(dir.join("projects/build")).unwrap();
+        std::fs::write(dir.join("projects/build/keep.olean"), "cached").unwrap();
+    }
+    std::os::unix::fs::symlink(&outside, main_cache.join("library-link")).unwrap();
+    let restore = database_cache
+        .parent()
+        .unwrap()
+        .join(".server/active-projects.json");
+    std::fs::create_dir_all(restore.parent().unwrap()).unwrap();
+    std::fs::write(
+        &restore,
+        serde_json::to_vec(&serde_json::json!([
+            format!("{}/main", fixture.db.database),
+            "unrelated/main"
+        ]))
+        .unwrap(),
+    )
+    .unwrap();
+    let busy = mathdoc::lean::LeanService::new(database_cache.join("agent")).unwrap();
+    reject(root, &["remove", &fixture.db.database], "cannot lock cache").await;
+    assert!(fixture.db.version().await.is_ok());
+    assert!(main_cache.join("projects/build/keep.olean").exists());
+    drop(busy);
+    assert_eq!(
+        run(root, &["remove", &fixture.db.database]).await,
+        serde_json::json!({"database":fixture.db.database,"deleted":true})
+    );
+    assert!(fixture.db.version().await.is_err());
+    assert_eq!(
+        std::fs::read_to_string(outside.join("keep")).unwrap(),
+        "other project"
+    );
+    for branch in ["main", "agent", "obsolete"] {
+        let remaining: Vec<_> = std::fs::read_dir(database_cache.join(branch))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(remaining, vec![std::ffi::OsString::from("service.lock")]);
+    }
+    assert_eq!(
+        serde_json::from_slice::<Value>(&std::fs::read(restore).unwrap()).unwrap(),
+        serde_json::json!(["unrelated/main"])
+    );
+    assert_eq!(run(root, &["status"]).await["server"]["running"], false);
+    reject(root, &["remove", &fixture.db.database], "TerminusDB").await;
+    reject(root, &["remove", "../main"], "database and branch names").await;
+    run(root, &["init", &fixture.db.database]).await;
+    assert!(fixture.db.version().await.is_ok());
+}
+
+#[tokio::test]
+#[ignore = "requires local TerminusDB and MDC_TERMINUS_PASSWORD"]
+async fn remove_database_stops_its_branches_and_preserves_other_projects() {
+    let fixture = common::TestDatabase::new("mdcremove").await;
+    let other = common::TestDatabase::new(&format!("{}extra", fixture.db.database)).await;
+    fixture.db.create_branch("agent").await.unwrap();
+    fixture.db.create_branch("stopped").await.unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = cache.path();
+    let main = format!("{}/main", fixture.db.database);
+    let agent = format!("{}/agent", fixture.db.database);
+    let keep = format!("{}/main", other.db.database);
+    let server = Started::start(root, &main, None).await;
+    let _agent = Started::start(root, &agent, None).await;
+    let _other = Started::start(root, &keep, None).await;
+    run(root, &["new", "-p", &main, "-t", "Remove me"]).await;
+    run(root, &["new", "-p", &keep, "-t", "Keep me"]).await;
+    let http = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{}", server.port());
+    assert_eq!(
+        http.post(format!("{url}/api/service/remove/{}", fixture.db.database))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    assert!(fixture.db.version().await.is_ok());
+    assert_eq!(
+        run(root, &["remove", &fixture.db.database]).await,
+        serde_json::json!({"database":fixture.db.database,"deleted":true})
+    );
+    assert!(fixture.db.version().await.is_err());
+    let states = status(root).await;
+    assert!(!states
+        .keys()
+        .any(|p| p.starts_with(&format!("{}/", fixture.db.database))));
+    assert!(states[&keep]);
+    assert_eq!(
+        run(root, &["graph", "check", "-p", &keep]).await["nodes"],
+        1
+    );
+    assert_eq!(
+        http.get(format!("{url}/p/{agent}/api/graph/full"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        503
+    );
+}
+
+#[tokio::test]
 async fn explicit_paths_do_not_require_a_home_directory() {
     let cache = tempfile::tempdir().unwrap();
     let config = cache.path().join("client.toml");
@@ -691,6 +830,56 @@ async fn browser_project_management_preserves_service_guards_and_cleans_branches
         run(root, &["graph", "check", "-p", &main]).await["nodes"],
         2
     );
+}
+
+#[tokio::test]
+#[ignore = "requires local TerminusDB and MDC_TERMINUS_PASSWORD"]
+async fn main_branch_deletion_preserves_data_and_cache_in_cli_and_browser() {
+    let fixture = common::TestDatabase::new("mdcmain").await;
+    let cache = tempfile::tempdir().unwrap();
+    let root = cache.path();
+    let main = format!("{}/main", fixture.db.database);
+    let server = Started::start(root, &main, None).await;
+    run(root, &["new", "-p", &main, "-t", "Keep me"]).await;
+    run(root, &["stop", &main]).await;
+    let version = fixture.db.version().await.unwrap();
+    let main_root = fixture
+        .db
+        .clone()
+        .with_cache_root(root.into())
+        .cache_path()
+        .unwrap();
+    let artifact = main_root.join("keep.olean");
+    std::fs::write(&artifact, "cached olean").unwrap();
+    let origin = format!("http://127.0.0.1:{}", server.port());
+    let http = reqwest::Client::new();
+    for other_branch in [false, true] {
+        if other_branch {
+            fixture.db.create_branch("other").await.unwrap();
+        }
+        reject(
+            root,
+            &["branch", "del", "-p", &main],
+            "cannot delete the main branch",
+        )
+        .await;
+        assert_eq!(std::fs::read_to_string(&artifact).unwrap(), "cached olean");
+        let response = http
+            .post(format!("{origin}/api/projects"))
+            .header("origin", &origin)
+            .json(&serde_json::json!({"action":"delete_branch","project":main}))
+            .send()
+            .await
+            .unwrap();
+        assert!(!response.status().is_success());
+        assert!(response
+            .text()
+            .await
+            .unwrap()
+            .contains("cannot delete the main branch"));
+        assert_eq!(std::fs::read_to_string(&artifact).unwrap(), "cached olean");
+        assert_eq!(fixture.db.version().await.unwrap(), version);
+    }
 }
 
 #[tokio::test]
