@@ -1022,7 +1022,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       const settings = JSON.parse((await cli('project', 'latex', 'show')).stdout).project;
       assert.match(settings.preamble, /newcommand/);
       assert.match(settings.bibliography, /A paper/);
-      const source = String.raw`\section{Introduction}\label{intro}By \nameref{thm:b}, see \cite{paper}. $\cA$\begin{items}\item One\end{items}`;
+      const source = String.raw`\section{Introduction}\label{intro}By \nameref{thm:b}, see \cite{paper}. $\cA$ The value $r=0$ is zero.\begin{items}\item One\end{items}`;
       await put('Alpha', source);
       await put('Beta', String.raw`\begin{thm}[Named result]\label{thm:b}$\cA$ exists.\end{thm}`);
       await put('Gamma', String.raw`\section{Private result}\label{private}`);
@@ -1037,6 +1037,12 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await block.getByRole('link', {name: externalName(1), exact: true}).waitFor();
       await block.locator('.katex').first().waitFor();
       assert.equal(await block.locator('.katex-error').count(), 0);
+      const inline = await block.locator('.latex-math[data-tex="r=0"] .katex').evaluate(element => ({
+        math: getComputedStyle(element).fontSize, text: getComputedStyle(element.closest('p')).fontSize,
+        weight: getComputedStyle(element).fontWeight,
+      }));
+      assert.equal(inline.math, inline.text, 'inline math must not be enlarged relative to surrounding text');
+      assert.equal(inline.weight, '400');
       assert.match(await block.locator('.latex-preview').innerText(), /A paper/);
       const bibliographyTitle = block.locator('.latex-bibliography em');
       assert.equal(await bibliographyTitle.innerText(), 'A paper on Möbius');

@@ -74,6 +74,7 @@
   .latex-preview :global(.latex-anchor) { scroll-margin-block:1rem; }
   .latex-preview :global(.latex-math[data-display="true"]) { display:block; overflow-x:auto; }
   .latex-preview :global(.katex) { font-size:1.1em; }
+  .latex-preview :global(.latex-math[data-display="false"] .katex) { font-size:1em; }
   .latex-preview :global(.latex-error) { color:var(--mdc-error); }
   .latex-preview :global(.latex-table) { max-width:100%; overflow-x:auto; margin:.6em 0; }
   .latex-preview :global(.latex-table table) { border-collapse:collapse; margin:auto; }

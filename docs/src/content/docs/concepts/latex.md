@@ -76,6 +76,8 @@ letters such as `ö`, `é` and `ü` in the same typeface, including bibliography
 titles. These TeX fonts are served locally under the GUST Font License; clients
 do not need a TeX installation. Ordinary formulas use KaTeX's own math fonts;
 TikZ diagrams use the separate TeX-to-SVG runtime described below.
+Inline formulas use the surrounding text's font size; display formulas retain
+their separate scale. Normal text is not artificially emboldened.
 
 Numbered theorem environments show their number in the heading. Each node starts
 at 1, retaining the class's independent or shared theorem counters. Section
