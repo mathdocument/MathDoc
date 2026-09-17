@@ -782,17 +782,14 @@
     width: 32px;
     padding: 0;
   }
-  /* The single accent action in the shell. */
   .tool.primary {
-    color: var(--mdc-on-accent);
-    background: var(--mdc-accent);
-    font-weight: 620;
-    box-shadow: var(--mdc-shadow-sm);
+    color: var(--mdc-accent);
+    border-color: color-mix(in srgb, var(--mdc-accent) 45%, var(--mdc-border));
+    background: color-mix(in srgb, var(--mdc-accent) 8%, var(--mdc-panel));
   }
   .tool.primary:hover:not(:disabled) {
-    background: var(--mdc-accent-strong);
-    color: var(--mdc-on-accent);
-    box-shadow: var(--mdc-shadow-md);
+    color: var(--mdc-accent);
+    background: color-mix(in srgb, var(--mdc-accent) 12%, transparent);
   }
   .tool.danger {
     color: var(--mdc-error);

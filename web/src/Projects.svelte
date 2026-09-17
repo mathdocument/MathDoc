@@ -97,7 +97,7 @@
         <span><strong>{projectCount}</strong> {projectCount === 1 ? "project" : "projects"}</span><span><strong>{branches.length}</strong> {branches.length === 1 ? "branch" : "branches"}</span>
         <span class="running-total"><i></i><strong>{running}</strong> running</span>
       </div>
-      <button class="init" onclick={() => create = {}} title="Initialize a project" aria-label="Init project"><Plus size={16} />Init</button>
+      <button class="init" onclick={() => create = {}} title="Initialize a project" aria-label="Init project"><Plus size={16} /></button>
     </div>
 
     <div class="controls">
@@ -131,8 +131,8 @@
                   <span>{#if row.running && row.edges !== undefined}<strong>{row.edges.toLocaleString()}</strong> {row.edges === 1 ? "edge" : "edges"}{/if}</span>
                 </span>
                 <div class="actions" aria-label={`Manage ${row.name}`}>
-                  <button class="toggle" class:stopped={!row.running} disabled={!!pending[row.name]} onclick={() => void manage(row.name, row.running ? "stop" : "start")} aria-label={`${row.running ? "Stop" : "Start"} ${row.name}`}>
-                    {#if pending[row.name]}<RefreshCw size={14} class="spinning" />{:else if row.running}<Square size={13} />{:else}<Play size={14} />{/if}{row.running ? "Stop" : "Start"}
+                  <button class="toggle" class:stopped={!row.running} disabled={!!pending[row.name]} onclick={() => void manage(row.name, row.running ? "stop" : "start")} title={`${row.running ? "Stop" : "Start"} ${row.name}`} aria-label={`${row.running ? "Stop" : "Start"} ${row.name}`}>
+                    {#if pending[row.name]}<RefreshCw size={14} class="spinning" />{:else if row.running}<Square size={13} />{:else}<Play size={14} />{/if}
                   </button>
                   <div class="branch-actions">
                     <button class="icon-button" disabled={!!pending[row.name]} onclick={() => create = {source: row.name}} title={`New branch from ${row.name}`} aria-label={`New branch from ${row.name}`}><GitBranchPlus size={16} /></button>
@@ -160,8 +160,8 @@
   .intro { display: flex; align-items: center; gap: 24px; margin-bottom: 28px; }
   h1 { font-size: 34px; line-height: 1.15; font-weight: 630; letter-spacing: -.035em; margin: 0; }
   .overview { display: flex; align-items: center; gap: 19px; color: var(--mdc-dim); font-size: 12px; white-space: nowrap; margin-left: auto; }
-  .init { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 13px; border: 1px solid var(--mdc-accent); border-radius: var(--mdc-radius-sm); color: var(--mdc-on-accent); background: var(--mdc-accent); font-size: 12px; font-weight: 600; }
-  .init:hover { background: var(--mdc-accent-strong); }
+  .init { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 0; flex-shrink: 0; border: 1px solid color-mix(in srgb, var(--mdc-accent) 45%, var(--mdc-border)); border-radius: var(--mdc-radius-sm); color: var(--mdc-accent); background: color-mix(in srgb, var(--mdc-accent) 8%, var(--mdc-panel)); }
+  .init:hover { background: color-mix(in srgb, var(--mdc-accent) 12%, transparent); }
   .overview strong { font-size: 14px; font-weight: 550; color: var(--mdc-fg-soft); margin-right: 3px; }
   .running-total { display: flex; align-items: center; }
   i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--mdc-muted); margin-right: 8px; }
@@ -193,7 +193,7 @@
   .counts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; min-height: 18px; font-size: 11px; color: var(--mdc-muted); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .counts strong { color: var(--mdc-fg-soft); font-weight: 500; }
   .actions { display: flex; align-items: center; gap: 8px; }
-  .toggle { display: inline-flex; align-items: center; justify-content: center; gap: 7px; width: 76px; height: 32px; padding: 0; font-size: 11px; color: var(--mdc-dim); background: var(--mdc-card); border: 1px solid var(--mdc-border-strong); border-radius: var(--mdc-radius-sm); }
+  .toggle { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 32px; padding: 0; color: var(--mdc-dim); background: var(--mdc-card); border: 1px solid var(--mdc-border-strong); border-radius: var(--mdc-radius-sm); }
   .toggle:hover:not(:disabled) { color: var(--mdc-fg); background: var(--mdc-card-hover); }
   .toggle.stopped { color: var(--mdc-accent-down); }
   .branch-actions { display: flex; padding: 1px; border: 1px solid var(--mdc-border); border-radius: var(--mdc-radius-sm); }
