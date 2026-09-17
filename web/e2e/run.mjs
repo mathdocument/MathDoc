@@ -1150,6 +1150,33 @@ await test('Lean first paint waits for syntax highlighting without a server', {t
   } finally { await browser.close(); }
 });
 
+await test('Lean hover stays above the active Infoview', {timeout: 45000}, async () => {
+  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const node = {fnode: randomUUID(), title: 'Hover', module: 'Lib.Hover', depens: [], blocks: [
+    {srctype: 'lean', content: '/-- Documentation with enough text to extend across the narrow source pane into the active Infoview. -/\ndef hoverTargetWithALongName : Nat := 42\n#check hoverTargetWithALongName\n'},
+  ]};
+  try {
+    await fixture(browser, async ({page, url}) => {
+      await page.goto(`${url}/?hover#ref=${node.fnode}`);
+      await page.getByRole('button', {name: 'Start Lean server', exact: true}).click();
+      await page.getByText('Lean editor ready', {exact: true}).waitFor();
+      const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
+      await frame.frameLocator('#infoview iframe').getByText(/All Messages/).first().waitFor();
+      await frame.locator('.view-line').getByText('hoverTargetWithALongName', {exact: true}).last().hover();
+      const hover = frame.locator('.monaco-hover:visible');
+      await hover.waitFor();
+      const overlap = await hover.evaluate(el => {
+        const box = el.getBoundingClientRect(), info = document.getElementById('infoview').getBoundingClientRect();
+        const x = Math.max(box.left, info.left) + 5, y = box.top + 10;
+        return {crosses: x < box.right, onTop: el.contains(document.elementFromPoint(x, y))};
+      });
+      assert.equal(overlap.crosses, true, 'exercise a tooltip crossing into Infoview');
+      assert.equal(overlap.onTop, true, 'the source tooltip paints and receives input above Infoview');
+      await page.screenshot({path: resolve(tmpdir(), `mdc-lean-hover-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
+    }, [node]);
+  } finally { await browser.close(); }
+});
+
 await test('wrapped Lean sources reach the last line before and after server startup', {timeout: 60000}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   const node = {fnode: randomUUID(), title: 'Wrapped Lean', module: 'Lib.Wrapped', depens: [], blocks: [

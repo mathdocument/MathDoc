@@ -362,6 +362,7 @@ async function start() {
   editor = MonacoEditor.create(document.getElementById("editor")!, {
     model: preview,
     ...sourceOptions,
+    overflowWidgetsDomNode: document.getElementById("editor-widgets")!,
     contextmenu: true,
     glyphMargin: true,
   });
