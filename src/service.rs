@@ -1304,7 +1304,7 @@ async fn bridge_editor(
     service: &Service,
     cancelled: &mut tokio::sync::watch::Receiver<()>,
 ) -> Result<()> {
-    use axum::extract::ws::Message;
+    use axum::extract::ws::{close_code, CloseFrame, Message};
     use futures_util::{SinkExt, StreamExt};
     let actual = crate::lean::file_uri(root)?;
     let mut sources: crate::lean::SourceState = input
@@ -1398,6 +1398,9 @@ async fn bridge_editor(
                             .send(text)
                             .await
                             .context("Lean server closed its input")?;
+                        if method == "exit" {
+                            break;
+                        }
                     }
                     Message::Close(_) => break,
                     Message::Ping(data) => replies.send(Message::Pong(data)).await?,
@@ -1430,6 +1433,17 @@ async fn bridge_editor(
             result = to_client => result,
         }
     };
+    // Finish the WebSocket handshake before dropping the transport. An explicit
+    // editor stop must not look like a connection reset to the surviving page.
+    let close = Message::Close(Some(CloseFrame {
+        code: if result.is_ok() {
+            close_code::NORMAL
+        } else {
+            close_code::ERROR
+        },
+        reason: "".into(),
+    }));
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), send.send(close)).await;
     server.shutdown().await;
     result
 }

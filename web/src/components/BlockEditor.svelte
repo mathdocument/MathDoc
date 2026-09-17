@@ -10,7 +10,7 @@
     Trash2,
   } from "@lucide/svelte";
   import { editor as Monaco, Uri, KeyMod, KeyCode } from "monaco-editor";
-  import { loadSourceLanguage, setMonacoTheme, sourceOptions } from "../lib/monaco";
+  import { loadSourceLanguage, setMonacoTheme, sourceOptions, renderSource } from "../lib/monaco";
   import { nativeMonacoScroll } from "../lib/monaco-scroll";
   import type { NodeDetail, SrcBlock } from "../lib/types";
   import { api } from "../lib/api";
@@ -83,7 +83,7 @@
       if (latex) { completion = await latexAutocomplete(latex, model); if (!alive) { completion.dispose(); return; } }
       requestAnimationFrame(() => requestAnimationFrame(() => {
         if (!alive) return;
-        editorView!.render(true); ready = true; onReady?.();
+        renderSource(editorView!); ready = true; onReady?.();
       }));
     })().catch(e => { if (alive) { error = errMsg(e); onReady?.(); } });
   });

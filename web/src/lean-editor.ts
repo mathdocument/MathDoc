@@ -1,4 +1,4 @@
-import { LeanMonaco, type LeanClient } from "lean4monaco";
+import { LeanMonaco, type LeanClient, type LeanMonacoOptions } from "lean4monaco";
 import { CancellationTokenSource, Uri, KeyCode, KeyMod, editor as MonacoEditor } from "monaco-editor";
 import { createModelReference } from "vscode/monaco";
 import { FileUri } from "lean4monaco/dist/vscode-lean4/vscode-lean4/src/utils/exturi";
@@ -6,15 +6,21 @@ import { CloseAction, ErrorAction } from "vscode-languageclient/lib/common/clien
 import { projectPath } from "./lib/project-path";
 import { chainEditorScroll } from "./lib/editor-scroll";
 import { nativeMonacoScroll } from "./lib/monaco-scroll";
-import { initializeMonaco, sourceOptions, setMonacoTheme } from "./lib/monaco";
+import { initializeMonaco, sourceOptions, setMonacoTheme, renderSource } from "./lib/monaco";
+import { leanSourcePath } from "./lib/lean-module";
 
 const params = new URLSearchParams(location.search);
-const id = params.get("session");
+let id: string | null = null;
 function applyTheme(theme: string) {
   document.body.style.backgroundColor = theme === "light" ? "#fff" : "#1f1f1f";
   void setMonacoTheme(theme === "light" ? "light" : "dark");
 }
 class BrowserLean extends LeanMonaco {
+  socket!: ReturnType<LeanMonaco["getWebSocketOptions"]>;
+  protected getWebSocketOptions(options: LeanMonacoOptions) {
+    // The native client factory reads these options on each explicit start.
+    return this.socket = super.getWebSocketOptions(options);
+  }
   protected getExtensionManifest() {
     // LeanMonaco installs browser providers itself; its desktop entry cannot run here.
     return { ...super.getExtensionManifest(), main: undefined, browser: undefined, activationEvents: [] };
@@ -34,6 +40,7 @@ const runtime = new BrowserLean();
 let editor: MonacoEditor.IStandaloneCodeEditor;
 let disposeScroll: (() => void) | undefined;
 const documents = new Map<string, OpenDocument>();
+const preparingProgress = new Map<string, string>();
 let selected: OpenDocument | undefined;
 let shownFnode = "";
 let preview: MonacoEditor.ITextModel | undefined;
@@ -41,29 +48,38 @@ let updating = false;
 let selection = new AbortController();
 let connectionFailure: string | undefined;
 let resolveClient: (client: LeanClient) => void;
-const clientReady = new Promise<LeanClient>(resolve => { resolveClient = resolve; });
-const send = (type: string, value?: unknown, generation?: number) => parent.postMessage({ type, value, fnode: shownFnode, generation }, location.origin);
+let clientReady = new Promise<LeanClient>(resolve => { resolveClient = resolve; });
+let connecting: Promise<[boolean, LeanClient | undefined]> | undefined;
+let stopped = Promise.resolve();
+let connection = 0;
+const send = (type: string, value?: unknown, generation?: number) => parent.postMessage({ type, value, fnode: shownFnode, generation, session: id }, location.origin);
+function progressText(processing: { range: { start: { line: number } } }[]) {
+  return processing.length === 0 ? "Lean editor ready" :
+    processing.some(item => item.range.start.line === 0) ? "Loading Lean imports…" : "Lean is checking edits…";
+}
 function showProgress() { send("lean-progress", !id || connectionFailure ? "" : preview ? "Preparing Lean environment…" : selected?.progress ?? ""); }
 function reveal(generation: number) {
   const current = selection;
   requestAnimationFrame(() => requestAnimationFrame(() => {
     if (current.signal.aborted) return;
-    editor.render(true);
+    renderSource(editor);
     send("lean-ready", undefined, generation);
   }));
 }
 function disconnected(reason: string) {
-  if (connectionFailure) return;
+  if (!id || connectionFailure) return;
   connectionFailure = reason;
   selection.abort(new Error(reason));
   send("lean-disconnected", reason);
 }
 async function validate(entry: OpenDocument) {
-  const key = () => `${entry.checkGeneration ?? 0}:${entry.document.revision}:${entry.document.environment_key}:${entry.reference.object.textEditorModel?.getVersionId()}`;
+  if (!id) return;
+  const session = id;
+  const key = () => `${id}:${entry.checkGeneration ?? 0}:${entry.document.revision}:${entry.document.environment_key}:${entry.reference.object.textEditorModel?.getVersionId()}`;
   if (documents.get(entry.document.filename) !== entry || entry.validating || entry.validated === key() || entry.progress !== "Lean editor ready" ||
       entry.reference.object.textEditorModel?.getValue() !== entry.document.source) return;
   const requested = key(), { fnode, revision } = entry.document;
-  const post = (type: string, value?: unknown) => parent.postMessage({ type, value, fnode }, location.origin);
+  const post = (type: string, value?: unknown) => { if (id === session) parent.postMessage({ type, value, fnode, session }, location.origin); };
   entry.validating = true; post("lean-validating", true);
   try {
     const client = await clientReady;
@@ -86,20 +102,26 @@ async function validate(entry: OpenDocument) {
     if (key() !== requested) void validate(entry);
   }
 }
-function showNode(fnode: string, source: string, generation: number) {
+function showNode(fnode: string, source: string, generation: number, module: string) {
   if (selected && !preview) selected.view = editor.saveViewState();
   const oldPreview = preview;
   selected = [...documents.values()].find(entry => entry.document.fnode === fnode);
   shownFnode = fnode;
-  // In-memory models retain Lean highlighting but are excluded by the native
-  // client's file/untitled selector. Typing need not wait for imports or LSP init.
-  preview = selected ? undefined : MonacoEditor.createModel(source, "lean4", Uri.parse(`inmemory://mdc/${fnode}/${generation}.lean`));
+  // While connected, cold nodes use temporary models until their files are
+  // prepared. Offline models already have the URI they will use on attachment.
+  const uri = id ? Uri.parse(`inmemory://mdc/${fnode}/${generation}.lean`) : Uri.file(leanSourcePath(module));
+  preview = selected ? undefined : oldPreview?.uri.toString() === uri.toString() ? oldPreview : MonacoEditor.createModel(source, "lean4", uri);
   updating = true;
   editor.setModel(selected?.reference.object.textEditorModel ?? preview!);
   if (editor.getValue() !== source) editor.setValue(source);
   if (selected?.view) editor.restoreViewState(selected.view);
   updating = false;
-  oldPreview?.dispose();
+  if (oldPreview !== preview && oldPreview !== editor.getModel()) oldPreview?.dispose();
+  if (!id) {
+    // An offline navigation must not reopen an unprepared previous file when
+    // the next server starts. Keep only the visible model and its undo history.
+    stopped = Promise.all([stopped, ...[...documents.keys()].filter(key => key !== selected?.document.filename).map(evict)]).then(() => {});
+  }
   editor.focus();
   document.getElementById("infoview-pending")!.hidden = !id || !preview;
   showProgress();
@@ -112,10 +134,14 @@ function error(error: unknown) {
 async function evict(filename: string) {
   const old = documents.get(filename)!;
   documents.delete(filename);
+  const model = old.reference.object.textEditorModel;
   // Clear Monaco's dirty flag before releasing its reference, so VS Code closes
   // the document and Lean releases its worker. This never writes to the database.
   await old.reference.object.revert({ soft: true });
   old.reference.dispose();
+  // A model created before LSP attachment is owned by us, not the reference.
+  // Dispose it too so VS Code cannot reopen this retired file on the next start.
+  if (model && !model.isDisposed()) model.dispose();
 }
 // Cancellation must settle locally even if an LSP peer never answers its request.
 async function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -162,6 +188,7 @@ async function selectNode(fnode: string, revision: string, generation: number, s
   entry.document = next;
   const source = editor.getValue();
   const view = editor.saveViewState();
+  const focused = editor.hasTextFocus();
   const model = entry.reference.object.textEditorModel;
   if (!model) throw new Error("Lean document closed while switching nodes");
   selected = entry;
@@ -174,29 +201,83 @@ async function selectNode(fnode: string, revision: string, generation: number, s
   }
   if (view) editor.restoreViewState(view);
   updating = false;
-  preview?.dispose(); preview = undefined;
+  if (preview !== model) preview?.dispose();
+  preview = undefined;
   document.getElementById("infoview-pending")!.hidden = true;
-  editor.focus();
+  if (focused) editor.focus();
   if (restart) {
     entry.checkGeneration = (entry.checkGeneration ?? 0) + 1;
     entry.progress = "Rechecking Lean…";
     // Reopen this file in the existing language client, including when collapsed
     // or unfocused. Other documents and the session's server remain alive.
     runtime.clientProvider!.restartFile(FileUri.fromUriOrError(model.uri));
+  } else {
+    // A retained model can finish checking before the selection reply arrives.
+    const progress = preparingProgress.get(next.filename);
+    if (progress) entry.progress = progress;
   }
   showProgress();
   reveal(generation);
   void validate(entry);
 }
+function stopSession(session: string | null) {
+  connection++; id = null; selection.abort();
+  document.body.classList.add("static");
+  document.getElementById("error")!.textContent = "";
+  showProgress();
+  const pending = connecting;
+  stopped = stopped.then(async () => {
+    await pending;
+    for (const client of runtime.clientProvider!.getClients()) await client.stop();
+    for (const key of [...documents.keys()]) if (key !== selected?.document.filename) await evict(key);
+    for (const entry of documents.values()) {
+      entry.progress = ""; entry.validated = undefined;
+      const model = entry.reference.object.textEditorModel;
+      if (model) for (const owner of new Set(MonacoEditor.getModelMarkers({resource: model.uri}).map(marker => marker.owner))) MonacoEditor.setModelMarkers(model, owner, []);
+    }
+  }).catch(error);
+  void stopped.then(() => parent.postMessage({type: "lean-stopped", session}, location.origin));
+}
+interface Selection { fnode: string; revision: string; generation: number; source: string; module: string }
+let currentNode: Selection;
+function choose(data: Selection, recheck = false) {
+  currentNode = data;
+  selection.abort(); selection = new AbortController();
+  showNode(data.fnode, data.source, data.generation, data.module);
+  prepare(data, recheck);
+}
+function prepare({fnode, revision, generation}: Selection, recheck = false) {
+  const current = selection;
+  preparingProgress.clear();
+  if (!id) return;
+  if (connectionFailure) { error(connectionFailure); return; }
+  const timer = setTimeout(() => current.abort(new DOMException("Lean node preparation timed out", "TimeoutError")), 30000);
+  void abortable(selectNode(fnode, revision, generation, current.signal, recheck), current.signal).catch(e => {
+    if (current !== selection) return;
+    if (e?.name === "TimeoutError") disconnected(e.message);
+    else if (!current.signal.aborted) error(e);
+  }).finally(() => clearTimeout(timer));
+}
+async function connect(data: Selection & { id: string }) {
+  const current = ++connection;
+  await stopped;
+  if (connection !== current) return;
+  connectionFailure = undefined;
+  clientReady = new Promise(resolve => { resolveClient = resolve; });
+  id = data.id;
+  runtime.socket.url = socketUrl(id);
+  document.body.classList.remove("static");
+  void runtime.clientProvider!.ensureClient(new FileUri("/project/lean-toolchain"));
+  // The selected offline model already has the native file URI. The reference
+  // adopts it without changing the source editor, cursor or undo history.
+  selection.abort(); selection = new AbortController();
+  prepare(currentNode ?? data);
+}
+function socketUrl(session: string) {
+  return `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}${projectPath(`/api/lean/session/${encodeURIComponent(session)}/ws`)}`;
+}
 async function start() {
-  let session: Document | undefined;
-  if (id) {
-    const response = await fetch(projectPath(`/api/lean/session/${encodeURIComponent(id)}`));
-    const data: Document & { error?: string } = await response.json();
-    if (!response.ok) throw new Error(data.error ?? "Lean session unavailable");
-    session = data;
-  }
-  document.body.classList.toggle("static", !id);
+  document.body.classList.add("static");
   const infoview = document.getElementById("infoview")!;
   infoview.addEventListener('load', event => {
     if (!(event.target instanceof HTMLIFrameElement)) return;
@@ -206,8 +287,8 @@ async function start() {
   runtime.setInfoviewElement(infoview);
   await initializeMonaco();
   await runtime.start({
-    websocket: { url: `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}${projectPath(`/api/lean/session/${encodeURIComponent(id ?? "")}/ws`)}` },
-    // The parent recreates the session and restores drafts. Retrying this consumed
+    websocket: { url: socketUrl("") },
+    // The parent replaces the session while retaining the editor. Retrying this consumed
     // socket inside vscode-languageclient races that recovery, including at init.
     clientOptions: {
       documentSelector: [{ language: "lean4" }],
@@ -235,52 +316,50 @@ async function start() {
   const provider = runtime.clientProvider!;
   const ensureClient = provider.ensureClient.bind(provider);
   provider.ensureClient = async () => {
-    // Browsing uses the same grammar, theme and in-memory models, but never
-    // connects a language client until the user explicitly creates a session.
     if (!id) return [false, undefined];
-    try { return await ensureClient(new FileUri("/project/lean-toolchain")); }
-    catch (e) {
-      // lean4monaco's transport factory can reject before LeanClient installs
-      // its failure listeners. Settle pending selections instead of timing out.
-      disconnected(`Lean failed to initialize: ${e instanceof Error ? e.message : (e as { message?: string })?.message ?? String(e)}`);
-      return [false, undefined];
-    }
+    return connecting ??= (async (): Promise<[boolean, LeanClient | undefined]> => {
+      try {
+        const result = await ensureClient(new FileUri("/project/lean-toolchain"));
+        if (result[0] && result[1] && !result[1].isRunning()) await result[1].start();
+        return result;
+      } catch (e) {
+        disconnected(`Lean failed to initialize: ${e instanceof Error ? e.message : (e as { message?: string })?.message ?? String(e)}`);
+        return [false, undefined];
+      } finally { connecting = undefined; }
+    })();
   };
   runtime.clientProvider!.clientAdded((client: LeanClient) => {
-    client.restarted(() => { if (client.isRunning()) resolveClient(client); });
+    client.restarted(() => { if (id && client.isRunning()) resolveClient(client); });
     client.stopped((reason: { message: string }) => disconnected(reason.message));
     client.serverFailed((reason: string) => disconnected(reason));
     if (client.isRunning()) resolveClient(client);
     client.progressChanged(([uri, processing]: [string, { range: { start: { line: number } } }[]]) => {
-      const entry = documents.get(Uri.parse(uri).path);
+      if (!id) return;
+      const filename = Uri.parse(uri).path;
+      const progress = progressText(processing);
+      preparingProgress.set(filename, progress);
+      const entry = documents.get(filename);
       if (!entry) return;
-      entry.progress = processing.length === 0 ? "Lean editor ready" :
-        processing.some(item => item.range.start.line === 0) ? "Loading Lean imports…" : "Lean is checking edits…";
+      entry.progress = progress;
       if (entry === selected) showProgress();
       if (processing.length === 0) void validate(entry);
     });
   });
   applyTheme(params.get("theme") ?? "light");
-  const reference = session ? await createModelReference(Uri.parse(session.filename), session.source) : undefined;
-  if (!session) preview = MonacoEditor.createModel("", "lean4", Uri.parse("inmemory://mdc/initial.lean"));
+  preview = MonacoEditor.createModel("", "lean4", Uri.parse("inmemory://mdc/initial.lean"));
   // Resolve the native TextMate grammar before revealing any source. The public
   // colorizer awaits its lazy tokenizer; an empty input avoids tokenizing twice.
   await MonacoEditor.colorize("", "lean4", {});
   // Disable automatic layout at construction: changing the option later does
   // not disconnect Monaco's observer, leaving two competing layout callbacks.
   editor = MonacoEditor.create(document.getElementById("editor")!, {
-    model: reference?.object.textEditorModel ?? preview!,
+    model: preview,
     ...sourceOptions,
     contextmenu: true,
     glyphMargin: true,
   });
   disposeScroll = nativeMonacoScroll(editor, document.getElementById("editor-scroll")!);
   editor.focus();
-  if (session && reference) {
-    shownFnode = session.fnode;
-    selected = { document: session, reference, view: null, progress: "Loading Lean imports…" };
-    documents.set(session.filename, selected);
-  }
   editor.onDidChangeModelContent(() => { if (!updating) send("lean-change", editor.getValue()); });
   editor.addCommand(KeyMod.CtrlCmd | KeyCode.KeyS, () => send("lean-save"));
   editor.addCommand(KeyMod.CtrlCmd | KeyCode.Enter, () => send("lean-save"));
@@ -288,27 +367,20 @@ async function start() {
     if (event.origin !== location.origin || event.source !== parent) return;
     if (event.data?.type === "lean-theme") applyTheme(event.data.value);
     if (event.data?.type === "lean-saved") {
+      if (currentNode?.fnode === event.data.fnode) currentNode = {...currentNode, revision: event.data.revision};
       const entry = [...documents.values()].find(e => e.document.fnode === event.data.fnode);
       if (entry) {
         entry.document = { ...entry.document, source: event.data.source, revision: event.data.revision };
         void validate(entry);
       }
     }
-    if (event.data?.type === "lean-select" || event.data?.type === "lean-recheck") {
-      const { fnode, revision, generation, source } = event.data;
-      selection.abort();
-      const current = selection = new AbortController();
-      showNode(fnode, source, generation);
-      if (!id) return;
-      if (connectionFailure) { error(connectionFailure); return; }
-      const timer = setTimeout(() => current.abort(new DOMException("Lean node preparation timed out", "TimeoutError")), 30000);
-      // Superseded requests cannot hold up the latest selection or replace its model.
-      void abortable(selectNode(fnode, revision, generation, current.signal, event.data.type === "lean-recheck"), current.signal).catch(e => {
-        if (current !== selection) return;
-        if (e?.name === "TimeoutError") send("lean-disconnected", e.message);
-        else if (!current.signal.aborted) error(e);
-      }).finally(() => clearTimeout(timer));
+    if (event.data?.type === "lean-starting") {
+      document.body.classList.remove("static");
+      document.getElementById("infoview-pending")!.hidden = false;
     }
+    if (event.data?.type === "lean-start") void connect(event.data).catch(error);
+    if (event.data?.type === "lean-stop") stopSession(event.data.session);
+    if (event.data?.type === "lean-select" || event.data?.type === "lean-recheck") choose(event.data, event.data.type === "lean-recheck");
     if (event.data?.type === "lean-cancel") selection.abort();
     if (event.data?.type === "lean-source" && event.data.fnode === shownFnode && typeof event.data.value === "string" && editor.getValue() !== event.data.value) {
       editor.setValue(event.data.value);

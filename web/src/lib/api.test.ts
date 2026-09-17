@@ -24,7 +24,7 @@ it("routes node requests and Lean pages inside the selected database and branch"
   vi.stubGlobal("fetch", fetchMock);
   await api.nodeView("same-uuid");
   expect(fetchMock.mock.calls[0]![0]).toBe("/p/mathlib4/agent-one/api/node/same-uuid/view");
-  expect(projectPath("/lean.html?session=one")).toBe("/p/mathlib4/agent-one/lean.html?session=one");
+  expect(projectPath("/lean.html?theme=light")).toBe("/p/mathlib4/agent-one/lean.html?theme=light");
   expect(projectName("/p/db/main-other/")).toBe("db/main-other");
   expect(projectName("/p/db/../main/")).toBeNull();
   expect(projectName("/")).toBeNull();

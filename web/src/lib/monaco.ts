@@ -17,6 +17,14 @@ export const sourceOptions: editor.IStandaloneEditorConstructionOptions = {
   scrollbar: {handleMouseWheel: false, vertical: 'hidden', horizontal: 'hidden'},
   fixedOverflowWidgets: true, renderLineHighlight: 'gutter',
 };
+/** Finish visible syntax before revealing an editor; leave the rest to its worker. */
+export function renderSource(view: editor.IStandaloneCodeEditor) {
+  // CodinGame exposes VS Code's tokenization part on the native model, while
+  // Monaco's public subset omits it. This is shared by all four source editors.
+  const model = view.getModel() as (editor.ITextModel & {tokenization: {forceTokenization(line: number): void}}) | null;
+  model?.tokenization.forceTokenization(view.getVisibleRanges().at(-1)?.endLineNumber ?? 1);
+  view.render(true);
+}
 let ready: Promise<void> | undefined;
 export function initializeMonaco() {
   return ready ??= (async () => {

@@ -43,18 +43,26 @@ The dependency removal dialog filters by title or UUID and displays 50 results
 per page; selections remain active across pages and filters until submitted.
 
 Lean uses a lazy-loaded page embedding `lean4monaco` and upstream Infoview. By
-default it uses in-memory Monaco models, with native client creation disabled:
+default it uses local Monaco models, with native client creation disabled:
 highlighting, edits and saves require no Lean session or WebSocket. **Start Lean
-server** creates the session and remounts the iframe with its ID, retaining the
-parent-owned draft. The same runtime supplies identical syntax, themes and fonts
+server** attaches a session to the existing iframe, editor and source model.
+Local models use the module's native URI so attachment retains undo and cursor
+state. Infoview expands in place; stopping hides it and closes the native client.
+The WebSocket closes gracefully before the backend reaps the session. Pending
+initialization has a bounded shutdown grace period. Navigation during session
+allocation retires the stale allocation before connecting the selected module.
+`build/lean-socket.ts` patches the installed transport wrapper to settle startup
+when a socket closes during initialization, and safely finish client shutdown.
+Both build and development prebundling verify the upstream code before patching.
+The same runtime supplies identical syntax, themes and fonts
 in both modes. The first reveal waits for the native TextMate grammar and a
 rendered viewport, with no plaintext/loading placeholder. The iframe fills the
 space remaining below the block controls, so its final lines remain reachable.
 After startup, the page has an isolated native WebSocket session,
 with source on the left and Infoview on the right. The start button becomes
 **Recheck Lean**, which refreshes the selected document in the existing client.
-The adjacent stop button closes only this session and restores a local editor,
-preserving its draft. LeanMonaco installs browser providers; its desktop
+The adjacent stop button closes only this session and leaves the editor and its
+draft intact. LeanMonaco installs browser providers; its desktop
 extension entry is disabled in the browser manifest. Save reuses the editor's
 native result for the exact saved source and imports. CLI `lean check --build`
 requests target artifacts when required.

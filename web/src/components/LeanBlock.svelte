@@ -31,6 +31,7 @@
   let reconnects = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   let connection = 0;
+  const closing = new Map<string, () => void>();
   let progress = $state("");
   let generation = 0;
   let openedNode = "";
@@ -68,32 +69,45 @@
     if (runtimeReady && block) frame?.contentWindow?.postMessage({ type: "lean-saved", fnode, revision, source: block.content }, location.origin);
   });
   function selectNode() {
-    if (runtimeReady && block) frame?.contentWindow?.postMessage({ type: "lean-select", fnode, revision, generation, source: content }, location.origin);
+    if (runtimeReady && block) frame?.contentWindow?.postMessage({ type: "lean-select", fnode, revision, generation, module, source: content }, location.origin);
   }
   async function open() {
-    if (!block) return;
+    if (!block || !runtimeReady) return;
     clearTimeout(reconnectTimer); reconnectTimer = undefined;
     const current = ++connection;
-    void closeSession().catch(console.warn);
-    mounted = false;
-    opening = true; runtimeReady = false; ready = false; error = null; result = null; initialTheme = theme;
+    const previous = closeSession();
+    opening = true; error = null; result = null;
+    frame?.contentWindow?.postMessage({ type: "lean-starting" }, location.origin);
     try {
-      const response = await api.leanSession(fnode, revision);
-      if (alive && connection === current) { session = response.id; mounted = true; }
-      else void api.closeLeanSession(response.id).catch(console.warn);
-    } catch (e) { if (alive && connection === current) { error = errMsg(e); mounted = true; onReady?.(); } }
-    finally { if (connection === current) opening = false; }
+      await previous;
+      // Allocation prepares one module. If navigation overtakes it, retire that
+      // session before connecting a model that the backend has not prepared.
+      while (alive && connection === current && block) {
+        const node = fnode;
+        const response = await api.leanSession(node, revision);
+        if (!alive || connection !== current) { void api.closeLeanSession(response.id).catch(console.warn); return; }
+        if (fnode !== node) { await api.closeLeanSession(response.id); continue; }
+        session = response.id;
+        frame?.contentWindow?.postMessage({ type: "lean-start", id: session, fnode, revision, generation, module, source: content }, location.origin);
+        break;
+      }
+    } catch (e) {
+      if (alive && connection === current) {
+        error = errMsg(e);
+        frame?.contentWindow?.postMessage({ type: "lean-stop" }, location.origin);
+      }
+    } finally { if (connection === current) opening = false; }
   }
   function refresh() {
     if (!session) { reconnects = 0; void open(); return; }
     error = null; result = null;
-    frame?.contentWindow?.postMessage({ type: "lean-recheck", fnode, revision, generation, source: content }, location.origin);
+    frame?.contentWindow?.postMessage({ type: "lean-recheck", fnode, revision, generation, module, source: content }, location.origin);
   }
   async function stop() {
     const current = ++connection;
     clearTimeout(reconnectTimer); reconnectTimer = undefined;
-    stopping = true; opening = false; ready = false; validating = false;
-    error = null; result = null; progress = ""; initialTheme = theme; mounted = true;
+    stopping = true; opening = false; validating = false;
+    error = null; result = null; progress = "";
     try { await closeSession(); }
     catch (e) { if (alive && connection === current) error = errMsg(e); }
     finally { if (alive && connection === current) stopping = false; }
@@ -101,7 +115,7 @@
   function disconnected(reason: string) {
     error = reason; progress = "";
     // One automatic attempt per editor lifetime; repeated crashes need an explicit
-    // retry. The parent owns unsaved text and restores it into the new runtime.
+    // retry. The editor and its unsaved model survive the connection change.
     if (!reconnectTimer && reconnects < 1 && block) {
       reconnects++;
       progress = "Reconnecting Lean…";
@@ -110,8 +124,16 @@
   }
   function closeSession() {
     const id = session;
-    session = null; runtimeReady = false;
-    return id ? api.closeLeanSession(id) : Promise.resolve();
+    session = null;
+    const stopped = id && alive && runtimeReady ? new Promise<void>(resolve => {
+      const done = () => { clearTimeout(timer); closing.delete(id); resolve(); };
+      // A wedged initialization cannot acknowledge shutdown; the backend still
+      // reaps its process after this bounded grace period.
+      const timer = setTimeout(done, 1500);
+      closing.set(id, done);
+    }) : Promise.resolve();
+    frame?.contentWindow?.postMessage({ type: "lean-stop", session: id }, location.origin);
+    return stopped.then(() => id ? api.closeLeanSession(id) : undefined);
   }
   async function save() {
     if (busy) return;
@@ -147,6 +169,8 @@
   }
   function message(event: MessageEvent) {
     if (event.origin !== location.origin || event.source !== frame?.contentWindow) return;
+    if (event.data?.type === "lean-stopped") { closing.get(event.data.session)?.(); return; }
+    if (event.data?.session && event.data.session !== session) return;
     if (event.data?.type === "lean-runtime-ready") { runtimeReady = true; selectNode(); return; }
     if (event.data?.type === "lean-disconnected") { if (session && !stopping) disconnected(String(event.data.value)); return; }
     if (event.data?.type === "lean-error") { error = String(event.data.value); onReady?.(); return; }
@@ -166,12 +190,12 @@
 </script>
 
 <svelte:window onmessage={message} />
-<article class="source-block lean-block" class:hidden={!block} class:preparing={!ready && !error && !opening && !session} data-srctype="lean">
+<article class="source-block lean-block" class:hidden={!block} class:preparing={!ready && !error && !opening && !session} data-srctype="lean" data-session={session}>
   <header class="block-head">
     <span class="srctype">lean</span><span class="spacer"></span>
     {#if dirty}<span class="dirty" title="Unsaved changes"><span class="dirty-dot"></span><span class="btn-label">Unsaved</span></span>{/if}
     <div class="block-actions">
-      <button class="icon-btn expand" onclick={refresh} disabled={opening || stopping || busy || (!!session && !runtimeReady)} aria-label={session ? "Recheck Lean" : "Start Lean server"} title={session ? "Recheck current Lean file" : "Start Lean server"}>{#if session}<RotateCcw size={14} strokeWidth={1.8}/>{:else}<Play size={14} strokeWidth={1.8}/>{/if}</button>
+      <button class="icon-btn expand" onclick={refresh} disabled={opening || stopping || busy || !runtimeReady} aria-label={session ? "Recheck Lean" : "Start Lean server"} title={session ? "Recheck current Lean file" : "Start Lean server"}>{#if session}<RotateCcw size={14} strokeWidth={1.8}/>{:else}<Play size={14} strokeWidth={1.8}/>{/if}</button>
       <button class="icon-btn expand" onclick={() => void stop()} disabled={stopping || (!session && !opening)} aria-label="Stop Lean server" title="Stop this page’s Lean server"><Square size={14} strokeWidth={1.8}/></button>
       <button class="icon-btn expand" onclick={() => expanded = !expanded} aria-expanded={expanded} aria-label={expanded ? "Collapse block" : "Expand block"} title={expanded ? "Collapse" : "Expand"}>{#if expanded}<ChevronDown size={15}/>{:else}<ChevronRight size={15}/>{/if}</button>
       <button class="save" onclick={() => void save()} disabled={busy || !dirty} aria-busy={action === "save"} aria-label="Save" title="Save (Ctrl/⌘+S or Ctrl/⌘+Enter); start Lean server for automatic validation"><Save size={13} strokeWidth={1.9}/><span class="btn-label">Save</span></button>
@@ -183,13 +207,10 @@
   {/if}
   {#if action}<div class="status activity" role="status" aria-live="polite">{{ save: "Saving…", delete: "Deleting…" }[action]}</div>{/if}
   {#if validating && !dirty}<div class="status activity" role="status" aria-live="polite">Verifying saved version…</div>{/if}
-  {#if !ready && !error && (opening || session)}<div class="status" aria-busy="true">Starting Lean editor…</div>{/if}
   {#if ready && progress}<div class="status" role="status">{progress}</div>{/if}
   <div class="editor-surface" class:collapsed={!expanded}>
   {#if mounted}
-    {#key session}
-    <div class="native-editor" class:pending={!ready} inert={!ready || !expanded}><iframe bind:this={frame} title="Lean source and Infoview" src={projectPath(`/lean.html?${session ? `session=${encodeURIComponent(session)}&` : ""}theme=${initialTheme}`)} allow="clipboard-write"></iframe></div>
-    {/key}
+    <div class="native-editor" class:pending={!ready} inert={!ready || !expanded}><iframe bind:this={frame} title="Lean source and Infoview" src={projectPath(`/lean.html?theme=${initialTheme}`)} allow="clipboard-write"></iframe></div>
   {/if}
   </div>
   {#if error}<div class="error-bar" role="alert">{error}</div>{/if}
