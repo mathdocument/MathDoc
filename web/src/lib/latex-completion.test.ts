@@ -27,8 +27,22 @@ test('citation candidates are capped after searching the entire bibliography', (
   })), commands: [], environments: [], diagnostics: []};
   const complete = (query: string) => latexCompletions({references: [], catalog}, `\\cite{${query}`)!;
   expect(complete('').options).toHaveLength(50);
-  for (const query of ['key13999', '13999 AUTHOR', 'Paper 13999 2020']) {
-    expect(complete(query).options.map(item => item.insert)).toEqual(['key13999']);
+  for (const query of ['key13999', 'k13999', 'Paper 13999 2020']) {
+    expect(complete(query).options[0].insert).toBe('key13999');
   }
   expect(complete('not found').options).toEqual([]);
+});
+
+test('Monaco ranks fuzzy matches before limiting candidates, independent of BibTeX order', () => {
+  const keys = [...Array.from({length: 60}, (_, i) => `Other${i}GT2008`), 'GT2008'];
+  const catalog: LatexCatalog = {project_key: 'p', citations: keys.map(key => ({
+    key, title: 'Quadratic uniformity', authors: 'Green and Tao', year: '2008', label: '', text: '',
+  })), commands: [], environments: [], diagnostics: []};
+  const complete = (query: string) => latexCompletions({references: [], catalog}, `\\cite{${query}`)!.options;
+  expect(complete('GT28')[0].insert).toBe('GT2008');
+  expect(complete('GT2008')[0].insert).toBe('GT2008');
+  expect(complete('GT2008')).toHaveLength(50);
+  const ordered = complete('GT');
+  catalog.citations.reverse();
+  expect(complete('GT')).toEqual(ordered);
 });

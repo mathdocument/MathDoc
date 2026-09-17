@@ -1,8 +1,17 @@
 import type { LatexSession } from './latex-session.svelte';
+import { fuzzyScore, fuzzyScoreGracefulAggressive } from 'vscode/vscode/vs/base/common/filters';
 
-function filter<T extends {search: string}>(items: T[], query: string) {
-  const words = query.trim().toLocaleLowerCase().split(/\s+/);
-  return items.filter(item => words.every(word => item.search.toLocaleLowerCase().includes(word))).slice(0, 50);
+function filter<T extends {label: string; search: string}>(items: T[], query: string) {
+  const word = query.trimStart(), lower = word.toLowerCase();
+  // Monaco's default completion scoring, including its large-catalog cutoff for
+  // typo correction. Equal scores use its label order (no locality/snippet bonus).
+  const score = items.length > 2000 ? fuzzyScore : fuzzyScoreGracefulAggressive;
+  return items.map(item => ({item, score: word
+    ? score(word, lower, 0, item.search, item.search.toLowerCase(), 0)?.[0] : 0}))
+    .filter((match): match is {item: T; score: number} => match.score !== undefined)
+    .sort((a, b) => b.score - a.score || (a.item.label < b.item.label ? -1 : a.item.label > b.item.label ? 1 : 0))
+    // Bound DOM size only after ranking the entire catalog.
+    .slice(0, 50).map(match => match.item);
 }
 
 /** Completion data is scoped to this node's dependencies and the shared bibliography. */
@@ -11,16 +20,11 @@ export function latexCompletions(session: Pick<LatexSession, 'references' | 'cat
   if (reference) {
     const fragment = reference[2].split(',').pop()!;
     if (reference[1] === 'cite') {
-      const words = fragment.trim().toLocaleLowerCase().split(/\s+/);
-      const options = [];
-      for (const cite of session.catalog?.citations ?? []) {
-        const search = `${cite.key} ${cite.title} ${cite.authors} ${cite.year}`;
-        const normalized = search.toLocaleLowerCase();
-        if (!words.every(word => normalized.includes(word))) continue;
-        options.push({label: cite.key, search, detail: [cite.title, cite.authors, cite.year].filter(Boolean).join(' · '), insert: cite.key});
-        if (options.length === 50) break;
-      }
-      return {length: fragment.trimStart().length, options};
+      const options = (session.catalog?.citations ?? []).map(cite => ({
+        label: cite.key, search: `${cite.key} ${cite.title} ${cite.authors} ${cite.year}`,
+        detail: [cite.title, cite.authors, cite.year].filter(Boolean).join(' · '), insert: cite.key,
+      }));
+      return {length: fragment.trimStart().length, options: filter(options, fragment)};
     }
     const options = session.references.map(ref => ({label: ref.name || ref.label, search: `${ref.label} ${ref.name} ${ref.title}`, detail: [ref.title, ref.label].filter(Boolean).join(' · '), insert: ref.label}));
     return {length: fragment.trimStart().length, options: filter(options, fragment)};
