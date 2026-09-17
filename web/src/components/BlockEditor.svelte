@@ -41,6 +41,7 @@
   let model: Monaco.ITextModel | null = null;
   let disposeScroll: (() => void) | undefined;
   let completion: {dispose(): void} | undefined;
+  let widgets: HTMLDivElement | undefined;
   let ready = $state(false);
   let dirty = $state(false);
   let saving = $state(false);
@@ -70,7 +71,14 @@
       await setMonacoTheme(theme);
       if (!alive) return;
       model = Monaco.createModel(block.content, language, Uri.parse(`inmemory://mdc/${fnode}/${block.srctype}`));
-      editorView = Monaco.create(host!, {...sourceOptions, model, ariaLabel: `${block.srctype} source`});
+      // Native overflow widgets must escape the block's clipping/stacking context.
+      widgets = document.createElement('div');
+      widgets.className = 'monaco-editor mdc-editor-widgets';
+      document.body.append(widgets);
+      editorView = Monaco.create(host!, {
+        ...sourceOptions, model, ariaLabel: `${block.srctype} source`, overflowWidgetsDomNode: widgets,
+        suggestFontSize: 12, suggestLineHeight: 28, suggest: {showIcons: false, showStatusBar: false},
+      });
       disposeScroll = nativeMonacoScroll(editorView, scroller);
       const fit = () => scroller.style.setProperty('--source-height', `${editorView!.getContentHeight()}px`);
       editorView.onDidContentSizeChange(fit); fit();
@@ -200,6 +208,7 @@
     completion?.dispose();
     disposeScroll?.();
     editorView?.dispose();
+    widgets?.remove();
     model?.dispose();
     editorView = null;
   });

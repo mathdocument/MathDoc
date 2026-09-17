@@ -61,6 +61,36 @@ input:focus-visible,
   background: var(--mdc-selection);
 }
 
+/* Monaco's native popup is portalled out of the scrolling source block. */
+.monaco-editor.mdc-editor-widgets {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+  background: transparent;
+  --vscode-editorSuggestWidget-background: var(--mdc-panel-raised);
+  --vscode-editorSuggestWidget-border: var(--mdc-border-strong);
+  --vscode-editorSuggestWidget-foreground: var(--mdc-fg-soft);
+  --vscode-editorSuggestWidget-selectedBackground: var(--mdc-card-selected);
+  --vscode-editorSuggestWidget-selectedForeground: var(--mdc-fg);
+  --vscode-editorSuggestWidget-highlightForeground: var(--mdc-accent);
+  --vscode-editorSuggestWidget-focusHighlightForeground: var(--mdc-accent);
+}
+.mdc-editor-widgets .overflowingContentWidgets > *,
+.mdc-editor-widgets .overflowingOverlayWidgets > * { pointer-events: auto; }
+.mdc-editor-widgets.monaco-editor .suggest-widget {
+  border-radius: var(--mdc-radius-md);
+  box-shadow: var(--mdc-shadow-panel);
+  overflow: hidden;
+  max-width: calc(100vw - 24px);
+}
+.mdc-editor-widgets .suggest-widget .monaco-list-row { border-radius: 5px; }
+.mdc-editor-widgets .suggest-widget .details-label {
+  font-family: var(--mdc-font);
+  color: var(--mdc-dim);
+}
+.mdc-editor-widgets .suggest-widget [tabindex]:focus-visible { outline: none; }
+
 /* ---------------------------------------------------------------------------
    Overlay dialogs. Shared chrome for the search, dependency, and new-node
    modals so they all read as the same surface family as the app shell.

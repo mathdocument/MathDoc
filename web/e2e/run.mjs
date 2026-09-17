@@ -938,7 +938,8 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await page.getByRole('tab', {name: 'LaTeX', exact: true}).click();
       const preamble = resolve(root, 'macros.tex'), bib = resolve(root, 'references.bib');
       await writeFile(preamble, String.raw`\usepackage{amsthm}\newcommand{\cA}{\mathcal{A}}\newenvironment{items}{\begin{itemize}}{\end{itemize}}\newtheorem{thm}{Theorem}`);
-      await writeFile(bib, '@article{paper,title={A paper},author={Author, A.},journal={Journal},year={2020}}');
+      await writeFile(bib, '@article{paper,title={A paper},author={Author, A.},journal={Journal},year={2020}}' +
+        Array.from({length: 3}, (_, i) => `@article{extra${i},title={Another publication ${i}},author={Writer, B.},year={2021}}`).join('\n'));
       await page.getByRole('button', {name: 'Save LaTeX project', exact: true}).waitFor();
       await page.getByLabel('Class or preamble').setInputFiles(preamble);
       await page.getByLabel('Bibliography', {exact: true}).setInputFiles(bib);
@@ -981,8 +982,38 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await fill('Use \\nameref{');
       await input.press('Control+Space');
       await page.getByRole('option').filter({hasText: 'Named result'}).click();
+      await page.waitForFunction(() => /Use.*nameref\{thm:b/.test(document.querySelector('[data-srctype="latex"] .view-lines').innerText));
       assert.match(await block.locator('.view-lines').innerText(), /Use.*nameref\{thm:b/);
       assert.equal(await page.getByRole('option').filter({hasText: 'Private result'}).count(), 0);
+      for (const theme of ['dark', 'light']) {
+        await page.getByRole('button', {name: `Switch to ${theme} mode`}).click();
+        await fill('% filler\n'.repeat(7) + '\\cite{');
+        await input.press('Control+Space');
+        const option = page.getByRole('option').filter({hasText: 'A paper'});
+        await option.waitFor();
+        const popup = page.locator('.mdc-editor-widgets .suggest-widget:visible');
+        assert.equal(await popup.count(), 1, 'completion escapes the source block clipping context');
+        const geometry = await option.evaluate(el => {
+          const add = document.querySelector('.add-btn').getBoundingClientRect();
+          const widget = el.closest('.suggest-widget');
+          const row = widget.getBoundingClientRect();
+          const left = Math.max(row.left, add.left), right = Math.min(row.right, add.right);
+          const top = Math.max(row.top, add.top), bottom = Math.min(row.bottom, add.bottom);
+          return {
+            overlap: right > left && bottom > top,
+            onTop: widget.contains(document.elementFromPoint((left + right) / 2, (top + bottom) / 2)),
+            radius: parseFloat(getComputedStyle(widget).borderRadius),
+          };
+        });
+        assert.equal(geometry.overlap, true, 'exercise completion over the add source block button');
+        assert.equal(geometry.onTop, true, 'the completion receives clicks above the add button');
+        assert.ok(geometry.radius >= 8, 'use the app popup shape');
+        assert.equal(await page.locator('.suggest-details:visible').count(), 0, 'no duplicate details panel');
+        await page.screenshot({path: resolve(tmpdir(), `mdc-completion-${theme}-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
+        await option.click();
+        await page.waitForFunction(() => /cite\{paper/.test(document.querySelector('[data-srctype="latex"] .view-lines').innerText));
+        assert.match(await block.locator('.view-lines').innerText(), /cite\{paper/);
+      }
       const draft = String.raw`\section{Draft title}\label{new}By \nameref{thm:b}, see \cite{paper}. $\cA$`;
       await fill(draft);
       await block.getByRole('button', {name: 'Render LaTeX preview'}).click();

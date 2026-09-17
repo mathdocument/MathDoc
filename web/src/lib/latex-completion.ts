@@ -30,7 +30,7 @@ export async function latexAutocomplete(session: LatexSession, target: editor.IT
       if (!result) return {suggestions: []};
       const from = model.getPositionAt(offset - result.length);
       return {suggestions: result.options.map(item => ({
-        label: {label: item.label, description: item.detail}, detail: item.detail,
+        label: {label: item.label, description: item.detail},
         filterText: item.search, insertText: item.insert, kind: languages.CompletionItemKind.Reference,
         range: {startLineNumber: from.lineNumber, startColumn: from.column, endLineNumber: position.lineNumber, endColumn: position.column},
       }))};
