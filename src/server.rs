@@ -1,4 +1,5 @@
 //! One HTTP listener; branch routers and Lean environments live in this process.
+mod projects;
 use crate::{
     config::Settings,
     service::{ApiError, RunningService, Service},
@@ -137,7 +138,7 @@ impl Server {
         )
     }
 
-    async fn stop_branch(&self, project: String, token: String) -> Result<Value, ApiError> {
+    async fn stop_branch(&self, project: String, token: Option<String>) -> Result<Value, ApiError> {
         let _operation = self.operations.read().await;
         let branch = {
             let mut branches = self.branches.lock().await;
@@ -145,7 +146,9 @@ impl Server {
                 .get_mut(&project)
                 .ok_or_else(|| stopped(&project))?;
             let branch = slot.as_ref().ok_or_else(|| stopped(&project))?;
-            authorize_token(&token, &branch.service.token)?;
+            if let Some(token) = token {
+                authorize_token(&token, &branch.service.token)?;
+            }
             self.remember(&project, false).await?;
             slot.take().unwrap()
         };
@@ -212,6 +215,7 @@ pub(crate) async fn serve(port: u16, foreground: bool) -> Result<()> {
             get(|| async { status().await.map(Json).map_err(ApiError::from) }),
         )
         .route("/api/service/stop", post(stop))
+        .route("/api/projects", get(projects::list).post(projects::manage))
         // Dispatch before branch path matching, retaining the native WebSocket
         // upgrade extension. There is no HTTP client or second TCP listener.
         .fallback(any(project_request))
@@ -352,7 +356,7 @@ async fn project_request(
                 .map(IntoResponse::into_response)
                 .map_err(ApiError::from);
         }
-        return tokio::spawn(async move { state.stop_branch(project, token).await })
+        return tokio::spawn(async move { state.stop_branch(project, Some(token)).await })
             .await
             .map_err(anyhow::Error::from)?
             .map(Json)

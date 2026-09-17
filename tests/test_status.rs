@@ -572,6 +572,129 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
 
 #[tokio::test]
 #[ignore = "requires local TerminusDB and MDC_TERMINUS_PASSWORD"]
+async fn browser_project_management_preserves_service_guards_and_cleans_branches() {
+    let fixture = common::TestDatabase::new("mdcdirectory").await;
+    let cache = tempfile::tempdir().unwrap();
+    let root = cache.path();
+    let main = format!("{}/main", fixture.db.database);
+    let fork = format!("{}/fork", fixture.db.database);
+    let server = Started::start(root, &main, None).await;
+    let origin = format!("http://127.0.0.1:{}", server.port());
+    let endpoint = format!("{origin}/api/projects");
+    let http = reqwest::Client::new();
+    let change = |body: Value| http.post(&endpoint).header("origin", &origin).json(&body);
+    let fork_body = serde_json::json!({"action":"new_branch","project":main,"name":"fork"});
+    for request in [
+        http.post(&endpoint).json(&fork_body),
+        http.post(&endpoint)
+            .header("origin", "https://attacker.invalid")
+            .json(&fork_body),
+    ] {
+        assert_eq!(request.send().await.unwrap().status(), 403);
+    }
+    run(root, &["new", "-p", &main, "-t", "A"]).await;
+    run(root, &["new", "-p", &main, "-t", "B"]).await;
+    run(root, &["dep", "add", "-p", &main, "A", "-t", "B"]).await;
+    assert!(change(fork_body.clone())
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+    let inventory: Value = http
+        .get(&endpoint)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(inventory["projects"][&main]["nodes"], 2);
+    assert_eq!(inventory["projects"][&main]["edges"], 1);
+    assert_eq!(inventory["projects"][&fork]["running"], false);
+    assert!(inventory["projects"][&fork].get("nodes").is_none());
+    assert!(!change(fork_body)
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+    for action in ["start", "stop"] {
+        assert!(change(serde_json::json!({"action":action,"project":fork}))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success());
+        if action == "start" {
+            assert_eq!(
+                run(root, &["graph", "check", "-p", &fork]).await["nodes"],
+                2
+            );
+            assert!(
+                !change(serde_json::json!({"action":"delete_branch","project":fork}))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status()
+                    .is_success()
+            );
+            // CLI management endpoints still reject missing/wrong private tokens.
+            assert_eq!(
+                http.post(format!("{origin}/p/{fork}/api/service/stop"))
+                    .header("origin", &origin)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                403
+            );
+        }
+    }
+    // Forking a stopped branch does not load its source graph or start its service.
+    assert!(
+        change(serde_json::json!({"action":"new_branch","project":fork,"name":"copy"}))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
+    let branch_cache = fixture.db.clone().with_cache_root(root.into());
+    let branch_cache = branch_cache
+        .cache_path()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("fork");
+    std::fs::write(branch_cache.join("obsolete.olean"), "cache").unwrap();
+    assert!(
+        change(serde_json::json!({"action":"delete_branch","project":fork}))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
+    assert!(!branch_cache.join("obsolete.olean").exists());
+    let inventory: Value = http
+        .get(&endpoint)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(inventory["projects"].get(&fork).is_none());
+    assert_eq!(inventory["projects"][&main]["running"], true);
+    assert_eq!(
+        run(root, &["graph", "check", "-p", &main]).await["nodes"],
+        2
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires local TerminusDB and MDC_TERMINUS_PASSWORD"]
 async fn branch_deletion_requires_stopped_service_and_cleans_only_its_cache() {
     let fixture = common::TestDatabase::new("mdcbranch").await;
     let cache = tempfile::tempdir().unwrap();

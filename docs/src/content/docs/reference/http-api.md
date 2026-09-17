@@ -4,6 +4,9 @@ title: HTTP API and CLI mapping
 
 The shared entry serves inventory at `GET /api/status`, with the same
 `{server, projects}` result as [`mdc status`](../workspace-commands/).
+The directory uses `GET /api/projects`: the same inventory plus `nodes` and
+`edges` on running branches, read from their loaded graph snapshots. Stopped
+branches have no counts and are never loaded just to display the directory.
 Branch endpoints use `/p/DATABASE/BRANCH/api`, for example
 `http://127.0.0.1:17843/p/myproject/main/api/graph/check`.
 Tables below give paths relative to that prefix. The browser and CLI use the
@@ -58,9 +61,22 @@ background process launch. Loading a branch calls
 `stop DATABASE/BRANCH` calls `POST /p/DATABASE/BRANCH/api/service/stop` with that
 branch's token; bare `stop` calls `POST /api/service/stop` with the server token.
 Stop waits for the relevant cache lease to be released. All calls use the same
-listening port; no branch HTTP process or forwarding hop exists. The project list
-is read-only; it does not expose browser start/stop controls. None of these
+listening port; no branch HTTP process or forwarding hop exists. None of these
 operations require a hidden CLI command.
+
+The project directory sends JSON to `POST /api/projects`. This endpoint requires
+a same-origin browser `Origin` header and supports these bodies:
+
+| Body | Behavior |
+| --- | --- |
+| `{action: "init", name}` | Create a database and its stopped `main` branch. |
+| `{action: "start", project: "DATABASE/BRANCH"}` | Load a branch into the existing entry server. |
+| `{action: "stop", project}` | Stop that branch, including its editor sessions. |
+| `{action: "new_branch", project, name}` | Fork the specified branch's current head, including a stopped source. The new branch is stopped. |
+| `{action: "delete_branch", project}` | Delete an already stopped branch and its compiler caches, using the same exclusive cache lease as CLI deletion. |
+
+Browser management does not disclose or replace the private CLI service tokens.
+The database and immutable history remain when its last branch is deleted.
 
 The following endpoints maintain browser draft sessions rather than saved graph
 objects. CLI agents use `lean check` and `lean goals` instead of managing sessions.
