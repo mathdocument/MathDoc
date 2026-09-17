@@ -108,7 +108,11 @@ reports a diagnostic rather than being silently discarded.
 ## Tables, colors and diagrams
 
 `tabular` and `tabular*` render as HTML tables, including column alignment,
-rules and `\multicolumn`. Column widths follow HTML layout; the parser does not
+rules and `\multicolumn`. Empty outer `@{}` insertions remove outer cell padding
+without shifting column alignment or vertical rules. Booktabs `\toprule` and
+`\bottomrule` use their standard `.08em` width, `\midrule` uses `.05em`, and
+`\cmidrule` uses `.03em`; optional rule widths are retained. Table rules follow
+the surrounding text color in both themes. Column widths follow HTML layout; the parser does not
 preserve the fixed width of `p{...}` columns. Their contents retain math and
 graph references. `\color`, `\textcolor`, `\colorbox` and `\fcolorbox` use
 xcolor's named colors and color expressions; shared `\definecolor` and

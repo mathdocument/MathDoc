@@ -70,6 +70,32 @@ class RendererTest(unittest.TestCase):
                          'border-top-style:solid', 'color:#99B2CC', r'\textcolor{#336699}', r'\color{#7F007F}'):
             self.assertIn(expected, output)
         self.assertNotIn(r'\require', output)
+
+    def test_table_outer_spacing_and_booktabs_rule_widths(self):
+        preamble = r'\newcommand{\compact}[2]{\begin{tabular}{@{}#1@{}}#2\end{tabular}}'
+        source = r'\compact{c|c}{\toprule A&B\\\midrule C&D\\\bottomrule}'
+        parsed = renderer.parse(preamble, source)
+        self.assertEqual(parsed.diagnostics, [])
+        output = ''.join(parsed.parts)
+        self.assertEqual(output.count('text-align:center'), 4)
+        self.assertEqual(output.count('border-right:1px solid currentColor'), 2)
+        for style in ('padding-left:0px', 'padding-right:0px', 'border-top-width:.08em',
+                      'border-top-width:.05em', 'border-bottom-width:.08em'):
+            self.assertEqual(output.count(style), 2)
+        for command in ('toprule', 'midrule', 'bottomrule'):
+            self.assertNotIn('\\' + command, output)
+
+        parsed = renderer.parse('', r'\begin{tabular*}{10cm}{@{}c|c@{}}\toprule[2pt] A&B\\\cmidrule[.6pt]{2-2}C&D\\\bottomrule\end{tabular*}')
+        self.assertEqual(parsed.diagnostics, [])
+        output = ''.join(parsed.parts)
+        self.assertEqual(output.count('border-top-width:2pt'), 2)
+        self.assertEqual(output.count('border-top-width:.6pt'), 1)
+
+        parsed = renderer.parse('', r'\begin{tabular}{cc}\multicolumn{2}{@{}c|@{}}{Both}\end{tabular}')
+        self.assertEqual(parsed.diagnostics, [])
+        output = ''.join(parsed.parts)
+        for style in ('colspan="2"', 'border-right:1px solid currentColor', 'padding-left:0px', 'padding-right:0px'):
+            self.assertIn(style, output)
         self.assertNotIn(r'\colorlet', output)
 
     def test_incomplete_bibliography_entries_remain_citable(self):

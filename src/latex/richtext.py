@@ -3,7 +3,71 @@ import html
 import re
 
 from plasTeX import sourceChildren
+from plasTeX.Base.LaTeX.Arrays import Array, tabular, TabularStar
 from plasTeX.Packages import xcolor
+
+
+class ColumnSpec:
+    def postParse(self, tex):
+        super().postParse(tex)
+        spec = self.attributes.get('colspec', [])
+        # plasTeX 3.1 fails to consume a leading @{} argument, treating its
+        # braces as two columns. Empty outer insertions simply remove padding.
+        self.trim_left = ''.join(spec[:3]) == '@{}'
+        self.trim_right = ''.join(spec[-3:]) == '@{}'
+        if self.trim_left:
+            spec = spec[3:]
+        if self.trim_right:
+            spec = spec[:-3]
+        self.attributes['colspec'] = spec
+
+    def trim_padding(self, left, right):
+        if self.trim_left:
+            left.style['padding-left'] = '0px'
+        if self.trim_right:
+            right.style['padding-right'] = '0px'
+
+
+class RuleWidth:
+    width = '.04em'
+
+    def applyBorders(self, cells, location=None):
+        super().applyBorders(cells, location)
+        location = location or self.locations[self.position]
+        span = self.attributes.get('span') or (1, float('inf'))
+        start, end = span[0], span[-1]
+        column = 1
+        for cell in cells:
+            if start <= column <= end:
+                cell.style[f'border-{location}-width'] = self.attributes.get('width') or self.width
+            column += cell.attributes.get('colspan', 1)
+
+
+class Table(ColumnSpec, tabular):
+    class hline(RuleWidth, Array.hline): pass
+    class cline(RuleWidth, Array.cline): pass
+    class toprule(RuleWidth, Array.toprule): width = '.08em'
+    class midrule(RuleWidth, Array.midrule): width = '.05em'
+    class bottomrule(RuleWidth, Array.bottomrule): width = '.08em'
+    class cmidrule(RuleWidth, Array.cmidrule): width = '.03em'
+
+    class multicolumn(ColumnSpec, Array.multicolumn):
+        def invoke(self, tex):
+            super().invoke(tex)
+            self.trim_padding(self.colspec, self.colspec)
+
+    def applyBorders(self):
+        super().applyBorders()
+        for row in self:
+            if row:
+                self.trim_padding(row[0], row[-1])
+
+
+class TableStar(Table):
+    args = TabularStar.args
+
+
+TABLES = {'tabular': Table, 'tabular*': TableStar}
 
 
 class Color(xcolor.color):
@@ -42,7 +106,7 @@ class ColorDeclaration:
 
 COLOR_DEFINITIONS = {name: type(name, (ColorDeclaration, getattr(xcolor, name)), {}) for name in
                      ('definecolor', 'providecolor', 'DefineNamedColor', 'colorlet', 'definecolorset', 'providecolorset')}
-TABLE_COMMANDS = {'hline', 'vline', 'cline', 'tabularnewline'}
+TABLE_COMMANDS = {'hline', 'vline', 'cline', 'toprule', 'midrule', 'bottomrule', 'cmidrule', 'tabularnewline'}
 
 
 def style(node):
@@ -54,15 +118,17 @@ def style(node):
         styles['width'] = width
     for key, value in styles.items():
         value = str(value)
+        if key.startswith('border'):
+            value = value.replace('black', 'currentColor')
         valid = False
         if key in ('color', 'background-color') or re.fullmatch(r'border-(top|bottom|left|right)-color', key):
             valid = bool(re.fullmatch(r'#[0-9A-Fa-f]{3,8}|black|white|currentColor', value))
         elif re.fullmatch(r'border(?:-(?:top|bottom|left|right))?', key):
-            valid = bool(re.fullmatch(r'\d+(?:\.\d+)?(?:px|pt) (?:solid|dashed|dotted) (?:#[0-9A-Fa-f]{3,8}|black|white)', value))
+            valid = bool(re.fullmatch(r'\d+(?:\.\d+)?(?:px|pt) (?:solid|dashed|dotted) (?:#[0-9A-Fa-f]{3,8}|black|white|currentColor)', value))
         elif re.fullmatch(r'border-(top|bottom|left|right)-style', key):
             valid = value in ('solid', 'dashed', 'dotted', 'double', 'none')
-        elif key in ('width', 'height') or re.fullmatch(r'border-(top|bottom|left|right)-width', key):
-            valid = bool(re.fullmatch(r'\d+(?:\.\d+)?(?:px|pt|em|cm|mm|in|%)', value))
+        elif key in ('width', 'height', 'padding-left', 'padding-right') or re.fullmatch(r'border-(top|bottom|left|right)-width', key):
+            valid = bool(re.fullmatch(r'(?:\d+(?:\.\d+)?|\.\d+)(?:px|pt|em|ex|cm|mm|in|%)', value))
         elif key == 'text-align':
             valid = value in ('left', 'center', 'right', 'justify')
         elif key == 'vertical-align':

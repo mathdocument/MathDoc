@@ -1275,6 +1275,36 @@ await test('LaTeX tables, colors and TikZ diagrams render shared macros locally'
       await preview(String.raw`\begin{tikzcd}\input{https://invalid.example/secret} \end{tikzcd}`);
       await page.locator('.latex-diagram.latex-error').waitFor({timeout: 40000});
       assert.ok(requests.every(request => new URL(request).origin === new URL(url).origin), 'TeX cannot fetch arbitrary input URLs');
+      await preview(String.raw`\newcommand{\tic}[2]{\begin{tabular}{@{}#1@{}}#2\end{tabular}}
+        \tic{c|c}{A&B}
+        \par\tic{c|c}{\toprule A&B\\\midrule C&D\\\bottomrule}
+        \par\tic{c|c}{\toprule[2pt] E&F\\\bottomrule[2pt]}`);
+      assert.equal(await page.locator('.latex-error').count(), 0);
+      const tables = page.locator('.latex-table table');
+      assert.equal(await tables.count(), 3);
+      for (const theme of ['dark', 'light']) {
+        await page.getByRole('button', {name: `Switch to ${theme} mode`}).click();
+        const cells = await tables.first().locator('td').evaluateAll(elements => elements.map(el => {
+          const style = getComputedStyle(el);
+          return {align: style.textAlign, border: style.borderRightStyle, width: parseFloat(style.borderRightWidth),
+            borderColor: style.borderRightColor, color: style.color, left: style.paddingLeft, right: style.paddingRight};
+        }));
+        assert.equal(cells[0].align, 'center');
+        assert.equal(cells[0].border, 'solid');
+        assert.ok(cells[0].width > 0, 'the c|c separator survives leading @{}');
+        assert.equal(cells[0].borderColor, cells[0].color, 'table rules remain visible in either theme');
+        assert.equal(cells[0].left, '0px');
+        assert.equal(cells[1].right, '0px');
+        const rules = await tables.nth(1).locator('td').evaluateAll(elements => elements.map(el => ({
+          top: el.style.borderTopWidth, bottom: el.style.borderBottomWidth,
+        })));
+        assert.equal(rules[0].top, '0.08em');
+        assert.equal(rules[2].top, '0.05em');
+        assert.equal(rules[2].bottom, '0.08em');
+        const explicit = await tables.nth(2).locator('td').first().evaluate(el => getComputedStyle(el).borderTopWidth);
+        assert.ok(parseFloat(explicit) >= 2, 'explicit booktabs rule widths are honored');
+        await page.screenshot({path: resolve(tmpdir(), `mdc-table-rules-${theme}-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
+      }
     }, [node]);
   } finally { await browser.close(); }
 });

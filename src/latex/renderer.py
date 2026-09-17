@@ -361,6 +361,7 @@ def parse(preamble, source):
     document.context.loadPackage(tex, 'xcolor')
     document.context.loadPackage(tex, 'tikz-cd')
     definitions = {
+        **richtext.TABLES,
         **richtext.COLORS,
         **richtext.COLOR_DEFINITIONS,
         **{name: Ref for name in ('ref', 'cref', 'Cref', 'nameref', 'eqref')},
