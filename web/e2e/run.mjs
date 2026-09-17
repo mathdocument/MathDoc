@@ -1012,7 +1012,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await page.getByRole('tab', {name: 'LaTeX', exact: true}).click();
       const preamble = resolve(root, 'macros.tex'), bib = resolve(root, 'references.bib');
       await writeFile(preamble, String.raw`\usepackage{amsthm}\newcommand{\cA}{\mathcal{A}}\newenvironment{items}{\begin{itemize}}{\end{itemize}}\newtheorem{thm}{Theorem}`);
-      await writeFile(bib, '@article{paper,title={A paper},author={Author, A.},journal={Journal},year={2020}}' +
+      await writeFile(bib, String.raw`@article{paper,title={A paper on {M}\"{o}bius},author={Author, A.},journal={Journal},year={2020}}` +
         Array.from({length: 14000}, (_, i) => `@article{zextra${i},title={Another publication ${i}},author={Writer, B.},year={2021}}`).join('\n'));
       await page.getByRole('button', {name: 'Save LaTeX project', exact: true}).waitFor();
       await page.getByLabel('Class or preamble').setInputFiles(preamble);
@@ -1038,6 +1038,31 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await block.locator('.katex').first().waitFor();
       assert.equal(await block.locator('.katex-error').count(), 0);
       assert.match(await block.locator('.latex-preview').innerText(), /A paper/);
+      const bibliographyTitle = block.locator('.latex-bibliography em');
+      assert.equal(await bibliographyTitle.innerText(), 'A paper on Möbius');
+      const fonts = await bibliographyTitle.evaluate(async element => {
+        const loaded = await Promise.all(['400', 'italic 400', '700', 'italic 700'].map(style =>
+          document.fonts.load(`${style} 16px "Latin Modern Roman"`, 'Möbius é ü')));
+        const css = getComputedStyle(element);
+        return {family: css.fontFamily, style: css.fontStyle,
+          loaded: loaded.map(faces => faces.length === 1 && faces[0].status === 'loaded')};
+      });
+      assert.equal(fonts.family.split(',')[0].replace(/["']/g, '').trim(), 'Latin Modern Roman');
+      assert.equal(fonts.style, 'italic');
+      assert.deepEqual(fonts.loaded, [true, true, true, true], 'all four complete TeX font faces are served');
+      if (process.env.MDC_E2E_BROWSER !== 'webkit') {
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send('DOM.enable');
+        await cdp.send('CSS.enable');
+        const {root: dom} = await cdp.send('DOM.getDocument');
+        const {nodeId} = await cdp.send('DOM.querySelector', {nodeId: dom.nodeId, selector: '.latex-bibliography em'});
+        const {fonts: used} = await cdp.send('CSS.getPlatformFontsForNode', {nodeId});
+        assert.equal(used.length, 1, 'accented letters must not fall back to another font');
+        assert.equal(used[0].postScriptName, 'LMRoman10-Italic');
+        assert.equal(used[0].isCustomFont, true);
+        await cdp.detach();
+      }
+      await page.screenshot({path: resolve(tmpdir(), `mdc-latex-font-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
       await block.getByRole('link', {name: externalName(1), exact: true}).click();
       await title(page, 'Beta');
       await block.locator('.latex-preview .latex-statement').waitFor();
@@ -1121,11 +1146,16 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await page.getByRole('option').filter({hasText: 'A paper'}).waitFor();
       await input.pressSequentially('zextra13999');
       await page.getByRole('option').filter({hasText: 'Another publication 13999'}).waitFor();
+      assert.equal(await page.getByRole('option').first().locator('span').first().innerText(), 'zextra13999');
       await input.press('Backspace');
       await page.getByRole('option').filter({hasText: 'Another publication 13998'}).waitFor();
       await input.press('9');
       await page.getByRole('option').filter({hasText: 'Another publication 13999'}).click();
       assert.match(await block.locator('.view-lines').innerText(), /cite\{zextra13999/);
+      await fill('\\cite{z13999');
+      await input.press('Control+Space');
+      await page.getByRole('option').filter({hasText: 'Another publication 13999'}).waitFor();
+      assert.equal(await page.getByRole('option').first().locator('span').first().innerText(), 'zextra13999', 'native fuzzy ranking finds noncontiguous keys across the full catalog');
       await fill('\\cite{A paper');
       await input.press('Control+Space');
       await page.getByRole('option').filter({hasText: 'A paper'}).waitFor();

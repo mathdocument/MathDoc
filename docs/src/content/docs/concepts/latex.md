@@ -26,6 +26,10 @@ environment completions appear as you type, or with **Ctrl+Space**. References
 are scoped to the selected node; bibliography candidates are shared by the
 branch. Reference completion
 inserts only the original label while showing the target's readable title.
+Matching and relevance scores use Monaco's native fuzzy matcher. Citation searches
+include the key, title, authors and year; the best 50 matches from the entire
+catalog appear in a natively scrolling list. The display limit does not restrict
+which bibliography entries can be found.
 
 Click a reference to open its node and scroll to the label in Preview. Opening
 the link in a new tab also targets that label. Citation links scroll to the
@@ -66,8 +70,12 @@ built-in plasTeX packages still supply their content commands.
 
 Proof environments retain optional captions, including through aliases:
 `\begin{prf}[Sketch of the proof] ... \end{prf}`. Preview text uses the bundled
-KaTeX Main font at 16px, a Computer Modern style web font, independently of the
-class's print fonts.
+Latin Modern Roman font at 16px, independently of the class's print fonts. Its
+complete OpenType regular, italic, bold and bold-italic faces retain accented
+letters such as `ö`, `é` and `ü` in the same typeface, including bibliography
+titles. These TeX fonts are served locally under the GUST Font License; clients
+do not need a TeX installation. Ordinary formulas use KaTeX's own math fonts;
+TikZ diagrams use the separate TeX-to-SVG runtime described below.
 
 Numbered theorem environments show their number in the heading. Each node starts
 at 1, retaining the class's independent or shared theorem counters. Section
