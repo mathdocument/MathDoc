@@ -794,7 +794,11 @@
     color: var(--mdc-on-accent);
     box-shadow: var(--mdc-shadow-md);
   }
-  .tool.danger { color: var(--mdc-error); }
+  .tool.danger {
+    color: var(--mdc-error);
+    border-color: color-mix(in srgb, var(--mdc-error) 45%, var(--mdc-border));
+    background: color-mix(in srgb, var(--mdc-error) 8%, var(--mdc-panel));
+  }
   .tool.danger:hover:not(:disabled) {
     color: var(--mdc-error);
     background: color-mix(in srgb, var(--mdc-error) 12%, transparent);
