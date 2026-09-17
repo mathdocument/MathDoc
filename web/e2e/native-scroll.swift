@@ -56,7 +56,7 @@ import WebKit
         await pause(250)
         return try await js("""
             window.samples = []; window.recording = true;
-            window.surfaces = [...document.querySelectorAll('.cm-scroller')];
+            window.surfaces = [...document.querySelectorAll('.editor-scroll')];
             const lean = document.querySelector('iframe[title="Lean source and Infoview"]')?.contentDocument;
             if (lean?.querySelector('#editor-scroll')) surfaces.push(lean.querySelector('#editor-scroll'));
             if (!surfaces.includes(target)) surfaces.push(target);
@@ -75,7 +75,7 @@ import WebKit
         let lean = "document.querySelector('iframe[title=\"Lean source and Infoview\"]')?.contentDocument"
         let ready = "document.querySelector('.native-editor:not(.pending)') && \(lean)?.querySelector('#editor-scroll')"
         for (id, target) in [
-            (args[3], "document.querySelector('.cm-scroller')"),
+            (args[3], "document.querySelector('.editor-scroll')"),
             (args[4], "\(lean)?.querySelector('#editor-scroll')"),
             (args[4], "\(lean)?.querySelector('#infoview iframe')?.contentDocument?.scrollingElement")
         ] {
@@ -98,7 +98,7 @@ import WebKit
         }
         window.setContentSize(NSSize(width: 1440, height: 900))
         try await load("\(base)/?native-scroll#ref=\(args[2])", ready)
-        // CodeMirror refines offscreen line-height estimates on first exposure.
+        // Allow the native editor viewport to settle after exposure.
         // Measure each block before asserting that wheel handoff preserves it.
         for kind in ["text", "latex", "rocq"] {
             _ = try await js("document.querySelector('[data-srctype=\"\(kind)\"]').scrollIntoView({block:'center'}); undefined;")
@@ -122,9 +122,9 @@ import WebKit
             try require(result["stable"] as! Bool, "Scrolling Lean moved another editor")
         }
         for direction in [1, -1] {
-            let target = "document.querySelector('[data-srctype=\"\(direction > 0 ? "text" : "rocq")\"] .cm-scroller')"
+            let target = "document.querySelector('[data-srctype=\"\(direction > 0 ? "text" : "rocq")\"] .editor-scroll')"
             let point = try await record(target, setup: """
-                document.querySelectorAll('.cm-scroller').forEach(s=>s.scrollTop=80);
+                document.querySelectorAll('.editor-scroll').forEach(s=>s.scrollTop=80);
                 (\(lean)).querySelector('#editor-scroll').scrollTop=80;
                 target.scrollTop = \(direction > 0 ? "target.scrollHeight-target.clientHeight-100" : "100");
                 pane.scrollTop = \(direction > 0 ? "0" : "pane.scrollHeight");
@@ -141,7 +141,7 @@ import WebKit
         }
         // Short content must still bounce: one collapsed block, all four, or none.
         for id in [args[3], args[4], args[2], args[5]] {
-            let loaded = id == args[5] ? "document.querySelector('.blocks .empty-state')" : id == args[3] ? "document.querySelector('.cm-scroller')" : ready
+            let loaded = id == args[5] ? "document.querySelector('.blocks .empty-state')" : id == args[3] ? "document.querySelector('.editor-scroll')" : ready
             try await load("\(base)/?native-scroll#ref=\(id)", loaded)
             _ = try await js("document.querySelectorAll('.blocks button[title=\"Collapse\"]').forEach(b=>b.click()); undefined;")
             await pause(250)

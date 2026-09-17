@@ -15,22 +15,22 @@
     "test:e2e": "node --test e2e/run.mjs"
   },
   "dependencies": {
-    "@codemirror/autocomplete": "^6.20.3",
-    "@codemirror/commands": "^6.8.1",
-    "@codemirror/language": "^6.11.0",
-    "@codemirror/state": "^6.5.2",
-    "@codemirror/view": "^6.36.4",
     "@codingame/esbuild-import-meta-url-plugin": "^1.0.3",
+    "@codingame/monaco-vscode-configuration-service-override": "8.0.4",
+    "@codingame/monaco-vscode-languages-service-override": "8.0.4",
+    "@codingame/monaco-vscode-model-service-override": "8.0.4",
+    "@codingame/monaco-vscode-textmate-service-override": "8.0.4",
+    "@codingame/monaco-vscode-theme-defaults-default-extension": "8.0.4",
+    "@codingame/monaco-vscode-theme-service-override": "8.0.4",
     "@lucide/svelte": "^1.27.0",
-    "@shikijs/core": "^4.2.0",
-    "@shikijs/engine-javascript": "^4.2.0",
     "@shikijs/langs": "^4.2.0",
-    "@shikijs/themes": "^4.2.0",
     "katex": "^0.18.4",
     "lean4monaco": "^1.1.16",
     "memfs": "^4.71.0",
+    "monaco-editor": "npm:@codingame/monaco-vscode-editor-api@8.0.4",
     "vite-plugin-node-polyfills": "^0.24.0",
-    "vite-plugin-static-copy": "^2.3.2"
+    "vite-plugin-static-copy": "^2.3.2",
+    "vscode": "npm:@codingame/monaco-vscode-api@8.0.4"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.3",

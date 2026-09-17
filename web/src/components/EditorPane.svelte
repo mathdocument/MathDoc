@@ -83,7 +83,7 @@
   });
 
   $effect(() => {
-    if (load.kind === "ready" && load.node.blocks.length > 0) ensureBlockEditorLoaded();
+    if (load.kind === "ready" && load.node.blocks.some(block => block.srctype !== "lean")) ensureBlockEditorLoaded();
   });
 
   // Reset title editing state when the displayed node changes.
@@ -223,7 +223,7 @@
           <span>editor failed to load: {editorLoadError}</span>
           <button onclick={ensureBlockEditorLoaded}>retry</button>
         </div>
-      {:else if !BlockEditorComponent}
+      {:else if !BlockEditorComponent && node.blocks.some(block => block.srctype !== "lean")}
         <div class="editor-loading" aria-busy="true">Loading editor…</div>
       {/if}
       {/if}

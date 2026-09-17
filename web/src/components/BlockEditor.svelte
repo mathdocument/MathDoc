@@ -8,32 +8,18 @@
     Eye,
     Save as SaveIcon,
     Trash2,
-    Zap,
   } from "@lucide/svelte";
-  import { Compartment, EditorState, StateEffect, Text, type Extension } from "@codemirror/state";
-  import {
-    EditorView,
-    keymap,
-    lineNumbers,
-    highlightSpecialChars,
-    highlightActiveLine,
-    drawSelection,
-    rectangularSelection,
-    crosshairCursor,
-    highlightActiveLineGutter,
-  } from "@codemirror/view";
-  import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
-  import { indentUnit } from "@codemirror/language";
+  import { editor as Monaco, Uri, KeyMod, KeyCode } from "monaco-editor";
+  import { loadSourceLanguage, setMonacoTheme, sourceOptions } from "../lib/monaco";
+  import { nativeMonacoScroll } from "../lib/monaco-scroll";
   import type { NodeDetail, SrcBlock } from "../lib/types";
   import { api } from "../lib/api";
   import { errMsg } from "../lib/format";
-  import { shikiHighlight } from "../lib/cm-shiki";
-  import { getHighlighter, srctypeToLang } from "../lib/shiki";
   import type { Theme } from "../lib/theme";
   import { LatexSession } from "../lib/latex-session.svelte";
   import LatexImports from "./LatexImports.svelte";
   import { removeDraft, setDraftDirty, trackMutation } from "../lib/unsaved";
-  import { chainEditorScroll } from "../lib/editor-scroll";
+  import { latexAutocomplete } from "../lib/latex-completion";
 
   interface Props {
     fnode: string;
@@ -50,14 +36,18 @@
   let { fnode, revision, block, theme, active = true, onDeleted, onSaved, onReady, focusLabel, onLatexNavigate }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
-  let editorView: EditorView | null = null;
+  let scroller: HTMLDivElement;
+  let editorView: Monaco.IStandaloneCodeEditor | null = null;
+  let model: Monaco.ITextModel | null = null;
+  let disposeScroll: (() => void) | undefined;
+  let completion: {dispose(): void} | undefined;
+  let ready = $state(false);
   let dirty = $state(false);
   let saving = $state(false);
   let deleting = $state(false);
-  let lastSavedDoc: Text | null = null;
+  let lastSavedDoc = "";
   let error: string | null = $state(null);
   let expanded = $state(true);
-  let shikiError: string | null = $state(null);
   let previewing = $state(false);
   let latex = $state<LatexSession | null>(null);
   let previewError: string | null = $state(null);
@@ -66,141 +56,6 @@
   let previewRequest = 0;
   let alive = false;
   const draftId = Symbol("block draft");
-  const syntaxCompartment = new Compartment();
-  let readyReported = false;
-  let syntaxRequest = 0;
-  let pendingSyntaxTheme: Theme | null = null;
-  let appliedSyntaxTheme: Theme | null = null;
-  let syntaxRetryCount = 0;
-  let syntaxRetryTimer: ReturnType<typeof setTimeout> | null = null;
-
-  const SHIKI_THEMES: Record<Theme, string> = {
-    dark: "tokyo-night",
-    light: "github-light",
-  };
-
-  function buildBaseExtensions(): Extension[] {
-    return [
-      lineNumbers(),
-      highlightSpecialChars(),
-      highlightActiveLine(),
-      drawSelection(),
-      rectangularSelection(),
-      crosshairCursor(),
-      highlightActiveLineGutter(),
-      history(),
-      keymap.of([
-        // Save with Ctrl/Cmd+S or Ctrl+Enter, and stop the browser's
-        // "save page" default while the editor has focus.
-        { key: "Mod-s", run: () => { void save(); return true; } },
-        { key: "Mod-Enter", run: () => { void save(); return true; } },
-        ...defaultKeymap,
-        ...historyKeymap,
-        indentWithTab,
-      ]),
-      EditorState.tabSize.of(4),
-      indentUnit.of("    "),
-      EditorView.lineWrapping,
-      EditorView.editorAttributes.of(view => ({
-        "data-selection": view.state.selection.ranges.some(range => !range.empty) ? "range" : "cursor",
-      })),
-      EditorView.theme({
-        "&": {
-          backgroundColor: "var(--mdc-code-bg)",
-          color: "var(--mdc-code-fg)",
-        },
-        "&.cm-focused": {
-          outline: "none",
-        },
-        ".cm-content": { caretColor: "var(--mdc-accent)" },
-        ".cm-content:focus-visible": { outline: "none" },
-        ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--mdc-accent)" },
-        "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": {
-          backgroundColor: "var(--mdc-editor-selection) !important",
-        },
-        ".cm-gutters": {
-          backgroundColor: "var(--mdc-code-bg)",
-          borderRight: "1px solid var(--mdc-border)",
-          color: "var(--mdc-code-dim)",
-        },
-        ".cm-activeLine": { backgroundColor: "var(--mdc-editor-active)" },
-        '&[data-selection="range"] .cm-activeLine': { backgroundColor: "transparent" },
-        ".cm-activeLineGutter": { backgroundColor: "var(--mdc-editor-active)" },
-      }),
-      EditorView.updateListener.of((u) => {
-        if (u.docChanged) {
-          setDirty(lastSavedDoc === null || !u.state.doc.eq(lastSavedDoc));
-          latex?.schedule(u.state.doc.toString());
-        }
-      }),
-    ];
-  }
-
-  function reportReadyAfterMeasure(view: EditorView) {
-    view.requestMeasure({
-      read: () => null,
-      write: () => {
-        if (!alive || editorView !== view || readyReported) return;
-        readyReported = true;
-        onReady?.();
-        // Let the editor paint before grammar compilation occupies the main thread.
-        requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(ensureSyntaxHighlighting, 50)));
-      },
-    });
-  }
-
-  function ensureSyntaxHighlighting() {
-    if (!editorView || !readyReported || !active || !expanded || previewing ||
-      appliedSyntaxTheme === theme || pendingSyntaxTheme === theme) return;
-    const requestedTheme = theme;
-    const request = ++syntaxRequest;
-    pendingSyntaxTheme = requestedTheme;
-    shikiError = null;
-    const lang = srctypeToLang(block.srctype);
-    getHighlighter(lang)
-      .then((hl) => {
-        if (!alive || request !== syntaxRequest || !editorView) return;
-        pendingSyntaxTheme = null;
-        if (!active || !expanded || previewing || theme !== requestedTheme) {
-          return;
-        }
-        syntaxRetryCount = 0;
-        editorView.dispatch({
-          effects: syntaxCompartment.reconfigure(
-            shikiHighlight(hl, lang, SHIKI_THEMES[requestedTheme], (error) => {
-              if (alive) shikiError = error === null ? null : errMsg(error);
-            }),
-          ),
-        });
-        appliedSyntaxTheme = requestedTheme;
-      })
-      .catch((e) => {
-        if (!alive || request !== syntaxRequest) return;
-        pendingSyntaxTheme = null;
-        shikiError = errMsg(e);
-        if (active && syntaxRetryCount < 2) {
-          const delay = 500 * 2 ** syntaxRetryCount++;
-          syntaxRetryTimer = setTimeout(() => {
-            syntaxRetryTimer = null;
-            if (alive && active) ensureSyntaxHighlighting();
-          }, delay);
-        }
-      });
-  }
-
-  function suspendSyntaxHighlighting() {
-    if (!editorView ||
-      (pendingSyntaxTheme === null && appliedSyntaxTheme === null && syntaxRetryTimer === null)) return;
-    syntaxRequest++;
-    pendingSyntaxTheme = null;
-    appliedSyntaxTheme = null;
-    if (syntaxRetryTimer) {
-      clearTimeout(syntaxRetryTimer);
-      syntaxRetryTimer = null;
-    }
-    editorView.dispatch({ effects: syntaxCompartment.reconfigure([]) });
-  }
-
   function setDirty(value: boolean) {
     dirty = value;
     setDraftDirty(draftId, value);
@@ -208,32 +63,32 @@
 
   onMount(() => {
     alive = true;
-    const initialState = EditorState.create({
-      doc: block.content,
-      extensions: [...buildBaseExtensions(), syntaxCompartment.of([])],
-    });
-    lastSavedDoc = initialState.doc;
-    editorView = new EditorView({
-      state: initialState,
-      parent: host!,
-    });
-    if (block.srctype === "latex") {
-      const session = new LatexSession(fnode, block.content);
-      latex = session;
-      void import("../lib/latex-completion").then(({latexAutocomplete}) => {
-        if (alive && editorView) editorView.dispatch({effects: StateEffect.appendConfig.of(latexAutocomplete(session))});
-      }).catch(e => { if (alive) previewError = errMsg(e); });
-    }
-    reportReadyAfterMeasure(editorView);
-    return chainEditorScroll(editorView.scrollDOM).destroy;
+    if (block.srctype === "latex") latex = new LatexSession(fnode, block.content);
+    void (async () => {
+      const language = await loadSourceLanguage(block.srctype as "text" | "latex" | "rocq");
+      if (!alive) return;
+      await setMonacoTheme(theme);
+      if (!alive) return;
+      model = Monaco.createModel(block.content, language, Uri.parse(`inmemory://mdc/${fnode}/${block.srctype}`));
+      editorView = Monaco.create(host!, {...sourceOptions, model, ariaLabel: `${block.srctype} source`});
+      disposeScroll = nativeMonacoScroll(editorView, scroller);
+      const fit = () => scroller.style.setProperty('--source-height', `${editorView!.getContentHeight()}px`);
+      editorView.onDidContentSizeChange(fit); fit();
+      model.onDidChangeContent(() => {
+        setDirty(model!.getValue() !== lastSavedDoc);
+        latex?.schedule(model!.getValue());
+      });
+      editorView.addCommand(KeyMod.CtrlCmd | KeyCode.KeyS, () => void save());
+      editorView.addCommand(KeyMod.CtrlCmd | KeyCode.Enter, () => void save());
+      if (latex) { completion = await latexAutocomplete(latex, model); if (!alive) { completion.dispose(); return; } }
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (!alive) return;
+        editorView!.render(true); ready = true; onReady?.();
+      }));
+    })().catch(e => { if (alive) { error = errMsg(e); onReady?.(); } });
   });
 
-  $effect(() => {
-    void theme;
-    if (!alive) return;
-    if (active && expanded && !previewing) ensureSyntaxHighlighting();
-    else suspendSyntaxHighlighting();
-  });
+  $effect(() => { const next = theme; if (ready) void setMonacoTheme(next); });
 
   $effect(() => { latex?.setActive(active && expanded); });
   let focusedLabel: string | undefined;
@@ -253,8 +108,7 @@
     saving = true;
     const clearMutation = trackMutation();
     error = null;
-    const contentDoc = editorView.state.doc;
-    const content = contentDoc.toString();
+    const content = editorView.getValue();
     const isCurrent = () => alive;
 
     try {
@@ -267,14 +121,12 @@
       }
 
       onSaved?.(node);
-      lastSavedDoc = Text.of(updated.content.split("\n"));
+      lastSavedDoc = updated.content;
       // A response may normalize the submitted text, but it must never replace
       // edits made while that request was in flight.
-      if (editorView.state.doc.eq(contentDoc)) {
+      if (editorView.getValue() === content) {
         if (content !== updated.content) {
-          editorView.dispatch({
-            changes: { from: 0, to: editorView.state.doc.length, insert: updated.content },
-          });
+          editorView.setValue(updated.content);
         }
       }
     } catch (e) {
@@ -282,7 +134,7 @@
     } finally {
       clearMutation();
       if (isCurrent()) {
-        if (editorView) setDirty(lastSavedDoc === null || !editorView.state.doc.eq(lastSavedDoc));
+        if (editorView) setDirty(editorView.getValue() !== lastSavedDoc);
         saving = false;
       }
     }
@@ -320,7 +172,7 @@
       previewRequest++;
       previewing = false;
       await tick();
-      editorView?.requestMeasure();
+      editorView?.render(true);
       return;
     }
     previewing = true;
@@ -343,29 +195,23 @@
   onDestroy(() => {
     alive = false;
     latex?.destroy();
-    syntaxRequest++;
     previewRequest++;
-    if (syntaxRetryTimer) clearTimeout(syntaxRetryTimer);
     removeDraft(draftId);
-    editorView?.destroy();
+    completion?.dispose();
+    disposeScroll?.();
+    editorView?.dispose();
+    model?.dispose();
     editorView = null;
   });
 
   // Update content changed by a save response or an external refresh.
   $effect(() => {
     const nextContent = block.content;
-    const nextSavedDoc = Text.of(nextContent.split("\n"));
-    if (lastSavedDoc?.eq(nextSavedDoc)) return;
+    if (lastSavedDoc === nextContent) return;
     error = null;
-    lastSavedDoc = nextSavedDoc;
-    if (editorView) {
-      if (!dirty && !editorView.state.doc.eq(lastSavedDoc)) {
-        editorView.dispatch({
-          changes: { from: 0, to: editorView.state.doc.length, insert: nextContent },
-        });
-      }
-    }
-    setDirty(editorView !== null && !editorView.state.doc.eq(lastSavedDoc));
+    lastSavedDoc = nextContent;
+    if (editorView && !dirty && editorView.getValue() !== nextContent) editorView.setValue(nextContent);
+    setDirty(editorView !== null && editorView.getValue() !== lastSavedDoc);
   });
 </script>
 
@@ -378,7 +224,6 @@
     {#if saving}<span class="saving">saving…</span>{/if}
     {#if deleting}<span class="saving">deleting…</span>{/if}
     {#if error || previewError}<span class="error" title={error ?? previewError ?? "error"}><AlertTriangle size={14} strokeWidth={1.9} /></span>{/if}
-    {#if shikiError}<span class="error" title={`highlight: ${shikiError}`}><Zap size={14} strokeWidth={1.9} /></span>{/if}
     {#if block.srctype === "latex"}
       <button
         class="preview-toggle"
@@ -400,12 +245,8 @@
     <button class="delete" onclick={onDelete} disabled={saving || deleting} title="Delete block" aria-label="Delete block"><Trash2 size={14} strokeWidth={1.8} /></button>
   </header>
   {#if latex && expanded}<LatexImports imports={latex.context?.imports ?? null} />{/if}
-  <div
-    class="editor-host"
-    class:collapsed={!expanded || previewing}
-    inert={deleting}
-    bind:this={host}
-  >
+  <div class="editor-scroll" class:pending={!ready} class:collapsed={!expanded || previewing} inert={deleting || !ready || !expanded || previewing} bind:this={scroller}>
+    <div class="editor-size"><div class="editor-host" bind:this={host}></div></div>
   </div>
   {#if previewing && expanded}
     {#if LatexPreviewComponent && latex?.preview}
@@ -424,18 +265,11 @@
 </article>
 
 <style>
-  .editor-host { display:flex; min-height:0; background:var(--mdc-code-bg); }
-  .editor-host.collapsed { display: none; }
-  .editor-host :global(.cm-editor) {
-    flex: 1;
-    min-width: 0;
-    min-height: 0;
-    font-family: var(--mdc-mono);
-    font-size: var(--mdc-text-sm);
-    line-height: 1.65;
-  }
-  .editor-host :global(.cm-editor .cm-scroller) { overflow:auto; font-family:var(--mdc-mono); }
-  .editor-host :global(.cm-content) { min-height:10rem; }
+  .editor-scroll { min-height:0; height:clamp(10rem, var(--source-height, 10rem), 100cqh); overflow:auto; }
+  .editor-scroll.collapsed { height:0; visibility:hidden; overflow:hidden; }
+  .editor-scroll.pending { visibility:hidden; }
+  .editor-size { min-width:100%; min-height:100%; }
+  .editor-host { position:sticky; top:0; left:0; overflow:hidden; }
   .preview-loading {
     min-height: 9rem;
     display: grid;

@@ -79,7 +79,7 @@ and math placeholders; browser KaTeX fills the latter with trusted commands
 disabled. No TeX executable, `.aux` exchange or TexLab process is involved.
 
 The browser's `latex-session.svelte.ts` owns draft requests and cancellation;
-`latex-completion.ts` supplies CodeMirror candidates. Common project catalogs
+`latex-completion.ts` supplies Monaco completion candidates. Common project catalogs
 are cached by configuration content, while reference context is node-specific.
 `LatexPreview.svelte` only renders math and handles node/label links. A new node
 gets a new draft session, so an older response cannot overwrite its preview.

@@ -6,12 +6,13 @@ import { CloseAction, ErrorAction } from "vscode-languageclient/lib/common/clien
 import { projectPath } from "./lib/project-path";
 import { chainEditorScroll } from "./lib/editor-scroll";
 import { nativeMonacoScroll } from "./lib/monaco-scroll";
+import { initializeMonaco, sourceOptions, setMonacoTheme } from "./lib/monaco";
 
 const params = new URLSearchParams(location.search);
 const id = params.get("session");
 function applyTheme(theme: string) {
   document.body.style.backgroundColor = theme === "light" ? "#fff" : "#1f1f1f";
-  runtime.updateVSCodeOptions({ "workbench.colorTheme": theme === "light" ? "Default Light Modern" : "Default Dark Modern" });
+  void setMonacoTheme(theme === "light" ? "light" : "dark");
 }
 class BrowserLean extends LeanMonaco {
   protected getExtensionManifest() {
@@ -203,6 +204,7 @@ async function start() {
     if (scroller) chainEditorScroll(scroller);
   }, true);
   runtime.setInfoviewElement(infoview);
+  await initializeMonaco();
   await runtime.start({
     websocket: { url: `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}${projectPath(`/api/lean/session/${encodeURIComponent(id ?? "")}/ws`)}` },
     // The parent recreates the session and restores drafts. Retrying this consumed
@@ -268,13 +270,9 @@ async function start() {
   // not disconnect Monaco's observer, leaving two competing layout callbacks.
   editor = MonacoEditor.create(document.getElementById("editor")!, {
     model: reference?.object.textEditorModel ?? preview!,
-    automaticLayout: false,
+    ...sourceOptions,
     contextmenu: true,
-    scrollbar: { handleMouseWheel: false, vertical: 'hidden', horizontal: 'hidden' },
-    mouseWheelZoom: false,
-    scrollBeyondLastLine: false,
-    lineNumbersMinChars: 1,
-    lineDecorationsWidth: 5,
+    glyphMargin: true,
   });
   disposeScroll = nativeMonacoScroll(editor, document.getElementById("editor-scroll")!);
   editor.focus();

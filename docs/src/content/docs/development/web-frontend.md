@@ -7,7 +7,13 @@ The Svelte 5 interface mounts the project directory at `/` and the editor at
 path helper scopes branch API calls, Lean iframe URLs and WebSocket URLs;
 static assets stay at the root. The editor provides search, graph/column navigation, dependency
 operations and block editing. It tracks unsaved drafts and serializes node
-mutations with revision guards. All four block types use consistent controls.
+mutations with revision guards. All four block types use Monaco, consistent controls,
+JuliaMono and VS Code's light/dark themes. `lib/monaco.ts` shares initialization
+and editor options; `lib/monaco-scroll.ts` provides the native scroll viewport.
+Text, LaTeX and Rocq share one runtime in the page. Lean keeps its isolated iframe.
+Both use native TextMate tokenization; `@shikijs/langs` supplies grammar data only.
+LaTeX completion providers are scoped to the current model and disposed with it.
+Ordinary editors and their undo history survive layout and preview changes.
 `web/src/design.css` supplies the shared colors, fonts and header geometry for
 the project directory, editor and documentation site. The documentation theme
 maps Starlight surfaces to these tokens; its header retains native search and
@@ -15,7 +21,7 @@ theme persistence.
 
 Project-directory navigation retains the outgoing native view-transition snapshot
 until the destination has loaded its data and initialized its editors (or has an
-error to display). CodeMirror wrapping and gutters are measured before revealing
+error to display). Monaco wrapping and gutters are measured before revealing
 the page in one step. Knowledge/Graph switches use the same readiness rule,
 including the first graph fetch. There is no fade for these switches, including
 with reduced motion enabled. Ordinary links, browser history and unsaved-draft

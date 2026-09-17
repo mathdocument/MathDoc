@@ -178,21 +178,21 @@ async function runEditorSample(context, url) {
   const { page, errors } = await preparePage(context, "editor");
   try {
     await page.goto(`${url}/p/benchmark/main/`, { waitUntil: "domcontentloaded" });
-    await page.locator('.cm-editor').waitFor({ state: "visible" });
+    await page.locator('.monaco-editor').waitFor({ state: "visible" });
     await nextPaint(page);
     const editorReadyMs = await page.evaluate(() => performance.now() - window.__mdcPerfStart);
 
-    const highlighted = page.locator('.cm-content span[style*="color:"]').first();
+    const highlighted = page.locator('.view-line span[class^="mtk"]').first();
     await highlighted.waitFor({ state: "visible" });
     const editorHighlightMs = await page.evaluate(() => performance.now() - window.__mdcPerfStart);
-    const darkStyle = await highlighted.getAttribute("style");
+    const darkStyle = await highlighted.evaluate(el => getComputedStyle(el).color);
 
     await page.evaluate(() => { window.__mdcPerfAction = performance.now(); });
     await page.getByTitle("Switch to light mode").click();
     await page.waitForFunction((previousStyle) => {
-      const token = document.querySelector('.cm-content span[style*="color:"]');
+      const token = document.querySelector('.view-line span[class^="mtk"]');
       return document.documentElement.dataset.theme === "light" &&
-        token?.getAttribute("style") !== previousStyle;
+        (token && getComputedStyle(token).color) !== previousStyle;
     }, darkStyle);
     await nextPaint(page);
     const themeSwitchMs = await page.evaluate(() => performance.now() - window.__mdcPerfAction);
@@ -231,9 +231,9 @@ async function runEditorSample(context, url) {
       throw new Error('preview wheel scrolling escaped the source block');
     }
     await block.getByRole('button', {name: 'Return to LaTeX editor'}).click();
-    const scrollable = await block.locator('.cm-scroller').evaluate(element =>
+    const scrollable = await block.locator('.editor-scroll').evaluate(element =>
       element.clientHeight > 0 && element.scrollHeight > element.clientHeight);
-    if (!scrollable) throw new Error('long source must scroll inside CodeMirror');
+    if (!scrollable) throw new Error('long source must scroll inside Monaco');
     if (errors.length > 0) throw new Error(errors.join("\n"));
     return { editorReadyMs, editorHighlightMs, themeSwitchMs, latexPreviewMs };
   } finally {

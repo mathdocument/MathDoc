@@ -524,7 +524,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await page.getByRole("button", { name: /Lean Example/ }).click();
         await page.getByRole("button", { name: "Start Lean server", exact: true }).click();
         await page.getByText("Starting Lean editor…").waitFor();
-        await page.locator('[data-srctype="latex"] .cm-editor').waitFor();
+        await page.locator('[data-srctype="latex"] .monaco-editor').waitFor();
         assert.deepEqual(await center(page).locator('.source-block:not(.hidden)').evaluateAll(
           blocks => blocks.map(block => block.dataset.srctype),
         ), ["text", "latex", "lean", "rocq"]);
@@ -884,6 +884,42 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
   } finally { await browser.close(); }
 });
 
+await test('Monaco source blocks retain highlighting, edits and undo across layout changes', {timeout: 60000}, async () => {
+  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const node = {fnode: randomUUID(), title: 'Shared editors', module: 'Lib.Shared', depens: [], blocks: [
+    {srctype: 'text', content: '# Heading\nA **bold** statement.\n'},
+    {srctype: 'latex', content: '% comment\n\\section{Heading}\nA statement.\n'},
+    {srctype: 'rocq', content: '(* comment *)\nTheorem demo : True. Proof. exact I. Qed.\n'},
+  ]};
+  try {
+    await fixture(browser, async ({page, url, cli}) => {
+      let sessions = 0;
+      page.on('request', r => { if (r.method() === 'POST' && r.url().endsWith('/lean/session')) sessions++; });
+      await page.goto(`${url}/?shared#ref=${node.fnode}`);
+      for (const {srctype, content} of node.blocks) {
+        const block = page.locator(`[data-srctype="${srctype}"]`);
+        await block.locator('.editor-scroll:not(.pending)').waitFor();
+        const colors = await block.locator('.view-line span').evaluateAll(spans => [...new Set(spans.map(el => getComputedStyle(el).color))]);
+        assert.ok(colors.length >= 2, `${srctype} has native syntax colors`);
+        const input = block.getByRole('textbox', {name: new RegExp(`^${srctype} source`)});
+        await input.press(await page.evaluate(() => /Mac/.test(navigator.platform)) ? 'Meta+ArrowDown' : 'Control+End');
+        await page.keyboard.insertText('draft');
+        await block.getByText('Unsaved', {exact: true}).waitFor();
+        await page.getByRole('button', {name: 'Graph', exact: true}).click();
+        await page.waitForFunction(() => !document.documentElement.dataset.vtScope);
+        await input.press('ControlOrMeta+z');
+        await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
+        assert.equal(JSON.parse((await cli('show', node.fnode)).stdout).blocks.find(b => b.srctype === srctype).content, content);
+        await page.getByRole('button', {name: 'Knowledge', exact: true}).click();
+        await page.waitForFunction(() => !document.documentElement.dataset.vtScope);
+      }
+      await page.getByRole('button', {name: 'Switch to dark mode'}).click();
+      for (const {srctype} of node.blocks) await page.locator(`[data-srctype="${srctype}"] .monaco-editor.vs-dark`).waitFor();
+      assert.equal(sessions, 0, 'ordinary editing never starts a Lean server');
+    }, [node]);
+  } finally { await browser.close(); }
+});
+
 await test('LaTeX macros, scoped completion, citations and draft previews', {timeout: 90000}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   try {
@@ -939,14 +975,15 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       assert.ok(headingGap < 4, 'theorem heading and first paragraph must share a line');
       await page.goBack();
       await title(page, 'Alpha');
-      const input = block.locator('.cm-content');
-      await input.fill('Use \\nameref{');
+      const input = block.getByRole('textbox', {name: /^latex source/});
+      const fill = async value => { await input.press('ControlOrMeta+A'); await page.keyboard.insertText(value); };
+      await fill('Use \\nameref{');
       await input.press('Control+Space');
       await page.getByRole('option').filter({hasText: 'Named result'}).click();
-      assert.equal(await input.innerText(), 'Use \\nameref{thm:b');
+      assert.match(await block.locator('.view-lines').innerText(), /Use.*nameref\{thm:b/);
       assert.equal(await page.getByRole('option').filter({hasText: 'Private result'}).count(), 0);
       const draft = String.raw`\section{Draft title}\label{new}By \nameref{thm:b}, see \cite{paper}. $\cA$`;
-      await input.fill(draft);
+      await fill(draft);
       await block.getByRole('button', {name: 'Render LaTeX preview'}).click();
       await block.getByRole('heading', {name: 'Draft title', exact: true}).waitFor();
       assert.equal(JSON.parse((await cli('show', 'Alpha')).stdout).blocks[0].content, source);
@@ -1257,7 +1294,7 @@ await test('editors and previews pass scrolling to the node pane at both boundar
         }
       };
       const latex = page.locator('[data-srctype="latex"]');
-      const code = latex.locator('.cm-scroller');
+      const code = latex.locator('.editor-scroll');
       await check(latex, code, direction => code.evaluate((el, direction) => { el.scrollTop = direction > 0 ? 0 : el.scrollHeight; }, direction));
       await nativeBoundary(code);
       await latex.getByRole('button', {name: 'Render LaTeX preview'}).click();
@@ -1276,7 +1313,7 @@ await test('editors and previews pass scrolling to the node pane at both boundar
           await page.goto(`${url}/?scroll=${kind}#ref=${single.fnode}`);
           await title(page, single.title);
           const surfaces = [];
-          if (kind === 'latex') surfaces.push(page.locator('.cm-scroller'));
+          if (kind === 'latex') surfaces.push(page.locator('.editor-scroll'));
           else {
             await page.getByRole('button', {name: 'Start Lean server', exact: true}).click();
             await page.locator('.native-editor:not(.pending)').waitFor();
@@ -1331,9 +1368,9 @@ await test('view changes reveal measured editors and loaded pages without interm
       });
       assert.equal(saved.status, 200);
       await page.reload();
-      await page.locator('.cm-lineNumbers .cm-gutterElement').nth(2).waitFor();
-      await page.waitForFunction(() => document.querySelector('.latex-imports') || document.querySelector('.source-block .cm-line'));
-      await page.evaluate(() => { window.originalEditor = document.querySelector('.cm-editor'); });
+      await page.locator('.line-numbers').nth(2).waitFor();
+      await page.waitForFunction(() => document.querySelector('.latex-imports') || document.querySelector('.source-block .view-line'));
+      await page.evaluate(() => { window.originalEditor = document.querySelector('.monaco-editor'); });
       let release, entered;
       const gate = new Promise(resolve => { release = resolve; });
       const requested = new Promise(resolve => { entered = resolve; });
@@ -1354,10 +1391,10 @@ await test('view changes reveal measured editors and loaded pages without interm
             const sample = () => {
               changing ||= document.documentElement.dataset.vtScope === 'ready';
               if (!changing || document.documentElement.dataset.vtScope) return requestAnimationFrame(sample);
-              const editor = document.querySelector('.cm-editor');
-              const lines = [...editor.querySelectorAll('.cm-line')];
-              const gutters = [...editor.querySelectorAll('.cm-lineNumbers .cm-gutterElement')].filter(el => el.textContent.trim() && getComputedStyle(el).visibility !== 'hidden');
-              resolve(gutters.map((g, i) => ({number: g.textContent, difference: Math.abs(g.getBoundingClientRect().top - lines[i].getBoundingClientRect().top)})));
+              const editor = document.querySelector('.monaco-editor');
+              const lines = [...editor.querySelectorAll('.view-line')];
+              const gutters = [...editor.querySelectorAll('.line-numbers')].filter(el => el.textContent.trim() && getComputedStyle(el).visibility !== 'hidden');
+              resolve(gutters.map(g => ({number: g.textContent, difference: Math.min(...lines.map(line => Math.abs(g.getBoundingClientRect().top - line.getBoundingClientRect().top)))})));
             };
             requestAnimationFrame(sample);
           });
@@ -1367,7 +1404,7 @@ await test('view changes reveal measured editors and loaded pages without interm
         assert.ok(rows.length > 3);
         assert.ok(rows.every(row => row.difference < 1), JSON.stringify(rows));
       }
-      assert.equal(await page.evaluate(() => window.originalEditor === document.querySelector('.cm-editor')), true);
+      assert.equal(await page.evaluate(() => window.originalEditor === document.querySelector('.monaco-editor')), true);
       // Cross-document transitions also hold the old view while project and node data are pending.
       // Reduced motion still needs readiness gating, without a fade animation.
       await page.emulateMedia({reducedMotion: 'reduce'});
@@ -1390,7 +1427,7 @@ await test('view changes reveal measured editors and loaded pages without interm
       const project = new URL(url).pathname.replace(/^\/p\//, '').replace(/\/$/, '');
       await held('**/api/node/*/view', () => page.getByRole('link', {name: `Open ${project}`, exact: true}).click());
       assert.equal(await page.locator('.editor-loading').count(), 0);
-      await page.locator('.cm-lineNumbers .cm-gutterElement').nth(2).waitFor();
+      await page.locator('.line-numbers').nth(2).waitFor();
       // A failed destination must reveal its error/retry UI instead of freezing the old page forever.
       await page.route('**/api/status', route => route.fulfill({status: 503, contentType: 'application/json', body: JSON.stringify({error: 'fixture: status unavailable'})}));
       await page.getByRole('link', {name: 'All projects', exact: true}).click();

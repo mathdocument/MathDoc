@@ -138,7 +138,7 @@
     let restoringHistory = false;
     let popstateRequest = 0;
     // Global shortcuts: "/" opens search, "g" toggles the workspace view.
-    // Ignored while typing (inputs, textareas, contenteditable e.g. CodeMirror).
+    // Ignored while typing (inputs, textareas, contenteditable including Monaco).
     const onKeyDown = (event: KeyboardEvent) => {
       if (overlay.kind !== "none" || refreshing || historyNavigating || changingView) return;
       const target = event.target;
