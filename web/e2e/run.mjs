@@ -1013,7 +1013,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       const preamble = resolve(root, 'macros.tex'), bib = resolve(root, 'references.bib');
       await writeFile(preamble, String.raw`\usepackage{amsthm}\newcommand{\cA}{\mathcal{A}}\newenvironment{items}{\begin{itemize}}{\end{itemize}}\newtheorem{thm}{Theorem}`);
       await writeFile(bib, '@article{paper,title={A paper},author={Author, A.},journal={Journal},year={2020}}' +
-        Array.from({length: 3}, (_, i) => `@article{extra${i},title={Another publication ${i}},author={Writer, B.},year={2021}}`).join('\n'));
+        Array.from({length: 80}, (_, i) => `@article{zextra${i},title={Another publication ${i}},author={Writer, B.},year={2021}}`).join('\n'));
       await page.getByRole('button', {name: 'Save LaTeX project', exact: true}).waitFor();
       await page.getByLabel('Class or preamble').setInputFiles(preamble);
       await page.getByLabel('Bibliography', {exact: true}).setInputFiles(bib);
@@ -1083,6 +1083,26 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
         assert.equal(geometry.onTop, true, 'the completion receives clicks above the add button');
         assert.ok(geometry.radius >= 8, 'use the app popup shape');
         assert.equal(await page.locator('.suggest-details:visible').count(), 0, 'no duplicate details panel');
+        const popupBox = await popup.boundingBox();
+        await page.mouse.move(popupBox.x + 100, popupBox.y + 70);
+        await popup.evaluate(el => {
+          window.completionFrames = []; window.recordCompletion = true;
+          const sample = () => {
+            const box = el.getBoundingClientRect(), list = el.querySelector('.monaco-list-rows');
+            window.completionFrames.push({x: box.x, y: box.y, height: box.height, shown: getComputedStyle(el).visibility,
+              list: parseFloat(list.style.top), pane: document.querySelector('.blocks').scrollTop,
+              hit: el.contains(document.elementFromPoint(box.x + 100, box.y + 70))});
+            if (window.recordCompletion) requestAnimationFrame(sample);
+          }; requestAnimationFrame(sample);
+        });
+        for (const direction of [1, -1]) for (let step = 0; step < 10; step++) {
+          await page.mouse.wheel(0, direction * 30);
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+        }
+        const frames = await page.evaluate(() => {window.recordCompletion = false; return window.completionFrames;});
+        assert.ok(frames.some(frame => frame.list < -100), 'scroll through the virtualized citation candidates');
+        assert.ok(frames.every(frame => frame.x === popupBox.x && frame.y === popupBox.y && frame.height === popupBox.height && frame.shown === 'visible' && frame.hit), 'completion geometry and hit testing stay stable through every scroll frame');
+        assert.equal(new Set(frames.map(frame => frame.pane)).size, 1, 'candidate scrolling never moves the page underneath');
         await page.screenshot({path: resolve(tmpdir(), `mdc-completion-${theme}-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
         await option.click();
         await page.waitForFunction(() => /cite\{paper/.test(document.querySelector('[data-srctype="latex"] .view-lines').innerText));

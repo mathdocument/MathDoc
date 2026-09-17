@@ -84,6 +84,9 @@ input:focus-visible,
   overflow: hidden;
   max-width: calc(100vw - 24px);
 }
+/* Keep recycled completion rows in the popup's paint layer. Safari can flash
+   the separately composited translate3d layer under its rounded clipping edge. */
+.mdc-editor-widgets .suggest-widget .monaco-list-rows { transform: none !important; }
 .mdc-editor-widgets .suggest-widget .monaco-list-row { border-radius: 5px; }
 .mdc-editor-widgets .suggest-widget .details-label {
   font-family: var(--mdc-font);
