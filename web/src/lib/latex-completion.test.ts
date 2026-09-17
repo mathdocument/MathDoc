@@ -20,3 +20,16 @@ test('completions insert original labels while searching titles and citation aut
   expect(complete('\\ref{')?.options).toEqual([]);
   expect(complete('ordinary prose')).toBeNull();
 });
+
+test('citation candidates are capped after searching the entire bibliography', () => {
+  const catalog: LatexCatalog = {project_key: 'p', citations: Array.from({length: 14000}, (_, i) => ({
+    key: `key${i}`, title: `Paper ${i}`, authors: 'Some Author', year: '2020', label: '', text: '',
+  })), commands: [], environments: [], diagnostics: []};
+  const complete = (query: string) => latexCompletions({references: [], catalog}, `\\cite{${query}`)!;
+  expect(complete('').options).toHaveLength(50);
+  expect(complete('').incomplete).toBe(true);
+  for (const query of ['key13999', '13999 AUTHOR', 'Paper 13999 2020']) {
+    expect(complete(query).options.map(item => item.insert)).toEqual(['key13999']);
+  }
+  expect(complete('not found').options).toEqual([]);
+});

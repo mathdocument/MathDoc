@@ -1071,7 +1071,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
         const paint = await popup.locator('.monaco-list-rows').evaluate(el => ({
           height: el.scrollHeight, transform: getComputedStyle(el).transform, contain: getComputedStyle(el).contain,
         }));
-        assert.ok(paint.height > 350000, 'exercise a bibliography as large as arithprog');
+        assert.equal(paint.height, 50 * 28, 'cap candidates even with 14,000 bibliography entries');
         assert.equal(paint.transform, 'none', 'do not tile the entire virtual list as a GPU layer');
         assert.equal(paint.contain, 'none', 'recycled rows must invalidate normal painting');
         const geometry = await option.evaluate(el => {
@@ -1119,6 +1119,18 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
         await page.waitForFunction(() => /cite\{paper/.test(document.querySelector('[data-srctype="latex"] .view-lines').innerText));
         assert.match(await block.locator('.view-lines').innerText(), /cite\{paper/);
       }
+      // An incomplete list must requery the full catalog while typing, and
+      // expand again on backspace, rather than filter just the first 50 items.
+      await fill('\\cite{');
+      await input.press('Control+Space');
+      await page.getByRole('option').filter({hasText: 'A paper'}).waitFor();
+      await input.pressSequentially('zextra13999');
+      await page.getByRole('option').filter({hasText: 'Another publication 13999'}).waitFor();
+      await input.press('Backspace');
+      await page.getByRole('option').filter({hasText: 'Another publication 13998'}).waitFor();
+      await input.press('9');
+      await page.getByRole('option').filter({hasText: 'Another publication 13999'}).click();
+      assert.match(await block.locator('.view-lines').innerText(), /cite\{zextra13999/);
       const draft = String.raw`\section{Draft title}\label{new}By \nameref{thm:b}, see \cite{paper}. $\cA$`;
       await fill(draft);
       await block.getByRole('button', {name: 'Render LaTeX preview'}).click();
@@ -1150,7 +1162,7 @@ await test('LaTeX tables, colors and TikZ diagrams render shared macros locally'
   try {
     await fixture(browser, async ({page, url, cli, root}) => {
       const preamble = resolve(root, 'diagrams.tex');
-      await writeFile(preamble, String.raw`\newcommand{\cA}{\mathcal{A}}\definecolor{brand}{HTML}{336699}`);
+      await writeFile(preamble, String.raw`\renewcommand\headrulewidth{0pt}\newcommand{\alphabet}[1]{\mathcal{#1}}\newcommand{\cA}{\alphabet{A}}\definecolor{brand}{HTML}{336699}`);
       const bibliography = resolve(root, 'diagrams.bib');
       await writeFile(bibliography, '');
       await cli('project', 'latex', 'set', '--preamble', preamble, '--bib', bibliography);

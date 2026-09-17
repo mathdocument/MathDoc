@@ -19,6 +19,7 @@ from plasTeX.Base.TeX.Primitives import DefCommand, IfCommand
 from plasTeX.Base.LaTeX.Definitions import newcommand
 from plasTeX.Packages.amsthm import newtheorem
 from plasTeX.TeX import TeX
+from plasTeX.Tokenizer import Tokenizer
 from pybtex.bibtex import bst
 from pybtex.bibtex.interpreter import Interpreter
 from pybtex.database import BibliographyData, parse_string
@@ -134,7 +135,7 @@ def load_preamble(document, preamble):
         'newcounter', 'setcounter', 'DeclareMathOperator',
     }
     diagram_preamble = []
-    diagram_declarations = declarations - {'newtheorem', 'theoremstyle', 'newcounter', 'setcounter'}
+    diagram_declarations = declarations - {'newtheorem', 'theoremstyle', 'newcounter', 'setcounter', 'makeatletter', 'makeatother'}
     tex.input(preamble)
     for token in tex.itertokens():
         name = token.macroName
@@ -164,11 +165,22 @@ def load_preamble(document, preamble):
             command = document.createElement(name)
             command.invoke(tex)
             if name in diagram_declarations:
-                diagram_preamble.append(command.source)
+                defined = command.attributes.get('name', '')
+                defined = str(getattr(defined, 'macroName', defined))
+                names = {defined}
+                if name in ('newenvironment', 'renewenvironment'):
+                    names.add('end' + defined)
+                if name == 'newif':
+                    names.update((defined[2:] + 'true', defined[2:] + 'false'))
+                diagram_preamble.append((names, command.source))
+            elif name and issubclass(context.get(name), (IfTrue, IfFalse)):
+                # Keep the selected value when a used macro depends on a flag.
+                flag = 'if' + re.sub(r'(true|false)$', '', name)
+                diagram_preamble.append(({flag}, command.source))
         elif name in ('usetikzlibrary', 'tikzset'):
             command = document.createElement(name)
             command.invoke(tex)
-            diagram_preamble.append(command.source)
+            diagram_preamble.append((set(), command.source))
         elif name and name.startswith('if'):
             # Unknown braced tests are setup calls; unknown primitive conditionals
             # have no trustworthy active branch, so import neither branch.
@@ -179,8 +191,46 @@ def load_preamble(document, preamble):
         context.addGlobal(name, cls)
     for name, color in document.userdata.getPath('packages/xcolor/colors').items():
         if re.fullmatch(r'[A-Za-z0-9_-]+', name):
-            diagram_preamble.append(r'\definecolor{' + name + '}{HTML}{' + color.html.removeprefix('#') + '}')
-    return '\n'.join(diagram_preamble)
+            diagram_preamble.append((set(), r'\definecolor{' + name + '}{HTML}{' + color.html.removeprefix('#') + '}'))
+    return diagram_preamble
+
+
+def tex_names(source):
+    """Read control sequences and environment names without expanding TeX."""
+    context = Context.Context()
+    context.catcode('@', 11)
+    tokens = list(Tokenizer(source, context))
+    names = {token.macroName for token in tokens if token.macroName}
+    for i, token in enumerate(tokens):
+        if token.macroName in ('begin', 'end'):
+            tail = iter(tokens[i + 1:])
+            opening = next((item for item in tail if not str(item).isspace()), None)
+            if opening == '{':
+                environment = []
+                for item in tail:
+                    if item == '}': break
+                    environment.append(str(item))
+                names.add(''.join(environment))
+    return names
+
+
+def diagram_preamble_for(declarations, source):
+    """Import only macros used by this diagram, with their transitive definitions.
+
+    Preserve declaration order (including redefinitions and aliases). Unrelated
+    print commands must never be executed by the separate diagram runtime.
+    """
+    needed = tex_names(source)
+    selected = set()
+    while True:
+        added = False
+        for index, (names, definition) in enumerate(declarations):
+            if index not in selected and (not names or names & needed):
+                selected.add(index)
+                needed.update(tex_names(definition))
+                added = True
+        if not added: break
+    return '\n'.join([r'\makeatletter', *(definition for i, (_, definition) in enumerate(declarations) if i in selected), r'\makeatother'])
 
 
 class NewTheorem(newtheorem):
@@ -382,7 +432,7 @@ def parse(preamble, source):
         if richtext.render(node, parts, lambda child: render(child, depth + 1)):
             return
         if name == 'tikzcd':
-            parts.append(f'<div class="latex-diagram" data-tex="{esc(node.source)}" data-preamble="{esc(diagram_preamble)}">Rendering diagram…</div>')
+            parts.append(f'<div class="latex-diagram" data-tex="{esc(node.source)}" data-preamble="{esc(diagram_preamble_for(diagram_preamble, node.source))}">Rendering diagram…</div>')
             return
         if name == 'par' and any(getattr(child, 'blockType', False) for child in children):
             # plasTeX can wrap a bibliography in a paragraph after its definitions.
@@ -403,7 +453,7 @@ def parse(preamble, source):
                 # KaTeX cannot render diagrams nested inside math delimiters.
                 # Keep surrounding math in the same TeX-rendered SVG as well.
                 diagram = r'\begin{tikzpicture}\node[inner sep=0pt] {$' + (r'\displaystyle ' if name != 'math' else '') + source + r'$};\end{tikzpicture}'
-                parts.append(f'<div class="latex-diagram" data-tex="{esc(diagram)}" data-preamble="{esc(diagram_preamble)}">Rendering diagram…</div>')
+                parts.append(f'<div class="latex-diagram" data-tex="{esc(diagram)}" data-preamble="{esc(diagram_preamble_for(diagram_preamble, diagram))}">Rendering diagram…</div>')
                 return
             parts.append(f'<span class="latex-math" data-display="{str(name != "math").lower()}" data-tex="{esc(source)}"></span>')
             return

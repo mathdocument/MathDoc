@@ -39,6 +39,24 @@ class RendererTest(unittest.TestCase):
         self.assertIn(r'\definecolor{brand}{HTML}{336699}', output)
         self.assertNotIn('private', output)
 
+    def test_diagram_macros_include_transitive_definitions_but_not_print_setup(self):
+        preamble = r'''
+            \renewcommand\headrulewidth{0pt}
+            \newcommand{\unused}{\input{private}}
+            \newif\ifdraft\drafttrue
+            \def\letter{A}\let\alias\letter\def\letter{B}
+            \newcommand{\chosen}{\ifdraft\alias\else\letter\fi}
+            \newenvironment{wrapped}{\chosen}{\letter}
+        '''
+        parsed = renderer.parse(preamble, r'\begin{tikzcd}\begin{wrapped}\end{wrapped}\end{tikzcd}')
+        self.assertEqual(parsed.diagnostics, [])
+        output = ''.join(parsed.parts)
+        for command in ('newif', 'drafttrue', 'alias', 'chosen', 'newenvironment'):
+            self.assertIn('\\' + command, output)
+        self.assertLess(output.index(r'\let'), output.index(r'\def\letter {B}'))
+        self.assertNotIn('headrulewidth', output)
+        self.assertNotIn('private', output)
+
     def test_tables_and_colors_use_native_parsed_structure(self):
         parsed = renderer.parse(r'\definecolor{brand}{HTML}{336699}\colorlet{soft}{brand!50!white}', r'''
             {\color{soft}Tinted} normal $\colorlet{local}{brand}\textcolor{local}{x}+{\color{red!50!blue}y}$

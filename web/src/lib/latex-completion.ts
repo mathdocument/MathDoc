@@ -6,9 +6,20 @@ export function latexCompletions(session: Pick<LatexSession, 'references' | 'cat
   const reference = /\\(cite|ref|cref|Cref|nameref|eqref)\s*(?:\[[^\]]*\])?\{([^{}]*)$/.exec(before);
   if (reference) {
     const fragment = reference[2].split(',').pop()!;
-    const options = reference[1] === 'cite'
-      ? (session.catalog?.citations ?? []).map(cite => ({label: cite.key, search: `${cite.key} ${cite.title} ${cite.authors} ${cite.year}`, detail: [cite.title, cite.authors, cite.year].filter(Boolean).join(' · '), insert: cite.key}))
-      : session.references.map(ref => ({label: ref.name || ref.label, search: `${ref.label} ${ref.name} ${ref.title}`, detail: [ref.title, ref.label].filter(Boolean).join(' · '), insert: ref.label}));
+    if (reference[1] === 'cite') {
+      const words = fragment.trim().toLocaleLowerCase().split(/\s+/);
+      const options = [];
+      for (const cite of session.catalog?.citations ?? []) {
+        const search = `${cite.key} ${cite.title} ${cite.authors} ${cite.year}`;
+        const normalized = search.toLocaleLowerCase();
+        if (!words.every(word => normalized.includes(word))) continue;
+        options.push({label: cite.key, search, filter: fragment.trimStart(), detail: [cite.title, cite.authors, cite.year].filter(Boolean).join(' · '), insert: cite.key});
+        if (options.length === 50) break;
+      }
+      // Ask again on typing: search the entire catalog before limiting results.
+      return {length: fragment.trimStart().length, options, incomplete: true};
+    }
+    const options = session.references.map(ref => ({label: ref.name || ref.label, search: `${ref.label} ${ref.name} ${ref.title}`, detail: [ref.title, ref.label].filter(Boolean).join(' · '), insert: ref.label}));
     return {length: fragment.trimStart().length, options};
   }
   const environment = /\\(?:begin|end)\{([A-Za-z*]*)$/.exec(before);
@@ -29,9 +40,9 @@ export async function latexAutocomplete(session: LatexSession, target: editor.IT
       const result = latexCompletions(session, before);
       if (!result) return {suggestions: []};
       const from = model.getPositionAt(offset - result.length);
-      return {suggestions: result.options.map(item => ({
+      return {incomplete: result.incomplete ?? false, suggestions: result.options.map(item => ({
         label: {label: item.label, description: item.detail},
-        filterText: item.search, insertText: item.insert, kind: languages.CompletionItemKind.Reference,
+        filterText: 'filter' in item ? item.filter : item.search, insertText: item.insert, kind: languages.CompletionItemKind.Reference,
         range: {startLineNumber: from.lineNumber, startColumn: from.column, endLineNumber: position.lineNumber, endColumn: position.column},
       }))};
     },
