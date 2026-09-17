@@ -14,6 +14,20 @@ PROJECT = {
 }
 
 class RendererTest(unittest.TestCase):
+    def test_math_wrapped_diagrams_use_tex_and_preserve_surrounding_math(self):
+        diagram = r'\begin{tikzcd}A&B\\ C&D\end{tikzcd}'
+        for source in (r'\[' + diagram + r'\]', '$' + diagram + '$',
+                       r'\begin{equation}X = ' + diagram + r'\end{equation}'):
+            with self.subTest(source=source):
+                parsed = renderer.parse('', source)
+                self.assertEqual(parsed.diagnostics, [])
+                output = ''.join(parsed.parts)
+                self.assertIn('class="latex-diagram"', output)
+                self.assertIn(r'\begin{tikzcd}', output)
+                self.assertNotIn('class="latex-math"', output)
+                if 'X =' in source:
+                    self.assertIn('X =', output)
+
     def test_diagrams_preserve_tex_and_only_import_preamble_declarations(self):
         preamble = r'\newcommand{\cA}{\mathcal{A}}\AtBeginDocument{\input{private}}\definecolor{brand}{HTML}{336699}'
         parsed = renderer.parse(preamble, r'\begin{tikzcd}\cA \arrow[r,"f"] & B\end{tikzcd}')

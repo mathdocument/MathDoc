@@ -1160,12 +1160,27 @@ await test('LaTeX tables, colors and TikZ diagrams render shared macros locally'
       assert.ok(requests.filter(url => /tex_files/.test(url)).length > 0, 'loads the bundled TikZ runtime');
       assert.ok(requests.every(request => new URL(request).origin === new URL(url).origin), 'no CDN or external rendering service');
       await page.screenshot({path: resolve(tmpdir(), `mdc-rich-latex-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
+      let previewVersion = 0;
       const preview = async source => {
         await page.getByRole('button', {name: 'Return to LaTeX editor'}).click();
         const input = page.getByRole('textbox', {name: /^latex source/});
-        await input.press('ControlOrMeta+A'); await page.keyboard.insertText(source);
+        const marker = `Preview version ${++previewVersion}`;
+        await input.press('ControlOrMeta+A'); await page.keyboard.insertText(source + '\n\\par ' + marker);
         await page.getByRole('button', {name: 'Render LaTeX preview'}).click();
+        await page.locator('.latex-preview').getByText(marker, {exact: true}).waitFor();
       };
+      await preview(String.raw`\[
+        \begin{tikzcd}
+        A&B\\
+        C&D
+        \end{tikzcd}
+      \]`);
+      await page.locator('.latex-diagram svg').waitFor();
+      assert.equal(await page.locator('.katex-error, .latex-diagram.latex-error').count(), 0);
+      assert.equal(await page.locator('.latex-diagram svg text').count(), 4);
+      await preview(String.raw`\begin{equation}X = \begin{tikzcd}A \arrow[r] & B\end{tikzcd}\end{equation}`);
+      await page.locator('.latex-diagram svg').waitFor();
+      assert.ok(await page.locator('.latex-diagram svg text').count() >= 4, 'surrounding X = is preserved with the diagram');
       await preview(String.raw`\begin{tikzcd}\notAMdcMacro\end{tikzcd}`);
       await page.locator('.latex-diagram.latex-error').waitFor();
       assert.match(await page.locator('.latex-diagram').innerText(), /Undefined control sequence/);

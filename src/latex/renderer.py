@@ -399,6 +399,12 @@ def parse(preamble, source):
                 source = source[start:end]
                 env = {'align': 'aligned', 'gather': 'gathered', 'eqnarray': 'aligned'}.get(name.rstrip('*'))
                 if env: source = '\\begin{' + env + '}' + source + '\\end{' + env + '}'
+            if node.getElementsByTagName('tikzcd'):
+                # KaTeX cannot render diagrams nested inside math delimiters.
+                # Keep surrounding math in the same TeX-rendered SVG as well.
+                diagram = r'\begin{tikzpicture}\node[inner sep=0pt] {$' + (r'\displaystyle ' if name != 'math' else '') + source + r'$};\end{tikzpicture}'
+                parts.append(f'<div class="latex-diagram" data-tex="{esc(diagram)}" data-preamble="{esc(diagram_preamble)}">Rendering diagram…</div>')
+                return
             parts.append(f'<span class="latex-math" data-display="{str(name != "math").lower()}" data-tex="{esc(source)}"></span>')
             return
         if name in ('ref', 'cref', 'Cref', 'nameref', 'eqref'):
