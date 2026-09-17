@@ -99,13 +99,19 @@ struct Worker {
 impl Worker {
     async fn spawn() -> Result<Self> {
         let python = python().await?;
+        // Keep the bundled worker modules importable under Python's isolated mode.
+        let source = format!(
+            "import sys, types\nm = types.ModuleType('richtext')\nsys.modules['richtext'] = m\nexec({}, m.__dict__)\n{}",
+            serde_json::to_string(include_str!("richtext.py"))?,
+            include_str!("renderer.py")
+        );
         let mut child = Command::new(python)
             .args([
                 "-I",
                 "-B",
                 "-u",
                 "-c",
-                include_str!("renderer.py"),
+                &source,
                 include_str!("amsalpha.bst"),
             ])
             .current_dir(std::env::temp_dir())

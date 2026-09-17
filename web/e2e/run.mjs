@@ -1133,6 +1133,56 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
   } finally { await browser.close(); }
 });
 
+await test('LaTeX tables, colors and TikZ diagrams render shared macros locally', {timeout: 90000}, async () => {
+  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const node = {fnode: randomUUID(), title: 'Rich LaTeX', module: 'Lib.RichLatex', depens: [], blocks: [{srctype: 'latex', content: String.raw`
+    {\color{brand}Colored text} and $\textcolor{brand}{x+y}$.
+    \begin{tabular}{|l|c|}\hline Left & Right\\\hline \multicolumn{2}{c}{Together}\\\hline\end{tabular}
+    \begin{tikzcd}\cA \arrow[r,"f",color=brand] \arrow[d,"g"'] & B \arrow[d,"h"] \\ C \arrow[r,"k"'] & D\end{tikzcd}
+  `}]};
+  try {
+    await fixture(browser, async ({page, url, cli, root}) => {
+      const preamble = resolve(root, 'diagrams.tex');
+      await writeFile(preamble, String.raw`\newcommand{\cA}{\mathcal{A}}\definecolor{brand}{HTML}{336699}`);
+      const bibliography = resolve(root, 'diagrams.bib');
+      await writeFile(bibliography, '');
+      await cli('project', 'latex', 'set', '--preamble', preamble, '--bib', bibliography);
+      const requests = [];
+      page.on('request', request => requests.push(request.url()));
+      await page.goto(`${url}/?diagrams#ref=${node.fnode}`);
+      await page.getByRole('button', {name: 'Render LaTeX preview'}).click();
+      await page.locator('.latex-diagram svg').waitFor({timeout: 45000});
+      assert.equal(await page.locator('.latex-error, .katex-error').count(), 0);
+      assert.equal(await page.locator('.latex-table td[colspan="2"]').innerText(), 'Together');
+      assert.equal(await page.locator('.latex-preview').getByText('Colored text', {exact: true}).evaluate(el => getComputedStyle(el).color), 'rgb(51, 102, 153)');
+      assert.ok(await page.locator('.latex-diagram svg path').count() > 0);
+      assert.match(await page.locator('.latex-diagram svg').innerHTML(), /336699|51.*,.*102.*,.*153/i);
+      assert.ok(requests.filter(url => /tex_files/.test(url)).length > 0, 'loads the bundled TikZ runtime');
+      assert.ok(requests.every(request => new URL(request).origin === new URL(url).origin), 'no CDN or external rendering service');
+      await page.screenshot({path: resolve(tmpdir(), `mdc-rich-latex-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
+      const preview = async source => {
+        await page.getByRole('button', {name: 'Return to LaTeX editor'}).click();
+        const input = page.getByRole('textbox', {name: /^latex source/});
+        await input.press('ControlOrMeta+A'); await page.keyboard.insertText(source);
+        await page.getByRole('button', {name: 'Render LaTeX preview'}).click();
+      };
+      await preview(String.raw`\begin{tikzcd}\notAMdcMacro\end{tikzcd}`);
+      await page.locator('.latex-diagram.latex-error').waitFor();
+      assert.match(await page.locator('.latex-diagram').innerText(), /Undefined control sequence/);
+      await preview(String.raw`\begin{tikzcd}E \arrow[r] & F\end{tikzcd}`);
+      await page.locator('.latex-diagram svg').waitFor();
+      await preview(String.raw`\begin{tikzcd}A \pgfextra{\special{dvisvgm:raw <script>window.diagramInjected=1</script><image href="https://invalid.example/pixel"/><circle style="fill:url(https://invalid.example/color)"/>}} \arrow[r] & B\end{tikzcd}`);
+      await page.locator('.latex-diagram svg').waitFor();
+      assert.equal(await page.evaluate(() => window.diagramInjected), undefined);
+      assert.equal(await page.locator('.latex-diagram script, .latex-diagram image').count(), 0);
+      assert.doesNotMatch(await page.locator('.latex-diagram').innerHTML(), /invalid\.example/);
+      await preview(String.raw`\begin{tikzcd}\input{https://invalid.example/secret} \end{tikzcd}`);
+      await page.locator('.latex-diagram.latex-error').waitFor({timeout: 40000});
+      assert.ok(requests.every(request => new URL(request).origin === new URL(url).origin), 'TeX cannot fetch arbitrary input URLs');
+    }, [node]);
+  } finally { await browser.close(); }
+});
+
 await test('Lean first paint waits for syntax highlighting without a server', {timeout: 60000}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   const node = {fnode: randomUUID(), title: 'Highlighted first paint', module: 'Lib.FirstPaint', depens: [], blocks: [

@@ -95,6 +95,42 @@ ends the shared input without consuming the node body. There are no special
 rewrites for particular users' classes or aliases. Unsupported node content still
 reports a diagnostic rather than being silently discarded.
 
+## Tables, colors and diagrams
+
+`tabular` and `tabular*` render as HTML tables, including column alignment,
+rules and `\multicolumn`. Column widths follow HTML layout; the parser does not
+preserve the fixed width of `p{...}` columns. Their contents retain math and
+graph references. `\color`, `\textcolor`, `\colorbox` and `\fcolorbox` use
+xcolor's named colors and color expressions; shared `\definecolor` and
+`\colorlet` declarations apply to text and math.
+
+`tikzcd` renders as SVG with the bundled TikZJax TeX WebAssembly runtime, in a
+browser worker. Standard arrows, labels, TikZ options and shared macro definitions
+are interpreted by TeX. The runtime and fonts load on the first diagram, from
+the MDC server; no CDN, host TeX installation or additional Docker service is
+required. Rendering is serialized per browser page, with a 30-second limit and
+a small cache keyed by diagram source and preamble.
+
+Only imported macro/color declarations and `\usetikzlibrary`/`\tikzset` settings
+are forwarded to diagrams; print layout setup is skipped. TeX reads only bundled
+runtime files, and generated SVG is sanitized before display. Diagram labels are
+local TeX content; graph `\ref` and bibliography links belong in the surrounding
+HTML body. The diagram keeps a white drawing surface so explicit colors retain
+their TeX meaning in either UI theme.
+
+```tex
+\begin{tabular}{|l|c|}
+\hline Object & Value \\
+\hline $A$ & \textcolor{blue}{1} \\
+\hline
+\end{tabular}
+
+\begin{tikzcd}
+A \arrow[r,"f"] \arrow[d,"g"'] & B \arrow[d,"h"] \\
+C \arrow[r,"k"'] & D
+\end{tikzcd}
+```
+
 ## References
 
 `dep` is the only source of external imports. A preview sees the current node's

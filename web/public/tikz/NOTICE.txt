@@ -1,0 +1,20 @@
+The separately bundled TikZ rendering runtime is third-party software.
+
+@drgrice1/tikzjax 1.0.0-beta24
+Jim Fowler, Glenn Rice; package license: GPL-3.0-or-later.
+Source and build instructions:
+https://github.com/drgrice1/tikzjax/tree/e4bb417fe574f58f6db611cefc6be4855ab9d345
+
+@drgrice1/dvi2html 0.0.7-beta4
+Jim Fowler, Glenn Rice; package license: GPL-3.0.
+Source:
+https://github.com/drgrice1/dvi2html/tree/d6ad76907524fb3924cd705825b65e7effeff4ff
+
+run-tex.js is distributed unchanged, with its upstream source map containing
+JavaScript sources and embedded dependency notices. TeX packages in tex_files
+retain their original source headers and licenses. TeX WebAssembly/core build
+instructions and underlying sources are linked in the TikZJax README above.
+The Computer Modern fonts are from BaKoMa (Basil K. Malyshev):
+https://ctan.org/pkg/bakoma-fonts
+
+GPL-3.0.txt accompanies this notice. The MathDoc source has its own license.

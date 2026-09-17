@@ -26,6 +26,8 @@
       const params = new URLSearchParams({ref: link.dataset.latexNode!, label: link.dataset.latexLabel!});
       link.href = `${projectPath('/')}#${params}`;
     }
+    const target = host;
+    if (target.querySelector('.latex-diagram')) void import('../lib/latex-diagram').then(({renderDiagrams}) => renderDiagrams(target));
   });
   $effect(() => {
     void html;
@@ -69,6 +71,12 @@
   .latex-preview :global(.latex-math[data-display="true"]) { display:block; overflow-x:auto; }
   .latex-preview :global(.katex) { font-size:1.1em; }
   .latex-preview :global(.latex-error) { color:var(--mdc-error); }
+  .latex-preview :global(.latex-table) { max-width:100%; overflow-x:auto; margin:.6em 0; }
+  .latex-preview :global(.latex-table table) { border-collapse:collapse; margin:auto; }
+  .latex-preview :global(.latex-table td) { padding:.25em .65em; }
+  .latex-preview :global(.latex-table td p) { margin:0; }
+  .latex-preview :global(.latex-diagram) { overflow-x:auto; text-align:center; margin:.8em 0; }
+  .latex-preview :global(.latex-diagram svg) { display:block; margin:auto; background:white; color:black; zoom:1.5; }
   .latex-preview :global(pre) { overflow-x:auto; white-space:pre; }
   .latex-preview :global(pre), .latex-preview :global(code) { font-family:var(--mdc-mono); font-size:.85em; }
   .latex-preview :global(.latex-bibliography) { border-top:1px solid var(--mdc-border); margin-top:1.5rem; font-size:.9em; }

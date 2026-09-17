@@ -7,6 +7,7 @@ import hashlib
 import html
 import json
 import logging
+import re
 import sys
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -23,11 +24,12 @@ from pybtex.bibtex.interpreter import Interpreter
 from pybtex.database import BibliographyData, parse_string
 from pybtex.database.input.bibtex import Parser
 from pybtex.errors import capture
+import richtext
 
 for name in ("plasTeX", "status", "parse", "context", "packages"):
     logging.getLogger(name).setLevel(logging.ERROR)
 
-PACKAGES = {"article", "amsmath", "amssymb", "amsfonts", "amsthm", "mathtools", "mathrsfs", "xcolor", "color", "hyperref", "cleveref"}
+PACKAGES = {"article", "amsmath", "amssymb", "amsfonts", "amsthm", "mathtools", "mathrsfs", "xcolor", "color", "hyperref", "cleveref", "tikz-cd"}
 RESERVED = {"input", "include", "includeonly", "externaldocument", "externalcitedocument", "openin", "openout", "read", "write", "immediate", "special", "includegraphics", "bibliography", "bibliographystyle"}
 MAX_SOURCE = 2 * 1024 * 1024
 
@@ -47,6 +49,8 @@ def anchor(label):
 class SafeContext(Context.Context):
     def loadPackage(self, tex, file_name, options=None):
         file_name = file_name.removesuffix('.sty').removesuffix('.cls')
+        if file_name == 'color':
+            file_name = 'xcolor'
         if file_name not in PACKAGES:
             raise ValueError(f"Unsupported LaTeX package: {file_name}; provide ordinary macro definitions in the shared preamble")
         result = super().loadPackage(tex, file_name, options)
@@ -129,6 +133,8 @@ def load_preamble(document, preamble):
         'def', 'gdef', 'edef', 'xdef', 'let', 'newif', 'makeatletter', 'makeatother',
         'newcounter', 'setcounter', 'DeclareMathOperator',
     }
+    diagram_preamble = []
+    diagram_declarations = declarations - {'newtheorem', 'theoremstyle', 'newcounter', 'setcounter'}
     tex.input(preamble)
     for token in tex.itertokens():
         name = token.macroName
@@ -149,9 +155,20 @@ def load_preamble(document, preamble):
             yes, no = tex.readArgument(), tex.readArgument()
             # HTML uses article structure, independently of print class options.
             tex.pushTokens(yes if cls == 'article' else no)
+        elif name in richtext.COLOR_DEFINITIONS:
+            command = document.createElement(name)
+            command.invoke(tex)
+            command.digest(iter(()))
         elif name in declarations or (name and context.get(name) and
                 issubclass(context.get(name), (IfCommand, NewIf, IfTrue, IfFalse))):
-            document.createElement(name).invoke(tex)
+            command = document.createElement(name)
+            command.invoke(tex)
+            if name in diagram_declarations:
+                diagram_preamble.append(command.source)
+        elif name in ('usetikzlibrary', 'tikzset'):
+            command = document.createElement(name)
+            command.invoke(tex)
+            diagram_preamble.append(command.source)
         elif name and name.startswith('if'):
             # Unknown braced tests are setup calls; unknown primitive conditionals
             # have no trustworthy active branch, so import neither branch.
@@ -160,6 +177,10 @@ def load_preamble(document, preamble):
     for name, cls in context.protected.items():
         context.top.lets.pop(name, None)
         context.addGlobal(name, cls)
+    for name, color in document.userdata.getPath('packages/xcolor/colors').items():
+        if re.fullmatch(r'[A-Za-z0-9_-]+', name):
+            diagram_preamble.append(r'\definecolor{' + name + '}{HTML}{' + color.html.removeprefix('#') + '}')
+    return '\n'.join(diagram_preamble)
 
 
 class NewTheorem(newtheorem):
@@ -287,7 +308,11 @@ def parse(preamble, source):
     document.context.loadPackage(tex, 'article')
     document.context.loadPackage(tex, 'amsmath')
     document.context.loadPackage(tex, 'amsthm')
+    document.context.loadPackage(tex, 'xcolor')
+    document.context.loadPackage(tex, 'tikz-cd')
     definitions = {
+        **richtext.COLORS,
+        **richtext.COLOR_DEFINITIONS,
         **{name: Ref for name in ('ref', 'cref', 'Cref', 'nameref', 'eqref')},
         'cite': Cite, 'label': Label, 'usepackage': UsePackage, 'RequirePackage': UsePackage,
         'newtheorem': NewTheorem, 'providecommand': ProvideCommand,
@@ -300,7 +325,7 @@ def parse(preamble, source):
     document.context.protected = {name: type(name, (base,), {'nodeName': name}) for name, base in definitions.items()}
     for name, cls in document.context.protected.items():
         document.context.addGlobal(name, cls)
-    load_preamble(document, preamble)
+    diagram_preamble = load_preamble(document, preamble)
     tex.input('\\begin{document}\n' + source + '\n\\end{document}')
     tex.parse()
     diagnostics = []
@@ -353,6 +378,11 @@ def parse(preamble, source):
             return
         if name == '#text':
             parts.append(esc(str(node)))
+            return
+        if richtext.render(node, parts, lambda child: render(child, depth + 1)):
+            return
+        if name == 'tikzcd':
+            parts.append(f'<div class="latex-diagram" data-tex="{esc(node.source)}" data-preamble="{esc(diagram_preamble)}">Rendering diagram…</div>')
             return
         if name == 'par' and any(getattr(child, 'blockType', False) for child in children):
             # plasTeX can wrap a bibliography in a paragraph after its definitions.

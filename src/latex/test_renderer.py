@@ -14,6 +14,31 @@ PROJECT = {
 }
 
 class RendererTest(unittest.TestCase):
+    def test_diagrams_preserve_tex_and_only_import_preamble_declarations(self):
+        preamble = r'\newcommand{\cA}{\mathcal{A}}\AtBeginDocument{\input{private}}\definecolor{brand}{HTML}{336699}'
+        parsed = renderer.parse(preamble, r'\begin{tikzcd}\cA \arrow[r,"f"] & B\end{tikzcd}')
+        self.assertEqual(parsed.diagnostics, [])
+        output = ''.join(parsed.parts)
+        self.assertIn('class="latex-diagram"', output)
+        self.assertIn(r'\arrow[r,&quot;f&quot;]', output)
+        self.assertIn(r'\newcommand{\cA', output)
+        self.assertIn(r'\definecolor{brand}{HTML}{336699}', output)
+        self.assertNotIn('private', output)
+
+    def test_tables_and_colors_use_native_parsed_structure(self):
+        parsed = renderer.parse(r'\definecolor{brand}{HTML}{336699}\colorlet{soft}{brand!50!white}', r'''
+            {\color{soft}Tinted} normal $\colorlet{local}{brand}\textcolor{local}{x}+{\color{red!50!blue}y}$
+            \begin{tabular}{|p{3cm}|c|}\hline A & \textcolor{red}{B}\\\hline
+            \multicolumn{2}{c}{Together}\\\hline\end{tabular}
+        ''')
+        self.assertEqual(parsed.diagnostics, [])
+        output = ''.join(parsed.parts)
+        for expected in ('<table ', '<tr', 'colspan="2"', 'text-align:center',
+                         'border-top-style:solid', 'color:#99B2CC', r'\textcolor{#336699}', r'\color{#7F007F}'):
+            self.assertIn(expected, output)
+        self.assertNotIn(r'\require', output)
+        self.assertNotIn(r'\colorlet', output)
+
     def test_incomplete_bibliography_entries_remain_citable(self):
         project = {**PROJECT, 'bibliography': PROJECT['bibliography'] + r'''
             @book{Fox1957, title={A title}, year={1957}}

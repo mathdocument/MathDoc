@@ -40,6 +40,7 @@ export default defineConfig({
       { src: "node_modules/@leanprover/infoview/dist/*", dest: "infoview" },
       { src: "node_modules/lean4monaco/dist/webview/webview.js", dest: "infoview" },
       { src: "node_modules/@leanprover/infoview/dist/codicon.ttf", dest: "assets" },
+      { src: "node_modules/@drgrice1/tikzjax/dist/{run-tex.js,run-tex.js.map,core.dump.gz,tex.wasm.gz,fonts.css,fonts,tex_files}", dest: "tikz/1.0.0-beta24" },
     ] }),
     {
       name: "katex-woff2-only",
