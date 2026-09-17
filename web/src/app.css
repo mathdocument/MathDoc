@@ -88,6 +88,12 @@ input:focus-visible,
    native scrolling, which can expose unrendered rows during Safari gestures. */
 .mdc-editor-widgets .suggest-widget .monaco-scrollable-element,
 .mdc-editor-widgets .suggest-widget .monaco-list-rows { overflow: clip !important; }
+/* A recycled, moving list must repaint its rows, not reuse Safari's clipped
+   tiles from a huge GPU layer. Disable both parts of Monaco's layer hint. */
+.mdc-editor-widgets .suggest-widget .monaco-list-rows {
+  transform: none !important;
+  contain: none !important;
+}
 .mdc-editor-widgets .suggest-widget .monaco-list-row { border-radius: 5px; }
 .mdc-editor-widgets .suggest-widget .details-label {
   font-family: var(--mdc-font);

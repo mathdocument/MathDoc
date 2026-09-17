@@ -34,7 +34,7 @@ async function fixture(browser, body, extraNodes = [], expectedPageErrors = []) 
   let server;
   let context;
   const database = `mdce2e${randomUUID().replaceAll("-", "")}`;
-  const cli = (...args) => run(binary, (args[0] === "init" ? ["init", database] : [args[0], "--proj", `${database}/main`, ...args.slice(1)]), { cwd: root, env: { ...env, MDC_CACHE_DIR: resolve(root, "cache") }, timeout: 30000 });
+  const cli = (...args) => run(binary, (args[0] === "init" ? ["init", database] : [args[0], "--proj", `${database}/main`, ...args.slice(1)]), { cwd: root, env: { ...env, MDC_CACHE_DIR: resolve(root, "cache") }, timeout: 30000, maxBuffer: 16 * 1024 * 1024 });
   try {
     await cli("init");
     server = await startServer(root, database);
@@ -1013,7 +1013,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       const preamble = resolve(root, 'macros.tex'), bib = resolve(root, 'references.bib');
       await writeFile(preamble, String.raw`\usepackage{amsthm}\newcommand{\cA}{\mathcal{A}}\newenvironment{items}{\begin{itemize}}{\end{itemize}}\newtheorem{thm}{Theorem}`);
       await writeFile(bib, '@article{paper,title={A paper},author={Author, A.},journal={Journal},year={2020}}' +
-        Array.from({length: 80}, (_, i) => `@article{zextra${i},title={Another publication ${i}},author={Writer, B.},year={2021}}`).join('\n'));
+        Array.from({length: 14000}, (_, i) => `@article{zextra${i},title={Another publication ${i}},author={Writer, B.},year={2021}}`).join('\n'));
       await page.getByRole('button', {name: 'Save LaTeX project', exact: true}).waitFor();
       await page.getByLabel('Class or preamble').setInputFiles(preamble);
       await page.getByLabel('Bibliography', {exact: true}).setInputFiles(bib);
@@ -1051,6 +1051,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       assert.ok(headingGap < 4, 'theorem heading and first paragraph must share a line');
       await page.goBack();
       await title(page, 'Alpha');
+      await block.locator('.latex-imports summary').getByText('1 imported dependencies', {exact: true}).waitFor();
       const input = block.getByRole('textbox', {name: /^latex source/});
       const fill = async value => { await input.press('ControlOrMeta+A'); await page.keyboard.insertText(value); };
       await fill('Use \\nameref{');
@@ -1067,6 +1068,12 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
         await option.waitFor();
         const popup = page.locator('.mdc-editor-widgets .suggest-widget:visible');
         assert.equal(await popup.count(), 1, 'completion escapes the source block clipping context');
+        const paint = await popup.locator('.monaco-list-rows').evaluate(el => ({
+          height: el.scrollHeight, transform: getComputedStyle(el).transform, contain: getComputedStyle(el).contain,
+        }));
+        assert.ok(paint.height > 350000, 'exercise a bibliography as large as arithprog');
+        assert.equal(paint.transform, 'none', 'do not tile the entire virtual list as a GPU layer');
+        assert.equal(paint.contain, 'none', 'recycled rows must invalidate normal painting');
         const geometry = await option.evaluate(el => {
           const add = document.querySelector('.add-btn').getBoundingClientRect();
           const widget = el.closest('.suggest-widget');
