@@ -450,9 +450,10 @@ def parse(preamble, source):
                 env = {'align': 'aligned', 'gather': 'gathered', 'eqnarray': 'aligned'}.get(name.rstrip('*'))
                 if env: source = '\\begin{' + env + '}' + source + '\\end{' + env + '}'
             if node.getElementsByTagName('tikzcd'):
-                # KaTeX cannot render diagrams nested inside math delimiters.
-                # Keep surrounding math in the same TeX-rendered SVG as well.
-                diagram = r'\begin{tikzpicture}\node[inner sep=0pt] {$' + (r'\displaystyle ' if name != 'math' else '') + source + r'$};\end{tikzpicture}'
+                # Capture the whole formula in the DVI driver's SVG, including
+                # surrounding math. A TikZ node wrapper nests pictures inside
+                # text's stroke:none scope and makes ordinary arrows invisible.
+                diagram = r'\special{dvisvgm:raw <svg beginpicture>}$' + (r'\displaystyle ' if name != 'math' else '') + source + r'$\special{dvisvgm:raw </svg endpicture>}'
                 parts.append(f'<div class="latex-diagram" data-tex="{esc(diagram)}" data-preamble="{esc(diagram_preamble_for(diagram_preamble, diagram))}">Rendering diagram…</div>')
                 return
             parts.append(f'<span class="latex-math" data-display="{str(name != "math").lower()}" data-tex="{esc(source)}"></span>')

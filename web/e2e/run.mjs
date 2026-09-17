@@ -1066,17 +1066,13 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
         await input.press('Control+Space');
         const option = page.getByRole('option').filter({hasText: 'A paper'});
         await option.waitFor();
-        const popup = page.locator('.mdc-editor-widgets .suggest-widget:visible');
+        const popup = page.locator('.mdc-editor-widgets .latex-completions:visible');
         assert.equal(await popup.count(), 1, 'completion escapes the source block clipping context');
-        const paint = await popup.locator('.monaco-list-rows').evaluate(el => ({
-          height: el.scrollHeight, transform: getComputedStyle(el).transform, contain: getComputedStyle(el).contain,
-        }));
-        assert.equal(paint.height, 50 * 28, 'cap candidates even with 14,000 bibliography entries');
-        assert.equal(paint.transform, 'none', 'do not tile the entire virtual list as a GPU layer');
-        assert.equal(paint.contain, 'none', 'recycled rows must invalidate normal painting');
+        assert.equal(await popup.getByRole('option').count(), 50, 'all 50 candidates are mounted, including offscreen rows');
+        assert.equal(await popup.evaluate(el => getComputedStyle(el).overflowY), 'auto');
         const geometry = await option.evaluate(el => {
           const add = document.querySelector('.add-btn').getBoundingClientRect();
-          const widget = el.closest('.suggest-widget');
+          const widget = el.closest('.latex-completions');
           const row = widget.getBoundingClientRect();
           const left = Math.max(row.left, add.left), right = Math.min(row.right, add.right);
           const top = Math.max(row.top, add.top), bottom = Math.min(row.bottom, add.bottom);
@@ -1091,17 +1087,16 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
         assert.ok(geometry.radius >= 8, 'use the app popup shape');
         assert.equal(await page.locator('.suggest-details:visible').count(), 0, 'no duplicate details panel');
         const popupBox = await popup.boundingBox();
-        assert.equal(await popup.evaluate(el => [el, ...el.querySelectorAll('.monaco-scrollable-element, .monaco-list-rows')].every(surface => {
-          surface.scrollTop = 100;
-          return surface.scrollTop === 0;
-        })), true, 'native scrolling cannot reveal rows outside Monaco\'s rendered window');
+        assert.equal(await popup.evaluate(el => { el.scrollTop = 100; return el.scrollTop; }), 100, 'use native scrolling');
+        await popup.evaluate(el => { el.scrollTop = 0; });
         await page.mouse.move(popupBox.x + 100, popupBox.y + 70);
         await popup.evaluate(el => {
           window.completionFrames = []; window.recordCompletion = true;
+          window.completionRows = [...el.children];
           const sample = () => {
-            const box = el.getBoundingClientRect(), list = el.querySelector('.monaco-list-rows');
+            const box = el.getBoundingClientRect();
             window.completionFrames.push({x: box.x, y: box.y, height: box.height, shown: getComputedStyle(el).visibility,
-              list: parseFloat(list.style.top), pane: document.querySelector('.blocks').scrollTop,
+              list: el.scrollTop, retained: window.completionRows.every((row, i) => el.children[i] === row), pane: document.querySelector('.blocks').scrollTop,
               hit: el.contains(document.elementFromPoint(box.x + 100, box.y + 70))});
             if (window.recordCompletion) requestAnimationFrame(sample);
           }; requestAnimationFrame(sample);
@@ -1111,16 +1106,16 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
           await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
         }
         const frames = await page.evaluate(() => {window.recordCompletion = false; return window.completionFrames;});
-        assert.ok(frames.some(frame => frame.list < -100), 'scroll through the virtualized citation candidates');
+        assert.ok(frames.some(frame => frame.list > 100), 'scroll through native citation candidates');
         assert.ok(frames.every(frame => frame.x === popupBox.x && frame.y === popupBox.y && frame.height === popupBox.height && frame.shown === 'visible' && frame.hit), 'completion geometry and hit testing stay stable through every scroll frame');
+        assert.ok(frames.every(frame => frame.retained), 'never remove or recycle candidate rows while scrolling');
         assert.equal(new Set(frames.map(frame => frame.pane)).size, 1, 'candidate scrolling never moves the page underneath');
         await page.screenshot({path: resolve(tmpdir(), `mdc-completion-${theme}-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
         await option.click();
         await page.waitForFunction(() => /cite\{paper/.test(document.querySelector('[data-srctype="latex"] .view-lines').innerText));
         assert.match(await block.locator('.view-lines').innerText(), /cite\{paper/);
       }
-      // An incomplete list must requery the full catalog while typing, and
-      // expand again on backspace, rather than filter just the first 50 items.
+      // Search the full catalog while typing and expand again on backspace.
       await fill('\\cite{');
       await input.press('Control+Space');
       await page.getByRole('option').filter({hasText: 'A paper'}).waitFor();
@@ -1131,6 +1126,25 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await input.press('9');
       await page.getByRole('option').filter({hasText: 'Another publication 13999'}).click();
       assert.match(await block.locator('.view-lines').innerText(), /cite\{zextra13999/);
+      await fill('\\cite{A paper');
+      await input.press('Control+Space');
+      await page.getByRole('option').filter({hasText: 'A paper'}).waitFor();
+      await input.press('Enter');
+      await page.waitForFunction(() => /cite\{paper/.test(document.querySelector('[data-srctype="latex"] .view-lines').innerText));
+      assert.match(await block.locator('.view-lines').innerText(), /cite\{paper/);
+      await input.press('ControlOrMeta+z');
+      await page.waitForFunction(() => /cite\{A.paper/.test(document.querySelector('[data-srctype="latex"] .view-lines').innerText));
+      assert.match(await block.locator('.view-lines').innerText(), /cite\{A.paper/);
+      await input.press('Escape');
+      assert.equal(await page.locator('.latex-completions:visible').count(), 0);
+      await fill('\\cite{');
+      await input.press('Control+Space');
+      await page.getByRole('option').filter({hasText: 'A paper'}).waitFor();
+      await input.press('ArrowDown');
+      const nextKey = await page.getByRole('option', {selected: true}).locator('span').first().innerText();
+      await input.press('Tab');
+      await page.waitForFunction(key => document.querySelector('[data-srctype="latex"] .view-lines').innerText.includes(`cite{${key}`), nextKey);
+      assert.ok((await block.locator('.view-lines').innerText()).includes(`cite{${nextKey}`));
       const draft = String.raw`\section{Draft title}\label{new}By \nameref{thm:b}, see \cite{paper}. $\cA$`;
       await fill(draft);
       await block.getByRole('button', {name: 'Render LaTeX preview'}).click();
@@ -1197,9 +1211,21 @@ await test('LaTeX tables, colors and TikZ diagrams render shared macros locally'
       await page.locator('.latex-diagram svg').waitFor();
       assert.equal(await page.locator('.katex-error, .latex-diagram.latex-error').count(), 0);
       assert.equal(await page.locator('.latex-diagram svg text').count(), 4);
+      await preview(String.raw`\[
+        \begin{tikzcd}
+        A\ar[r] & B\ar[d] \\
+        C & D\ar[l]
+        \end{tikzcd}
+      \]`);
+      await page.locator('.latex-diagram svg').waitFor();
+      const visibleStrokes = () => page.locator('.latex-diagram svg path').evaluateAll(paths =>
+        paths.filter(path => getComputedStyle(path).stroke !== 'none').length);
+      assert.equal(await visibleStrokes(), 6, 'three visible arrow shafts and three arrowheads');
+      await page.screenshot({path: resolve(tmpdir(), `mdc-tikzcd-arrows-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
       await preview(String.raw`\begin{equation}X = \begin{tikzcd}A \arrow[r] & B\end{tikzcd}\end{equation}`);
       await page.locator('.latex-diagram svg').waitFor();
       assert.ok(await page.locator('.latex-diagram svg text').count() >= 4, 'surrounding X = is preserved with the diagram');
+      assert.equal(await visibleStrokes(), 2, 'surrounding math must not hide the arrow');
       await preview(String.raw`\begin{tikzcd}\notAMdcMacro\end{tikzcd}`);
       await page.locator('.latex-diagram.latex-error').waitFor();
       assert.match(await page.locator('.latex-diagram').innerText(), /Undefined control sequence/);

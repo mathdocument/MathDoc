@@ -27,7 +27,6 @@ test('citation candidates are capped after searching the entire bibliography', (
   })), commands: [], environments: [], diagnostics: []};
   const complete = (query: string) => latexCompletions({references: [], catalog}, `\\cite{${query}`)!;
   expect(complete('').options).toHaveLength(50);
-  expect(complete('').incomplete).toBe(true);
   for (const query of ['key13999', '13999 AUTHOR', 'Paper 13999 2020']) {
     expect(complete(query).options.map(item => item.insert)).toEqual(['key13999']);
   }

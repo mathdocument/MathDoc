@@ -19,7 +19,7 @@
   import { LatexSession } from "../lib/latex-session.svelte";
   import LatexImports from "./LatexImports.svelte";
   import { removeDraft, setDraftDirty, trackMutation } from "../lib/unsaved";
-  import { latexAutocomplete } from "../lib/latex-completion";
+  import { latexAutocomplete } from "../lib/latex-completion-widget";
 
   interface Props {
     fnode: string;
@@ -88,7 +88,7 @@
       });
       editorView.addCommand(KeyMod.CtrlCmd | KeyCode.KeyS, () => void save());
       editorView.addCommand(KeyMod.CtrlCmd | KeyCode.Enter, () => void save());
-      if (latex) { completion = await latexAutocomplete(latex, model); if (!alive) { completion.dispose(); return; } }
+      if (latex) completion = latexAutocomplete(latex, editorView);
       requestAnimationFrame(() => requestAnimationFrame(() => {
         if (!alive) return;
         renderSource(editorView!); ready = true; onReady?.();

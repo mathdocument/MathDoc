@@ -24,6 +24,7 @@ class RendererTest(unittest.TestCase):
                 output = ''.join(parsed.parts)
                 self.assertIn('class="latex-diagram"', output)
                 self.assertIn(r'\begin{tikzcd}', output)
+                self.assertNotIn(r'\begin{tikzpicture}', output)
                 self.assertNotIn('class="latex-math"', output)
                 if 'X =' in source:
                     self.assertIn('X =', output)

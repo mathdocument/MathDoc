@@ -84,22 +84,38 @@ input:focus-visible,
   overflow: clip;
   max-width: calc(100vw - 24px);
 }
-/* Monaco scrolls/recycles these rows itself. overflow:hidden still permits
-   native scrolling, which can expose unrendered rows during Safari gestures. */
-.mdc-editor-widgets .suggest-widget .monaco-scrollable-element,
-.mdc-editor-widgets .suggest-widget .monaco-list-rows { overflow: clip !important; }
-/* A recycled, moving list must repaint its rows, not reuse Safari's clipped
-   tiles from a huge GPU layer. Disable both parts of Monaco's layer hint. */
-.mdc-editor-widgets .suggest-widget .monaco-list-rows {
-  transform: none !important;
-  contain: none !important;
-}
 .mdc-editor-widgets .suggest-widget .monaco-list-row { border-radius: 5px; }
 .mdc-editor-widgets .suggest-widget .details-label {
   font-family: var(--mdc-font);
   color: var(--mdc-dim);
 }
 .mdc-editor-widgets .suggest-widget [tabindex]:focus-visible { outline: none; }
+.mdc-editor-widgets .latex-completions {
+  width: min(440px, calc(100vw - 24px));
+  max-height: min(340px, 40vh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  border: 1px solid var(--mdc-border-strong);
+  border-radius: var(--mdc-radius-md);
+  background: var(--mdc-panel-raised);
+  color: var(--mdc-fg-soft);
+  box-shadow: var(--mdc-shadow-panel);
+  font: 12px/28px var(--mdc-font);
+}
+.latex-completions [role="option"] {
+  display: grid;
+  grid-template-columns: minmax(0, 36%) minmax(0, 1fr);
+  gap: 12px;
+  height: 28px;
+  padding: 0 7px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.latex-completions [role="option"][aria-selected="true"] { background: var(--mdc-card-selected); color: var(--mdc-fg); }
+.latex-completions [role="option"] > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.latex-completions [role="option"] > span:first-child { font-family: var(--mdc-mono); }
+.latex-completions [role="option"] > span:last-child { color: var(--mdc-dim); }
 
 /* ---------------------------------------------------------------------------
    Overlay dialogs. Shared chrome for the search, dependency, and new-node
