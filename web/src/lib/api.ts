@@ -67,11 +67,12 @@ export interface ServiceStatus {
 }
 
 export type ProjectAction = {action: "init"; name: string}
+  | {action: "remove"; database: string}
   | {action: "new_branch"; project: string; name: string}
   | {action: "start" | "stop" | "delete_branch"; project: string};
 export const projectsApi = {
   list: (signal?: AbortSignal) => fetchJson<ServiceStatus>("/api/projects", {signal}),
-  change: (body: ProjectAction) => fetchJson<{project: string}>("/api/projects", {
+  change: (body: ProjectAction) => fetchJson<{project?: string; database?: string; deleted?: boolean}>("/api/projects", {
     method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(body),
   }),
 };

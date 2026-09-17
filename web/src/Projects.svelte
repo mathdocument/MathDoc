@@ -55,12 +55,23 @@
     await refresh();
   }
   async function manage(project: string, action: "start" | "stop" | "delete_branch") {
-    if (pending[project]) return;
+    if (pending[project] || pending[project.split("/")[0]!]) return;
     if (action === "delete_branch" && !confirm(`Delete ${project} and its Lean caches?`)) return;
     pending[project] = action; delete failures[project];
     try { await projectsApi.change({action, project}); }
     catch (e) { failures[project] = e instanceof Error ? e.message : String(e); }
     finally { await changed(); delete pending[project]; }
+  }
+  function projectPending(database: string) {
+    return !!pending[database] || branches.some(row => row.database === database && !!pending[row.name]);
+  }
+  async function removeProject(database: string) {
+    if (projectPending(database)) return;
+    if (!confirm(`Delete entire project ${database}?\n\nAll its branches will be stopped. All project data, history, Lean caches and unsaved editor sessions will be deleted.`)) return;
+    pending[database] = "remove"; delete failures[database];
+    try { await projectsApi.change({action: "remove", database}); }
+    catch (e) { failures[database] = e instanceof Error ? e.message : String(e); }
+    finally { await changed(); delete pending[database]; }
   }
   function toggleTheme() {
     theme = theme === "dark" ? "light" : "dark";
@@ -111,6 +122,9 @@
     </div>
 
     {#if error}<div class="error" role="alert">Could not refresh projects: {error}{#if status}<span>Showing the last known states.</span>{/if}</div>{/if}
+    {#each Object.entries(failures).filter(([name]) => !name.includes("/")) as [database, message] (database)}
+      <div class="error" role="alert">Could not delete project {database}: {message}</div>
+    {/each}
     {#if !status && !error}
       <div class="empty" role="status">Loading projects…</div>
     {:else if status && branches.length === 0}
@@ -121,24 +135,31 @@
       <div class="projects">
         {#each groups as [database, rows] (database)}
           <section class="project" aria-label={`Project ${database}`}>
-            <div class="project-head"><FolderOpen size={18} strokeWidth={1.7} /><h2>{database}</h2><span>{rows.length} {rows.length === 1 ? "branch" : "branches"}</span></div>
+            <div class="project-head">
+              <FolderOpen size={18} strokeWidth={1.7} /><h2>{database}</h2><span>{rows.length} {rows.length === 1 ? "branch" : "branches"}</span>
+              <button class="icon-button delete" disabled={projectPending(database)} onclick={() => void removeProject(database)} title={`Delete entire project ${database}`} aria-label={`Delete project ${database}`}>
+                {#if pending[database]}<RefreshCw size={16} class="spinning" />{:else}<Trash2 size={16} />{/if}
+              </button>
+            </div>
             {#each rows as row (row.name)}
               <div class="branch-row" data-project={row.name}>
-                <span class="branch-name" title={row.name}><GitBranch size={16} strokeWidth={1.6} /><span>{row.branch}</span></span>
+                <span class="branch-name" title={row.name}><GitBranch size={16} strokeWidth={1.6} /><span class:main-branch={row.branch === "main"} title={row.branch === "main" ? "Main branch: can only be deleted with the entire project" : undefined}>{row.branch}</span></span>
                 <span class="state" class:online={row.running}><i></i>{row.running ? "Running" : "Stopped"}</span>
                 <span class="counts" aria-label={`Graph size of ${row.name}`}>
                   <span>{#if row.running && row.nodes !== undefined}<strong>{row.nodes.toLocaleString()}</strong> {row.nodes === 1 ? "node" : "nodes"}{/if}</span>
                   <span>{#if row.running && row.edges !== undefined}<strong>{row.edges.toLocaleString()}</strong> {row.edges === 1 ? "edge" : "edges"}{/if}</span>
                 </span>
                 <div class="actions" aria-label={`Manage ${row.name}`}>
-                  <button class="toggle" class:stopped={!row.running} disabled={!!pending[row.name]} onclick={() => void manage(row.name, row.running ? "stop" : "start")} title={`${row.running ? "Stop" : "Start"} ${row.name}`} aria-label={`${row.running ? "Stop" : "Start"} ${row.name}`}>
+                  <button class="toggle" class:stopped={!row.running} disabled={!!pending[row.name] || !!pending[database]} onclick={() => void manage(row.name, row.running ? "stop" : "start")} title={`${row.running ? "Stop" : "Start"} ${row.name}`} aria-label={`${row.running ? "Stop" : "Start"} ${row.name}`}>
                     {#if pending[row.name]}<RefreshCw size={14} class="spinning" />{:else if row.running}<Square size={13} />{:else}<Play size={14} />{/if}
                   </button>
                   <div class="branch-actions">
-                    <button class="icon-button" disabled={!!pending[row.name]} onclick={() => create = {source: row.name}} title={`New branch from ${row.name}`} aria-label={`New branch from ${row.name}`}><GitBranchPlus size={16} /></button>
-                    <button class="icon-button delete" disabled={row.running || !!pending[row.name]} onclick={() => void manage(row.name, "delete_branch")} title={row.running ? "Stop this branch before deleting" : `Delete ${row.name}`} aria-label={`Delete ${row.name}`}><Trash2 size={15} /></button>
+                    <button class="icon-button" disabled={!!pending[row.name] || !!pending[database]} onclick={() => create = {source: row.name}} title={`New branch from ${row.name}`} aria-label={`New branch from ${row.name}`}><GitBranchPlus size={16} /></button>
+                    {#if row.branch !== "main"}
+                      <button class="icon-button delete" disabled={row.running || !!pending[row.name] || !!pending[database]} onclick={() => void manage(row.name, "delete_branch")} title={row.running ? "Stop this branch before deleting" : `Delete ${row.name}`} aria-label={`Delete ${row.name}`}><Trash2 size={15} /></button>
+                    {/if}
                   </div>
-                  {#if row.running && row.url && !pending[row.name]}
+                  {#if row.running && row.url && !pending[row.name] && !pending[database]}
                     <a class="open icon-button" href={`/p/${row.name}/`} title={`Open ${row.name}`} aria-label={`Open ${row.name}`}><ArrowUpRight size={17} /></a>
                   {:else}<span class="open-space" aria-hidden="true"></span>{/if}
                 </div>
@@ -187,12 +208,13 @@
   .branch-row + .branch-row { border-top: 1px solid var(--mdc-border); }
   .branch-name { display: flex; align-items: center; gap: 12px; min-width: 0; color: var(--mdc-dim); }
   .branch-name span { color: var(--mdc-fg-soft); font-family: var(--mdc-mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .branch-name .main-branch { padding: 2px 7px; border: 1px solid var(--mdc-border-strong); border-radius: var(--mdc-radius-sm); }
   .branch-name :global(svg) { flex-shrink: 0; }
   .state { display: flex; align-items: center; font-size: 11px; color: var(--mdc-muted); }
   .online { color: var(--mdc-accent-down); }
   .counts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; min-height: 18px; font-size: 11px; color: var(--mdc-muted); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .counts strong { color: var(--mdc-fg-soft); font-weight: 500; }
-  .actions { display: flex; align-items: center; gap: 8px; }
+  .actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 148px; }
   .toggle { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 32px; padding: 0; color: var(--mdc-dim); background: var(--mdc-card); border: 1px solid var(--mdc-border-strong); border-radius: var(--mdc-radius-sm); }
   .toggle:hover:not(:disabled) { color: var(--mdc-fg); background: var(--mdc-card-hover); }
   .toggle.stopped { color: var(--mdc-accent-down); }
@@ -205,7 +227,7 @@
   a:focus-visible { outline: 2px solid var(--mdc-accent); outline-offset: 3px; }
   .open-space { width: 34px; flex-shrink: 0; }
   .row-error { grid-column: 1 / -1; color: var(--mdc-error); font-size: 12px; overflow-wrap: anywhere; }
-  .actions :global(.spinning) { animation: spin 1s linear infinite; }
+  .project-head :global(.spinning), .actions :global(.spinning) { animation: spin 1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .error { padding: 14px 18px; margin-bottom: 18px; border-radius: var(--mdc-radius-sm); background: color-mix(in srgb, var(--mdc-error) 7%, var(--mdc-panel)); color: var(--mdc-error); overflow-wrap: anywhere; }
   .error span { display: block; margin-top: 4px; font-size: 12px; }

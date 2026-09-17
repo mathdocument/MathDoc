@@ -40,6 +40,7 @@ pub(super) async fn list(State(state): State<Arc<Server>>) -> Result<Json<Value>
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Action {
     Init { name: String },
+    Remove { database: String },
     Start { project: String },
     Stop { project: String },
     NewBranch { project: String, name: String },
@@ -64,6 +65,7 @@ pub(super) async fn manage(
         match action {
             Action::Start { project } => Ok(state.start_branch(project).await?),
             Action::Stop { project } => state.stop_branch(project, None).await,
+            Action::Remove { database } => state.remove_database(database).await,
             action => {
                 let _operation = state.operations.read().await;
                 if state.closing.load(Ordering::Acquire) {
@@ -86,7 +88,9 @@ pub(super) async fn manage(
                     Action::DeleteBranch { project } => {
                         Ok(crate::service::delete_branch(&project).await?)
                     }
-                    Action::Start { .. } | Action::Stop { .. } => unreachable!(),
+                    Action::Start { .. } | Action::Stop { .. } | Action::Remove { .. } => {
+                        unreachable!()
+                    }
                 }
             }
         }

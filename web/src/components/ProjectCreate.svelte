@@ -21,6 +21,7 @@
     busy = true; error = "";
     try {
       const result = await projectsApi.change(source ? {action: "new_branch", project: source, name} : {action: "init", name});
+      if (!result.project) throw new Error("Project creation returned no branch");
       await onCreated(result.project);
       onClose();
     } catch (e) { error = errMsg(e); }

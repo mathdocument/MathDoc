@@ -142,7 +142,8 @@ await test('project directory creates, forks, starts, stops and deletes branches
       assert.equal(await page.getByText('MATHEMATICAL WORKSPACE', {exact: true}).count(), 0);
       assert.match(await row(main).locator('.counts').innerText(), /3.*nodes/);
       assert.match(await row(main).locator('.counts').innerText(), /1.*edge/);
-      assert.equal(await row(main).getByRole('button', {name: `Delete ${main}`, exact: true}).isDisabled(), true);
+      assert.equal(await row(main).getByRole('button', {name: `Delete ${main}`, exact: true}).count(), 0);
+      assert.equal(await row(main).locator('.main-branch').evaluate(el => getComputedStyle(el).borderTopStyle), 'solid');
       const branch = async (source, name) => {
         await row(source).getByRole('button', {name: `New branch from ${source}`, exact: true}).click();
         await page.getByLabel('Branch name', {exact: true}).fill('invalid/name');
@@ -182,9 +183,46 @@ await test('project directory creates, forks, starts, stops and deletes branches
         await page.getByRole('dialog').getByRole('button', {name: 'Init', exact: true}).click();
         await page.getByRole('dialog').waitFor({state: 'hidden'});
         await row(`${initialized}/main`).getByText('Stopped', {exact: true}).waitFor();
+        const deleteMain = row(`${initialized}/main`).getByRole('button', {name: `Delete ${initialized}/main`, exact: true});
+        assert.equal(await deleteMain.count(), 0);
         await row(`${initialized}/main`).getByRole('button', {name: `Start ${initialized}/main`, exact: true}).click();
         await row(`${initialized}/main`).getByText('Running', {exact: true}).waitFor();
         assert.match(await row(`${initialized}/main`).locator('.counts').innerText(), /0.*nodes/);
+        const body = JSON.stringify({action: 'remove', database: initialized});
+        for (const origin of [undefined, 'https://attacker.invalid']) {
+          const headers = {'content-type': 'application/json'};
+          if (origin) headers.origin = origin;
+          assert.equal((await fetch(`${base}/api/projects`, {method: 'POST', headers, body})).status, 403);
+        }
+        assert.ok((await fetch(`${base}/api/projects`, {method: 'POST', headers: {'content-type': 'application/json', origin: base},
+          body: JSON.stringify({action: 'new_branch', project: `${initialized}/main`, name: 'hidden'})})).ok);
+        await page.getByRole('textbox', {name: 'Search projects and branches'}).fill(initialized);
+        await page.getByRole('button', {name: 'Running', exact: true}).click();
+        const removeProject = page.getByRole('button', {name: `Delete project ${initialized}`, exact: true});
+        // Cancel must preserve the project; accepting covers even filtered-out branches.
+        page.removeAllListeners('dialog');
+        page.once('dialog', dialog => void dialog.dismiss());
+        await removeProject.click();
+        assert.ok((await fetch(`${base}/p/${initialized}/main/api/graph/check`)).ok);
+        const confirmations = [];
+        page.on('dialog', dialog => { confirmations.push(dialog.message()); void dialog.accept(); });
+        const rejectRemoval = route => route.request().postDataJSON()?.action === 'remove'
+          ? route.fulfill({status: 500, json: {error: 'test removal failed'}}) : route.continue();
+        await page.route('**/api/projects', rejectRemoval);
+        await removeProject.click();
+        await page.getByRole('alert').filter({hasText: 'test removal failed'}).waitFor();
+        await page.unroute('**/api/projects', rejectRemoval);
+        await removeProject.click();
+        await page.getByRole('region', {name: `Project ${initialized}`, exact: true}).waitFor({state: 'hidden'});
+        assert.ok(confirmations.every(text => text.includes('All its branches') && text.includes('history')));
+        assert.ok((await fetch(`${url}/api/graph/check`)).ok, 'removing a project preserves other projects');
+        const inventory = await (await fetch(`${base}/api/projects`)).json();
+        assert.equal(Object.keys(inventory.projects).some(name => name.startsWith(`${initialized}/`)), false);
+        assert.equal(await page.getByRole('alert').filter({hasText: 'test removal failed'}).count(), 0);
+        const db = await fetch(`${env.MDC_TERMINUS_URL ?? 'http://127.0.0.1:6363'}/api/db/admin/${initialized}`, {
+          headers: {Authorization: `Basic ${Buffer.from(`${env.MDC_TERMINUS_USER ?? 'admin'}:${env.MDC_TERMINUS_PASSWORD}`).toString('base64')}`},
+        });
+        assert.equal(db.status, 404);
       } finally {
         await fetch(`${base}/api/projects`, {method: 'POST', headers: {'content-type': 'application/json', origin: base}, body: JSON.stringify({action: 'stop', project: `${initialized}/main`})});
         const removed = await fetch(`${env.MDC_TERMINUS_URL ?? 'http://127.0.0.1:6363'}/api/db/admin/${initialized}`, {

@@ -77,6 +77,7 @@ a same-origin browser `Origin` header and supports these bodies:
 | Body | Behavior |
 | --- | --- |
 | `{action: "init", name}` | Create a database and its stopped `main` branch. |
+| `{action: "remove", database}` | Stop every branch of this project and delete its database, history and local branch caches, as with `mdc remove DATABASE`. |
 | `{action: "start", project: "DATABASE/BRANCH"}` | Load a branch into the existing entry server. |
 | `{action: "stop", project}` | Stop that branch, including its editor sessions. |
 | `{action: "new_branch", project, name}` | Fork the specified branch's current head, including a stopped source. The new branch is stopped. |
