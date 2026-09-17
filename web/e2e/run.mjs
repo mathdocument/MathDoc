@@ -966,6 +966,47 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
   } finally { await browser.close(); }
 });
 
+await test('Lean first paint waits for syntax highlighting without a server', {timeout: 60000}, async () => {
+  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const node = {fnode: randomUUID(), title: 'Highlighted first paint', module: 'Lib.FirstPaint', depens: [], blocks: [
+    {srctype: 'lean', content: '-- highlighted comment\ntheorem firstPaint : True := by trivial\n'},
+  ]};
+  try {
+    await fixture(browser, async ({page, url}) => {
+      let release, requested, sessions = 0;
+      const gate = new Promise(resolve => { release = resolve; });
+      const grammar = new Promise(resolve => { requested = resolve; });
+      await page.route(/\/assets\/lean4-[^/]+\.json$/, async route => {
+        requested(); await gate; await route.continue();
+      });
+      page.on('request', r => { if (r.method() === 'POST' && r.url().endsWith('/lean/session')) sessions++; });
+      await page.addInitScript(() => {
+        const observe = () => {
+          const frame = document.querySelector('iframe[title="Lean source and Infoview"]');
+          const lines = frame?.contentDocument?.querySelectorAll('.view-line span');
+          if (frame && getComputedStyle(frame).visibility === 'visible' && lines?.length) {
+            window.firstLeanPaint = [...new Set([...lines].map(el => frame.contentWindow.getComputedStyle(el).color))];
+          } else requestAnimationFrame(observe);
+        };
+        requestAnimationFrame(observe);
+      });
+      try {
+        await page.goto(`${url}/?first-paint#ref=${node.fnode}`);
+        await grammar;
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        assert.equal(await page.getByText('Loading Lean editor…', {exact: true}).isVisible(), false);
+        assert.equal(await page.getByLabel('Lean source while editor loads').isVisible(), false);
+        assert.equal(await page.locator('iframe[title="Lean source and Infoview"]').isVisible(), false, 'hold the editor until its grammar is loaded');
+      } finally { release(); }
+      await page.locator('.native-editor:not(.pending)').waitFor();
+      await page.waitForFunction(() => window.firstLeanPaint);
+      assert.ok((await page.evaluate(() => window.firstLeanPaint)).length >= 2, 'the first visible frame must already contain syntax colors');
+      await page.frameLocator('iframe[title="Lean source and Infoview"]').getByText('firstPaint', {exact: true}).waitFor();
+      assert.equal(sessions, 0);
+    }, [node]);
+  } finally { await browser.close(); }
+});
+
 await test('wrapped Lean sources reach the last line before and after server startup', {timeout: 60000}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   const node = {fnode: randomUUID(), title: 'Wrapped Lean', module: 'Lib.Wrapped', depens: [], blocks: [

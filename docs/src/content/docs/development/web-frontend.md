@@ -41,7 +41,10 @@ default it uses in-memory Monaco models, with native client creation disabled:
 highlighting, edits and saves require no Lean session or WebSocket. **Start Lean
 server** creates the session and remounts the iframe with its ID, retaining the
 parent-owned draft. The same runtime supplies identical syntax, themes and fonts
-in both modes. After startup, the page has an isolated native WebSocket session,
+in both modes. The first reveal waits for the native TextMate grammar and a
+rendered viewport, with no plaintext/loading placeholder. The iframe fills the
+space remaining below the block controls, so its final lines remain reachable.
+After startup, the page has an isolated native WebSocket session,
 with source on the left and Infoview on the right. The start button becomes
 **Recheck Lean**, which refreshes the selected document in the existing client.
 The adjacent stop button closes only this session and restores a local editor,

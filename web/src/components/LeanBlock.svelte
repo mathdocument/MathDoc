@@ -166,7 +166,7 @@
 </script>
 
 <svelte:window onmessage={message} />
-<article class="source-block lean-block" class:hidden={!block} data-srctype="lean">
+<article class="source-block lean-block" class:hidden={!block} class:preparing={!ready && !error && !opening && !session} data-srctype="lean">
   <header class="block-head">
     <span class="srctype">lean</span><span class="spacer"></span>
     {#if dirty}<span class="dirty" title="Unsaved changes"><span class="dirty-dot"></span><span class="btn-label">Unsaved</span></span>{/if}
@@ -183,10 +183,9 @@
   {/if}
   {#if action}<div class="status activity" role="status" aria-live="polite">{{ save: "Saving…", delete: "Deleting…" }[action]}</div>{/if}
   {#if validating && !dirty}<div class="status activity" role="status" aria-live="polite">Verifying saved version…</div>{/if}
-  {#if !ready && !error}<div class="status" aria-busy="true">{opening || session ? "Starting Lean editor…" : "Loading Lean editor…"}</div>{/if}
+  {#if !ready && !error && (opening || session)}<div class="status" aria-busy="true">Starting Lean editor…</div>{/if}
   {#if ready && progress}<div class="status" role="status">{progress}</div>{/if}
   <div class="editor-surface" class:collapsed={!expanded}>
-    {#if !ready && expanded}<pre class="source-placeholder" aria-label="Lean source while editor loads">{content}</pre>{/if}
   {#if mounted}
     {#key session}
     <div class="native-editor" class:pending={!ready} inert={!ready || !expanded}><iframe bind:this={frame} title="Lean source and Infoview" src={projectPath(`/lean.html?${session ? `session=${encodeURIComponent(session)}&` : ""}theme=${initialTheme}`)} allow="clipboard-write"></iframe></div>
@@ -205,6 +204,7 @@
 </article>
 <style>
   .hidden { display: none; }
+  .preparing { visibility:hidden; }
   .module-import { flex-shrink:0; padding: .5rem .65rem; color: var(--mdc-muted); font-size: var(--mdc-text-xs); border-bottom: 1px solid var(--mdc-border); }
   .module-import summary { cursor: pointer; }
   .module-import code { display: block; margin-top: .4rem; overflow-wrap: anywhere; user-select: all; }
@@ -213,7 +213,6 @@
   .editor-surface.collapsed { height:0; overflow:hidden; visibility:hidden; }
   .native-editor { height:100%; }
   .collapsed .native-editor { height:100cqh; }
-  .source-placeholder { box-sizing:border-box; height:100%; overflow:auto; margin:0; padding:12px; font:13px/1.6 monospace; white-space:pre-wrap; }
   .pending { visibility: hidden; position: absolute; inset: 0; }
   iframe { display:block; width:100%; height:100%; border:0; }
 </style>

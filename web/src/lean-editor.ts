@@ -43,6 +43,14 @@ let resolveClient: (client: LeanClient) => void;
 const clientReady = new Promise<LeanClient>(resolve => { resolveClient = resolve; });
 const send = (type: string, value?: unknown, generation?: number) => parent.postMessage({ type, value, fnode: shownFnode, generation }, location.origin);
 function showProgress() { send("lean-progress", !id || connectionFailure ? "" : preview ? "Preparing Lean environment…" : selected?.progress ?? ""); }
+function reveal(generation: number) {
+  const current = selection;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (current.signal.aborted) return;
+    editor.render(true);
+    send("lean-ready", undefined, generation);
+  }));
+}
 function disconnected(reason: string) {
   if (connectionFailure) return;
   connectionFailure = reason;
@@ -94,7 +102,7 @@ function showNode(fnode: string, source: string, generation: number) {
   editor.focus();
   document.getElementById("infoview-pending")!.hidden = !id || !preview;
   showProgress();
-  send("lean-ready", undefined, generation);
+  reveal(generation);
 }
 function error(error: unknown) {
   document.getElementById("error")!.textContent = String(error);
@@ -176,7 +184,7 @@ async function selectNode(fnode: string, revision: string, generation: number, s
     runtime.clientProvider!.restartFile(FileUri.fromUriOrError(model.uri));
   }
   showProgress();
-  send("lean-ready", undefined, generation);
+  reveal(generation);
   void validate(entry);
 }
 async function start() {
@@ -253,6 +261,9 @@ async function start() {
   applyTheme(params.get("theme") ?? "light");
   const reference = session ? await createModelReference(Uri.parse(session.filename), session.source) : undefined;
   if (!session) preview = MonacoEditor.createModel("", "lean4", Uri.parse("inmemory://mdc/initial.lean"));
+  // Resolve the native TextMate grammar before revealing any source. The public
+  // colorizer awaits its lazy tokenizer; an empty input avoids tokenizing twice.
+  await MonacoEditor.colorize("", "lean4", {});
   // Disable automatic layout at construction: changing the option later does
   // not disconnect Monaco's observer, leaving two competing layout callbacks.
   editor = MonacoEditor.create(document.getElementById("editor")!, {
