@@ -1297,6 +1297,19 @@ await test('editors and previews pass scrolling to the node pane at both boundar
       await frame.locator('.view-line').first().waitFor();
       await page.locator('.native-editor:not(.pending)').waitFor();
       const pane = page.locator('.blocks');
+      for (const view of ['Knowledge', 'Graph', 'Knowledge']) {
+        await page.getByRole('button', {name: view, exact: true}).click();
+        const bounds = await pane.evaluate(el => {
+          el.scrollTop = 0;
+          const top = el.getBoundingClientRect();
+          const next = el.querySelector('[data-srctype="latex"] .block-head').getBoundingClientRect();
+          el.scrollTop = el.scrollHeight;
+          const last = el.querySelector('[data-srctype="rocq"] .block-head').getBoundingClientRect();
+          return {top: top.top, bottom: top.bottom, nextBottom: next.bottom, lastTop: last.top};
+        });
+        assert.ok(bounds.nextBottom <= bounds.bottom, `${view}: the next header is visible at the top`);
+        assert.ok(bounds.lastTop >= bounds.top, `${view}: the last header remains visible above the add button`);
+      }
       const outerScroll = () => pane.evaluate(el => el.scrollTop);
       const check = async (block, surface, position) => {
         for (const direction of [1, -1]) {

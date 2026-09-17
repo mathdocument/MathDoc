@@ -411,6 +411,8 @@
     font-weight: 620;
   }
   .blocks {
+    --block-head-height: 38px;
+    --block-gap: 0.75rem;
     position: relative;
     flex: 1;
     min-height: 0;
@@ -423,7 +425,7 @@
     padding: 1rem 1.25rem 1.5rem;
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: var(--block-gap);
   }
   .blocks::-webkit-scrollbar { display: none; }
   /* WebKit needs an actual scroll range to rubber-band short or collapsed content. */
