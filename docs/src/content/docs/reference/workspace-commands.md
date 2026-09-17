@@ -108,6 +108,9 @@ mdc branch del -p myproject/agent
 
 `branch new NAME` forks the selected running branch's current head in the same
 database. It neither starts the new branch nor switches the source service.
+The browser project list also offers Init, Start/Stop, New branch and Delete
+controls. Init creates a database with a stopped `main` branch. Browser forking
+also works from stopped branches; deletion still requires stopping first.
 Each loaded branch keeps its own graph, Lean environment and cache; `status` identifies it explicitly.
 `history` returns the latest 50 TerminusDB commits.
 

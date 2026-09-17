@@ -3,7 +3,10 @@ title: Browser frontend
 ---
 
 The Svelte 5 interface mounts the project directory at `/` and the editor at
-`/p/DATABASE/BRANCH/`. The directory polls `/api/status` while visible. A shared
+`/p/DATABASE/BRANCH/`. The directory polls `/api/projects` while visible. It can
+initialize a project, start/stop branches, fork either running or stopped branches,
+and delete stopped branches. Running rows show node/edge counts from the loaded
+snapshot; stopped rows leave the same columns empty. A shared
 path helper scopes branch API calls, Lean iframe URLs and WebSocket URLs;
 static assets stay at the root. The editor provides search, graph/column navigation, dependency
 operations and block editing. It tracks unsaved drafts and serializes node

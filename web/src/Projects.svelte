@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { ArrowUpRight, FolderOpen, GitBranch, Moon, RefreshCw, Search, Sun } from "@lucide/svelte";
-  import { fetchJson, isAbortError, type ServiceStatus } from "./lib/api";
+  import { ArrowUpRight, FolderOpen, GitBranch, GitBranchPlus, Moon, Play, Plus, RefreshCw, Search, Square, Sun, Trash2 } from "@lucide/svelte";
+  import { projectsApi, isAbortError, type ServiceStatus } from "./lib/api";
+  import ProjectCreate from "./components/ProjectCreate.svelte";
   import { applyTheme, currentTheme, observeTheme, type Theme } from "./lib/theme";
 
   let { onReady }: { onReady?: () => void } = $props();
@@ -13,6 +14,10 @@
   let query = $state("");
   let filter = $state<"all" | "running" | "stopped">("all");
   let theme = $state<Theme>(currentTheme());
+  let create = $state<{source?: string} | null>(null);
+  let pending = $state<Record<string, string>>({});
+  let failures = $state<Record<string, string>>({});
+  let refreshTask: Promise<void> | undefined;
   const controller = new AbortController();
   const branches = $derived(Object.entries(status?.projects ?? {}).map(([name, state]) => {
     const [database, branch] = name.split("/");
@@ -31,18 +36,31 @@
     return [...groups.entries()];
   });
 
-  async function refresh() {
-    if (refreshing) return;
+  function refresh() {
+    return refreshTask ??= load().finally(() => { refreshTask = undefined; });
+  }
+  async function load() {
     refreshing = true;
     try {
-      status = await fetchJson<ServiceStatus>("/api/status", {
-        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]),
-      });
+      status = await projectsApi.list(AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]));
       updated = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       error = null;
     } catch (e) {
       if (!isAbortError(e)) error = e instanceof Error ? e.message : String(e);
     } finally { refreshing = false; onReady?.(); }
+  }
+  async function changed() {
+    // Let an older poll finish before requesting the post-mutation inventory.
+    await refreshTask;
+    await refresh();
+  }
+  async function manage(project: string, action: "start" | "stop" | "delete_branch") {
+    if (pending[project]) return;
+    if (action === "delete_branch" && !confirm(`Delete ${project} and its Lean caches?`)) return;
+    pending[project] = action; delete failures[project];
+    try { await projectsApi.change({action, project}); }
+    catch (e) { failures[project] = e instanceof Error ? e.message : String(e); }
+    finally { await changed(); delete pending[project]; }
   }
   function toggleTheme() {
     theme = theme === "dark" ? "light" : "dark";
@@ -74,11 +92,12 @@
 
   <main>
     <div class="intro">
-      <div><p class="eyebrow">MATHEMATICAL WORKSPACE</p><h1>Projects</h1><p class="subtitle">Open a running branch to explore and edit its graph.</p></div>
+      <h1>Projects</h1>
       <div class="overview" aria-label="Project summary">
-        <span><strong>{projectCount}</strong> projects</span><span><strong>{branches.length}</strong> branches</span>
+        <span><strong>{projectCount}</strong> {projectCount === 1 ? "project" : "projects"}</span><span><strong>{branches.length}</strong> {branches.length === 1 ? "branch" : "branches"}</span>
         <span class="running-total"><i></i><strong>{running}</strong> running</span>
       </div>
+      <button class="init" onclick={() => create = {}} title="Initialize a project" aria-label="Init project"><Plus size={16} />Init</button>
     </div>
 
     <div class="controls">
@@ -95,7 +114,7 @@
     {#if !status && !error}
       <div class="empty" role="status">Loading projects…</div>
     {:else if status && branches.length === 0}
-      <div class="empty"><FolderOpen size={30} /><h2>No projects yet</h2><p>Create a project with <code>mdc init NAME</code>, then start its main branch.</p></div>
+      <div class="empty"><FolderOpen size={30} /><h2>No projects yet</h2></div>
     {:else if status && groups.length === 0}
       <div class="empty"><Search size={28} /><h2>No matching branches</h2><p>Try a different name or change the status filter.</p></div>
     {:else}
@@ -105,11 +124,25 @@
             <div class="project-head"><FolderOpen size={18} strokeWidth={1.7} /><h2>{database}</h2><span>{rows.length} {rows.length === 1 ? "branch" : "branches"}</span></div>
             {#each rows as row (row.name)}
               <div class="branch-row" data-project={row.name}>
-                <span class="branch-name"><GitBranch size={16} strokeWidth={1.6} /><span>{row.branch}</span>{#if row.branch === "main"}<small>MAIN</small>{/if}</span>
+                <span class="branch-name" title={row.name}><GitBranch size={16} strokeWidth={1.6} /><span>{row.branch}</span></span>
                 <span class="state" class:online={row.running}><i></i>{row.running ? "Running" : "Stopped"}</span>
-                {#if row.running && row.url}
-                  <a class="open" href={`/p/${row.name}/`} aria-label={`Open ${row.name}`}>Open<ArrowUpRight size={16} /></a>
-                {:else}<span class="unavailable" title="This branch has no active service">—</span>{/if}
+                <span class="counts" aria-label={`Graph size of ${row.name}`}>
+                  <span>{#if row.running && row.nodes !== undefined}<strong>{row.nodes.toLocaleString()}</strong> {row.nodes === 1 ? "node" : "nodes"}{/if}</span>
+                  <span>{#if row.running && row.edges !== undefined}<strong>{row.edges.toLocaleString()}</strong> {row.edges === 1 ? "edge" : "edges"}{/if}</span>
+                </span>
+                <div class="actions" aria-label={`Manage ${row.name}`}>
+                  <button class="toggle" class:stopped={!row.running} disabled={!!pending[row.name]} onclick={() => void manage(row.name, row.running ? "stop" : "start")} aria-label={`${row.running ? "Stop" : "Start"} ${row.name}`}>
+                    {#if pending[row.name]}<RefreshCw size={14} class="spinning" />{:else if row.running}<Square size={13} />{:else}<Play size={14} />{/if}{row.running ? "Stop" : "Start"}
+                  </button>
+                  <div class="branch-actions">
+                    <button class="icon-button" disabled={!!pending[row.name]} onclick={() => create = {source: row.name}} title={`New branch from ${row.name}`} aria-label={`New branch from ${row.name}`}><GitBranchPlus size={16} /></button>
+                    <button class="icon-button delete" disabled={row.running || !!pending[row.name]} onclick={() => void manage(row.name, "delete_branch")} title={row.running ? "Stop this branch before deleting" : `Delete ${row.name}`} aria-label={`Delete ${row.name}`}><Trash2 size={15} /></button>
+                  </div>
+                  {#if row.running && row.url && !pending[row.name]}
+                    <a class="open icon-button" href={`/p/${row.name}/`} title={`Open ${row.name}`} aria-label={`Open ${row.name}`}><ArrowUpRight size={17} /></a>
+                  {:else}<span class="open-space" aria-hidden="true"></span>{/if}
+                </div>
+                {#if failures[row.name]}<div class="row-error" role="alert">{failures[row.name]}</div>{/if}
               </div>
             {/each}
           </section>
@@ -119,15 +152,16 @@
     {#if updated}<footer>Last refreshed {updated}<span>Updates automatically</span></footer>{/if}
   </main>
 </div>
+{#if create}<ProjectCreate source={create.source} onClose={() => create = null} onCreated={async () => {query = ""; filter = "all"; await changed();}} />{/if}
 
 <style>
   .directory { height: 100%; overflow: auto; }
-  main { max-width: 1144px; padding: 58px 32px 28px; margin: auto; }
-  .intro { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 32px; }
-  .eyebrow { color: var(--mdc-accent); font-size: 10px; letter-spacing: .13em; font-weight: 650; margin: 0 0 12px; }
+  main { max-width: 1144px; padding: 44px 32px 28px; margin: auto; }
+  .intro { display: flex; align-items: center; gap: 24px; margin-bottom: 28px; }
   h1 { font-size: 34px; line-height: 1.15; font-weight: 630; letter-spacing: -.035em; margin: 0; }
-  .subtitle { color: var(--mdc-dim); margin: 12px 0 0; font-size: 13px; }
-  .overview { display: flex; align-items: center; gap: 19px; color: var(--mdc-dim); font-size: 12px; white-space: nowrap; padding-bottom: 2px; }
+  .overview { display: flex; align-items: center; gap: 19px; color: var(--mdc-dim); font-size: 12px; white-space: nowrap; margin-left: auto; }
+  .init { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 13px; border: 1px solid var(--mdc-accent); border-radius: var(--mdc-radius-sm); color: var(--mdc-on-accent); background: var(--mdc-accent); font-size: 12px; font-weight: 600; }
+  .init:hover { background: var(--mdc-accent-strong); }
   .overview strong { font-size: 14px; font-weight: 550; color: var(--mdc-fg-soft); margin-right: 3px; }
   .running-total { display: flex; align-items: center; }
   i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--mdc-muted); margin-right: 8px; }
@@ -149,33 +183,48 @@
   .project-head { display: flex; align-items: center; gap: 11px; padding: 16px 20px; color: var(--mdc-accent); background: color-mix(in srgb, var(--mdc-panel-raised) 65%, transparent); border-bottom: 1px solid var(--mdc-border); }
   h2 { color: var(--mdc-fg); font-size: 14px; font-weight: 580; letter-spacing: -.015em; margin: 0; overflow-wrap: anywhere; }
   .project-head span { color: var(--mdc-muted); font-size: 11px; margin-left: auto; white-space: nowrap; }
-  .branch-row { display: grid; grid-template-columns: minmax(0, 1fr) 110px 75px; gap: 18px; align-items: center; min-height: 62px; padding: 12px 20px; }
+  .branch-row { display: grid; grid-template-columns: minmax(100px, 1fr) 90px 208px auto; gap: 16px; align-items: center; min-height: 66px; padding: 12px 20px; }
   .branch-row + .branch-row { border-top: 1px solid var(--mdc-border); }
   .branch-name { display: flex; align-items: center; gap: 12px; min-width: 0; color: var(--mdc-dim); }
-  .branch-name span { color: var(--mdc-fg-soft); font-family: var(--mdc-mono); font-size: 12px; overflow-wrap: anywhere; }
+  .branch-name span { color: var(--mdc-fg-soft); font-family: var(--mdc-mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .branch-name :global(svg) { flex-shrink: 0; }
-  small { font-size: 8px; font-weight: 600; letter-spacing: .06em; border: 1px solid var(--mdc-border-strong); padding: 1px 5px; border-radius: 4px; color: var(--mdc-muted); }
   .state { display: flex; align-items: center; font-size: 11px; color: var(--mdc-muted); }
   .online { color: var(--mdc-accent-down); }
-  .open { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 6px 10px; color: var(--mdc-fg-soft); background: var(--mdc-card); border: 1px solid var(--mdc-border-strong); border-radius: 6px; font-size: 11px; text-decoration: none; }
+  .counts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; min-height: 18px; font-size: 11px; color: var(--mdc-muted); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .counts strong { color: var(--mdc-fg-soft); font-weight: 500; }
+  .actions { display: flex; align-items: center; gap: 8px; }
+  .toggle { display: inline-flex; align-items: center; justify-content: center; gap: 7px; width: 76px; height: 32px; padding: 0; font-size: 11px; color: var(--mdc-dim); background: var(--mdc-card); border: 1px solid var(--mdc-border-strong); border-radius: var(--mdc-radius-sm); }
+  .toggle:hover:not(:disabled) { color: var(--mdc-fg); background: var(--mdc-card-hover); }
+  .toggle.stopped { color: var(--mdc-accent-down); }
+  .branch-actions { display: flex; padding: 1px; border: 1px solid var(--mdc-border); border-radius: var(--mdc-radius-sm); }
+  .branch-actions .icon-button { width: 30px; height: 28px; }
+  .delete { color: var(--mdc-error); }
+  .delete:hover:not(:disabled) { color: var(--mdc-error); background: color-mix(in srgb, var(--mdc-error) 12%, transparent); }
+  .open { text-decoration: none; color: var(--mdc-fg-soft); border-color: var(--mdc-border-strong); background: var(--mdc-card); }
   .open:hover { background: var(--mdc-card-hover); color: var(--mdc-accent-strong); border-color: var(--mdc-accent); }
   a:focus-visible { outline: 2px solid var(--mdc-accent); outline-offset: 3px; }
-  .unavailable { color: var(--mdc-border-strong); text-align: center; }
+  .open-space { width: 34px; flex-shrink: 0; }
+  .row-error { grid-column: 1 / -1; color: var(--mdc-error); font-size: 12px; overflow-wrap: anywhere; }
+  .actions :global(.spinning) { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .error { padding: 14px 18px; margin-bottom: 18px; border-radius: var(--mdc-radius-sm); background: color-mix(in srgb, var(--mdc-error) 7%, var(--mdc-panel)); color: var(--mdc-error); overflow-wrap: anywhere; }
   .error span { display: block; margin-top: 4px; font-size: 12px; }
   .empty { display: flex; flex-direction: column; gap: 14px; align-items: center; padding: 65px 20px; text-align: center; color: var(--mdc-muted); border: 1px dashed var(--mdc-border-strong); border-radius: var(--mdc-radius-md); }
   .empty p { margin: 0; font-size: 12px; }
   footer { display: flex; justify-content: space-between; color: var(--mdc-muted); font-size: 10px; margin-top: 24px; }
-  @media (max-width: 700px) {
+  @media (max-width: 800px) {
     main { padding: 32px 18px 24px; }
-    .intro { align-items: flex-start; flex-direction: column; gap: 20px; }
+    .intro { flex-wrap: wrap; gap: 16px; }
+    .overview { order: 3; flex-basis: 100%; margin-left: 0; gap: 16px; }
+    .init { margin-left: auto; }
     h1 { font-size: 29px; }
     .controls { flex-wrap: wrap; gap: 10px; }
     .search { flex-basis: calc(100% - 46px); max-width: none; }
     .filters { order: 2; margin-left: 0; }
-    .branch-row { grid-template-columns: minmax(0, 1fr) 76px 66px; gap: 8px; padding: 12px 14px; }
+    .branch-row { grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 14px; }
+    .counts { grid-column: 1 / -1; grid-template-columns: repeat(2, 96px); text-align: left; }
+    .actions { grid-column: 1 / -1; justify-content: flex-end; }
     .project-head { padding: 14px; }
     .branch-name { gap: 8px; }
-    small { display: none; }
   }
 </style>

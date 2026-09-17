@@ -127,6 +127,80 @@ async function rename(page, value) {
 const beta = (page) => page.getByRole("complementary", { name: "Dependencies" })
   .getByRole("button", { name: /^Beta \(/ });
 
+await test('project directory creates, forks, starts, stops and deletes branches', {timeout: 90000}, async () => {
+  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  try {
+    await fixture(browser, async ({page, url}) => {
+      const base = new URL(url).origin, main = new URL(url).pathname.slice(3);
+      const database = main.split('/')[0], fork = `${database}/draft`;
+      const initialized = `mdce2einit${randomUUID().replaceAll('-', '')}`;
+      const row = name => page.locator(`[data-project="${name}"]`);
+      await page.goto(base);
+      await page.getByRole('textbox', {name: 'Search projects and branches'}).fill(database);
+      await row(main).getByText('Running', {exact: true}).waitFor();
+      assert.equal(await page.getByText('MAIN', {exact: true}).count(), 0);
+      assert.equal(await page.getByText('MATHEMATICAL WORKSPACE', {exact: true}).count(), 0);
+      assert.match(await row(main).locator('.counts').innerText(), /3.*nodes/);
+      assert.match(await row(main).locator('.counts').innerText(), /1.*edge/);
+      assert.equal(await row(main).getByRole('button', {name: `Delete ${main}`, exact: true}).isDisabled(), true);
+      const branch = async (source, name) => {
+        await row(source).getByRole('button', {name: `New branch from ${source}`, exact: true}).click();
+        await page.getByLabel('Branch name', {exact: true}).fill('invalid/name');
+        assert.equal(await page.getByLabel('Branch name', {exact: true}).evaluate(el => el.checkValidity()), false);
+        await page.getByLabel('Branch name', {exact: true}).fill(name);
+        await page.getByRole('dialog').getByRole('button', {name: 'New branch', exact: true}).click();
+        await page.getByRole('dialog').waitFor({state: 'hidden'});
+        await page.getByRole('textbox', {name: 'Search projects and branches'}).fill(database);
+      };
+      await branch(main, 'draft');
+      await row(fork).getByText('Stopped', {exact: true}).waitFor();
+      assert.equal((await row(fork).locator('.counts').innerText()).trim(), '');
+      const positions = await Promise.all([main, fork].map(name => row(name).locator('.counts').boundingBox()));
+      assert.equal(positions[0].x, positions[1].x); assert.equal(positions[0].width, positions[1].width);
+      await branch(fork, 'copy');
+      await row(fork).getByRole('button', {name: `Start ${fork}`, exact: true}).click();
+      await row(fork).getByText('Running', {exact: true}).waitFor();
+      assert.match(await row(fork).locator('.counts').innerText(), /3.*nodes/);
+      await row(fork).getByRole('button', {name: `Stop ${fork}`, exact: true}).click();
+      await row(fork).getByText('Stopped', {exact: true}).waitFor();
+      assert.equal((await row(fork).locator('.counts').innerText()).trim(), '');
+      for (const theme of ['dark', 'light']) {
+        if (await page.evaluate(() => document.documentElement.dataset.theme) !== theme) await page.getByRole('button', {name: 'Toggle theme'}).click();
+        for (const width of [1440, 750, 420]) {
+          await page.setViewportSize({width, height: 900});
+          assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth || document.querySelector('.directory').scrollWidth > innerWidth), false);
+          await page.screenshot({path: resolve(tmpdir(), `mdc-projects-${theme}-${width}-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`), fullPage: true});
+        }
+      }
+      await page.setViewportSize({width: 1440, height: 900});
+      await row(fork).getByRole('button', {name: `Delete ${fork}`, exact: true}).click();
+      await row(fork).waitFor({state: 'hidden'});
+      assert.equal((await fetch(`${url}/api/graph/check`)).ok, true, 'other branches remain usable');
+      try {
+        await page.getByRole('button', {name: 'Init project', exact: true}).click();
+        await page.getByLabel('Project name', {exact: true}).fill(initialized);
+        await page.getByRole('dialog').getByRole('button', {name: 'Init', exact: true}).click();
+        await page.getByRole('dialog').waitFor({state: 'hidden'});
+        await row(`${initialized}/main`).getByText('Stopped', {exact: true}).waitFor();
+        await row(`${initialized}/main`).getByRole('button', {name: `Start ${initialized}/main`, exact: true}).click();
+        await row(`${initialized}/main`).getByText('Running', {exact: true}).waitFor();
+        assert.match(await row(`${initialized}/main`).locator('.counts').innerText(), /0.*nodes/);
+      } finally {
+        await fetch(`${base}/api/projects`, {method: 'POST', headers: {'content-type': 'application/json', origin: base}, body: JSON.stringify({action: 'stop', project: `${initialized}/main`})});
+        const removed = await fetch(`${env.MDC_TERMINUS_URL ?? 'http://127.0.0.1:6363'}/api/db/admin/${initialized}`, {
+          method: 'DELETE', headers: {Authorization: `Basic ${Buffer.from(`${env.MDC_TERMINUS_USER ?? 'admin'}:${env.MDC_TERMINUS_PASSWORD}`).toString('base64')}`},
+        });
+        assert.ok(removed.ok || removed.status === 404);
+      }
+      await page.route('**/api/projects', route => route.fulfill({json: {server: {running: true}, projects: {}}}));
+      await page.goto(base);
+      await page.getByRole('heading', {name: 'No projects yet'}).waitFor();
+      assert.equal(await page.getByText(/Create a project with|Open a running branch/).count(), 0);
+      assert.equal(await page.getByRole('button', {name: 'Init project', exact: true}).isEnabled(), true);
+    });
+  } finally { await browser.close(); }
+});
+
 await test("large relation lists filter and retain natural card heights", { timeout: 90000 }, async () => {
   const browser = process.env.MDC_E2E_BROWSER === "webkit" ? await webkit.launch() : await chromium.launch({ headless: true, channel: "chromium" });
   const node = (title, fnode = randomUUID(), depens = []) => ({ fnode, title, module: `Lib.N_${fnode.replaceAll("-", "")}`, depens, blocks: [] });
@@ -1608,14 +1682,14 @@ await test('view changes reveal measured editors and loaded pages without interm
         await page.waitForFunction(() => !document.documentElement.dataset.vtScope);
         await page.unroute(pattern);
       };
-      await held('**/api/status', () => page.getByRole('link', {name: 'All projects', exact: true}).click());
+      await held('**/api/projects', () => page.getByRole('link', {name: 'All projects', exact: true}).click());
       await page.getByRole('heading', {name: 'Projects', exact: true}).waitFor();
       const project = new URL(url).pathname.replace(/^\/p\//, '').replace(/\/$/, '');
       await held('**/api/node/*/view', () => page.getByRole('link', {name: `Open ${project}`, exact: true}).click());
       assert.equal(await page.locator('.editor-loading').count(), 0);
       await page.locator('.line-numbers').nth(2).waitFor();
       // A failed destination must reveal its error/retry UI instead of freezing the old page forever.
-      await page.route('**/api/status', route => route.fulfill({status: 503, contentType: 'application/json', body: JSON.stringify({error: 'fixture: status unavailable'})}));
+      await page.route('**/api/projects', route => route.fulfill({status: 503, contentType: 'application/json', body: JSON.stringify({error: 'fixture: status unavailable'})}));
       await page.getByRole('link', {name: 'All projects', exact: true}).click();
       await page.waitForFunction(() => !document.documentElement.dataset.vtScope);
       await page.getByRole('alert').filter({hasText: 'fixture: status unavailable'}).waitFor();

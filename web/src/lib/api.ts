@@ -63,8 +63,18 @@ function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export interface ServiceStatus {
   server: { running: boolean; port: number | null; url: string | null };
-  projects: Record<string, { running: boolean; url: string | null }>;
+  projects: Record<string, { running: boolean; url: string | null; nodes?: number; edges?: number }>;
 }
+
+export type ProjectAction = {action: "init"; name: string}
+  | {action: "new_branch"; project: string; name: string}
+  | {action: "start" | "stop" | "delete_branch"; project: string};
+export const projectsApi = {
+  list: (signal?: AbortSignal) => fetchJson<ServiceStatus>("/api/projects", {signal}),
+  change: (body: ProjectAction) => fetchJson<{project: string}>("/api/projects", {
+    method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(body),
+  }),
+};
 
 const nodeMutationTails = new Map<string, Promise<string>>();
 
