@@ -27,6 +27,7 @@ interface OpenDocument {
   progress: string;
   validating?: boolean;
   validated?: string;
+  checkGeneration?: number;
 }
 const runtime = new BrowserLean();
 let editor: MonacoEditor.IStandaloneCodeEditor;
@@ -49,7 +50,7 @@ function disconnected(reason: string) {
   send("lean-disconnected", reason);
 }
 async function validate(entry: OpenDocument) {
-  const key = () => `${entry.document.revision}:${entry.document.environment_key}:${entry.reference.object.textEditorModel?.getVersionId()}`;
+  const key = () => `${entry.checkGeneration ?? 0}:${entry.document.revision}:${entry.document.environment_key}:${entry.reference.object.textEditorModel?.getVersionId()}`;
   if (documents.get(entry.document.filename) !== entry || entry.validating || entry.validated === key() || entry.progress !== "Lean editor ready" ||
       entry.reference.object.textEditorModel?.getValue() !== entry.document.source) return;
   const requested = key(), { fnode, revision } = entry.document;
@@ -118,7 +119,7 @@ async function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
     })]);
   } finally { signal.removeEventListener("abort", cancel); }
 }
-async function selectNode(fnode: string, revision: string, generation: number, signal: AbortSignal) {
+async function selectNode(fnode: string, revision: string, generation: number, signal: AbortSignal, recheck = false) {
   const client = await abortable(clientReady, signal);
   signal.throwIfAborted();
   const token = new CancellationTokenSource();
@@ -132,7 +133,7 @@ async function selectNode(fnode: string, revision: string, generation: number, s
   document.getElementById("error")!.textContent = "";
 
   let entry = documents.get(next.filename);
-  const restart = entry && entry.document.environment_key !== next.environment_key;
+  const restart = entry && (recheck || entry.document.environment_key !== next.environment_key);
   if (!entry) {
     // ponytail: two hot documents; larger sets would retain another full Mathlib
     // environment per file. Evicted files keep Lake's shared compiled artifacts.
@@ -167,7 +168,13 @@ async function selectNode(fnode: string, revision: string, generation: number, s
   preview?.dispose(); preview = undefined;
   document.getElementById("infoview-pending")!.hidden = true;
   editor.focus();
-  if (restart) { entry.progress = "Reloading changed Lean dependencies…"; runtime.clientProvider!.restartActiveFile(); }
+  if (restart) {
+    entry.checkGeneration = (entry.checkGeneration ?? 0) + 1;
+    entry.progress = "Rechecking Lean…";
+    // Reopen this file in the existing language client, including when collapsed
+    // or unfocused. Other documents and the session's server remain alive.
+    runtime.clientProvider!.restartFile(FileUri.fromUriOrError(model.uri));
+  }
   showProgress();
   send("lean-ready", undefined, generation);
   void validate(entry);
@@ -278,7 +285,7 @@ async function start() {
         void validate(entry);
       }
     }
-    if (event.data?.type === "lean-select") {
+    if (event.data?.type === "lean-select" || event.data?.type === "lean-recheck") {
       const { fnode, revision, generation, source } = event.data;
       selection.abort();
       const current = selection = new AbortController();
@@ -287,7 +294,7 @@ async function start() {
       if (connectionFailure) { error(connectionFailure); return; }
       const timer = setTimeout(() => current.abort(new DOMException("Lean node preparation timed out", "TimeoutError")), 30000);
       // Superseded requests cannot hold up the latest selection or replace its model.
-      void abortable(selectNode(fnode, revision, generation, current.signal), current.signal).catch(e => {
+      void abortable(selectNode(fnode, revision, generation, current.signal, event.data.type === "lean-recheck"), current.signal).catch(e => {
         if (current !== selection) return;
         if (e?.name === "TimeoutError") send("lean-disconnected", e.message);
         else if (!current.signal.aborted) error(e);

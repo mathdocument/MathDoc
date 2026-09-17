@@ -674,9 +674,11 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.equal(await page.getByText("Unsaved", { exact: true }).count(), 0);
         for (let i = 0; i < 3; i++) {
           const old = new URL(await page.locator('iframe[title="Lean source and Infoview"]').getAttribute("src"), url).searchParams.get("session");
-          await page.getByRole("button", { name: "Reload environment", exact: true }).click();
-          await frame.locator(".monaco-editor").waitFor();
-          assert.equal((await fetch(`${url}/api/lean/session/${old}`)).status, 404, "reload must retire the old LSP session");
+          const rechecked = socket.waitForEvent("framesent", {predicate: ({payload}) => JSON.parse(String(payload)).method === "textDocument/didOpen"});
+          await page.getByRole("button", { name: "Recheck Lean", exact: true }).click();
+          await rechecked;
+          assert.equal((await fetch(`${url}/api/lean/session/${old}`)).status, 200, "recheck must retain the LSP session");
+          assert.equal(messages.filter(m => m.method === "initialize").length, 1);
         }
       }, [a]);
     });
@@ -710,7 +712,8 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await page.keyboard.insertText("-- draft after failed startup\n");
         await page.getByText("Unsaved", { exact: true }).waitFor();
         fail = false;
-        await page.getByRole("button", { name: "Reload environment", exact: true }).click();
+        await page.getByRole("button", { name: "Stop Lean server", exact: true }).click();
+        await page.getByRole("button", { name: "Start Lean server", exact: true }).click();
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
         await frame.getByText("-- draft after failed startup", { exact: true }).waitFor();
         assert.doesNotMatch(JSON.parse((await cli("show", "Alpha")).stdout).blocks[0].content, /draft after failed startup/);
@@ -1009,9 +1012,9 @@ await test('Lean browsing stays offline until explicitly started and preserves s
   ]}));
   try {
     await fixture(browser, async ({page, url, cli, root}) => {
-      let sessions = 0, sockets = 0;
+      let sessions = 0, sockets = 0, socket;
       page.on('request', request => { if (request.method() === 'POST' && request.url().endsWith('/lean/session')) sessions++; });
-      page.on('websocket', () => sockets++);
+      page.on('websocket', ws => { sockets++; socket = ws; });
       await page.goto(`${url}/?offline#ref=${nodes[0].fnode}`);
       const block = page.locator('.lean-block');
       const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
@@ -1059,18 +1062,67 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       await frame.getByText('-- draft before startup', {exact: true}).waitFor();
       assert.deepEqual(await styled(), dark, 'the same grammar, theme and font apply after startup');
       assert.doesNotMatch(JSON.parse((await cli('show', nodes[0].fnode)).stdout).blocks[0].content, /draft before startup/);
-      await block.getByRole('button', {name: 'Reload environment', exact: true}).click();
+      const rechecked = socket.waitForEvent('framesent', {predicate: ({payload}) => JSON.parse(String(payload)).method === 'textDocument/didOpen'});
+      await block.getByRole('button', {name: 'Recheck Lean', exact: true}).click();
+      await rechecked;
       await page.getByText('Lean editor ready', {exact: true}).waitFor();
       await frame.getByText('-- draft before startup', {exact: true}).waitFor();
-      assert.equal(sessions, 2);
+      assert.equal(sessions, 1);
+      assert.equal(sockets, 1);
       await select('Second');
       await page.getByText('Lean editor ready', {exact: true}).waitFor();
-      assert.equal(sessions, 2, 'explicitly started sessions are reused across nodes');
+      assert.equal(sessions, 1, 'explicitly started sessions are reused across nodes');
+      // Stop only this page's session, preserving drafts and another page's worker.
+      const other = await page.context().newPage();
+      await other.goto(`${url}/?other#ref=${nodes[0].fnode}`);
+      await other.getByRole('button', {name: 'Start Lean server', exact: true}).click();
+      await other.getByText('Lean editor ready', {exact: true}).waitFor();
+      const sessionId = async p => new URL(await p.locator('iframe[title="Lean source and Infoview"]').getAttribute('src'), url).searchParams.get('session');
+      const oldId = await sessionId(page), otherId = await sessionId(other);
+      await input.press('ControlOrMeta+End');
+      await page.keyboard.insertText('-- draft survives stop\n');
+      const closed = socket.waitForEvent('close');
+      await block.getByRole('button', {name: 'Stop Lean server', exact: true}).click();
+      await closed;
+      await frame.getByText('-- draft survives stop', {exact: true}).waitFor();
+      assert.equal(await sessionId(page), null);
+      assert.equal((await fetch(`${url}/api/lean/session/${oldId}`)).status, 404);
+      assert.equal((await fetch(`${url}/api/lean/session/${otherId}`)).status, 200);
+      const otherFrame = other.frameLocator('iframe[title="Lean source and Infoview"]');
+      await otherFrame.getByRole('textbox', {name: /Editor content/}).press('ControlOrMeta+A');
+      await other.keyboard.insertText('example : True := by exact 42');
+      await otherFrame.locator('.squiggly-error').first().waitFor();
+      await block.getByRole('button', {name: 'Start Lean server', exact: true}).click();
+      await page.getByText('Lean editor ready', {exact: true}).waitFor();
+      await frame.getByText('-- draft survives stop', {exact: true}).waitFor();
+      assert.equal(sessions, 2);
+      await other.close();
+      // Stop may overtake a session allocation before its ID reaches the page.
+      await block.getByRole('button', {name: 'Stop Lean server', exact: true}).click();
+      await page.locator('.native-editor:not(.pending)').waitFor();
+      let release, allocated;
+      const gate = new Promise(resolve => { release = resolve; });
+      const allocation = new Promise(resolve => { allocated = resolve; });
+      await page.route(/\/lean\/session$/, async route => {
+        const response = await route.fetch();
+        allocated((await response.json()).id);
+        await gate;
+        await route.fulfill({response});
+      });
+      await block.getByRole('button', {name: 'Start Lean server', exact: true}).click();
+      const pendingId = await allocation;
+      await block.getByRole('button', {name: 'Stop Lean server', exact: true}).click();
+      const retired = page.waitForResponse(r => r.request().method() === 'DELETE' && r.url().endsWith(`/lean/session/${pendingId}`));
+      release();
+      assert.equal((await retired).status(), 204);
+      await frame.getByText('-- draft survives stop', {exact: true}).waitFor();
+      assert.equal(await sessionId(page), null);
+      assert.equal(sockets, 2, 'a cancelled start must never connect its late session');
     }, nodes);
   } finally { await browser.close(); }
 });
 
-await test('collapsed Lean editors reload without a zero-sized browser viewport', {timeout: 60000}, async () => {
+await test('collapsed Lean editors recheck without recreating the browser viewport', {timeout: 60000}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   const node = {fnode: randomUUID(), title: 'Collapsed reload', module: 'Lib.Collapsed', depens: [], blocks: [
     {srctype: 'lean', content: 'example : True := by trivial\n'},
@@ -1083,9 +1135,9 @@ await test('collapsed Lean editors reload without a zero-sized browser viewport'
       const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
       await page.getByText('Lean editor ready', {exact: true}).waitFor();
       await block.getByRole('button', {name: 'Collapse block'}).click();
-      await block.getByRole('button', {name: 'Reload environment'}).click();
+      await block.getByRole('button', {name: 'Recheck Lean'}).click();
       await page.getByText('Lean editor ready', {exact: true}).waitFor();
-      assert.equal(await block.getByRole('button', {name: 'Expand block'}).count(), 1, 'reload preserves the collapsed state');
+      assert.equal(await block.getByRole('button', {name: 'Expand block'}).count(), 1, 'recheck preserves the collapsed state');
       assert.equal(await frame.locator('#error').textContent(), '');
       await block.getByRole('button', {name: 'Expand block'}).click();
       await frame.locator('.view-line').first().waitFor();

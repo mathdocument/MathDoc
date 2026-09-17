@@ -43,7 +43,9 @@ server** creates the session and remounts the iframe with its ID, retaining the
 parent-owned draft. The same runtime supplies identical syntax, themes and fonts
 in both modes. After startup, the page has an isolated native WebSocket session,
 with source on the left and Infoview on the right. The start button becomes
-**Reload environment**. LeanMonaco installs browser providers; its desktop
+**Recheck Lean**, which refreshes the selected document in the existing client.
+The adjacent stop button closes only this session and restores a local editor,
+preserving its draft. LeanMonaco installs browser providers; its desktop
 extension entry is disabled in the browser manifest. Save reuses the editor's
 native result for the exact saved source and imports. CLI `lean check --build`
 requests target artifacts when required.

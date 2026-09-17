@@ -47,8 +47,10 @@ document environments remain isolated.
 
 An unexpected connection failure triggers one automatic session reconnect. The
 parent editor retains unsaved text and restores it into the new runtime without
-saving it to the database. Repeated failures require “Reload environment”, which
-also preserves the draft.
+saving it to the database. Repeated failures require stopping and starting the
+page's server, which also preserves the draft. Recheck reopens only the selected
+native document in the same language client; it does not replace the session or
+restart `lake serve`. An explicit stop cancels reconnects and pending starts.
 The LSP client's own reconnect is disabled: a consumed session socket cannot be
 reused. Connection closure during initialization and transport-factory failures
 enter this same recovery path immediately, instead of waiting for the selection

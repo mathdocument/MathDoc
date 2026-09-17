@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, untrack } from "svelte";
-  import { ChevronDown, ChevronRight, Save, Trash2, RotateCcw, Play } from "@lucide/svelte";
+  import { ChevronDown, ChevronRight, Save, Trash2, RotateCcw, Play, Square } from "@lucide/svelte";
   import type { NodeDetail, SrcBlock } from "../lib/types";
   import type { Theme } from "../lib/theme";
   import { api } from "../lib/api";
@@ -27,6 +27,7 @@
   let ready = $state(false);
   let runtimeReady = $state(false);
   let opening = $state(false);
+  let stopping = $state(false);
   let reconnects = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   let connection = 0;
@@ -73,7 +74,7 @@
     if (!block) return;
     clearTimeout(reconnectTimer); reconnectTimer = undefined;
     const current = ++connection;
-    closeSession();
+    void closeSession().catch(console.warn);
     mounted = false;
     opening = true; runtimeReady = false; ready = false; error = null; result = null; initialTheme = theme;
     try {
@@ -83,7 +84,20 @@
     } catch (e) { if (alive && connection === current) { error = errMsg(e); mounted = true; onReady?.(); } }
     finally { if (connection === current) opening = false; }
   }
-  function reload() { reconnects = 0; void open(); }
+  function refresh() {
+    if (!session) { reconnects = 0; void open(); return; }
+    error = null; result = null;
+    frame?.contentWindow?.postMessage({ type: "lean-recheck", fnode, revision, generation, source: content }, location.origin);
+  }
+  async function stop() {
+    const current = ++connection;
+    clearTimeout(reconnectTimer); reconnectTimer = undefined;
+    stopping = true; opening = false; ready = false; validating = false;
+    error = null; result = null; progress = ""; initialTheme = theme; mounted = true;
+    try { await closeSession(); }
+    catch (e) { if (alive && connection === current) error = errMsg(e); }
+    finally { if (alive && connection === current) stopping = false; }
+  }
   function disconnected(reason: string) {
     error = reason; progress = "";
     // One automatic attempt per editor lifetime; repeated crashes need an explicit
@@ -95,8 +109,9 @@
     }
   }
   function closeSession() {
-    if (session) void api.closeLeanSession(session).catch(console.warn);
+    const id = session;
     session = null; runtimeReady = false;
+    return id ? api.closeLeanSession(id) : Promise.resolve();
   }
   async function save() {
     if (busy) return;
@@ -133,7 +148,7 @@
   function message(event: MessageEvent) {
     if (event.origin !== location.origin || event.source !== frame?.contentWindow) return;
     if (event.data?.type === "lean-runtime-ready") { runtimeReady = true; selectNode(); return; }
-    if (event.data?.type === "lean-disconnected") { disconnected(String(event.data.value)); return; }
+    if (event.data?.type === "lean-disconnected") { if (session && !stopping) disconnected(String(event.data.value)); return; }
     if (event.data?.type === "lean-error") { error = String(event.data.value); onReady?.(); return; }
     if (event.data?.fnode !== fnode || !block) return;
     switch (event.data?.type) {
@@ -147,7 +162,7 @@
 
     }
   }
-  onDestroy(() => { clearTimeout(reconnectTimer); alive = false; generation++; connection++; closeSession(); removeDraft(draft); });
+  onDestroy(() => { clearTimeout(reconnectTimer); alive = false; generation++; connection++; void closeSession().catch(console.warn); removeDraft(draft); });
 </script>
 
 <svelte:window onmessage={message} />
@@ -156,7 +171,8 @@
     <span class="srctype">lean</span><span class="spacer"></span>
     {#if dirty}<span class="dirty" title="Unsaved changes"><span class="dirty-dot"></span><span class="btn-label">Unsaved</span></span>{/if}
     <div class="block-actions">
-      <button class="icon-btn expand" onclick={reload} disabled={opening || busy} aria-label={session ? "Reload environment" : "Start Lean server"} title={session ? "Reload environment" : "Start Lean server"}>{#if session}<RotateCcw size={14} strokeWidth={1.8}/>{:else}<Play size={14} strokeWidth={1.8}/>{/if}</button>
+      <button class="icon-btn expand" onclick={refresh} disabled={opening || stopping || busy || (!!session && !runtimeReady)} aria-label={session ? "Recheck Lean" : "Start Lean server"} title={session ? "Recheck current Lean file" : "Start Lean server"}>{#if session}<RotateCcw size={14} strokeWidth={1.8}/>{:else}<Play size={14} strokeWidth={1.8}/>{/if}</button>
+      <button class="icon-btn expand" onclick={() => void stop()} disabled={stopping || (!session && !opening)} aria-label="Stop Lean server" title="Stop this page’s Lean server"><Square size={14} strokeWidth={1.8}/></button>
       <button class="icon-btn expand" onclick={() => expanded = !expanded} aria-expanded={expanded} aria-label={expanded ? "Collapse block" : "Expand block"} title={expanded ? "Collapse" : "Expand"}>{#if expanded}<ChevronDown size={15}/>{:else}<ChevronRight size={15}/>{/if}</button>
       <button class="save" onclick={() => void save()} disabled={busy || !dirty} aria-busy={action === "save"} aria-label="Save" title="Save (Ctrl/⌘+S or Ctrl/⌘+Enter); start Lean server for automatic validation"><Save size={13} strokeWidth={1.9}/><span class="btn-label">Save</span></button>
       <button class="delete" onclick={() => void remove()} disabled={busy} aria-label="Delete block" title="Delete block"><Trash2 size={14} strokeWidth={1.8}/></button>
@@ -172,7 +188,9 @@
   <div class="editor-surface" class:collapsed={!expanded}>
     {#if !ready && expanded}<pre class="source-placeholder" aria-label="Lean source while editor loads">{content}</pre>{/if}
   {#if mounted}
+    {#key session}
     <div class="native-editor" class:pending={!ready} inert={!ready || !expanded}><iframe bind:this={frame} title="Lean source and Infoview" src={projectPath(`/lean.html?${session ? `session=${encodeURIComponent(session)}&` : ""}theme=${initialTheme}`)} allow="clipboard-write"></iframe></div>
+    {/key}
   {/if}
   </div>
   {#if error}<div class="error-bar" role="alert">{error}</div>{/if}
