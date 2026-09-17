@@ -127,13 +127,13 @@
     session = null;
     const stopped = id && alive && runtimeReady ? new Promise<void>(resolve => {
       const done = () => { clearTimeout(timer); closing.delete(id); resolve(); };
-      // A wedged initialization cannot acknowledge shutdown; the backend still
-      // reaps its process after this bounded grace period.
+      // Do not let a wedged browser block the next explicit start.
       const timer = setTimeout(done, 1500);
       closing.set(id, done);
     }) : Promise.resolve();
     frame?.contentWindow?.postMessage({ type: "lean-stop", session: id }, location.origin);
-    return stopped.then(() => id ? api.closeLeanSession(id) : undefined);
+    // Kill the native process immediately, even during initialization/checking.
+    return Promise.all([stopped, id ? api.closeLeanSession(id) : undefined]);
   }
   async function save() {
     if (busy) return;

@@ -1084,6 +1084,47 @@ await test('wrapped Lean sources reach the last line before and after server sta
   } finally { await browser.close(); }
 });
 
+await test('stopping an unfinished Lean check clears progress and Infoview connections', {timeout: 90000}, async () => {
+  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const node = {fnode: randomUUID(), title: 'Interruptible', module: 'Lib.Interruptible', depens: [], blocks: [
+    {srctype: 'lean', content: '#eval IO.sleep 60000\nexample : True := by trivial\n'},
+  ]};
+  try {
+    await fixture(browser, async ({page, url, root}) => {
+      await page.goto(`${url}/?stop#ref=${node.fnode}`);
+      const block = page.locator('.lean-block');
+      const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
+      const input = frame.getByRole('textbox', {name: /Editor content/});
+      const gutter = frame.locator('.glyph-margin-widgets [class*="ced-"]');
+      const workers = async () => (await run('ps', ['-axo', 'pid=,command='])).stdout.split('\n').filter(line => line.includes(root) && /--worker|--server/.test(line));
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await block.getByRole('button', {name: 'Start Lean server', exact: true}).click();
+        await gutter.first().waitFor();
+        const info = frame.frameLocator('#infoview iframe');
+        await info.getByText('All Messages', {exact: true}).waitFor();
+        assert.doesNotMatch(await info.locator('body').innerText(), /No connection to Lean|Error updating/);
+        assert.ok((await workers()).length > 0, 'a native Lean process is checking the unfinished source');
+        const instance = await frame.locator('.monaco-editor').elementHandle();
+        const stopped = page.waitForResponse(r => r.request().method() === 'DELETE' && /\/lean\/session\//.test(r.url()));
+        const start = Date.now();
+        await block.getByRole('button', {name: 'Stop Lean server', exact: true}).click();
+        assert.equal((await stopped).status(), 204);
+        await gutter.first().waitFor({state: 'hidden'});
+        assert.ok(Date.now() - start < 5000, 'stop does not wait for the sixty-second check');
+        assert.equal(await frame.locator('#infoview iframe').count(), 0, 'dispose the old Infoview RPC connection');
+        assert.equal(await instance.evaluate(el => el.isConnected), true, 'preserve the syntax editor');
+        assert.deepEqual(await workers(), [], 'stop reaps the native server and its workers');
+      }
+      await input.press('ControlOrMeta+A');
+      await page.keyboard.insertText('example : True := by trivial\n');
+      await block.getByRole('button', {name: 'Start Lean server', exact: true}).click();
+      await page.getByText('Lean editor ready', {exact: true}).waitFor();
+      await frame.frameLocator('#infoview iframe').getByText('All Messages', {exact: true}).waitFor();
+      assert.doesNotMatch(await frame.frameLocator('#infoview iframe').locator('body').innerText(), /No connection to Lean|Error updating/);
+    }, [node]);
+  } finally { await browser.close(); }
+});
+
 await test('Lean browsing stays offline until explicitly started and preserves static drafts', {timeout: 90000}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   const nodes = ['First', 'Second'].map((title, i) => ({fnode: randomUUID(), title, module: `Lib.Offline${i}`, depens: [], blocks: [

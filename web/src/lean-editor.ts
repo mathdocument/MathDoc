@@ -1,6 +1,7 @@
 import { LeanMonaco, type LeanClient, type LeanMonacoOptions } from "lean4monaco";
 import { CancellationTokenSource, Uri, KeyCode, KeyMod, editor as MonacoEditor } from "monaco-editor";
 import { createModelReference } from "vscode/monaco";
+import { getService, ICommandService } from "vscode/services";
 import { FileUri } from "lean4monaco/dist/vscode-lean4/vscode-lean4/src/utils/exturi";
 import { CloseAction, ErrorAction } from "vscode-languageclient/lib/common/client.js";
 import { projectPath } from "./lib/project-path";
@@ -203,6 +204,7 @@ async function selectNode(fnode: string, revision: string, generation: number, s
   updating = false;
   if (preview !== model) preview?.dispose();
   preview = undefined;
+  if (!runtime.infoProvider!.isOpen()) void getService(ICommandService).then(commands => { if (!signal.aborted) return commands.executeCommand("lean4.displayGoal"); });
   document.getElementById("infoview-pending")!.hidden = true;
   if (focused) editor.focus();
   if (restart) {
@@ -225,8 +227,12 @@ function stopSession(session: string | null) {
   document.body.classList.add("static");
   document.getElementById("error")!.textContent = "";
   showProgress();
+  // Closing the native view cancels its RPC requests and releases sessions.
+  // The source editor/model stays mounted; only Infoview is recreated on start.
+  const closedView = runtime.infoProvider?.isOpen() ? getService(ICommandService).then(commands => commands.executeCommand("lean4.toggleInfoview")) : undefined;
   const pending = connecting;
   stopped = stopped.then(async () => {
+    await closedView;
     await pending;
     for (const client of runtime.clientProvider!.getClients()) await client.stop();
     for (const key of [...documents.keys()]) if (key !== selected?.document.filename) await evict(key);
@@ -305,6 +311,7 @@ async function start() {
       "editor.fontSize": 13,
       "editor.tabSize": 2,
       "editor.wordWrap": "on",
+      "lean4.infoview.autoOpen": false,
       // JuliaMono is monospace. LeanMonaco's advanced default measures the
       // entire document in the DOM on every resize, blocking Safari's paint.
       "editor.wrappingStrategy": "simple",
