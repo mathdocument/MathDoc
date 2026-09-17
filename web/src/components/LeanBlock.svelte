@@ -73,6 +73,7 @@
   }
   async function open() {
     if (!block || !runtimeReady) return;
+    const initial = {fnode, revision, generation, module, source: content};
     clearTimeout(reconnectTimer); reconnectTimer = undefined;
     const current = ++connection;
     const previous = closeSession();
@@ -82,13 +83,14 @@
       await previous;
       // Allocation prepares one module. If navigation overtakes it, retire that
       // session before connecting a model that the backend has not prepared.
-      while (alive && connection === current && block) {
-        const node = fnode;
-        const response = await api.leanSession(node, revision);
+      while (alive && connection === current) {
+        const selected = block ? {fnode, revision, generation, module, source: content} : initial;
+        const response = await api.leanSession(selected.fnode, selected.revision);
         if (!alive || connection !== current) { void api.closeLeanSession(response.id).catch(console.warn); return; }
-        if (fnode !== node) { await api.closeLeanSession(response.id); continue; }
+        if (block && fnode !== selected.fnode) { await api.closeLeanSession(response.id); continue; }
         session = response.id;
-        frame?.contentWindow?.postMessage({ type: "lean-start", id: session, fnode, revision, generation, module, source: content }, location.origin);
+        // A node without Lean hides the editor; it must not cancel its start.
+        frame?.contentWindow?.postMessage({ type: "lean-start", id: session, ...(block ? {fnode, revision, generation, module, source: content} : selected) }, location.origin);
         break;
       }
     } catch (e) {

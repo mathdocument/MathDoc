@@ -1156,6 +1156,54 @@ await test('stopping an unfinished Lean check clears progress and Infoview conne
   } finally { await browser.close(); }
 });
 
+await test('Lean session state survives navigation through nodes without Lean', {timeout: 60000}, async () => {
+  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const nodes = ['First', 'Second'].map(title => ({fnode: randomUUID(), title, module: `Lib.${title}`, depens: [], blocks: [
+    {srctype: 'lean', content: 'example : True := by trivial\n'},
+  ]}));
+  try {
+    await fixture(browser, async ({page, url}) => {
+      let sessions = 0, sockets = 0, release, allocated;
+      page.on('request', r => { if (r.method() === 'POST' && r.url().endsWith('/lean/session')) sessions++; });
+      page.on('websocket', () => sockets++);
+      const select = async name => {
+        await page.getByRole('button', {name: /Search nodes/}).click();
+        await page.getByPlaceholder('Search by title or fnode…').fill(name);
+        await page.getByRole('dialog').getByRole('button', {name: new RegExp(name)}).click();
+        await title(page, name);
+      };
+      const gate = new Promise(resolve => { release = resolve; });
+      const allocation = new Promise(resolve => { allocated = resolve; });
+      await page.route(/\/lean\/session$/, async route => {
+        const response = await route.fetch();
+        allocated((await response.json()).id);
+        await gate;
+        await route.fulfill({response});
+      });
+      await select('First');
+      await page.getByRole('button', {name: 'Start Lean server', exact: true}).click();
+      const id = await allocation;
+      await select('Alpha');
+      release();
+      await page.waitForFunction(id => document.querySelector('.lean-block').dataset.session === id, id);
+      for (const name of ['Second', 'Alpha', 'First']) {
+        await select(name);
+        if (name !== 'Alpha') await page.getByText('Lean editor ready', {exact: true}).waitFor();
+        assert.equal(await page.locator('.lean-block').getAttribute('data-session'), id);
+        assert.equal((await fetch(`${url}/api/lean/session/${id}`)).status, 200);
+      }
+      assert.equal(sessions, 1); assert.equal(sockets, 1);
+      const stopped = page.waitForResponse(r => r.request().method() === 'DELETE' && r.url().endsWith(`/lean/session/${id}`));
+      await page.getByRole('button', {name: 'Stop Lean server', exact: true}).click();
+      assert.equal((await stopped).status(), 204);
+      await select('Alpha'); await select('Second');
+      await page.getByRole('button', {name: 'Start Lean server', exact: true}).waitFor();
+      assert.equal(await page.locator('.lean-block').getAttribute('data-session'), null);
+      assert.equal(sessions, 1); assert.equal(sockets, 1);
+    }, nodes);
+  } finally { await browser.close(); }
+});
+
 await test('Lean browsing stays offline until explicitly started and preserves static drafts', {timeout: 90000}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   const nodes = ['First', 'Second'].map((title, i) => ({fnode: randomUUID(), title, module: `Lib.Offline${i}`, depens: [], blocks: [
