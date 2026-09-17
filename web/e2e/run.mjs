@@ -963,6 +963,45 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
   } finally { await browser.close(); }
 });
 
+await test('wrapped Lean sources reach the last line before and after server startup', {timeout: 60000}, async () => {
+  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const node = {fnode: randomUUID(), title: 'Wrapped Lean', module: 'Lib.Wrapped', depens: [], blocks: [
+    {srctype: 'lean', content: Array.from({length: 60}, (_, i) => `-- ${i} ${'Long wrapped Lean source. '.repeat(9)}`).join('\n') + '\n-- DOCUMENT END'},
+  ]};
+  try {
+    await fixture(browser, async ({page, url}) => {
+      await page.goto(`${url}/?wrapped#ref=${node.fnode}`);
+      const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
+      for (const running of [false, true]) {
+        if (running) {
+          await page.getByRole('button', {name: 'Start Lean server', exact: true}).click();
+          await page.getByText('Lean editor ready', {exact: true}).waitFor();
+        }
+        await page.locator('.native-editor:not(.pending)').waitFor();
+        for (const view of ['Knowledge', 'Graph', 'Knowledge']) {
+          await page.getByRole('button', {name: view, exact: true}).click();
+          const scroll = frame.locator('#editor-scroll');
+          await scroll.evaluate(el => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          const size = await scroll.evaluate(el => {
+            el.scrollTop = el.scrollHeight;
+            return {height: el.clientHeight, content: el.scrollHeight, viewport: innerHeight, width: el.clientWidth};
+          });
+          console.log('Wrapped source viewport:', running, view, size);
+          assert.ok(size.height <= size.viewport, 'the native scroller must fit inside the iframe');
+          const end = frame.getByText('-- DOCUMENT END', {exact: true});
+          await end.waitFor({timeout: 3000});
+          assert.ok(await end.evaluate(el => {
+            const r = el.getBoundingClientRect();
+            const frame = window.frameElement;
+            return r.top >= 0 && r.bottom <= innerHeight + 1 &&
+              r.bottom + frame.getBoundingClientRect().top <= frame.closest('article').getBoundingClientRect().bottom;
+          }), 'the final source line must fit inside both the iframe and the clipped code block');
+        }
+      }
+    }, [node]);
+  } finally { await browser.close(); }
+});
+
 await test('Lean browsing stays offline until explicitly started and preserves static drafts', {timeout: 90000}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   const nodes = ['First', 'Second'].map((title, i) => ({fnode: randomUUID(), title, module: `Lib.Offline${i}`, depens: [], blocks: [

@@ -193,7 +193,8 @@
   .editor-surface { position:relative; height:100cqh; min-height:0; }
   /* Keep the iframe viewport valid when reloading a collapsed editor. */
   .editor-surface.collapsed { height:0; overflow:hidden; visibility:hidden; }
-  .native-editor { height:100cqh; }
+  .native-editor { height:100%; }
+  .collapsed .native-editor { height:100cqh; }
   .source-placeholder { box-sizing:border-box; height:100%; overflow:auto; margin:0; padding:12px; font:13px/1.6 monospace; white-space:pre-wrap; }
   .pending { visibility: hidden; position: absolute; inset: 0; }
   iframe { display:block; width:100%; height:100%; border:0; }
