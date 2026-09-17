@@ -1084,6 +1084,10 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
         assert.ok(geometry.radius >= 8, 'use the app popup shape');
         assert.equal(await page.locator('.suggest-details:visible').count(), 0, 'no duplicate details panel');
         const popupBox = await popup.boundingBox();
+        assert.equal(await popup.evaluate(el => [el, ...el.querySelectorAll('.monaco-scrollable-element, .monaco-list-rows')].every(surface => {
+          surface.scrollTop = 100;
+          return surface.scrollTop === 0;
+        })), true, 'native scrolling cannot reveal rows outside Monaco\'s rendered window');
         await page.mouse.move(popupBox.x + 100, popupBox.y + 70);
         await popup.evaluate(el => {
           window.completionFrames = []; window.recordCompletion = true;

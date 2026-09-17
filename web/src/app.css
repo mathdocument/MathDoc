@@ -81,12 +81,13 @@ input:focus-visible,
 .mdc-editor-widgets.monaco-editor .suggest-widget {
   border-radius: var(--mdc-radius-md);
   box-shadow: var(--mdc-shadow-panel);
-  overflow: hidden;
+  overflow: clip;
   max-width: calc(100vw - 24px);
 }
-/* Keep recycled completion rows in the popup's paint layer. Safari can flash
-   the separately composited translate3d layer under its rounded clipping edge. */
-.mdc-editor-widgets .suggest-widget .monaco-list-rows { transform: none !important; }
+/* Monaco scrolls/recycles these rows itself. overflow:hidden still permits
+   native scrolling, which can expose unrendered rows during Safari gestures. */
+.mdc-editor-widgets .suggest-widget .monaco-scrollable-element,
+.mdc-editor-widgets .suggest-widget .monaco-list-rows { overflow: clip !important; }
 .mdc-editor-widgets .suggest-widget .monaco-list-row { border-radius: 5px; }
 .mdc-editor-widgets .suggest-widget .details-label {
   font-family: var(--mdc-font);
