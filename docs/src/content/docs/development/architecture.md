@@ -80,7 +80,7 @@ operating-system sandbox. See [Compiler internals](../compiler-internals/) and
 timeouts and shutdown. `latex/renderer.py` uses plasTeX for standard macro
 expansion and document structure, and Pybtex for citations. It emits escaped HTML
 and math placeholders. `latex-math.ts` lazily loads the locally bundled MathJax 4
-renderer and Latin Modern math fonts. Preview teardown clears its math items;
+renderer and Computer Modern/AMS math fonts. Preview teardown clears its math items;
 stale asynchronous renders cannot replace a newer preview. MathJax's safe
 extension blocks formula URLs, custom classes and IDs; HTML and runtime-option
 extensions are disabled. No TeX executable, `.aux` exchange or TexLab process is involved.

@@ -21,7 +21,9 @@ function loadMathJax(): Promise<MathJax> {
         failed: reject,
       },
       startup: { typeset: false },
-      output: { font: 'mathjax-modern', mtextInheritFont: true },
+      // Classic LaTeX uses Computer Modern with AMS blackboard bold, not the
+      // different double-struck alphabet in Latin Modern Math.
+      output: { font: 'mathjax-tex', mtextInheritFont: true },
       chtml: { matchFontHeight: false },
       tex: { require: { allow: { html: false, texhtml: false, setoptions: false } } },
       options: {

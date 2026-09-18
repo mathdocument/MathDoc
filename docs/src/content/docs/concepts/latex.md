@@ -75,9 +75,12 @@ complete OpenType regular, italic, bold and bold-italic faces retain accented
 letters such as `ö`, `é` and `ü` in the same typeface, including bibliography
 titles. These TeX fonts are served locally under the GUST Font License; clients
 do not need a TeX installation. Ordinary formulas use MathJax's official
-Latin Modern math font package, pinned with the renderer and bundled locally;
-no CDN requests are needed. Math is rendered asynchronously, and closing or
-changing a preview releases its MathJax items without affecting other previews.
+TeX font package (Computer Modern with AMS blackboard bold), pinned with the
+renderer and bundled locally. This follows conventional LaTeX/`amssymb`, rather
+than Latin Modern Math's different `\mathbb` alphabet; class-specific font
+selections are not applied to HTML. No CDN requests are needed. Math is rendered
+asynchronously, and closing or changing a preview releases its MathJax items
+without affecting other previews.
 TikZ diagrams use the separate TeX-to-SVG runtime described below.
 Inline formulas use the surrounding text's font size; display formulas retain
 their separate scale. Normal text is not artificially emboldened.

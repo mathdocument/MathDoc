@@ -1133,7 +1133,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       const settings = JSON.parse((await cli('project', 'latex', 'show')).stdout).project;
       assert.match(settings.preamble, /newcommand/);
       assert.match(settings.bibliography, /A paper/);
-      const source = String.raw`\section{Introduction}\label{intro}By \nameref{thm:b}, see \cite{paper}. $\cA$ The value $r=0$ is zero.\[\left(\frac{x_1^2}{1+x}\right)=\begin{pmatrix}a&b\\c&d\end{pmatrix}\]\begin{items}\item One\end{items}`;
+      const source = String.raw`\section{Introduction}\label{intro}By \nameref{thm:b}, see \cite{paper}. $\cA$ The value $r=0$ is zero. Blackboard bold: $\mathbb{ABCDEFGHIJKLMNOPQRSTUVWXYZ}$.\[\left(\frac{x_1^2}{1+x}\right)=\begin{pmatrix}a&b\\c&d\end{pmatrix}\]\begin{items}\item One\end{items}`;
       await put('Alpha', source);
       await put('Beta', String.raw`\begin{thm}[Named result]\label{thm:b}$\cA$ exists.\end{thm}`);
       await put('Gamma', String.raw`\section{Private result}\label{private}`);
@@ -1149,10 +1149,6 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       let releaseFont;
       const fontGate = new Promise(resolve => { releaseFont = resolve; });
       await page.route('**/mathjax/**/chtml.js', async route => { await fontGate; await route.continue(); });
-      let releaseMath;
-      const mathGate = new Promise(resolve => { releaseMath = resolve; });
-      await page.route('**/mathjax/**/dynamic/calligraphic.js', async route => { await mathGate; await route.continue(); });
-      const mathRequest = page.waitForRequest('**/mathjax/**/dynamic/calligraphic.js');
       const fontRequest = page.waitForRequest('**/mathjax/**/chtml.js');
       await block.getByRole('button', {name: 'Render LaTeX preview'}).click();
       await fontRequest;
@@ -1160,10 +1156,6 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       releaseFont();
       await page.waitForFunction(() => typeof window.MathJax?.typesetPromise === 'function');
       assert.equal(await block.locator('mjx-container').count(), 0, 'a closed preview stays closed when fonts finish loading');
-      await block.getByRole('button', {name: 'Render LaTeX preview'}).click();
-      await mathRequest;
-      await block.getByRole('button', {name: 'Return to LaTeX editor'}).click();
-      releaseMath();
       await block.getByRole('button', {name: 'Render LaTeX preview'}).click();
       assert.equal(await block.locator('.latex-imports summary').innerText(), '1 imported dependencies');
       await block.locator('.latex-imports li').getByText('Beta', {exact: true}).waitFor();
@@ -1179,7 +1171,15 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       }));
       assert.equal(inline.math, inline.text, 'inline math must not be enlarged relative to surrounding text');
       assert.equal(inline.weight, '400');
-      assert.ok(requests.some(request => request.includes('/mathjax-modern-font/chtml/woff2/')), 'use the official Latin Modern math font');
+      await page.evaluate(() => document.fonts.ready);
+      const blackboard = block.locator('mjx-mi[data-latex="ABCDEFGHIJKLMNOPQRSTUVWXYZ"]');
+      assert.equal(await blackboard.locator('mjx-c').count(), 26);
+      assert.ok(await blackboard.locator('mjx-c').evaluateAll(chars => chars.every(char =>
+        getComputedStyle(char).fontFamily.includes('MJX-TEX-N'))), 'use the AMS alphabet from the official TeX font');
+      const blackboardRWidth = await blackboard.locator('.mjx-c211D').evaluate(char =>
+        char.getBoundingClientRect().width / parseFloat(getComputedStyle(char).fontSize));
+      assert.ok(Math.abs(blackboardRWidth - 0.722) < 0.003, 'AMS msbm10 R has width 0.722em, unlike Latin Modern Math at 0.639em');
+      assert.ok(requests.some(request => request.includes('/mathjax-tex-font/chtml/woff2/')), 'use the official Computer Modern/AMS math fonts');
       assert.ok(requests.every(request => new URL(request).origin === new URL(url).origin), 'all renderer and font assets are self-hosted');
       assert.deepEqual(failedMathAssets, [], 'all requested MathJax assets are bundled');
       assert.match(await block.locator('.latex-preview').innerText(), /A paper/);

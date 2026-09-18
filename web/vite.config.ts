@@ -47,7 +47,7 @@ export default defineConfig({
       { src: "node_modules/mathjax/input/tex", dest: `mathjax/${mathjaxVersion}/input` },
       { src: "node_modules/mathjax/ui/safe.js", dest: `mathjax/${mathjaxVersion}/ui` },
       { src: "node_modules/mathjax/a11y/assistive-mml.js", dest: `mathjax/${mathjaxVersion}/a11y` },
-      { src: "node_modules/@mathjax/mathjax-modern-font/{chtml.js,chtml}", dest: `mathjax/${mathjaxVersion}/fonts/mathjax-modern-font` },
+      { src: "node_modules/@mathjax/mathjax-tex-font/{chtml.js,chtml}", dest: `mathjax/${mathjaxVersion}/fonts/mathjax-tex-font` },
     ] }),
     ...sveltePlugins,
   ],
