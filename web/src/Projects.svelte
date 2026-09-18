@@ -153,7 +153,7 @@
                   <button class="toggle" class:stopped={!row.running} disabled={!!pending[row.name] || !!pending[database]} onclick={() => void manage(row.name, row.running ? "stop" : "start")} title={`${row.running ? "Stop" : "Start"} ${row.name}`} aria-label={`${row.running ? "Stop" : "Start"} ${row.name}`}>
                     {#if pending[row.name]}<RefreshCw size={14} class="spinning" />{:else if row.running}<Square size={13} />{:else}<Play size={14} />{/if}
                   </button>
-                  <div class="branch-actions">
+                  <div class="branch-actions" class:main={row.branch === "main"}>
                     <button class="icon-button" disabled={!!pending[row.name] || !!pending[database]} onclick={() => create = {source: row.name}} title={`New branch from ${row.name}`} aria-label={`New branch from ${row.name}`}><GitBranchPlus size={16} /></button>
                     {#if row.branch !== "main"}
                       <button class="icon-button delete" disabled={row.running || !!pending[row.name] || !!pending[database]} onclick={() => void manage(row.name, "delete_branch")} title={row.running ? "Stop this branch before deleting" : `Delete ${row.name}`} aria-label={`Delete ${row.name}`}><Trash2 size={15} /></button>
@@ -218,7 +218,8 @@
   .toggle { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 32px; padding: 0; color: var(--mdc-dim); background: var(--mdc-card); border: 1px solid var(--mdc-border-strong); border-radius: var(--mdc-radius-sm); }
   .toggle:hover:not(:disabled) { color: var(--mdc-fg); background: var(--mdc-card-hover); }
   .toggle.stopped { color: var(--mdc-accent-down); }
-  .branch-actions { display: flex; padding: 1px; border: 1px solid var(--mdc-border); border-radius: var(--mdc-radius-sm); }
+  .branch-actions { display: grid; grid-template-columns: repeat(2, 30px); padding: 1px; border: 1px solid var(--mdc-border); border-radius: var(--mdc-radius-sm); }
+  .branch-actions.main { grid-template-columns: 30px; margin-right: 30px; }
   .branch-actions .icon-button { width: 30px; height: 28px; }
   .delete { color: var(--mdc-error); }
   .delete:hover:not(:disabled) { color: var(--mdc-error); background: color-mix(in srgb, var(--mdc-error) 12%, transparent); }

@@ -170,6 +170,11 @@ await test('project directory creates, forks, starts, stops and deletes branches
         for (const width of [1440, 750, 420]) {
           await page.setViewportSize({width, height: 900});
           assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth || document.querySelector('.directory').scrollWidth > innerWidth), false);
+          for (const selector of ['.toggle', '.branch-actions', '.branch-actions button', '.open, .open-space']) {
+            const bounds = await Promise.all([main, fork].map(name => row(name).locator(selector).first().boundingBox()));
+            assert.equal(bounds[0].x, bounds[1].x, `${selector} aligns at ${width}px`);
+            assert.equal(bounds[0].width + (selector === '.branch-actions' ? 30 : 0), bounds[1].width);
+          }
           await page.screenshot({path: resolve(tmpdir(), `mdc-projects-${theme}-${width}-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`), fullPage: true});
         }
       }

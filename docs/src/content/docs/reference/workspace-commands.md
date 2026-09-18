@@ -125,7 +125,9 @@ duplicate before sending a branch-creation request to TerminusDB.
 The browser project list also offers Init, Start/Stop, New branch and Delete
 controls. Init creates a database with a stopped `main` branch. Browser forking
 also works from stopped branches; deletion still requires stopping first.
-The `main` name has an outlined badge and no branch-delete button; it can still
+The `main` name has an outlined badge and no branch-delete button; its empty
+delete slot sits outside the New branch button's border and keeps the remaining
+buttons aligned with other branches. It can still
 be started, stopped, edited and forked. Each project header has a separate Delete
 project button. Its confirmation covers **all** branches, including branches
 hidden by the current search or status filter, plus data, history, caches and
