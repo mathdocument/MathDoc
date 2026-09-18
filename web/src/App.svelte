@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import {
+    ArrowLeft,
+    ArrowRight,
     Columns3,
     Link2,
     Moon,
@@ -475,6 +477,23 @@
 
     <!-- Node actions, followed by view and app controls. -->
     <div class="bar-zone bar-end">
+      <div class="tool-cluster" aria-label="node history">
+        <button
+          class="tool icon-only"
+          onclick={() => window.history.back()}
+          disabled={nodeSession.historyIdx <= 0}
+          title="Back"
+          aria-label="Back"
+        ><ArrowLeft size={15} strokeWidth={1.8} /></button>
+        <button
+          class="tool icon-only"
+          onclick={() => window.history.forward()}
+          disabled={nodeSession.historyIdx < 0 || nodeSession.historyIdx >= nodeSession.history.length - 1}
+          title="Forward"
+          aria-label="Forward"
+        ><ArrowRight size={15} strokeWidth={1.8} /></button>
+      </div>
+      <span class="toolbar-divider"></span>
       <button
         class="tool primary icon-only"
         onclick={() => { overlay = { kind: "new-node" }; }}

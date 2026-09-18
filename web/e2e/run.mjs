@@ -1208,6 +1208,10 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
         await cdp.detach();
       }
       await page.screenshot({path: resolve(tmpdir(), `mdc-latex-font-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
+      const back = page.getByRole('button', {name: 'Back', exact: true});
+      const forward = page.getByRole('button', {name: 'Forward', exact: true});
+      assert.equal(await back.isDisabled(), true);
+      assert.equal(await forward.isDisabled(), true);
       await block.getByRole('link', {name: externalName(1), exact: true}).click();
       await title(page, 'Beta');
       await block.locator('.latex-preview .latex-statement').waitFor();
@@ -1221,7 +1225,15 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
         return Math.abs(title.y - paragraph.y);
       });
       assert.ok(headingGap < 4, 'theorem heading and first paragraph must share a line');
-      await page.goBack();
+      assert.equal(await forward.isDisabled(), true);
+      await back.click();
+      await title(page, 'Alpha');
+      assert.equal(await back.isDisabled(), true);
+      assert.equal(await forward.isDisabled(), false);
+      await forward.click();
+      await title(page, 'Beta');
+      await block.locator('.latex-preview .latex-statement').waitFor();
+      await back.click();
       await title(page, 'Alpha');
       await block.locator('.latex-imports summary').getByText('1 imported dependencies', {exact: true}).waitFor();
       await block.getByRole('heading', {name: 'Introduction', exact: true}).waitFor();
@@ -1355,6 +1367,19 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       assert.ok((await block.locator('.view-lines').innerText()).includes(`cite{${nextKey}`));
       const draft = String.raw`\section{Draft title}\label{new}By \nameref{thm:b}, see \cite{paper}. $\cA$`;
       await fill(draft);
+      const discard = page.listeners('dialog');
+      page.removeAllListeners('dialog');
+      try {
+        const prompted = page.waitForEvent('dialog');
+        page.once('dialog', dialog => void dialog.dismiss());
+        await forward.click();
+        await prompted;
+        await page.waitForFunction(() => window.history.state?.index === 0 && document.querySelector('.app')?.getAttribute('aria-busy') === 'false');
+        await title(page, 'Alpha');
+        assert.match(await block.locator('.view-lines').innerText(), /Draft.title/);
+        assert.equal(await back.isDisabled(), true);
+        assert.equal(await forward.isDisabled(), false);
+      } finally { discard.forEach(listener => page.on('dialog', listener)); }
       await block.getByRole('button', {name: 'Render LaTeX preview'}).click();
       await block.getByRole('heading', {name: 'Draft title', exact: true}).waitFor();
       assert.equal(JSON.parse((await cli('show', 'Alpha')).stdout).blocks[0].content, source);

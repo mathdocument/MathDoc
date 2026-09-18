@@ -34,7 +34,9 @@ catalog appear in a natively scrolling list. The display limit does not restrict
 which bibliography entries can be found.
 
 Click a reference to open its node and scroll to the label in Preview. Opening
-the link in a new tab also targets that label. Citation links scroll to the
+the link in a new tab also targets that label. The header's **Back / Forward**
+buttons follow browser history, keep the selected Edit / Preview mode and
+confirm before discarding unsaved edits. Citation links scroll to the
 node's bibliography. Dependency and project changes are checked every five
 seconds while the editor is visible; slow context requests are allowed to finish
 and stale draft responses are discarded. Completion catalogs must match the
