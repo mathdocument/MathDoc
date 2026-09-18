@@ -62,7 +62,7 @@
   @font-face { font-family:"Latin Modern Roman"; src:url('/fonts/latin-modern/lmroman10-italic.otf') format('opentype'); font-weight:400; font-style:italic; font-display:block; }
   @font-face { font-family:"Latin Modern Roman"; src:url('/fonts/latin-modern/lmroman10-bold.otf') format('opentype'); font-weight:700; font-style:normal; font-display:block; }
   @font-face { font-family:"Latin Modern Roman"; src:url('/fonts/latin-modern/lmroman10-bolditalic.otf') format('opentype'); font-weight:700; font-style:italic; font-display:block; }
-  .latex-preview { min-height:0; overflow:auto; padding:1.2rem 1.4rem; color:var(--mdc-fg); font-family:"Latin Modern Roman", "Songti SC", serif; font-size:1rem; line-height:1.75; overflow-wrap:anywhere; }
+  .latex-preview { min-height:0; overflow:auto; padding:1.2rem 1.4rem; color:var(--mdc-fg); font-family:"Latin Modern Roman", "Songti SC", serif; font-size:1rem; line-height:1.75; overflow-wrap:anywhere; -webkit-font-smoothing:auto; }
   .latex-preview :global(p) { margin:.6em 0; }
   .latex-preview :global(h2), .latex-preview :global(h3), .latex-preview :global(h4) { margin:1em 0 .5em; line-height:1.35; }
   .latex-preview :global(a) { color:var(--mdc-accent); text-decoration:underline; text-underline-offset:3px; }
