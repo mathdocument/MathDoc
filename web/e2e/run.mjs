@@ -710,7 +710,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await page.getByRole("button", { name: "Start Lean server", exact: true }).click();
         await page.frameLocator('iframe[title="Lean source and Infoview"]').locator('#infoview-pending').waitFor();
         await page.locator('.native-editor:not(.pending)').waitFor();
-        await page.locator('[data-srctype="latex"] .monaco-editor').waitFor();
+        await page.locator('[data-srctype="latex"] .monaco-editor[role=code]').waitFor();
         assert.deepEqual(await center(page).locator('.source-block:not(.hidden)').evaluateAll(
           blocks => blocks.map(block => block.dataset.srctype),
         ), ["text", "latex", "lean", "rocq"]);
@@ -720,7 +720,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         }
         releaseSession();
         const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
-        await frame.locator(".monaco-editor").waitFor();
+        await frame.locator(".monaco-editor[role=code]").waitFor();
         const input = frame.getByRole("textbox", { name: /Editor content/ });
         await frame.locator(".view-line").getByText("constructor", { exact: true }).click();
         await frame.frameLocator("#infoview iframe").getByText("True", { exact: true }).first().waitFor();
@@ -740,7 +740,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await leanBlock.getByRole("button", { name: "Collapse block" }).click();
         assert.equal(await leanBlock.locator("iframe").isVisible(), false);
         await leanBlock.getByRole("button", { name: "Expand block" }).click();
-        await frame.locator(".monaco-editor").waitFor();
+        await frame.locator(".monaco-editor[role=code]").waitFor();
         assert.equal(messages.filter(m => m.method === "initialize").length, initializedBeforeCollapse);
         if (process.env.MDC_E2E_ARTIFACTS) {
           await mkdir(process.env.MDC_E2E_ARTIFACTS, { recursive: true });
@@ -1100,7 +1100,7 @@ await test('Monaco source blocks retain highlighting, edits and undo across layo
         await page.waitForFunction(() => !document.documentElement.dataset.vtScope);
       }
       await page.getByRole('button', {name: 'Switch to dark mode'}).click();
-      for (const {srctype} of node.blocks) await page.locator(`[data-srctype="${srctype}"] .monaco-editor.vs-dark`).waitFor();
+      for (const {srctype} of node.blocks) await page.locator(`[data-srctype="${srctype}"] .monaco-editor[role=code].vs-dark`).waitFor();
       assert.equal(sessions, 0, 'ordinary editing never starts a Lean server');
     }, [node]);
   } finally { await browser.close(); }
@@ -1597,7 +1597,7 @@ await test('stopping an unfinished Lean check clears progress and Infoview conne
         await info.getByText('All Messages', {exact: true}).waitFor();
         assert.doesNotMatch(await info.locator('body').innerText(), /No connection to Lean|Error updating/);
         assert.ok((await workers()).length > 0, 'a native Lean process is checking the unfinished source');
-        const instance = await frame.locator('.monaco-editor').elementHandle();
+        const instance = await frame.locator('.monaco-editor[role=code]').elementHandle();
         const stopped = page.waitForResponse(r => r.request().method() === 'DELETE' && /\/lean\/session\//.test(r.url()));
         const start = Date.now();
         await block.getByRole('button', {name: 'Stop Lean server', exact: true}).click();
@@ -1700,7 +1700,7 @@ await test('Lean browsing stays offline until explicitly started and preserves s
         assert.equal(await page.getByText('Starting Lean editor…', {exact: true}).count(), 0);
       };
       await page.getByRole('button', {name: 'Switch to dark mode'}).click();
-      await frame.locator('.monaco-editor.vs-dark').waitFor();
+      await frame.locator('.monaco-editor[role=code].vs-dark').waitFor();
       const dark = await styled();
       assert.notEqual(light.color, dark.color, 'offline syntax responds to the theme');
       assert.equal(await frame.locator('#infoview').isVisible(), false);
@@ -1728,7 +1728,7 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       await page.keyboard.insertText('-- offline revision\n');
       await block.getByRole('button', {name: 'Save', exact: true}).click();
       await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
-      persistentEditor = await frame.locator('.monaco-editor').elementHandle();
+      persistentEditor = await frame.locator('.monaco-editor[role=code]').elementHandle();
       await input.press('ControlOrMeta+End');
       await page.keyboard.insertText('-- draft before startup\n');
       await block.getByText('Unsaved', {exact: true}).waitFor();
@@ -1763,7 +1763,7 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       await other.getByText('Lean editor ready', {exact: true}).waitFor();
       const sessionId = p => p.locator(".lean-block").getAttribute("data-session");
       const oldId = await sessionId(page), otherId = await sessionId(other);
-      persistentEditor = await frame.locator('.monaco-editor').elementHandle();
+      persistentEditor = await frame.locator('.monaco-editor[role=code]').elementHandle();
       await input.press('ControlOrMeta+End');
       await page.keyboard.insertText('-- draft survives stop\n');
       const closed = socket.waitForEvent('close');
@@ -1854,7 +1854,7 @@ await test('collapsed Lean editors recheck without recreating the browser viewpo
       assert.equal(await frame.locator('#error').textContent(), '');
       await block.getByRole('button', {name: 'Expand block'}).click();
       await frame.locator('.view-line').first().waitFor();
-      const dimensions = await frame.locator('.monaco-editor').evaluate(el => ({width: el.clientWidth, height: el.clientHeight}));
+      const dimensions = await frame.locator('.monaco-editor[role=code]').evaluate(el => ({width: el.clientWidth, height: el.clientHeight}));
       assert.ok(dimensions.width > 100 && dimensions.height > 100, 'expanded editor has a usable viewport');
     }, [node]);
   } finally { await browser.close(); }
@@ -1951,7 +1951,7 @@ await test('editors and previews pass scrolling to the node pane at both boundar
       await check(latex, preview, direction => preview.evaluate((el, direction) => { el.scrollTop = direction > 0 ? 0 : el.scrollHeight; }, direction));
       await nativeBoundary(preview);
       const input = frame.getByRole('textbox', {name: /Editor content/});
-      await check(page.locator('[data-srctype="lean"]'), frame.locator('.monaco-editor'), async direction => {
+      await check(page.locator('[data-srctype="lean"]'), frame.locator('.monaco-editor[role=code]'), async direction => {
         await input.press(direction > 0 ? 'ControlOrMeta+Home' : 'ControlOrMeta+End');
       });
       for (const reducedMotion of ['no-preference', 'reduce']) {
@@ -1965,7 +1965,7 @@ await test('editors and previews pass scrolling to the node pane at both boundar
           else {
             await page.getByRole('button', {name: 'Start Lean server', exact: true}).click();
             await page.locator('.native-editor:not(.pending)').waitFor();
-            surfaces.push(frame.locator('.monaco-editor'));
+            surfaces.push(frame.locator('.monaco-editor[role=code]'));
             await frame.frameLocator('#infoview iframe').getByText('All Messages', {exact: true}).waitFor();
             surfaces.push(frame.frameLocator('#infoview iframe').locator('html'));
           }
@@ -2018,7 +2018,7 @@ await test('view changes reveal measured editors and loaded pages without interm
       await page.reload();
       await page.locator('.line-numbers').nth(2).waitFor();
       await page.waitForFunction(() => document.querySelector('.latex-imports') || document.querySelector('.source-block .view-line'));
-      await page.evaluate(() => { window.originalEditor = document.querySelector('.monaco-editor'); });
+      await page.evaluate(() => { window.originalEditor = document.querySelector('.monaco-editor[role=code]'); });
       let release, entered;
       const gate = new Promise(resolve => { release = resolve; });
       const requested = new Promise(resolve => { entered = resolve; });
@@ -2039,7 +2039,7 @@ await test('view changes reveal measured editors and loaded pages without interm
             const sample = () => {
               changing ||= document.documentElement.dataset.vtScope === 'ready';
               if (!changing || document.documentElement.dataset.vtScope) return requestAnimationFrame(sample);
-              const editor = document.querySelector('.monaco-editor');
+              const editor = document.querySelector('.monaco-editor[role=code]');
               const lines = [...editor.querySelectorAll('.view-line')];
               const gutters = [...editor.querySelectorAll('.line-numbers')].filter(el => el.textContent.trim() && getComputedStyle(el).visibility !== 'hidden');
               resolve(gutters.map(g => ({number: g.textContent, difference: Math.min(...lines.map(line => Math.abs(g.getBoundingClientRect().top - line.getBoundingClientRect().top)))})));
@@ -2052,7 +2052,7 @@ await test('view changes reveal measured editors and loaded pages without interm
         assert.ok(rows.length > 3);
         assert.ok(rows.every(row => row.difference < 1), JSON.stringify(rows));
       }
-      assert.equal(await page.evaluate(() => window.originalEditor === document.querySelector('.monaco-editor')), true);
+      assert.equal(await page.evaluate(() => window.originalEditor === document.querySelector('.monaco-editor[role=code]')), true);
       // Cross-document transitions also hold the old view while project and node data are pending.
       // Reduced motion still needs readiness gating, without a fade animation.
       await page.emulateMedia({reducedMotion: 'reduce'});

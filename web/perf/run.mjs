@@ -178,7 +178,7 @@ async function runEditorSample(context, url) {
   const { page, errors } = await preparePage(context, "editor");
   try {
     await page.goto(`${url}/p/benchmark/main/`, { waitUntil: "domcontentloaded" });
-    await page.locator('.monaco-editor').waitFor({ state: "visible" });
+    await page.locator('.monaco-editor[role=code]').waitFor({ state: "visible" });
     await nextPaint(page);
     const editorReadyMs = await page.evaluate(() => performance.now() - window.__mdcPerfStart);
 
