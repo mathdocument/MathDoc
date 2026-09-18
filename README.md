@@ -5,7 +5,7 @@ MathDoc manages mathematical knowledge as a versioned dependency graph in Termin
 
 - [Documentation](https://mathdocument.github.io/MathDoc/)
 - [Installation](docs/src/content/docs/getting-started/installation.md)
-- [Server deployment with Docker and SSH](docs/src/content/docs/getting-started/server-deployment.md)
+- [Server deployment](docs/src/content/docs/getting-started/server-deployment.md)
 - [Quick start](docs/src/content/docs/getting-started/quick-start.md)
 - [CLI reference](docs/src/content/docs/reference/workspace-commands.md)
 - [HTTP API](docs/src/content/docs/reference/http-api.md)

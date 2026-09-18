@@ -669,6 +669,15 @@ impl Database {
         {
             bail!("invalid branch name");
         }
+        if self
+            .server
+            .projects()
+            .await?
+            .iter()
+            .any(|project| project.database == self.database && project.branch == name)
+        {
+            bail!("branch {}/{name} already exists", self.database);
+        }
         Ok(self
             .server
             .request(
@@ -921,6 +930,67 @@ impl Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn duplicate_branches_are_rejected_before_creation() {
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = requests.clone();
+        let app = axum::Router::new().fallback(move |method: Method, uri: axum::http::Uri| {
+            recorded
+                .lock()
+                .unwrap()
+                .push((method.clone(), uri.path().to_owned()));
+            async move {
+                axum::Json(if method == Method::GET {
+                    json!([
+                        {"path":"admin/demo","label":"MathDoc","branches":["main","agent"]},
+                        {"path":"admin/other","label":"MathDoc","branches":["main","fresh"]}
+                    ])
+                } else {
+                    json!({"created":true})
+                })
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let database = Database::new(
+            Terminus {
+                client: Client::new(),
+                url,
+                user: "admin".into(),
+                password: "test".into(),
+                cache_root: PathBuf::new(),
+            },
+            "demo".into(),
+            "main".into(),
+        )
+        .unwrap();
+        for name in ["main", "agent"] {
+            assert_eq!(
+                database.create_branch(name).await.unwrap_err().to_string(),
+                format!("branch demo/{name} already exists")
+            );
+        }
+        // A name used only in another database remains available.
+        assert_eq!(
+            database.create_branch("fresh").await.unwrap(),
+            json!({"created":true})
+        );
+        assert_eq!(
+            *requests.lock().unwrap(),
+            vec![
+                (Method::GET, "/api/db".into()),
+                (Method::GET, "/api/db".into()),
+                (Method::GET, "/api/db".into()),
+                (
+                    Method::POST,
+                    "/api/branch/admin/demo/local/branch/fresh".into()
+                ),
+            ]
+        );
+        task.abort();
+    }
+
     #[test]
     fn module_names_preserve_filename_boundaries() {
         let name = "Lib.EGA.«1-1.7.1»";

@@ -752,12 +752,20 @@ async fn browser_project_management_preserves_service_guards_and_cleans_branches
     assert_eq!(inventory["projects"][&main]["edges"], 1);
     assert_eq!(inventory["projects"][&fork]["running"], false);
     assert!(inventory["projects"][&fork].get("nodes").is_none());
-    assert!(!change(fork_body)
-        .send()
-        .await
-        .unwrap()
-        .status()
-        .is_success());
+    let duplicate = change(fork_body).send().await.unwrap();
+    assert!(!duplicate.status().is_success());
+    assert_eq!(
+        duplicate.json::<Value>().await.unwrap()["error"],
+        format!("branch {fork} already exists")
+    );
+    for name in ["main", "fork"] {
+        reject(
+            root,
+            &["branch", "new", name, "-p", &main],
+            &format!("branch {}/{name} already exists", fixture.db.database),
+        )
+        .await;
+    }
     for action in ["start", "stop"] {
         assert!(change(serde_json::json!({"action":action,"project":fork}))
             .send()
