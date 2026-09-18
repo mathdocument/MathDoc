@@ -10,6 +10,9 @@ import logging
 import re
 import sys
 from collections import OrderedDict
+from copy import deepcopy
+from functools import lru_cache
+from types import ModuleType
 from dataclasses import dataclass
 from io import StringIO
 from urllib.parse import quote, urlparse
@@ -48,6 +51,23 @@ def anchor(label):
 
 
 class SafeContext(Context.Context):
+    def local_macro(self, cls):
+        if cls not in self.template_macros:
+            return cls
+        if cls not in self.macro_copies:
+            local = self.macro_copies[cls] = type(cls.__name__, (cls,), {})
+            for name, value in vars(cls).items():
+                if name in ('__dict__', '__weakref__', '__slots__'):
+                    continue
+                if isinstance(value, (classmethod, staticmethod)):
+                    value = type(value)(value.__func__)
+                elif isinstance(value, type):
+                    value = self.local_macro(value)
+                else:
+                    value = deepcopy(value, self.copy_memo)
+                setattr(local, name, value)
+        return self.macro_copies[cls]
+
     def loadPackage(self, tex, file_name, options=None):
         file_name = file_name.removesuffix('.sty').removesuffix('.cls')
         if file_name == 'color':
@@ -58,6 +78,16 @@ class SafeContext(Context.Context):
         for name, cls in getattr(self, 'protected', {}).items():
             self.addGlobal(name, cls)
         return result
+
+
+class DocumentMacros(Context.ContextItem):
+    """Copy a compiled macro only when this document first looks it up."""
+    def __getitem__(self, name):
+        value = super().__getitem__(name)
+        if isinstance(value, type):
+            value = self.owner.local_macro(value)
+            dict.__setitem__(self, name, value)
+        return value
 
 
 class SafeTeX(TeX):
@@ -340,15 +370,9 @@ BIB = OrderedDict()
 AMSALPHA = []  # The worker receives the bundled, unmodified style at startup.
 
 
-def parse(preamble, source):
-    global PARSED_BYTES
-    if len(source.encode()) > MAX_SOURCE:
-        raise ValueError("LaTeX block exceeds 2 MiB")
-    key = hashlib.sha256((preamble + "\0" + source).encode()).hexdigest()
-    if key in PARSED:
-        result, size = PARSED.pop(key)
-        PARSED[key] = (result, size)
-        return result
+@lru_cache(maxsize=1)
+def prepared_preamble(preamble):
+    """Compile one branch's shared declarations before any document body runs."""
     document = TeXDocument(context=SafeContext(load=True))
     document.config['general']['load-tex-packages'] = False
     document.config['general']['packages-dirs'] = []
@@ -377,6 +401,42 @@ def parse(preamble, source):
     for name, cls in document.context.protected.items():
         document.context.addGlobal(name, cls)
     diagram_preamble = load_preamble(document, preamble)
+    # Macro names are strings, but plasTeX retains tokenizer subclasses here.
+    # Their owner/parent links would copy every declaration's parse tree too.
+    for frame in document.context.contexts:
+        names = [(str(name) if isinstance(name, str) else name, cls) for name, cls in frame.items()]
+        frame.clear()
+        frame.update(names)
+    document.context.template_macros = {cls for frame in document.context.contexts
+                                        for cls in frame.values() if isinstance(cls, type)}
+    return document, diagram_preamble
+
+
+def copy_preamble(preamble):
+    template, diagrams = prepared_preamble(preamble)
+    # deepcopy shares Python classes. plasTeX keeps mutable flags and tokens on
+    # those classes; copy on lookup avoids rebuilding thousands of unused macros.
+    memo = {id(module): module for module in sys.modules.values() if isinstance(module, ModuleType)}
+    document = deepcopy(template, memo)
+    document.context.copy_memo = memo
+    document.context.macro_copies = {}
+    for frame in document.context.contexts:
+        frame.__class__ = DocumentMacros
+    document.context.mapMethods()  # Rebind dictionary methods to this copy.
+    return document, diagrams
+
+
+def parse(preamble, source):
+    global PARSED_BYTES
+    if len(source.encode()) > MAX_SOURCE:
+        raise ValueError("LaTeX block exceeds 2 MiB")
+    key = hashlib.sha256((preamble + "\0" + source).encode()).hexdigest()
+    if key in PARSED:
+        result, size = PARSED.pop(key)
+        PARSED[key] = (result, size)
+        return result
+    document, diagram_preamble = copy_preamble(preamble)
+    tex = SafeTeX(ownerDocument=document)
     tex.input('\\begin{document}\n' + source + '\n\\end{document}')
     tex.parse()
     diagnostics = []
@@ -570,9 +630,11 @@ def parse(preamble, source):
     render(bodies[0])
     if sum(len(str(part)) for part in parts) > 8 * 1024 * 1024:
         raise ValueError('Rendered LaTeX exceeds 8 MiB')
-    commands = sorted(set(document.context.keys()) - set(SafeContext(load=True).keys()))
-    commands = [name for name in commands if name.isalpha() and name not in definitions]
-    environments = [name for name in commands if isinstance(document.context.get(name), type) and issubclass(document.context.get(name), Environment)]
+    # Inspect definitions without activating copy-on-lookup for unused macros.
+    macros = {name: cls for frame in document.context.contexts for name, cls in frame.items()}
+    commands = sorted(set(macros) - set(SafeContext(load=True).keys()))
+    commands = [name for name in commands if name.isalpha() and name not in document.context.protected]
+    environments = [name for name in commands if isinstance(macros[name], type) and issubclass(macros[name], Environment)]
     result = Parsed(parts, labels, commands, environments, list(dict.fromkeys(diagnostics)))
     size = len(source) + sum(len(str(p)) for p in parts)
     PARSED[key] = (result, size)

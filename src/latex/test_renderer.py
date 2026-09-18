@@ -16,6 +16,38 @@ PROJECT = {
 }
 
 class RendererTest(unittest.TestCase):
+    def test_compiled_preamble_reuses_definitions_without_leaking_document_state(self):
+        preamble = r'''
+            \newcommand{\sharedword}[1][original]{#1}
+            \newif\ifsharedflag\sharedflagtrue
+            \newtheorem{theorem}{Theorem}\newtheorem{lemma}[theorem]{Lemma}
+            \definecolor{sharedcolor}{HTML}{FF0000}
+        '''
+        first = renderer.parse(preamble, r'''
+            \sharedflagfalse\renewcommand{\sharedword}[1][changed]{#1}
+            \definecolor{sharedcolor}{HTML}{0000FF}
+            \begin{theorem}\label{first}\sharedword\end{theorem}
+            \begin{lemma}\label{second}Second.\end{lemma}
+        ''')
+        self.assertEqual([label['number'] for label in first.labels], ['1', '2'])
+        self.assertIn('changed', ''.join(first.parts))
+        with patch.object(renderer, 'load_preamble', side_effect=AssertionError('Compile shared macros once')):
+            with self.assertRaises(ValueError):
+                renderer.parse(preamble, r'\sharedflagfalse\input{forbidden}')
+            second = renderer.parse(preamble, r'''
+                \begin{theorem}\label{fresh}\sharedword\end{theorem}
+                \ifsharedflag True flag.\else Leaked flag.\fi
+                \textcolor{sharedcolor}{Red}
+            ''')
+        self.assertEqual(second.diagnostics, [])
+        self.assertEqual([(label['label'], label['number']) for label in second.labels], [('fresh', '1')])
+        text = ''.join(second.parts)
+        for value in ('original', 'True flag.', 'color:#FF0000'):
+            self.assertIn(value, text)
+        self.assertNotIn('Leaked flag.', text)
+        changed = renderer.parse(preamble.replace('{#1}', '{updated #1}'), r'\sharedword')
+        self.assertIn('updated original', ''.join(changed.parts))
+
     def test_worker_retains_configuration_until_its_content_key_changes(self):
         project = {'preamble': r'\newcommand{\word}{First}', 'bibliography': ''}
         request = {'kind': 'preview', 'project_key': 'first',
