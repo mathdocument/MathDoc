@@ -4,8 +4,12 @@
 !src/
 !src/**
 !web/
-web/*
-!web/dist/
-!web/dist/**
+!web/**
+web/node_modules/
+web/dist/
+web/e2e/
+web/perf/
+**/.*
+**/*.log
 **/__pycache__/
 **/*.pyc

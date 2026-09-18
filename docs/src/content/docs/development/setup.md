@@ -4,7 +4,8 @@ title: Development setup
 
 Use the [installation instructions](../../getting-started/installation/) for a
 local TerminusDB instance and pinned Lean v4.33.1 toolchain. Node.js is required
-for frontend/documentation development, but not for the installed binary.
+to build from source and develop the frontend/documentation, but not to run the
+installed binary. The build and CI use Node.js 26.
 
 ## Build and fast checks
 
@@ -22,9 +23,15 @@ cargo test --locked
 cargo build --locked
 ```
 
-`web/dist` is committed and embedded into the Rust binary. Rebuild and commit
-assets when frontend sources change; CI rejects drift. Backend-only changes can
-use existing assets. See [Browser frontend](../web-frontend/) for the Vite proxy.
+`web/dist` is generated locally and ignored by Git. Build it before running Cargo
+in a fresh checkout; Cargo embeds those assets into the Rust binary. Rebuild it
+when frontend sources or dependencies change. Backend-only changes can reuse
+existing assets. CI and Docker build the frontend from source. See
+[Browser frontend](../web-frontend/) for the Vite proxy.
+
+Commit sources, dependency lockfiles, static source assets and intentional
+benchmark baselines/reports. Build output (`web/dist`, `docs/dist`, `target`),
+installed dependencies, Python bytecode and transient test output stay local.
 
 ## Native integration checks
 

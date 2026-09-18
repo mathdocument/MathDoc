@@ -104,8 +104,9 @@ Stop the branch with `mdc stop dev/main`; `mdc stop` shuts down the server and a
 ## Release and validation
 
 `npm --prefix web run build` writes `web/dist`; Cargo embeds those assets with
-`rust-embed`. Commit rebuilt assets together with frontend changes. The release
-binary needs no Node.js runtime.
+`rust-embed`. This directory is ignored by Git: commit source changes and lockfile
+updates, then build the frontend before building or installing the Rust binary.
+Docker and CI do both steps. The release binary needs no Node.js runtime.
 
 The real-browser integration suite checks CLI/browser conflicts, navigation,
 graph invariants, Lean goals and diagnostics, draft recovery, saved-editor

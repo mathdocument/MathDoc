@@ -1,6 +1,1 @@
-node_modules/
-.vite/
-*.log
-.DS_Store
-
 /e2e/*.png

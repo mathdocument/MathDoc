@@ -50,11 +50,12 @@ docker compose version
 docker buildx version
 ```
 
-The first build downloads the base images, Rust dependencies and Python packages.
-The image embeds the checked-in frontend assets, installs pinned Elan and LaTeX
-parser dependencies, and runs MDC as a non-root user. Rust stays in the build
-stage; there is no Node installation in either stage. Logs go to Docker's bounded
-local log driver.
+The first build downloads the base images, npm/Rust dependencies and Python
+packages. A Node build stage generates the frontend from source, then the Rust
+stage embeds it into MDC. The runtime installs pinned Elan and LaTeX parser
+dependencies and runs MDC as a non-root user. Node and Rust stay in build stages;
+neither is installed in the runtime image. Logs go to Docker's bounded local log
+driver.
 
 ## Prepare Lean and create a project
 

@@ -5,5 +5,8 @@
 
 # builds
 target/
-docs/dist/
-docs/node_modules/
+dist/
+node_modules/
+__pycache__/
+*.py[cod]
+*.log

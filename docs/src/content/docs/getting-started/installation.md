@@ -6,8 +6,9 @@ For a server with only Docker and Git, use [Docker and SSH deployment](../server
 The instructions below describe native installation and local development.
 
 MathDoc runs on a Unix host. Install Rust to build `mdc`, Docker with Compose for
-the supplied TerminusDB deployment, and Elan for native Lean. Node.js is needed
-only to develop or rebuild the frontend; the repository includes browser assets.
+the supplied TerminusDB deployment, and Elan for native Lean. Node.js 26 and npm
+are required to build the frontend from source; generated browser assets are not
+stored in Git. The installed executable does not need Node.js.
 LaTeX previews require Python 3.9+ with venv support. On first use, mdc installs
 its pinned parser dependencies in a shared virtual environment. See
 [LaTeX runtime setup](../../concepts/latex/#runtime-and-caching) for offline use.
@@ -17,12 +18,15 @@ its pinned parser dependencies in a shared virtual environment. See
 From the source checkout:
 
 ```sh
+npm --prefix web ci
+npm --prefix web run build
 cargo install --path . --locked
 elan toolchain install leanprover/lean4:v4.33.1
 mdc --help
 ```
 
-Alternatively, `cargo build --release --locked` produces `target/release/mdc`.
+After building the frontend, `cargo build --release --locked` is an alternative
+that produces `target/release/mdc`.
 `cargo install` puts the binary in Cargo's executable directory, normally
 `~/.cargo/bin`; include that directory in your PATH. No per-project binary or
 launch script is needed.

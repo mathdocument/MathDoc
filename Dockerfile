@@ -1,11 +1,17 @@
+FROM node:26-bookworm-slim AS frontend
+WORKDIR /build/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web ./
+RUN npm run build
+
 FROM rust:1.95.0-slim-bookworm AS build
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-# Release CI verifies these committed assets against the frontend sources.
-COPY web/dist ./web/dist
+COPY --from=frontend /build/web/dist ./web/dist
 RUN cargo build --release --locked && strip target/release/mdc
 
 FROM debian:bookworm-slim
