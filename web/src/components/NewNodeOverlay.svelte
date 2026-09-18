@@ -22,7 +22,6 @@
   let title = $state("");
   let saving = $state(false);
   let error: string | null = $state(null);
-  let titleInputEl = $state<HTMLInputElement | null>(null);
   let alive = true;
   const draftId = Symbol("new node draft");
 
@@ -38,10 +37,6 @@
   function close() {
     if (!saving && confirmDiscardDraft(draftId)) onClose();
   }
-
-  $effect(() => {
-    titleInputEl?.focus();
-  });
 
   function onKey(e: KeyboardEvent) {
     if (disabled || saving || e.isComposing) return;
@@ -88,9 +83,9 @@
 <svelte:window onkeydown={onKey} />
 
 <dialog
-    class="dialog modal-dialog"
+    class="dialog modal-dialog modal-wide node-dialog"
     aria-label="new node"
-    use:modal
+    use:modal={"input"}
     oncancel={onCancel}
     onclick={(event) => { if (event.target === event.currentTarget) close(); }}
   >
@@ -103,7 +98,6 @@
       <label class="field">
         <span class="lbl">Title</span>
         <input
-          bind:this={titleInputEl}
           bind:value={title}
           placeholder="New Lemma"
           autocomplete="off"
@@ -115,7 +109,7 @@
       {/if}
     </div>
     <footer class="dialog-footer">
-      <div class="hint"><kbd>Enter</kbd> Create <span>·</span> <kbd>Esc</kbd> Cancel</div>
+      <div class="hint"><span><kbd>Enter</kbd> Create</span><span><kbd>Esc</kbd> Cancel</span></div>
       <div class="actions">
         <button class="secondary" onclick={close} disabled={saving}>Cancel</button>
         <button class="primary" onclick={() => void submit()} disabled={saving}>Create node</button>
@@ -124,10 +118,6 @@
   </dialog>
 
 <style>
-  .dialog {
-    width: min(560px, 90vw);
-    margin-top: 14vh;
-  }
   .head-icon {
     color: var(--mdc-accent);
     background: color-mix(in srgb, var(--mdc-accent) 12%, transparent);
@@ -164,8 +154,6 @@
   }
   input:focus-visible {
     outline: none;
-  }
-  input:focus-visible {
     border-color: var(--mdc-accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--mdc-ring) 28%, transparent);
   }
@@ -175,17 +163,6 @@
   .error-bar {
     padding: 0.55rem 0.7rem;
     border-radius: var(--mdc-radius-sm);
-  }
-  .dialog-footer {
-    min-height: 58px;
-  }
-  .hint {
-    gap: 0.35rem;
-    font-size: var(--mdc-text-2xs);
-  }
-  kbd {
-    padding: 0.12rem 0.3rem;
-    font-size: 0.6rem;
   }
   .actions button {
     display: inline-flex;

@@ -315,6 +315,74 @@ await test("large relation lists filter and retain natural card heights", { time
   } finally { await browser.close(); }
 });
 
+await test('node operation dialogs share layout, focus and Escape handling', {timeout: 60000}, async () => {
+  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  try {
+    await fixture(browser, async ({page}) => {
+      const toolbar = page.locator('.bar-end');
+      const open = async (button, label) => {
+        await toolbar.getByRole('button', {name: button, exact: true}).press('Enter');
+        const dialog = page.getByRole('dialog', {name: label, exact: true});
+        await dialog.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished)));
+        return dialog;
+      };
+      for (const theme of ['light', 'dark']) {
+        if (await page.evaluate(() => document.documentElement.dataset.theme) !== theme) await page.getByRole('button', {name: `Switch to ${theme} mode`}).click();
+        for (const width of [1440, 420]) {
+          await page.setViewportSize({width, height: 900});
+          const layouts = [];
+          for (const [button, label, query] of [
+            ['Create node', 'new node', ''],
+            ['Add dependency', 'add dependency', 'Gamma'],
+            ['Remove dependency', 'remove dependencies', 'Beta'],
+          ]) {
+            const dialog = await open(button, label);
+            assert.equal(await dialog.locator('input').evaluate(el => el === document.activeElement), true, `${label} focuses its input`);
+            layouts.push(await dialog.evaluate(el => {
+              const box = el.getBoundingClientRect(), head = el.querySelector('.dialog-head').getBoundingClientRect();
+              const close = el.querySelector('.close-btn').getBoundingClientRect();
+              return {width: box.width, top: box.top, headerHeight: head.height, closeRight: close.right, radius: getComputedStyle(el).borderRadius};
+            }));
+            assert.ok(layouts.at(-1).width <= width, 'dialog fits the viewport');
+            assert.equal(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth), true, 'dialog contents fit narrow screens');
+            await dialog.locator('input').fill(query);
+            await page.screenshot({path: resolve(tmpdir(), `mdc-${label.replaceAll(' ', '-')}-${theme}-${width}-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
+            await dialog.locator('input').press('Escape');
+            await dialog.waitFor({state: 'hidden'});
+            assert.equal(await toolbar.getByRole('button', {name: button, exact: true}).evaluate(el => el === document.activeElement), true, 'closing returns focus to the trigger');
+          }
+          assert.deepEqual(layouts[0], layouts[1]);
+          assert.deepEqual(layouts[1], layouts[2]);
+        }
+      }
+      await page.setViewportSize({width: 1440, height: 900});
+      // Escape follows the same unsaved-draft protection as the close button.
+      page.removeAllListeners('dialog');
+      const create = await open('Create node', 'new node');
+      await create.locator('input').fill('Unsaved title');
+      page.once('dialog', dialog => void dialog.dismiss());
+      await create.locator('input').press('Escape');
+      assert.equal(await create.isVisible(), true);
+      assert.equal(await create.locator('input').inputValue(), 'Unsaved title');
+      page.once('dialog', dialog => void dialog.accept());
+      await create.locator('input').press('Escape');
+      await create.waitFor({state: 'hidden'});
+      const add = await open('Add dependency', 'add dependency');
+      await add.locator('input').fill('New dependency draft');
+      await add.getByRole('button', {name: 'Create new: New dependency draft'}).click();
+      page.once('dialog', dialog => void dialog.dismiss());
+      await add.locator('input').press('Escape');
+      assert.equal(await add.getByRole('button', {name: 'create & add'}).isVisible(), true);
+      page.once('dialog', dialog => void dialog.accept());
+      await add.locator('input').press('Escape');
+      await add.waitFor({state: 'hidden'});
+      await beta(page).click();
+      await title(page, 'Beta');
+      assert.equal(await toolbar.getByRole('button', {name: 'Remove dependency', exact: true}).isDisabled(), true, 'nodes without dependencies cannot open the removal dialog');
+    });
+  } finally { await browser.close(); }
+});
+
 await test("browser with the real MathDoc backend", { timeout: 240000 }, async (suite) => {
   const browser = process.env.MDC_E2E_BROWSER === "webkit"
     ? await webkit.launch()

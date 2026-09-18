@@ -110,9 +110,9 @@
 <svelte:window onkeydown={onKey} />
 
 <dialog
-    class="dialog modal-dialog modal-wide dependency-dialog"
+    class="dialog modal-dialog modal-wide node-dialog"
     aria-label="remove dependencies"
-    use:modal
+    use:modal={"input"}
     oncancel={onCancel}
     onclick={(event) => { if (event.target === event.currentTarget) close(); }}
   >

@@ -27,7 +27,6 @@
   let loading = $state(false);
   let error: string | null = $state(null);
   let saving = $state(false);
-  let inputEl = $state<HTMLInputElement | null>(null);
   let list = $state<HTMLUListElement>();
   let createMode = $state(false);
   const draftId = Symbol("add dependency creation draft");
@@ -92,10 +91,6 @@
       clearTimeout(handle);
       controller.abort();
     };
-  });
-
-  $effect(() => {
-    inputEl?.focus();
   });
 
   let canCreate = $derived(
@@ -207,20 +202,16 @@
   function onCancel(event: Event) {
     event.preventDefault();
     if (disabled || saving) return;
-    if (createMode) {
-      createMode = false;
-    } else {
-      close();
-    }
+    close();
   }
 </script>
 
 <svelte:window onkeydown={onKey} />
 
 <dialog
-    class="dialog modal-dialog modal-wide dependency-dialog"
+    class="dialog modal-dialog modal-wide node-dialog"
     aria-label="add dependency"
-    use:modal
+    use:modal={"input"}
     oncancel={onCancel}
     onclick={(event) => { if (event.target === event.currentTarget) close(); }}
   >
@@ -233,7 +224,6 @@
       <Search size={18} strokeWidth={1.8} />
       <input
         type="search"
-        bind:this={inputEl}
         bind:value={query}
         aria-label="Search dependencies"
         placeholder="Search for a dependency…"
