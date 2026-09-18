@@ -27,13 +27,14 @@
     block: SrcBlock;
     theme: Theme;
     active?: boolean;
+    latexPreview?: boolean;
     onDeleted?: (node: NodeDetail, srctype: string) => void;
     onSaved?: (node: NodeDetail) => void;
     onReady?: () => void;
     focusLabel?: string;
     onLatexNavigate?: (fnode: string, label: string) => void;
   }
-  let { fnode, revision, block, theme, active = true, onDeleted, onSaved, onReady, focusLabel, onLatexNavigate }: Props = $props();
+  let { fnode, revision, block, theme, active = true, latexPreview = $bindable(false), onDeleted, onSaved, onReady, focusLabel, onLatexNavigate }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
   let scroller: HTMLDivElement;
@@ -49,7 +50,7 @@
   let lastSavedDoc = "";
   let error: string | null = $state(null);
   let expanded = $state(true);
-  let previewing = $state(false);
+  let previewing = $derived(block.srctype === "latex" && latexPreview);
   let latex = $state<LatexSession | null>(null);
   let previewError: string | null = $state(null);
   let LatexPreviewComponent = $state<typeof import("./LatexPreview.svelte").default | null>(null);
@@ -99,12 +100,13 @@
   $effect(() => { const next = theme; if (ready) void setMonacoTheme(next); });
 
   $effect(() => { latex?.setActive(active && expanded); });
+  $effect(() => { if (latex) void updateLatexPreview(previewing); });
   let focusedLabel: string | undefined;
   $effect(() => {
     if (focusLabel && latex && focusedLabel !== focusLabel) {
       focusedLabel = focusLabel;
       expanded = true;
-      if (!previewing) void toggleLatexPreview();
+      latexPreview = true;
     }
   });
 
@@ -174,19 +176,15 @@
 
   function toggleExpand() { expanded = !expanded; }
 
-  async function toggleLatexPreview() {
-    if (block.srctype !== "latex") return;
-    if (previewing) {
-      previewRequest++;
-      previewing = false;
+  async function updateLatexPreview(show: boolean) {
+    const request = ++previewRequest;
+    if (!show) {
       await tick();
-      editorView?.render(true);
+      if (alive && request === previewRequest) editorView?.render(true);
       return;
     }
-    previewing = true;
     previewError = null;
     if (LatexPreviewComponent) return;
-    const request = ++previewRequest;
     latexPreviewPromise ??= import("./LatexPreview.svelte").then((module) => module.default);
     try {
       const component = await latexPreviewPromise;
@@ -195,7 +193,7 @@
     } catch (loadError) {
       latexPreviewPromise = null;
       if (!alive || request !== previewRequest) return;
-      previewing = false;
+      latexPreview = false;
       previewError = `preview failed: ${errMsg(loadError)}`;
     }
   }
@@ -237,7 +235,7 @@
       <button
         class="preview-toggle"
         class:active={previewing}
-        onclick={() => void toggleLatexPreview()}
+        onclick={() => { latexPreview = !latexPreview; }}
         disabled={!expanded}
         aria-pressed={previewing}
         title={previewing ? "Return to LaTeX editor" : "Render LaTeX preview"}

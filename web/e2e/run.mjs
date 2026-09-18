@@ -1224,6 +1224,22 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await page.goBack();
       await title(page, 'Alpha');
       await block.locator('.latex-imports summary').getByText('1 imported dependencies', {exact: true}).waitFor();
+      await block.getByRole('heading', {name: 'Introduction', exact: true}).waitFor();
+      // Reading mode belongs to this page, not the node or other browser tabs.
+      const other = await page.context().newPage();
+      try {
+        await other.goto(`${url}/#ref=${ids.Alpha}`);
+        await other.getByRole('textbox', {name: /^latex source/}).waitFor();
+        assert.equal(await other.locator('.latex-preview').count(), 0);
+      } finally { await other.close(); }
+      await block.getByRole('button', {name: 'Return to LaTeX editor'}).click();
+      await beta(page).click();
+      await title(page, 'Beta');
+      await block.getByRole('textbox', {name: /^latex source/}).waitFor();
+      assert.equal(await block.locator('.latex-preview').count(), 0);
+      await page.goBack();
+      await title(page, 'Alpha');
+      await block.locator('.latex-imports summary').getByText('1 imported dependencies', {exact: true}).waitFor();
       const input = block.getByRole('textbox', {name: /^latex source/});
       const fill = async value => { await input.press('ControlOrMeta+A'); await page.keyboard.insertText(value); };
       // First paint without hovering: Safari 27 used to show a blank command

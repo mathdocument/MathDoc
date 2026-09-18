@@ -18,14 +18,16 @@ Saving stores the uploaded text without parsing or formatting it. Only filenames
 size limits and the branch revision are checked; incomplete LaTeX or BibTeX can
 be saved. Parsing errors are reported when loading completions or previews.
 
-Each block has an **Edit / Preview** toggle. Preview preparation is debounced
+Each block has an **Edit / Preview** toggle. The selected mode is shared by
+LaTeX blocks in the current page: switching nodes keeps it, while a new page
+starts in Edit unless opened at a specific reference. Preview preparation is debounced
 while typing and uses the unsaved draft; only **Save** writes the node. The
 imported-dependency list stays visible in both Edit and Preview, is derived
 from `dep`, and never enters the block source. Reference, citation, macro and
 environment completions appear as you type, or with **Ctrl+Space**. References
 are scoped to the selected node; bibliography candidates are shared by the
-branch. Reference completion
-inserts only the original label while showing the target's readable title.
+branch. Reference completion shows the target's readable title and inserts
+`NODE_UUID::label` for dependencies, or just `label` within the current node.
 Matching and relevance scores use Monaco's native fuzzy matcher. Citation searches
 include the key, title, authors and year; the best 50 matches from the entire
 catalog appear in a natively scrolling list. The display limit does not restrict

@@ -43,6 +43,8 @@
   let blockEditorPromise: Promise<typeof import("./BlockEditor.svelte").default> | null = null;
   let editorLoadError: string | null = $state(null);
   let alive = true;
+  // A reading/editing preference for this page, independent of the selected node.
+  let latexPreview = $state(false);
 
   function applyBlockUpdate(updated: NodeDetail, graphChanged = false) {
     if (load.kind !== "ready" || load.node.fnode !== updated.fnode) return;
@@ -241,6 +243,7 @@
             {block}
             {theme}
             {active}
+            bind:latexPreview
             focusLabel={latexTarget?.fnode === node.fnode ? latexTarget.label : undefined}
             {onLatexNavigate}
             onDeleted={(updated) => applyBlockUpdate(updated)}
