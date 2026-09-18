@@ -180,6 +180,7 @@ async fn latex_project_previews_follow_dependencies_and_preserve_configuration()
         .await
         .unwrap();
     let (_, refreshed) = call(&app, "POST", &preview_path, draft.clone(), None).await;
+    assert_eq!(refreshed["project_key"], preview["project_key"]);
     assert_ne!(refreshed["context_key"], preview["context_key"]);
     assert!(refreshed["html"]
         .as_str()
@@ -221,6 +222,42 @@ async fn latex_project_previews_follow_dependencies_and_preserve_configuration()
         project
     );
     assert_eq!(loaded.nodes[&b.fnode].blocks, b.blocks);
+    // Each branch has its own resident configuration. Ordinary graph commits
+    // retain its key; changing configuration must replace it without a restart.
+    let mut updated_project = project.clone();
+    updated_project["bibliography"] = json!(
+        "@article{paper,title={Updated paper},author={Author, A.},journal={Journal},year={2021}}"
+    );
+    let (status, _) = call(
+        &restored_app,
+        "PUT",
+        "/api/project/latex",
+        updated_project,
+        Some(&loaded.version),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let cited = json!({"source":"\\cite{paper}"});
+    let (status, updated) = call(&restored_app, "POST", &preview_path, cited.clone(), None).await;
+    assert_eq!(status, 200, "{updated}");
+    assert!(updated["html"].as_str().unwrap().contains("Aut21"));
+    let (status, original) = call(&app, "POST", &preview_path, cited.clone(), None).await;
+    assert_eq!(status, 200, "{original}");
+    assert!(original["html"].as_str().unwrap().contains("Aut20"));
+    assert_ne!(original["project_key"], updated["project_key"]);
+    // Restore the old configuration in an already-running worker.
+    let revision = restored.db.version().await.unwrap();
+    let (status, _) = call(
+        &restored_app,
+        "PUT",
+        "/api/project/latex",
+        project,
+        Some(&revision),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (_, reverted) = call(&restored_app, "POST", &preview_path, cited, None).await;
+    assert_eq!(reverted, original);
     service.latex.shutdown().await;
     restored_service.latex.shutdown().await;
 }

@@ -49,6 +49,7 @@ async fn put_project(
         )
         .await?;
     snapshot.version = version;
+    snapshot.latex_project_key = project.key();
     snapshot.latex_project = project.into();
     Ok(Json(
         json!({"revision":snapshot.version, "project":snapshot.latex_project}),
@@ -80,13 +81,13 @@ fn capture(
         json!({"fnode":node.fnode, "title":node.title, "source":node.source("latex").unwrap_or("")})
     }).collect();
     let key = crate::store::digest(&serde_json::to_vec(&(
-        snapshot.latex_project.key(),
+        &snapshot.latex_project_key,
         &target,
         &dependencies,
     ))?);
     Ok(
-        json!({"kind":kind, "project":snapshot.latex_project, "target":target, "dependencies":dependencies,
-        "context_key":key, "project_key":snapshot.latex_project.key()}),
+        json!({"kind":kind, "target":target, "dependencies":dependencies,
+        "context_key":key, "project_key":snapshot.latex_project_key}),
     )
 }
 
@@ -94,14 +95,19 @@ async fn catalog(
     State(service): State<Arc<Service>>,
     axum::extract::Query(query): axum::extract::Query<Known>,
 ) -> Result<Json<Value>, ApiError> {
-    let project = service.read().await?.latex_project.clone();
-    let key = project.key();
+    let (project, key) = {
+        let snapshot = service.read().await?;
+        (
+            snapshot.latex_project.clone(),
+            snapshot.latex_project_key.clone(),
+        )
+    };
     if query.known.as_deref() == Some(&key) {
         return Ok(Json(json!({"unchanged":true,"project_key":key})));
     }
     let mut result = service
         .latex
-        .request(json!({"kind":"catalog","project":project}))
+        .request(project, json!({"kind":"catalog","project_key":key}))
         .await?;
     result["project_key"] = json!(key);
     Ok(Json(result))
@@ -112,16 +118,19 @@ async fn context(
     axum::extract::Path(id): axum::extract::Path<String>,
     axum::extract::Query(query): axum::extract::Query<Known>,
 ) -> Result<Json<Value>, ApiError> {
-    let input = {
+    let (project, input) = {
         let snapshot = service.read().await?;
-        capture(&snapshot, &id, None, "context")?
+        (
+            snapshot.latex_project.clone(),
+            capture(&snapshot, &id, None, "context")?,
+        )
     };
     if query.known.as_deref() == input["context_key"].as_str() {
         return Ok(Json(
             json!({"unchanged":true,"context_key":input["context_key"],"project_key":input["project_key"]}),
         ));
     }
-    let mut result = service.latex.request(input.clone()).await?;
+    let mut result = service.latex.request(project, input.clone()).await?;
     result["context_key"] = input["context_key"].clone();
     result["project_key"] = input["project_key"].clone();
     Ok(Json(result))
@@ -138,11 +147,14 @@ async fn preview(
             "LaTeX block exceeds 2 MiB".into(),
         ));
     }
-    let input = {
+    let (project, input) = {
         let snapshot = service.read().await?;
-        capture(&snapshot, &id, Some(&draft.source), "preview")?
+        (
+            snapshot.latex_project.clone(),
+            capture(&snapshot, &id, Some(&draft.source), "preview")?,
+        )
     };
-    let mut result = service.latex.request(input.clone()).await?;
+    let mut result = service.latex.request(project, input.clone()).await?;
     let current = {
         let snapshot = service.read().await?;
         capture(&snapshot, &id, Some(&draft.source), "preview")?

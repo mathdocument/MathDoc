@@ -564,6 +564,7 @@ impl Database {
             project: project.context("database has no Lean project")?,
             latex_project: latex_project.into(),
             project_key: String::new(),
+            latex_project_key: String::new(),
             modules: Default::default(),
             lean_prefixes: HashMap::new(),
             depths: HashMap::new(),
@@ -735,6 +736,7 @@ pub struct Snapshot {
     pub project: Arc<LeanProject>,
     pub latex_project: Arc<crate::latex::LatexProject>,
     pub project_key: String,
+    pub latex_project_key: String,
     pub modules: Arc<BTreeMap<PathBuf, String>>,
     pub lean_prefixes: HashMap<String, Sha256>,
     pub depths: HashMap<String, u32>,
@@ -750,6 +752,7 @@ impl Snapshot {
     }
     pub fn recompute(&mut self) {
         self.project_key = self.project.key();
+        self.latex_project_key = self.latex_project.key();
         self.recompute_graph();
         self.refresh_lean_keys(self.nodes.keys().cloned().collect());
     }
@@ -1090,6 +1093,7 @@ mod tests {
             project: LeanProject::default().into(),
             latex_project: Default::default(),
             project_key: String::new(),
+            latex_project_key: String::new(),
             modules: Default::default(),
             lean_prefixes: HashMap::new(),
             depths: HashMap::new(),
@@ -1142,6 +1146,7 @@ mod tests {
             project: LeanProject::default().into(),
             latex_project: Default::default(),
             project_key: String::new(),
+            latex_project_key: String::new(),
             modules: Default::default(),
             lean_prefixes: HashMap::new(),
             depths: HashMap::new(),

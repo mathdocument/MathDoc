@@ -214,6 +214,11 @@ virtual environment and set `MDC_LATEX_PYTHON` to its Python executable.
 
 Each branch lazily starts one rendering worker. Parsed results are content-keyed
 and bounded to 128 entries / 32 MiB; bibliography results are cached separately.
+The shared preamble and bibliography stay resident in that worker. Their content
+hash is retained with the branch snapshot, and the full configuration is sent
+only when its content changes or the worker restarts. Switching nodes and saving
+ordinary node edits do not retransmit the bibliography. Other branches retain
+their own configuration independently.
 Each document gets its own macro context. Draft requests never update persisted
 node labels or another client's document. Unchanged context queries return only
 version information, and rendering checks again for dependency changes before

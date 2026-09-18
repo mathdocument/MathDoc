@@ -1,3 +1,4 @@
+use super::LatexProject;
 use anyhow::{bail, ensure, Context, Result};
 use serde_json::Value;
 use std::{
@@ -32,7 +33,11 @@ impl LatexService {
         })
     }
 
-    pub async fn request(self: &Arc<Self>, request: Value) -> Result<Value> {
+    pub async fn request(
+        self: &Arc<Self>,
+        project: Arc<LatexProject>,
+        request: Value,
+    ) -> Result<Value> {
         let service = self.clone();
         let permit = self
             .slots
@@ -56,7 +61,7 @@ impl LatexService {
                 }
                 let result = tokio::time::timeout(
                     Duration::from_secs(10),
-                    slot.as_mut().unwrap().request(request),
+                    slot.as_mut().unwrap().request(&project, request),
                 )
                 .await;
                 match result {
@@ -95,6 +100,7 @@ struct Worker {
     _child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
+    project_key: Option<String>,
 }
 impl Worker {
     async fn spawn() -> Result<Self> {
@@ -125,9 +131,19 @@ impl Worker {
             input: child.stdin.take().unwrap(),
             output: BufReader::new(child.stdout.take().unwrap()),
             _child: child,
+            project_key: None,
         })
     }
-    async fn request(&mut self, request: Value) -> Result<Value> {
+    async fn request(&mut self, project: &LatexProject, mut request: Value) -> Result<Value> {
+        let key = request["project_key"]
+            .as_str()
+            .context("LaTeX project key required")?
+            .to_owned();
+        // A branch's worker retains its configuration across node requests.
+        // A restarted worker has no key and receives the full configuration again.
+        if self.project_key.as_deref() != Some(&key) {
+            request["project"] = serde_json::to_value(project)?;
+        }
         let mut bytes = serde_json::to_vec(&request)?;
         ensure!(
             bytes.len() < MAX_FRAME,
@@ -145,7 +161,9 @@ impl Worker {
             line.last() == Some(&b'\n'),
             "LaTeX renderer stopped or exceeded its response limit"
         );
-        serde_json::from_slice(&line).context("invalid LaTeX renderer response")
+        let response = serde_json::from_slice(&line).context("invalid LaTeX renderer response")?;
+        self.project_key = Some(key);
+        Ok(response)
     }
 }
 
@@ -217,9 +235,9 @@ mod tests {
         let mut requests = Vec::new();
         for _ in 0..8 {
             let service = service.clone();
-            requests.push(tokio::spawn(
-                async move { service.request(Value::Null).await },
-            ));
+            requests.push(tokio::spawn(async move {
+                service.request(Default::default(), Value::Null).await
+            }));
         }
         while service.slots.available_permits() != 0 {
             tokio::task::yield_now().await;
@@ -229,7 +247,7 @@ mod tests {
             let _ = request.await;
         }
         assert!(service
-            .request(Value::Null)
+            .request(Default::default(), Value::Null)
             .await
             .unwrap_err()
             .to_string()

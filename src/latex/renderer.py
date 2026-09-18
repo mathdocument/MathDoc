@@ -708,9 +708,15 @@ def handle(request):
 
 
 def main():
+    project = project_key = None
     for line in sys.stdin:
         try:
             request = json.loads(line)
+            if 'project' in request:
+                project, project_key = request['project'], request['project_key']
+            if project is None or request.get('project_key') != project_key:
+                raise ValueError('LaTeX project configuration required')
+            request['project'] = project
             result = {'result': handle(request)}
         except Exception as error:
             result = {'error': str(error)}

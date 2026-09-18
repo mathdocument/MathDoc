@@ -21,6 +21,7 @@ fn load_snapshot() -> Snapshot {
         project: bundle.project.into(),
         latex_project: Default::default(),
         project_key: String::new(),
+        latex_project_key: String::new(),
         modules: Default::default(),
         lean_prefixes: HashMap::new(),
         depths: HashMap::new(),

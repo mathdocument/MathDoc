@@ -1,5 +1,7 @@
 """Run with: python -B -m unittest discover -s src/latex -p 'test_*.py'."""
 import unittest
+import json
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 import renderer
@@ -14,6 +16,32 @@ PROJECT = {
 }
 
 class RendererTest(unittest.TestCase):
+    def test_worker_retains_configuration_until_its_content_key_changes(self):
+        project = {'preamble': r'\newcommand{\word}{First}', 'bibliography': ''}
+        request = {'kind': 'preview', 'project_key': 'first',
+                   'target': {'fnode': A, 'title': 'A', 'source': r'\word'}, 'dependencies': []}
+        messages = [
+            {**request, 'project': project},
+            {**request, 'target': {**request['target'], 'source': r'\input{forbidden}'}},
+            request,  # A document error does not discard shared configuration.
+            {**request, 'project_key': 'second'},  # Never silently use another version.
+            {**request, 'project_key': 'second', 'project': {**project, 'preamble': r'\newcommand{\word}{Second}'}},
+            {**request, 'project': project},
+        ]
+        output = StringIO()
+        with patch('sys.stdin', StringIO('\n'.join(map(json.dumps, messages)))), patch('sys.stdout', output):
+            renderer.main()
+        results = [json.loads(line) for line in output.getvalue().splitlines()]
+        for index in (0, 2, 5):
+            self.assertIn('First', results[index]['result']['html'])
+        self.assertIn('error', results[1])
+        self.assertIn('configuration required', results[3]['error'])
+        self.assertIn('Second', results[4]['result']['html'])
+        output = StringIO()
+        with patch('sys.stdin', StringIO(json.dumps(request))), patch('sys.stdout', output):
+            renderer.main()
+        self.assertIn('configuration required', json.loads(output.getvalue())['error'])
+
     def test_math_wrapped_diagrams_use_tex_and_preserve_surrounding_math(self):
         diagram = r'\begin{tikzcd}A&B\\ C&D\end{tikzcd}'
         for source in (r'\[' + diagram + r'\]', '$' + diagram + '$',
