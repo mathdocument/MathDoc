@@ -207,6 +207,15 @@ class RendererTest(unittest.TestCase):
         '''}})
         self.assertIn('Ambiguous reference: main', collision['diagnostics'])
         self.assertNotIn('data-latex-node=', collision['html'])
+        qualified = {**request, 'target': {**target, 'source':
+            r'\begin{thm}\label{main}Local.\end{thm}' +
+            r'\cref{' + A + r'::main}\nameref{' + A + '::main}'}}
+        resolved = renderer.handle(qualified)
+        self.assertEqual(resolved['diagnostics'], [])
+        self.assertEqual(resolved['html'].count('data-latex-node="' + A + '"'), 2)
+        undeclared = renderer.handle({**qualified, 'dependencies': []})
+        self.assertIn('Unknown or undeclared reference: ' + A + '::main', undeclared['diagnostics'])
+        self.assertNotIn('data-latex-node=', undeclared['html'])
         duplicate = {**dependency, 'source': r'''
             \begin{thm}\label{main}First.\end{thm}
             \begin{thm}\label{main}Second.\end{thm}

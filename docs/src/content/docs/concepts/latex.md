@@ -157,11 +157,17 @@ C \arrow[r,"k"'] & D
 labels and labels exported by its **direct** dependencies. Unused dependencies
 are allowed. Source-level `\externaldocument` and filesystem `\input` are rejected.
 
-A label is written normally, such as `\label{thm:main}`, and referenced as
-`\cref{thm:main}` even across nodes. It must identify exactly one target among
-the current node and its direct dependencies; collisions report an ambiguity
-instead of silently preferring the local label. Existing qualified references
-(`NODE_UUID::thm:main`) remain readable, but completion never inserts them.
+A label is written normally, such as `\label{thm:main}`. In the web editor,
+type `thm:main` inside `\cref{…}` or `\nameref{…}` and accept a suggestion with
+Enter: external references insert `NODE_UUID::thm:main` using the target's full
+UUID; references within the current node insert only `thm:main`. Completion
+also searches theorem and node titles. Agents using `mdc edit --type latex`
+should write the qualified form directly for external references.
+
+Bare labels remain supported when they identify exactly one target among the
+current node and its direct dependencies; collisions report an ambiguity
+instead of silently preferring the local label. Qualified references let
+different dependencies reuse the same label without ambiguity.
 Removing a dependency immediately removes access to its labels; transitive
 dependencies are not implicitly imported.
 

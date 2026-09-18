@@ -1239,11 +1239,13 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await input.press('Enter');
       assert.equal(await commands.count(), 0, 'accepting a command hides the popup');
       assert.match(await block.locator('.view-lines').innerText(), /\\mathbb/);
-      await fill('Use \\nameref{');
+      await fill('Use \\nameref{thm:b');
       await input.press('Control+Space');
-      await page.getByRole('option').filter({hasText: 'Named result'}).click();
-      await page.waitForFunction(() => /Use.*nameref\{thm:b/.test(document.querySelector('[data-srctype="latex"] .view-lines').innerText));
-      assert.match(await block.locator('.view-lines').innerText(), /Use.*nameref\{thm:b/);
+      await page.getByRole('option', {selected: true}).filter({hasText: 'Named result'}).waitFor();
+      await input.press('Enter');
+      const qualifiedReference = `\\nameref{${ids.Beta}::thm:b`;
+      await page.waitForFunction(text => document.querySelector('[data-srctype="latex"] .view-lines').innerText.includes(text), qualifiedReference);
+      assert.ok((await block.locator('.view-lines').innerText()).includes(qualifiedReference));
       assert.equal(await page.getByRole('option').filter({hasText: 'Private result'}).count(), 0);
       for (const theme of ['dark', 'light']) {
         await page.getByRole('button', {name: `Switch to ${theme} mode`}).click();
