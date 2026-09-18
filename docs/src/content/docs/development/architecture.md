@@ -79,8 +79,11 @@ operating-system sandbox. See [Compiler internals](../compiler-internals/) and
 `latex/runtime.rs` owns one lazy Python worker per branch, with bounded requests,
 timeouts and shutdown. `latex/renderer.py` uses plasTeX for standard macro
 expansion and document structure, and Pybtex for citations. It emits escaped HTML
-and math placeholders; browser KaTeX fills the latter with trusted commands
-disabled. No TeX executable, `.aux` exchange or TexLab process is involved.
+and math placeholders. `latex-math.ts` lazily loads the locally bundled MathJax 4
+renderer and Latin Modern math fonts. Preview teardown clears its math items;
+stale asynchronous renders cannot replace a newer preview. MathJax's safe
+extension blocks formula URLs, custom classes and IDs; HTML and runtime-option
+extensions are disabled. No TeX executable, `.aux` exchange or TexLab process is involved.
 
 The browser's `latex-session.svelte.ts` owns draft requests and cancellation;
 `latex-completion.ts` supplies Monaco completion candidates. Common project catalogs

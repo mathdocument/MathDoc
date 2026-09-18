@@ -1,6 +1,5 @@
 <script lang="ts">
-  import katex from 'katex';
-  import 'katex/dist/katex.min.css';
+  import { renderMath } from '../lib/latex-math';
   import { projectPath } from '../lib/project-path';
   import type { LatexLabel } from '../lib/latex';
   import { chainEditorScroll } from '../lib/editor-scroll';
@@ -17,17 +16,14 @@
   $effect(() => {
     void html;
     if (!host) return;
-    for (const element of host.querySelectorAll<HTMLElement>('.latex-math[data-tex]')) {
-      katex.render(element.dataset.tex ?? '', element, {
-        displayMode: element.dataset.display === 'true', throwOnError: false, trust: false,
-      });
-    }
+    const clearMath = renderMath(host);
     for (const link of host.querySelectorAll<HTMLAnchorElement>('a[data-latex-node]')) {
       const params = new URLSearchParams({ref: link.dataset.latexNode!, label: link.dataset.latexLabel!});
       link.href = `${projectPath('/')}#${params}`;
     }
     const target = host;
     if (target.querySelector('.latex-diagram')) void import('../lib/latex-diagram').then(({renderDiagrams}) => renderDiagrams(target));
+    return clearMath;
   });
   $effect(() => {
     void html;
@@ -72,9 +68,8 @@
   .latex-preview :global(.latex-statement-title::after) { content:'. '; }
   .latex-preview :global(.latex-statement-title + p) { display:inline; }
   .latex-preview :global(.latex-anchor) { scroll-margin-block:1rem; }
-  .latex-preview :global(.latex-math[data-display="true"]) { display:block; overflow-x:auto; }
-  .latex-preview :global(.katex) { font-size:1.1em; }
-  .latex-preview :global(.latex-math[data-display="false"] .katex) { font-size:1em; }
+  .latex-preview :global(.latex-math[data-display="true"]) { display:block; overflow-x:auto; font-size:1.1em; }
+  .latex-preview :global(.latex-math[aria-busy="true"]) { visibility:hidden; }
   .latex-preview :global(.latex-error) { color:var(--mdc-error); }
   .latex-preview :global(.latex-table) { max-width:100%; overflow-x:auto; margin:.6em 0; }
   .latex-preview :global(.latex-table table) { border-collapse:collapse; margin:auto; }

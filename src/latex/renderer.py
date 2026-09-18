@@ -286,7 +286,7 @@ class Label(Command):
 
     @property
     def source(self):
-        # Labels are HTML anchors, not KaTeX input.
+        # Labels are HTML anchors, not formula input.
         return ""
 
 

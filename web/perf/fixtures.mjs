@@ -4,7 +4,7 @@ export const EDITOR_LINE_COUNT = 500;
 export const RELATION_COUNT = 8_311;
 
 const rootFnode = "perf-root";
-// Fixed server response: this benchmark measures browser layout and KaTeX,
+// Fixed server response: this benchmark measures browser layout and MathJax,
 // while renderer correctness and latency are covered by the native API tests.
 const latexHtml = '<section class="latex-proof"><div class="latex-statement-title">Proof</div><p>Inline proof.</p></section><p>Outside proof.</p>' + Array.from(
   {length: EDITOR_LINE_COUNT - 1}, (_, i) => `<h5>Case ${i + 2}.</h5><p>If <span class="latex-math" data-display="false" data-tex="x_{${i + 2}} \\in \\mathbb{R}"></span>, then <span class="latex-math" data-display="false" data-tex="x_{${i + 2}}^2 \\ge 0"></span>.</p>`,

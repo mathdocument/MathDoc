@@ -199,7 +199,7 @@ async function runEditorSample(context, url) {
 
     await page.evaluate(() => { window.__mdcPerfAction = performance.now(); });
     await page.getByTitle("Render LaTeX preview").click();
-    await page.locator(".latex-preview .katex").first().waitFor({ state: "visible" });
+    await page.locator('.latex-preview mjx-container[jax="CHTML"]').first().waitFor({ state: "visible" });
     await nextPaint(page);
     const latexPreviewMs = await page.evaluate(() => performance.now() - window.__mdcPerfAction);
     const proofText = await page.locator(".latex-proof p").innerText();

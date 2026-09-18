@@ -37,5 +37,5 @@ edits and checks remain separate commands.
 Native Lean Server handles incremental elaboration and goals; native Lake handles
 library and target artifacts. Rocq remains editable without a compiler integration. LaTeX has
 [HTML previews, macros and references](../../concepts/latex/) through plasTeX
-and KaTeX; it does not run a TeX compiler. See [Lean internals](../../development/compiler-internals/)
+and MathJax; it does not run a TeX compiler. See [Lean internals](../../development/compiler-internals/)
 for editor sessions and cache reuse.

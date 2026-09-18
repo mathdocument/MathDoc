@@ -59,7 +59,7 @@ Use ordinary LaTeX definitions, for example:
 \newtheorem{thm}{Theorem}
 ```
 
-plasTeX expands macros and parses document structure. The web preview uses KaTeX
+plasTeX expands macros and parses document structure. The web preview uses MathJax 4
 for math. This is HTML generation, not XeLaTeX compilation: page layout, font
 configuration, arbitrary packages, filesystem input and external commands are
 not executed. Upload the original class or preamble: MDC imports ordinary macro,
@@ -74,7 +74,10 @@ Latin Modern Roman font at 16px, independently of the class's print fonts. Its
 complete OpenType regular, italic, bold and bold-italic faces retain accented
 letters such as `ö`, `é` and `ü` in the same typeface, including bibliography
 titles. These TeX fonts are served locally under the GUST Font License; clients
-do not need a TeX installation. Ordinary formulas use KaTeX's own math fonts;
+do not need a TeX installation. Ordinary formulas use MathJax's official
+Latin Modern math font package, pinned with the renderer and bundled locally;
+no CDN requests are needed. Math is rendered asynchronously, and closing or
+changing a preview releases its MathJax items without affecting other previews.
 TikZ diagrams use the separate TeX-to-SVG runtime described below.
 Inline formulas use the surrounding text's font size; display formulas retain
 their separate scale. Normal text is not artificially emboldened.

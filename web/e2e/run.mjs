@@ -1065,7 +1065,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       const settings = JSON.parse((await cli('project', 'latex', 'show')).stdout).project;
       assert.match(settings.preamble, /newcommand/);
       assert.match(settings.bibliography, /A paper/);
-      const source = String.raw`\section{Introduction}\label{intro}By \nameref{thm:b}, see \cite{paper}. $\cA$ The value $r=0$ is zero.\begin{items}\item One\end{items}`;
+      const source = String.raw`\section{Introduction}\label{intro}By \nameref{thm:b}, see \cite{paper}. $\cA$ The value $r=0$ is zero.\[\left(\frac{x_1^2}{1+x}\right)=\begin{pmatrix}a&b\\c&d\end{pmatrix}\]\begin{items}\item One\end{items}`;
       await put('Alpha', source);
       await put('Beta', String.raw`\begin{thm}[Named result]\label{thm:b}$\cA$ exists.\end{thm}`);
       await put('Gamma', String.raw`\section{Private result}\label{private}`);
@@ -1074,18 +1074,46 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       const block = page.locator('article[data-srctype="latex"]');
       await block.getByText('1 imported dependencies', {exact: false}).waitFor();
       await block.locator('.latex-imports summary').click();
+      const requests = [];
+      page.on('request', request => requests.push(request.url()));
+      const failedMathAssets = [];
+      page.on('response', response => { if (response.url().includes('/mathjax/') && response.status() >= 400) failedMathAssets.push(response.url()); });
+      let releaseFont;
+      const fontGate = new Promise(resolve => { releaseFont = resolve; });
+      await page.route('**/mathjax/**/chtml.js', async route => { await fontGate; await route.continue(); });
+      let releaseMath;
+      const mathGate = new Promise(resolve => { releaseMath = resolve; });
+      await page.route('**/mathjax/**/dynamic/calligraphic.js', async route => { await mathGate; await route.continue(); });
+      const mathRequest = page.waitForRequest('**/mathjax/**/dynamic/calligraphic.js');
+      const fontRequest = page.waitForRequest('**/mathjax/**/chtml.js');
+      await block.getByRole('button', {name: 'Render LaTeX preview'}).click();
+      await fontRequest;
+      await block.getByRole('button', {name: 'Return to LaTeX editor'}).click();
+      releaseFont();
+      await page.waitForFunction(() => typeof window.MathJax?.typesetPromise === 'function');
+      assert.equal(await block.locator('mjx-container').count(), 0, 'a closed preview stays closed when fonts finish loading');
+      await block.getByRole('button', {name: 'Render LaTeX preview'}).click();
+      await mathRequest;
+      await block.getByRole('button', {name: 'Return to LaTeX editor'}).click();
+      releaseMath();
       await block.getByRole('button', {name: 'Render LaTeX preview'}).click();
       assert.equal(await block.locator('.latex-imports summary').innerText(), '1 imported dependencies');
       await block.locator('.latex-imports li').getByText('Beta', {exact: true}).waitFor();
       await block.getByRole('link', {name: externalName(1), exact: true}).waitFor();
-      await block.locator('.katex').first().waitFor();
-      assert.equal(await block.locator('.katex-error').count(), 0);
-      const inline = await block.locator('.latex-math[data-tex="r=0"] .katex').evaluate(element => ({
+      await block.locator('mjx-container[jax="CHTML"]').first().waitFor();
+      assert.equal(await block.locator('mjx-merror, .latex-error').count(), 0);
+      assert.equal(await block.locator('mjx-mfrac').count(), 1);
+      assert.equal(await block.locator('mjx-mtable').count(), 1);
+      assert.ok(await block.locator('mjx-assistive-mml math').count() > 0, 'retain accessible MathML');
+      const inline = await block.locator('.latex-math[data-tex="r=0"] mjx-container').evaluate(element => ({
         math: getComputedStyle(element).fontSize, text: getComputedStyle(element.closest('p')).fontSize,
         weight: getComputedStyle(element).fontWeight,
       }));
       assert.equal(inline.math, inline.text, 'inline math must not be enlarged relative to surrounding text');
       assert.equal(inline.weight, '400');
+      assert.ok(requests.some(request => request.includes('/mathjax-modern-font/chtml/woff2/')), 'use the official Latin Modern math font');
+      assert.ok(requests.every(request => new URL(request).origin === new URL(url).origin), 'all renderer and font assets are self-hosted');
+      assert.deepEqual(failedMathAssets, [], 'all requested MathJax assets are bundled');
       assert.match(await block.locator('.latex-preview').innerText(), /A paper/);
       const bibliographyTitle = block.locator('.latex-bibliography em');
       assert.equal(await bibliographyTitle.innerText(), 'A paper on Möbius');
@@ -1115,6 +1143,8 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await block.getByRole('link', {name: externalName(1), exact: true}).click();
       await title(page, 'Beta');
       await block.locator('.latex-preview .latex-statement').waitFor();
+      await block.locator('mjx-container[jax="CHTML"]').waitFor();
+      assert.equal(await page.evaluate(() => [...window.MathJax.startup.document.math].length), 1, 'discard the previous node math when navigating');
       assert.equal(await block.locator('[id="latex-thm%3Ab"]').count(), 1);
       assert.equal(await block.locator('.latex-statement-title').innerText(), 'Theorem 1 (Named result)');
       const headingGap = await block.locator('.latex-statement').evaluate(element => {
@@ -1261,16 +1291,21 @@ await test('LaTeX tables, colors and TikZ diagrams render shared macros locally'
       await cli('project', 'latex', 'set', '--preamble', preamble, '--bib', bibliography);
       const requests = [];
       page.on('request', request => requests.push(request.url()));
+      const failedMathAssets = [];
+      page.on('response', response => { if (response.url().includes('/mathjax/') && response.status() >= 400) failedMathAssets.push(response.url()); });
       await page.goto(`${url}/?diagrams#ref=${node.fnode}`);
       await page.getByRole('button', {name: 'Render LaTeX preview'}).click();
       await page.locator('.latex-diagram svg').waitFor({timeout: 45000});
-      assert.equal(await page.locator('.latex-error, .katex-error').count(), 0);
+      await page.locator('.latex-math mjx-container').waitFor();
+      assert.equal(await page.locator('.latex-error, mjx-merror').count(), 0);
+      assert.equal(await page.locator('.latex-math mjx-mstyle').first().evaluate(el => getComputedStyle(el).color), 'rgb(51, 102, 153)');
       assert.equal(await page.locator('.latex-table td[colspan="2"]').innerText(), 'Together');
       assert.equal(await page.locator('.latex-preview').getByText('Colored text', {exact: true}).evaluate(el => getComputedStyle(el).color), 'rgb(51, 102, 153)');
       assert.ok(await page.locator('.latex-diagram svg path').count() > 0);
       assert.match(await page.locator('.latex-diagram svg').innerHTML(), /336699|51.*,.*102.*,.*153/i);
       assert.ok(requests.filter(url => /tex_files/.test(url)).length > 0, 'loads the bundled TikZ runtime');
       assert.ok(requests.every(request => new URL(request).origin === new URL(url).origin), 'no CDN or external rendering service');
+      assert.deepEqual(failedMathAssets, [], 'all requested MathJax assets are bundled');
       await page.screenshot({path: resolve(tmpdir(), `mdc-rich-latex-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
       let previewVersion = 0;
       const preview = async source => {
@@ -1288,7 +1323,7 @@ await test('LaTeX tables, colors and TikZ diagrams render shared macros locally'
         \end{tikzcd}
       \]`);
       await page.locator('.latex-diagram svg').waitFor();
-      assert.equal(await page.locator('.katex-error, .latex-diagram.latex-error').count(), 0);
+      assert.equal(await page.locator('mjx-merror, .latex-diagram.latex-error').count(), 0);
       assert.equal(await page.locator('.latex-diagram svg text').count(), 4);
       await preview(String.raw`\[
         \begin{tikzcd}

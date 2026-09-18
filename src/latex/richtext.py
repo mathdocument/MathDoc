@@ -100,7 +100,7 @@ COLORS = {'color': Color, 'textcolor': TextColor, 'colorbox': ColorBox, 'fcolorb
 class ColorDeclaration:
     @property
     def source(self):
-        # Resolved uses already carry the color; KaTeX needs no declarations.
+        # Resolved uses already carry the color; formulas need no declarations.
         return sourceChildren(self)
 
 
