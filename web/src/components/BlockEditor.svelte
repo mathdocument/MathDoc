@@ -54,8 +54,10 @@
   let error: string | null = $state(null);
   let expanded = $state(true);
   let previewing = $derived(block.srctype === "latex" && latexPreview);
+  let showPreview = $state(false);
   let latex = $state<LatexSession | null>(null);
   let alive = false;
+  let initializing = false;
   const draftId = Symbol("block draft");
   function setDirty(value: boolean) {
     dirty = value;
@@ -65,7 +67,12 @@
   onMount(() => {
     alive = true;
     if (block.srctype === "latex") latex = new LatexSession(fnode, block.content, preparedLatex);
-    void (async () => {
+  });
+
+  async function ensureEditor() {
+    if (!alive || editorView || initializing) return;
+    initializing = true;
+    try {
       const language = await loadSourceLanguage(block.srctype as "text" | "latex" | "rocq");
       if (!alive) return;
       await setMonacoTheme(theme);
@@ -93,14 +100,24 @@
         if (!alive) return;
         renderSource(editorView!); ready = true; onReady?.();
       }));
-    })().catch(e => { if (alive) { error = errMsg(e); onReady?.(); } });
+    } catch (e) {
+      if (alive) { error = errMsg(e); onReady?.(); }
+    } finally { initializing = false; }
+  }
+
+  $effect(() => {
+    if (previewing) showPreview = true;
+    else if (ready) showPreview = false;
+    if (!active || !expanded) return;
+    if (!previewing) void ensureEditor();
+    else if (latex?.preview || latex?.error) onReady?.();
   });
 
   $effect(() => { const next = theme; if (ready) void setMonacoTheme(next); });
 
   $effect(() => { latex?.setActive(active && expanded); });
   $effect(() => {
-    if (!previewing) void tick().then(() => { if (alive) editorView?.render(true); });
+    if (!showPreview && ready) void tick().then(() => { if (alive && editorView) renderSource(editorView); });
   });
   let focusedLabel: string | undefined;
   $effect(() => {
@@ -196,6 +213,7 @@
     error = null;
     lastSavedDoc = nextContent;
     if (editorView && !dirty && editorView.getValue() !== nextContent) editorView.setValue(nextContent);
+    if (!editorView && latex && latex.source !== nextContent) latex.schedule(nextContent);
     setDirty(editorView !== null && editorView.getValue() !== lastSavedDoc);
   });
 </script>
@@ -230,10 +248,10 @@
     <button class="delete" onclick={onDelete} disabled={saving || deleting} title="Delete block" aria-label="Delete block"><Trash2 size={14} strokeWidth={1.8} /></button>
   </header>
   {#if latex && expanded}<LatexImports imports={latex.context?.imports ?? null} />{/if}
-  <div class="editor-scroll" class:pending={!ready} class:collapsed={!expanded || previewing} inert={deleting || !ready || !expanded || previewing} bind:this={scroller}>
+  <div class="editor-scroll" class:pending={!ready} class:collapsed={!expanded || showPreview} inert={deleting || !ready || !expanded || showPreview} bind:this={scroller}>
     <div class="editor-size"><div class="editor-host" bind:this={host}></div></div>
   </div>
-  {#if previewing && expanded}
+  {#if showPreview && expanded}
     {#if latex?.preview}
       <LatexPreview html={latex.preview.html} labels={latex.preview.labels} {fnode} {focusLabel} onNavigate={onLatexNavigate} />
     {:else if !latex?.error}

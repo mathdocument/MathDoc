@@ -22,8 +22,10 @@ Each block has an **Edit / Preview** toggle. The selected mode is shared by
 LaTeX blocks in the current page: switching nodes keeps it, while a new page
 starts in Edit unless opened at a specific reference. Reading-mode navigation
 prepares the destination preview before switching nodes. Initial rendering starts
-immediately; only typing is debounced. Previews use the unsaved draft; only **Save** writes the node. The
-imported-dependency list stays visible in both Edit and Preview, is derived
+immediately; only typing is debounced. Previews use the unsaved draft; only
+**Save** writes the node. The source editor is created when entering Edit, so reading another node does not
+initialize a hidden editor. Once opened, it stays available for Edit / Preview
+switches on that node. The imported-dependency list stays visible in both Edit and Preview, is derived
 from `dep`, and never enters the block source. Reference, citation, macro and
 environment completions appear as you type, or with **Ctrl+Space**. References
 are scoped to the selected node; bibliography candidates are shared by the

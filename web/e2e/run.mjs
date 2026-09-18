@@ -1239,6 +1239,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await title(page, 'Beta');
       await block.locator('.latex-preview .latex-statement').waitFor();
       await block.locator('mjx-container[jax="CHTML"]').waitFor();
+      assert.equal(await block.locator('.monaco-editor[role=code]').count(), 0, 'reading a new node does not create a hidden source editor');
       assert.equal(await page.evaluate(() => { window.watchPreview = false; return window.previewLoadingFrames; }), 0);
       assert.equal(requests.filter(path => path.endsWith(`/node/${ids.Beta}/latex/preview`)).length - previousPreviews, 1, 'reuse the prepared response after mounting');
       assert.equal(await page.evaluate(() => [...window.MathJax.startup.document.math].length), 1, 'discard the previous node math when navigating');
@@ -1270,6 +1271,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
         assert.equal(await other.locator('.latex-preview').count(), 0);
       } finally { await other.close(); }
       await block.getByRole('button', {name: 'Return to LaTeX editor'}).click();
+      await block.getByRole('textbox', {name: /^latex source/}).waitFor();
       await beta(page).click();
       await title(page, 'Beta');
       await block.getByRole('textbox', {name: /^latex source/}).waitFor();
