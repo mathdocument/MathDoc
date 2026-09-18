@@ -1,6 +1,8 @@
 import { browserHistoryAdapter, type BrowserHistoryAdapter } from "./browser-history";
 import type { NodeDetail, NodePreview, NodeView } from "./types";
 import { api } from "./api";
+import { latexApi, type PreparedLatexPreview } from "./latex";
+import { errMsg } from "./format";
 import {
   confirmDiscardDrafts,
   settlePendingMutations,
@@ -19,7 +21,7 @@ export type { BrowserHistoryEntry, BrowserHistoryMode, FocusedHistoryOptions } f
 
 export type LoadState =
   | { kind: "idle" }
-  | { kind: "ready"; node: NodeDetail }
+  | { kind: "ready"; node: NodeDetail; latexPreview?: PreparedLatexPreview }
   | { kind: "error"; message: string };
 
 interface NavigateOptions extends FocusedHistoryOptions {
@@ -35,6 +37,7 @@ export class NodeSession {
   selectionCleared = $state(false);
   history = $state<string[]>([]);
   historyIdx = $state(-1);
+  latexPreview = $state(false);
   editorRevision = $state(0);
   /** fnode of the previously focused node — highlighted in columns. */
   lastVisitedFnode = $state<string | null>(null);
@@ -43,9 +46,11 @@ export class NodeSession {
   private loadError = $state<string | null>(null);
   private navigationRequest = 0;
   private syncRequest = 0;
+  private preparedLatex = $state.raw<PreparedLatexPreview | undefined>(undefined);
+  private preparing: AbortController | null = null;
 
   get load(): LoadState {
-    if (this.snapshot) return { kind: "ready", node: this.snapshot.node };
+    if (this.snapshot) return { kind: "ready", node: this.snapshot.node, latexPreview: this.preparedLatex };
     return this.loadError ? { kind: "error", message: this.loadError } : { kind: "idle" };
   }
 
@@ -72,11 +77,14 @@ export class NodeSession {
   cancel(): void {
     this.navigationRequest++;
     this.syncRequest++;
+    this.preparing?.abort();
+    this.preparing = null;
   }
 
   acceptNode(node: NodeDetail): void {
     if (!this.snapshot || this.snapshot.node.fnode !== node.fnode) return;
     this.syncRequest++;
+    this.preparedLatex = undefined;
     this.snapshot = { ...this.snapshot, node };
   }
 
@@ -87,6 +95,7 @@ export class NodeSession {
     if (this.lastVisitedFnode === fnode) this.lastVisitedFnode = null;
     if (this.node?.fnode === fnode) {
       this.snapshot = null;
+      this.preparedLatex = undefined;
       this.selectionCleared = false;
       this.loadError = null;
       this.editorRevision++;
@@ -98,14 +107,28 @@ export class NodeSession {
 
   async select(fnode: string, opts: NavigateOptions = {}): Promise<boolean> {
     if (!opts.skipUnsavedGuard && !confirmDiscardDrafts()) return false;
-    const request = ++this.navigationRequest;
-    this.syncRequest++;
+    this.cancel();
+    const request = this.navigationRequest;
     if (!await settlePendingMutations()) return false;
     if (request !== this.navigationRequest) return false;
 
     const confirmedDraftRevision = unsavedDraftRevision();
     try {
       const view = await api.nodeView(fnode);
+      if (request !== this.navigationRequest) return false;
+      let latexPreview: PreparedLatexPreview | undefined;
+      const source = view.node.blocks.find(block => block.srctype === "latex")?.content;
+      if (this.latexPreview && source !== undefined && (this.selectionCleared || this.node?.fnode !== view.node.fnode)) {
+        const preparing = this.preparing = new AbortController();
+        try {
+          latexPreview = {preview: await latexApi.preview(view.node.fnode, source, preparing.signal), error: null};
+        } catch (error) {
+          latexPreview = {preview: null, error: errMsg(error)};
+        } finally {
+          if (this.preparing === preparing) this.preparing = null;
+        }
+        if (request !== this.navigationRequest) return false;
+      }
       let committed = false;
       const apply = () => {
         if (request !== this.navigationRequest || committed) return;
@@ -114,6 +137,7 @@ export class NodeSession {
         if (leaving !== view.node.fnode) this.lastVisitedFnode = leaving;
         this.editorRevision++;
         this.snapshot = view;
+        this.preparedLatex = latexPreview;
         this.selectionCleared = false;
         this.loadError = null;
         this.commitFocusedHistory(view.node.fnode, opts);
@@ -121,7 +145,8 @@ export class NodeSession {
         this.failedNavigationFnode = null;
         committed = true;
       };
-      if (opts.skipTransition) apply();
+      // Prepared reading content can appear in one paint, without a second fade.
+      if (opts.skipTransition || latexPreview) apply();
       else await withViewTransition(apply);
       return committed;
     } catch (error) {
@@ -137,8 +162,8 @@ export class NodeSession {
 
   async clearSelection(opts: NavigateOptions = {}): Promise<boolean> {
     if (!opts.skipUnsavedGuard && !confirmDiscardDrafts()) return false;
-    const request = ++this.navigationRequest;
-    this.syncRequest++;
+    this.cancel();
+    const request = this.navigationRequest;
     if (!await settlePendingMutations()) return false;
     if (request !== this.navigationRequest) return false;
     const confirmedDraftRevision = unsavedDraftRevision();

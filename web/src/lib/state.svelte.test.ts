@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NodeDetail, NodePreview } from "./types";
 import { api } from "./api";
+import { latexApi, type LatexPreviewResult } from "./latex";
 import { NodeSession } from "./state.svelte";
 import { removeDraft, setDraftDirty } from "./unsaved";
 
@@ -32,6 +33,44 @@ describe("NodeSession", () => {
     expect(session.selectedFnode).toBeNull();
     expect(session.selectedLoad).toEqual({ kind: "idle" });
     expect(session.load).toEqual({ kind: "ready", node: updated });
+  });
+
+  it("prepares reading-mode navigation before committing and cancels superseded previews", async () => {
+    const session = new NodeSession({state: () => null, commit: vi.fn()});
+    const opts = {skipTransition: true, skipUnsavedGuard: true};
+    vi.spyOn(api, "nodeView").mockImplementation(async fnode => ({
+      node: {...node("r1"), fnode, blocks: [{srctype: "latex", content: fnode, metadata: {}}]}, referrers: [], children: [],
+    }));
+    let finish!: (result: LatexPreviewResult) => void;
+    const preview = vi.spyOn(latexApi, "preview").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    await session.select("a", opts);
+    expect(preview).not.toHaveBeenCalled();
+    session.latexPreview = true;
+    const pending = session.select("b", opts);
+    await vi.waitFor(() => expect(preview).toHaveBeenCalledTimes(1));
+    expect(session.node?.fnode).toBe("a");
+    expect(session.history).toEqual(["a"]);
+    const result = {project_key: "p", context_key: "c", html: "ready", labels: [], diagnostics: []};
+    finish(result);
+    expect(await pending).toBe(true);
+    expect(session.load).toMatchObject({node: {fnode: "b"}, latexPreview: {preview: result, error: null}});
+
+    const stale = session.select("stale", opts);
+    await vi.waitFor(() => expect(preview).toHaveBeenCalledTimes(2));
+    const signal = preview.mock.calls[1][2]!;
+    session.latexPreview = false;
+    await session.select("next", opts);
+    expect(signal.aborted).toBe(true);
+    finish(result);
+    expect(await stale).toBe(false);
+    expect(session.node?.fnode).toBe("next");
+    expect(session.history).toEqual(["a", "b", "next"]);
+
+    // A broken preview still opens the node so its source can be corrected.
+    session.latexPreview = true;
+    preview.mockRejectedValueOnce(new Error("invalid macro"));
+    expect(await session.select("broken", opts)).toBe(true);
+    expect(session.load).toMatchObject({node: {fnode: "broken"}, latexPreview: {preview: null, error: "invalid macro"}});
   });
 
   it("rejects an external generation during relation synchronization", async () => {

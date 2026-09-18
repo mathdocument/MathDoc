@@ -625,6 +625,7 @@
         <div class="full-error">{initialError}</div>
       {:else}
           <EditorPane
+            bind:latexPreview={nodeSession.latexPreview}
             load={view === "force" ? nodeSession.selectedLoad : nodeSession.load}
             selection={nodeSession.editorRevision}
             {theme}

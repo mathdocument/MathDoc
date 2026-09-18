@@ -154,5 +154,6 @@ async fn preview(
         ));
     }
     result["project_key"] = input["project_key"].clone();
+    result["context_key"] = input["context_key"].clone();
     Ok(Json(result))
 }

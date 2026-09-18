@@ -1,6 +1,6 @@
 import { isAbortError } from './api';
 import { errMsg } from './format';
-import { latexApi, type LatexCatalog, type LatexContext, type LatexPreviewResult, type LatexReference } from './latex';
+import { latexApi, type LatexCatalog, type LatexContext, type LatexPreviewResult, type LatexReference, type PreparedLatexPreview } from './latex';
 
 const catalogs = new Map<string, Promise<LatexCatalog>>();
 function catalog(key: string): Promise<LatexCatalog> {
@@ -36,7 +36,14 @@ export class LatexSession {
   private loading: AbortController | null = null;
   private changed = () => { void this.refresh(); };
 
-  constructor(readonly fnode: string, source: string) { this.source = source; }
+  constructor(readonly fnode: string, source: string, private prepared?: PreparedLatexPreview) {
+    this.source = source;
+    if (prepared) {
+      this.preview = prepared.preview;
+      this.error = prepared.error;
+      if (prepared.preview) this.previewSource = source;
+    }
+  }
 
   get references(): LatexReference[] {
     const external = this.context?.references.filter(ref => ref.fnode !== this.fnode) ?? [];
@@ -49,8 +56,10 @@ export class LatexSession {
     if (active === this.active) return;
     this.active = active;
     if (active) {
+      // Debounce typing, not navigation. A prepared preview is consumed once.
+      if (this.prepared) this.prepared = undefined;
+      else void this.render();
       void this.refresh();
-      this.schedule(this.source);
       this.poll = setInterval(() => { if (!document.hidden) void this.refresh(); }, 5000);
       window.addEventListener('mdc-latex-project-changed', this.changed);
     } else {
@@ -72,9 +81,9 @@ export class LatexSession {
       const result = await latexApi.context(this.fnode, this.context?.context_key, request.signal);
       if (!this.live || request.signal.aborted) return;
       if (!('unchanged' in result)) {
-        const previous = this.context?.context_key;
+        const previous = this.context?.context_key ?? this.preview?.context_key;
         this.context = result;
-        if (previous && previous !== result.context_key) this.schedule(this.source);
+        if (previous && previous !== result.context_key) void this.render();
       }
       if (this.catalog?.project_key !== result.project_key) {
         const next = await catalog(result.project_key);

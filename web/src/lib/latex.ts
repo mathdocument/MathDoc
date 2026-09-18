@@ -13,7 +13,8 @@ export interface LatexImport { fnode: string; title: string; prefix: string }
 export interface Citation { key: string; label: string; title: string; authors: string; year: string; text: string }
 export interface LatexCatalog { project_key: string; citations: Citation[]; commands: string[]; environments: string[]; diagnostics: string[] }
 export interface LatexContext { context_key: string; project_key: string; imports: LatexImport[]; references: LatexReference[]; diagnostics: string[] }
-export interface LatexPreviewResult { project_key: string; html: string; labels: LatexLabel[]; diagnostics: string[] }
+export interface LatexPreviewResult { project_key: string; context_key: string; html: string; labels: LatexLabel[]; diagnostics: string[] }
+export interface PreparedLatexPreview { preview: LatexPreviewResult | null; error: string | null }
 interface Unchanged { unchanged: true; project_key: string }
 const nodePath = (fnode: string) => `/api/node/${encodeURIComponent(fnode)}/latex`;
 export const latexApi = {

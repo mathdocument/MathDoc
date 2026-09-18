@@ -125,6 +125,8 @@ async fn latex_project_previews_follow_dependencies_and_preserve_configuration()
         .contains(&format!("{}::Theorem 1</a>", &a.fnode[..8])));
     assert!(preview["html"].as_str().unwrap().contains("Aut20"));
     let (_, context) = call(&app, "GET", &context_path, Value::Null, None).await;
+    assert!(preview["context_key"].is_string());
+    assert_eq!(preview["context_key"], context["context_key"]);
     assert_eq!(context["imports"].as_array().unwrap().len(), 1);
     assert_eq!(
         context["references"][0]["key"],
@@ -178,6 +180,7 @@ async fn latex_project_previews_follow_dependencies_and_preserve_configuration()
         .await
         .unwrap();
     let (_, refreshed) = call(&app, "POST", &preview_path, draft.clone(), None).await;
+    assert_ne!(refreshed["context_key"], preview["context_key"]);
     assert!(refreshed["html"]
         .as_str()
         .unwrap()

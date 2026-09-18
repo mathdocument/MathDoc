@@ -17,7 +17,9 @@
   import { errMsg } from "../lib/format";
   import type { Theme } from "../lib/theme";
   import { LatexSession } from "../lib/latex-session.svelte";
+  import type { PreparedLatexPreview } from "../lib/latex";
   import LatexImports from "./LatexImports.svelte";
+  import LatexPreview from "./LatexPreview.svelte";
   import { removeDraft, setDraftDirty, trackMutation } from "../lib/unsaved";
   import { latexAutocomplete } from "../lib/latex-completion-widget";
 
@@ -28,13 +30,14 @@
     theme: Theme;
     active?: boolean;
     latexPreview?: boolean;
+    preparedLatex?: PreparedLatexPreview;
     onDeleted?: (node: NodeDetail, srctype: string) => void;
     onSaved?: (node: NodeDetail) => void;
     onReady?: () => void;
     focusLabel?: string;
     onLatexNavigate?: (fnode: string, label: string) => void;
   }
-  let { fnode, revision, block, theme, active = true, latexPreview = $bindable(false), onDeleted, onSaved, onReady, focusLabel, onLatexNavigate }: Props = $props();
+  let { fnode, revision, block, theme, active = true, latexPreview = $bindable(false), preparedLatex, onDeleted, onSaved, onReady, focusLabel, onLatexNavigate }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
   let scroller: HTMLDivElement;
@@ -52,10 +55,6 @@
   let expanded = $state(true);
   let previewing = $derived(block.srctype === "latex" && latexPreview);
   let latex = $state<LatexSession | null>(null);
-  let previewError: string | null = $state(null);
-  let LatexPreviewComponent = $state<typeof import("./LatexPreview.svelte").default | null>(null);
-  let latexPreviewPromise: Promise<typeof import("./LatexPreview.svelte").default> | null = null;
-  let previewRequest = 0;
   let alive = false;
   const draftId = Symbol("block draft");
   function setDirty(value: boolean) {
@@ -65,7 +64,7 @@
 
   onMount(() => {
     alive = true;
-    if (block.srctype === "latex") latex = new LatexSession(fnode, block.content);
+    if (block.srctype === "latex") latex = new LatexSession(fnode, block.content, preparedLatex);
     void (async () => {
       const language = await loadSourceLanguage(block.srctype as "text" | "latex" | "rocq");
       if (!alive) return;
@@ -100,7 +99,9 @@
   $effect(() => { const next = theme; if (ready) void setMonacoTheme(next); });
 
   $effect(() => { latex?.setActive(active && expanded); });
-  $effect(() => { if (latex) void updateLatexPreview(previewing); });
+  $effect(() => {
+    if (!previewing) void tick().then(() => { if (alive) editorView?.render(true); });
+  });
   let focusedLabel: string | undefined;
   $effect(() => {
     if (focusLabel && latex && focusedLabel !== focusLabel) {
@@ -176,32 +177,9 @@
 
   function toggleExpand() { expanded = !expanded; }
 
-  async function updateLatexPreview(show: boolean) {
-    const request = ++previewRequest;
-    if (!show) {
-      await tick();
-      if (alive && request === previewRequest) editorView?.render(true);
-      return;
-    }
-    previewError = null;
-    if (LatexPreviewComponent) return;
-    latexPreviewPromise ??= import("./LatexPreview.svelte").then((module) => module.default);
-    try {
-      const component = await latexPreviewPromise;
-      if (!alive || request !== previewRequest) return;
-      LatexPreviewComponent = component;
-    } catch (loadError) {
-      latexPreviewPromise = null;
-      if (!alive || request !== previewRequest) return;
-      latexPreview = false;
-      previewError = `preview failed: ${errMsg(loadError)}`;
-    }
-  }
-
   onDestroy(() => {
     alive = false;
     latex?.destroy();
-    previewRequest++;
     removeDraft(draftId);
     completion?.dispose();
     disposeScroll?.();
@@ -230,7 +208,7 @@
     {#if latex?.working}<span class="saving">rendering…</span>{/if}
     {#if saving}<span class="saving">saving…</span>{/if}
     {#if deleting}<span class="saving">deleting…</span>{/if}
-    {#if error || previewError}<span class="error" title={error ?? previewError ?? "error"}><AlertTriangle size={14} strokeWidth={1.9} /></span>{/if}
+    {#if error}<span class="error" title={error}><AlertTriangle size={14} strokeWidth={1.9} /></span>{/if}
     {#if block.srctype === "latex"}
       <button
         class="preview-toggle"
@@ -256,8 +234,8 @@
     <div class="editor-size"><div class="editor-host" bind:this={host}></div></div>
   </div>
   {#if previewing && expanded}
-    {#if LatexPreviewComponent && latex?.preview}
-      <LatexPreviewComponent html={latex.preview.html} labels={latex.preview.labels} {fnode} {focusLabel} onNavigate={onLatexNavigate} />
+    {#if latex?.preview}
+      <LatexPreview html={latex.preview.html} labels={latex.preview.labels} {fnode} {focusLabel} onNavigate={onLatexNavigate} />
     {:else if !latex?.error}
       <div class="preview-loading" aria-busy="true">Preparing preview…</div>
     {/if}
@@ -268,7 +246,7 @@
       {#each latex.preview.diagnostics as message}<p>{message}</p>{/each}
     </details>
   {/if}
-  {#if error || previewError}<div class="error-bar">{error ?? previewError}</div>{/if}
+  {#if error}<div class="error-bar">{error}</div>{/if}
 </article>
 
 <style>

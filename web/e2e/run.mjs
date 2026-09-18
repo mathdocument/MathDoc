@@ -1212,10 +1212,35 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       const forward = page.getByRole('button', {name: 'Forward', exact: true});
       assert.equal(await back.isDisabled(), true);
       assert.equal(await forward.isDisabled(), true);
-      await block.getByRole('link', {name: externalName(1), exact: true}).click();
+      // A slow renderer must leave the current readable node in place, not
+      // replace it with a new heading and "Preparing preview…".
+      let releasePreview, previewRequested;
+      const previewGate = new Promise(resolve => { releasePreview = resolve; });
+      const previewStarted = new Promise(resolve => { previewRequested = resolve; });
+      const previewPath = `**/node/${ids.Beta}/latex/preview`;
+      const previousPreviews = requests.filter(path => path.endsWith(`/node/${ids.Beta}/latex/preview`)).length;
+      await page.route(previewPath, async route => { previewRequested(); await previewGate; await route.continue(); });
+      await page.evaluate(() => {
+        window.previewLoadingFrames = 0;
+        window.watchPreview = true;
+        const sample = () => {
+          if (!window.watchPreview) return;
+          if (document.querySelector('.preview-loading')?.getBoundingClientRect().height) window.previewLoadingFrames++;
+          requestAnimationFrame(sample);
+        };
+        requestAnimationFrame(sample);
+      });
+      try {
+        await block.getByRole('link', {name: externalName(1), exact: true}).click();
+        await previewStarted;
+        await title(page, 'Alpha');
+        assert.equal(await block.getByRole('heading', {name: 'Introduction', exact: true}).isVisible(), true);
+      } finally { releasePreview(); await page.unroute(previewPath); }
       await title(page, 'Beta');
       await block.locator('.latex-preview .latex-statement').waitFor();
       await block.locator('mjx-container[jax="CHTML"]').waitFor();
+      assert.equal(await page.evaluate(() => { window.watchPreview = false; return window.previewLoadingFrames; }), 0);
+      assert.equal(requests.filter(path => path.endsWith(`/node/${ids.Beta}/latex/preview`)).length - previousPreviews, 1, 'reuse the prepared response after mounting');
       assert.equal(await page.evaluate(() => [...window.MathJax.startup.document.math].length), 1, 'discard the previous node math when navigating');
       assert.equal(await block.locator('[id="latex-thm%3Ab"]').count(), 1);
       assert.equal(await block.locator('.latex-statement-title').innerText(), 'Theorem 1 (Named result)');
