@@ -91,6 +91,9 @@ input:focus-visible,
 }
 .mdc-editor-widgets .suggest-widget [tabindex]:focus-visible { outline: none; }
 .mdc-editor-widgets .latex-completions {
+  /* Safari 27 fails to paint text inserted into a visibility:hidden scroller.
+     Let Monaco position it while transparent, without changing visibility. */
+  visibility: visible !important;
   width: min(440px, calc(100vw - 24px));
   max-height: min(340px, 40vh);
   overflow: auto;
@@ -103,6 +106,7 @@ input:focus-visible,
   box-shadow: var(--mdc-shadow-panel);
   font: 12px/28px var(--mdc-font);
 }
+.latex-completions:not([monaco-visible-content-widget]) { opacity: 0; pointer-events: none; }
 .latex-completions [role="option"] {
   display: grid;
   grid-template-columns: minmax(0, 36%) minmax(0, 1fr);

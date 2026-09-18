@@ -1226,6 +1226,19 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await block.locator('.latex-imports summary').getByText('1 imported dependencies', {exact: true}).waitFor();
       const input = block.getByRole('textbox', {name: /^latex source/});
       const fill = async value => { await input.press('ControlOrMeta+A'); await page.keyboard.insertText(value); };
+      // First paint without hovering: Safari 27 used to show a blank command
+      // list until individual rows were invalidated by the pointer.
+      await page.mouse.move(0, 0);
+      await fill('\\');
+      const commands = page.getByRole('listbox', {name: 'LaTeX suggestions'});
+      await commands.waitFor();
+      assert.ok(await commands.getByRole('option').count() > 1);
+      await page.screenshot({path: resolve(tmpdir(), `mdc-command-completion-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
+      await input.pressSequentially('mathbb');
+      await commands.getByRole('option', {selected: true}).filter({hasText: /^mathbb$/}).waitFor();
+      await input.press('Enter');
+      assert.equal(await commands.count(), 0, 'accepting a command hides the popup');
+      assert.match(await block.locator('.view-lines').innerText(), /\\mathbb/);
       await fill('Use \\nameref{');
       await input.press('Control+Space');
       await page.getByRole('option').filter({hasText: 'Named result'}).click();
