@@ -1157,12 +1157,12 @@ await test('Monaco source blocks retain highlighting, edits and undo across layo
         await page.keyboard.insertText('draft');
         await block.getByText('Unsaved', {exact: true}).waitFor();
         await page.getByRole('button', {name: 'Graph', exact: true}).click();
-        await page.waitForFunction(() => !document.documentElement.dataset.vtScope);
+        await page.waitForFunction(() => document.querySelector('button[title="Graph view"]')?.getAttribute('aria-pressed') === 'true' && !document.querySelector('.app[inert]'));
         await input.press('ControlOrMeta+z');
         await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
         assert.equal(JSON.parse((await cli('show', node.fnode)).stdout).blocks.find(b => b.srctype === srctype).content, content);
         await page.getByRole('button', {name: 'Knowledge', exact: true}).click();
-        await page.waitForFunction(() => !document.documentElement.dataset.vtScope);
+        await page.waitForFunction(() => document.querySelector('button[title="Knowledge view"]')?.getAttribute('aria-pressed') === 'true' && !document.querySelector('.app[inert]'));
       }
       await page.getByRole('button', {name: 'Switch to dark mode'}).click();
       for (const {srctype} of node.blocks) await page.locator(`[data-srctype="${srctype}"] .monaco-editor[role=code].vs-dark`).waitFor();
@@ -1688,6 +1688,7 @@ await test('wrapped Lean sources reach the last line before and after server sta
         await page.locator('.native-editor:not(.pending)').waitFor();
         for (const view of ['Knowledge', 'Graph', 'Knowledge']) {
           await page.getByRole('button', {name: view, exact: true}).click();
+          await page.waitForFunction(view => document.querySelector(`button[title="${view} view"]`)?.getAttribute('aria-pressed') === 'true' && !document.querySelector('.app[inert]'), view);
           const scroll = frame.locator('#editor-scroll');
           await scroll.evaluate(el => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
           const size = await scroll.evaluate(el => {
@@ -1863,7 +1864,9 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
       persistentEditor = await frame.locator('.monaco-editor[role=code]').elementHandle();
       await input.press('ControlOrMeta+End');
-      await page.keyboard.insertText('-- draft before startup\n');
+      // A trailing newline is its own Monaco undo group. Use a single-line
+      // edit so one Undo specifically tests history surviving attachment.
+      await page.keyboard.insertText('-- draft before startup');
       await block.getByText('Unsaved', {exact: true}).waitFor();
       await block.getByRole('button', {name: 'Collapse block'}).click();
       await block.getByRole('button', {name: 'Start Lean server', exact: true}).click();
@@ -1898,7 +1901,7 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       const oldId = await sessionId(page), otherId = await sessionId(other);
       persistentEditor = await frame.locator('.monaco-editor[role=code]').elementHandle();
       await input.press('ControlOrMeta+End');
-      await page.keyboard.insertText('-- draft survives stop\n');
+      await page.keyboard.insertText('-- draft survives stop');
       const closed = socket.waitForEvent('close');
       const stoppedSession = page.waitForResponse(r => r.request().method() === 'DELETE' && r.url().endsWith(`/lean/session/${oldId}`));
       await block.getByRole('button', {name: 'Stop Lean server', exact: true}).click();
