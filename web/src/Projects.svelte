@@ -101,83 +101,92 @@
     </button>
   </header>
 
+  <div class="page-head">
+    <div class="head-content">
+      <div class="intro">
+        <h1>Projects</h1>
+        <div class="overview" aria-label="Project summary">
+          <span><strong>{projectCount}</strong> {projectCount === 1 ? "project" : "projects"}</span><span><strong>{branches.length}</strong> {branches.length === 1 ? "branch" : "branches"}</span>
+          <span class="running-total"><i></i><strong>{running}</strong> running</span>
+        </div>
+        <button class="init" onclick={() => create = {}} title="Initialize a project" aria-label="Init project"><Plus size={16} /></button>
+      </div>
+
+      <div class="controls">
+        <label class="search"><Search size={17} strokeWidth={1.8} /><input aria-label="Search projects and branches" placeholder="Search projects or branches…" bind:value={query} /></label>
+        <div class="filters" aria-label="Filter branches">
+          <button aria-pressed={filter === "all"} onclick={() => filter = "all"}>All branches</button>
+          <button aria-pressed={filter === "running"} onclick={() => filter = "running"}>Running</button>
+          <button aria-pressed={filter === "stopped"} onclick={() => filter = "stopped"}>Stopped</button>
+        </div>
+        <button class="icon-button" class:refreshing onclick={() => void refresh()} disabled={refreshing} title="Refresh projects" aria-label="Refresh projects"><RefreshCw size={16} /></button>
+      </div>
+    </div>
+  </div>
+
   <main>
-    <div class="intro">
-      <h1>Projects</h1>
-      <div class="overview" aria-label="Project summary">
-        <span><strong>{projectCount}</strong> {projectCount === 1 ? "project" : "projects"}</span><span><strong>{branches.length}</strong> {branches.length === 1 ? "branch" : "branches"}</span>
-        <span class="running-total"><i></i><strong>{running}</strong> running</span>
-      </div>
-      <button class="init" onclick={() => create = {}} title="Initialize a project" aria-label="Init project"><Plus size={16} /></button>
-    </div>
-
-    <div class="controls">
-      <label class="search"><Search size={17} strokeWidth={1.8} /><input aria-label="Search projects and branches" placeholder="Search projects or branches…" bind:value={query} /></label>
-      <div class="filters" aria-label="Filter branches">
-        <button aria-pressed={filter === "all"} onclick={() => filter = "all"}>All branches</button>
-        <button aria-pressed={filter === "running"} onclick={() => filter = "running"}>Running</button>
-        <button aria-pressed={filter === "stopped"} onclick={() => filter = "stopped"}>Stopped</button>
-      </div>
-      <button class="icon-button" class:refreshing onclick={() => void refresh()} disabled={refreshing} title="Refresh projects" aria-label="Refresh projects"><RefreshCw size={16} /></button>
-    </div>
-
-    {#if error}<div class="error" role="alert">Could not refresh projects: {error}{#if status}<span>Showing the last known states.</span>{/if}</div>{/if}
-    {#each Object.entries(failures).filter(([name]) => !name.includes("/")) as [database, message] (database)}
-      <div class="error" role="alert">Could not delete project {database}: {message}</div>
-    {/each}
-    {#if !status && !error}
-      <div class="empty" role="status">Loading projects…</div>
-    {:else if status && branches.length === 0}
-      <div class="empty"><FolderOpen size={30} /><h2>No projects yet</h2></div>
-    {:else if status && groups.length === 0}
-      <div class="empty"><Search size={28} /><h2>No matching branches</h2><p>Try a different name or change the status filter.</p></div>
-    {:else}
-      <div class="projects">
-        {#each groups as [database, rows] (database)}
-          <section class="project" aria-label={`Project ${database}`}>
-            <div class="project-head">
-              <FolderOpen size={18} strokeWidth={1.7} /><h2>{database}</h2><span>{rows.length} {rows.length === 1 ? "branch" : "branches"}</span>
-              <button class="icon-button delete" disabled={projectPending(database)} onclick={() => void removeProject(database)} title={`Delete entire project ${database}`} aria-label={`Delete project ${database}`}>
-                {#if pending[database]}<RefreshCw size={16} class="spinning" />{:else}<Trash2 size={16} />{/if}
-              </button>
-            </div>
-            {#each rows as row (row.name)}
-              <div class="branch-row" data-project={row.name}>
-                <span class="branch-name" title={row.name}><GitBranch size={16} strokeWidth={1.6} /><span class:main-branch={row.branch === "main"} title={row.branch === "main" ? "Main branch: can only be deleted with the entire project" : undefined}>{row.branch}</span></span>
-                <span class="state" class:online={row.running}><i></i>{row.running ? "Running" : "Stopped"}</span>
-                <span class="counts" aria-label={`Graph size of ${row.name}`}>
-                  <span>{#if row.running && row.nodes !== undefined}<strong>{row.nodes.toLocaleString()}</strong> {row.nodes === 1 ? "node" : "nodes"}{/if}</span>
-                  <span>{#if row.running && row.edges !== undefined}<strong>{row.edges.toLocaleString()}</strong> {row.edges === 1 ? "edge" : "edges"}{/if}</span>
-                </span>
-                <div class="actions" aria-label={`Manage ${row.name}`}>
-                  <button class="toggle" class:stopped={!row.running} disabled={!!pending[row.name] || !!pending[database]} onclick={() => void manage(row.name, row.running ? "stop" : "start")} title={`${row.running ? "Stop" : "Start"} ${row.name}`} aria-label={`${row.running ? "Stop" : "Start"} ${row.name}`}>
-                    {#if pending[row.name]}<RefreshCw size={14} class="spinning" />{:else if row.running}<Square size={13} />{:else}<Play size={14} />{/if}
-                  </button>
-                  <div class="branch-actions" class:main={row.branch === "main"}>
-                    <button class="icon-button" disabled={!!pending[row.name] || !!pending[database]} onclick={() => create = {source: row.name}} title={`New branch from ${row.name}`} aria-label={`New branch from ${row.name}`}><GitBranchPlus size={16} /></button>
-                    {#if row.branch !== "main"}
-                      <button class="icon-button delete" disabled={row.running || !!pending[row.name] || !!pending[database]} onclick={() => void manage(row.name, "delete_branch")} title={row.running ? "Stop this branch before deleting" : `Delete ${row.name}`} aria-label={`Delete ${row.name}`}><Trash2 size={15} /></button>
-                    {/if}
-                  </div>
-                  {#if row.running && row.url && !pending[row.name] && !pending[database]}
-                    <a class="open icon-button" href={`/p/${row.name}/`} title={`Open ${row.name}`} aria-label={`Open ${row.name}`}><ArrowUpRight size={17} /></a>
-                  {:else}<span class="open-space" aria-hidden="true"></span>{/if}
-                </div>
-                {#if failures[row.name]}<div class="row-error" role="alert">{failures[row.name]}</div>{/if}
+    <div class="list-content">
+      {#if error}<div class="error" role="alert">Could not refresh projects: {error}{#if status}<span>Showing the last known states.</span>{/if}</div>{/if}
+      {#each Object.entries(failures).filter(([name]) => !name.includes("/")) as [database, message] (database)}
+        <div class="error" role="alert">Could not delete project {database}: {message}</div>
+      {/each}
+      {#if !status && !error}
+        <div class="empty" role="status">Loading projects…</div>
+      {:else if status && branches.length === 0}
+        <div class="empty"><FolderOpen size={30} /><h2>No projects yet</h2></div>
+      {:else if status && groups.length === 0}
+        <div class="empty"><Search size={28} /><h2>No matching branches</h2><p>Try a different name or change the status filter.</p></div>
+      {:else}
+        <div class="projects">
+          {#each groups as [database, rows] (database)}
+            <section class="project" aria-label={`Project ${database}`}>
+              <div class="project-head">
+                <FolderOpen size={18} strokeWidth={1.7} /><h2>{database}</h2><span>{rows.length} {rows.length === 1 ? "branch" : "branches"}</span>
+                <button class="icon-button delete" disabled={projectPending(database)} onclick={() => void removeProject(database)} title={`Delete entire project ${database}`} aria-label={`Delete project ${database}`}>
+                  {#if pending[database]}<RefreshCw size={16} class="spinning" />{:else}<Trash2 size={16} />{/if}
+                </button>
               </div>
-            {/each}
-          </section>
-        {/each}
-      </div>
-    {/if}
-    {#if updated}<footer>Last refreshed {updated}<span>Updates automatically</span></footer>{/if}
+              {#each rows as row (row.name)}
+                <div class="branch-row" data-project={row.name}>
+                  <span class="branch-name" title={row.name}><GitBranch size={16} strokeWidth={1.6} /><span class:main-branch={row.branch === "main"} title={row.branch === "main" ? "Main branch: can only be deleted with the entire project" : undefined}>{row.branch}</span></span>
+                  <span class="state" class:online={row.running}><i></i>{row.running ? "Running" : "Stopped"}</span>
+                  <span class="counts" aria-label={`Graph size of ${row.name}`}>
+                    <span>{#if row.running && row.nodes !== undefined}<strong>{row.nodes.toLocaleString()}</strong> {row.nodes === 1 ? "node" : "nodes"}{/if}</span>
+                    <span>{#if row.running && row.edges !== undefined}<strong>{row.edges.toLocaleString()}</strong> {row.edges === 1 ? "edge" : "edges"}{/if}</span>
+                  </span>
+                  <div class="actions" aria-label={`Manage ${row.name}`}>
+                    <button class="toggle" class:stopped={!row.running} disabled={!!pending[row.name] || !!pending[database]} onclick={() => void manage(row.name, row.running ? "stop" : "start")} title={`${row.running ? "Stop" : "Start"} ${row.name}`} aria-label={`${row.running ? "Stop" : "Start"} ${row.name}`}>
+                      {#if pending[row.name]}<RefreshCw size={14} class="spinning" />{:else if row.running}<Square size={13} />{:else}<Play size={14} />{/if}
+                    </button>
+                    <div class="branch-actions" class:main={row.branch === "main"}>
+                      <button class="icon-button" disabled={!!pending[row.name] || !!pending[database]} onclick={() => create = {source: row.name}} title={`New branch from ${row.name}`} aria-label={`New branch from ${row.name}`}><GitBranchPlus size={16} /></button>
+                      {#if row.branch !== "main"}
+                        <button class="icon-button delete" disabled={row.running || !!pending[row.name] || !!pending[database]} onclick={() => void manage(row.name, "delete_branch")} title={row.running ? "Stop this branch before deleting" : `Delete ${row.name}`} aria-label={`Delete ${row.name}`}><Trash2 size={15} /></button>
+                      {/if}
+                    </div>
+                    {#if row.running && row.url && !pending[row.name] && !pending[database]}
+                      <a class="open icon-button" href={`/p/${row.name}/`} title={`Open ${row.name}`} aria-label={`Open ${row.name}`}><ArrowUpRight size={17} /></a>
+                    {:else}<span class="open-space" aria-hidden="true"></span>{/if}
+                  </div>
+                  {#if failures[row.name]}<div class="row-error" role="alert">{failures[row.name]}</div>{/if}
+                </div>
+              {/each}
+            </section>
+          {/each}
+        </div>
+      {/if}
+      {#if updated}<footer>Last refreshed {updated}<span>Updates automatically</span></footer>{/if}
+    </div>
   </main>
 </div>
 {#if create}<ProjectCreate source={create.source} onClose={() => create = null} onCreated={async () => {query = ""; filter = "all"; await changed();}} />{/if}
 
 <style>
-  .directory { height: 100%; overflow: auto; }
-  main { max-width: 1144px; padding: 44px 32px 28px; margin: auto; }
+  .directory { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+  .page-head { flex: none; border-bottom: 1px solid var(--mdc-border); background: color-mix(in srgb, var(--mdc-panel) 82%, transparent); backdrop-filter: blur(12px) saturate(160%); }
+  .head-content { max-width: 1144px; margin: 0 auto; padding: 30px 32px 22px; }
+  main { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+  .list-content { max-width: 1144px; margin: 0 auto; padding: 24px 32px 28px; }
   .intro { display: flex; align-items: center; gap: 24px; margin-bottom: 28px; }
   h1 { font-size: 34px; line-height: 1.15; font-weight: 630; letter-spacing: -.035em; margin: 0; }
   .overview { display: flex; align-items: center; gap: 19px; color: var(--mdc-dim); font-size: 12px; white-space: nowrap; margin-left: auto; }
@@ -187,7 +196,7 @@
   .running-total { display: flex; align-items: center; }
   i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--mdc-muted); margin-right: 8px; }
   .running-total i, .online i { background: var(--mdc-accent-down); box-shadow: 0 0 0 3px color-mix(in srgb, var(--mdc-accent-down) 9%, transparent); }
-  .controls { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+  .controls { display: flex; align-items: center; gap: 12px; }
   .search { display: flex; align-items: center; gap: 10px; max-width: 430px; min-width: 170px; flex: 1; height: 40px; padding: 0 13px; border: 1px solid var(--mdc-border-strong); border-radius: var(--mdc-radius-sm); background: var(--mdc-panel); color: var(--mdc-dim); }
   .search:focus-within { border-color: var(--mdc-accent); }
   .search input { width: 100%; border: 0; outline: none; background: transparent; color: var(--mdc-fg); font-size: 12px; }
@@ -236,7 +245,8 @@
   .empty p { margin: 0; font-size: 12px; }
   footer { display: flex; justify-content: space-between; color: var(--mdc-muted); font-size: 10px; margin-top: 24px; }
   @media (max-width: 800px) {
-    main { padding: 32px 18px 24px; }
+    .head-content { padding: 22px 18px 16px; }
+    .list-content { padding: 20px 18px 24px; }
     .intro { flex-wrap: wrap; gap: 16px; }
     .overview { order: 3; flex-basis: 100%; margin-left: 0; gap: 16px; }
     .init { margin-left: auto; }
