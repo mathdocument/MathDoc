@@ -54,6 +54,9 @@ ENV HOME=/home/mdc \
     PATH=/opt/elan/bin:$PATH
 USER mdc
 WORKDIR /home/mdc
+LABEL org.opencontainers.image.source="https://github.com/mathdocument/MathDoc" \
+    org.opencontainers.image.title="MathDoc runtime" \
+    org.opencontainers.image.licenses="MIT"
 EXPOSE 17843
 ENTRYPOINT ["mathdoc-entrypoint"]
 CMD ["start", "--foreground"]

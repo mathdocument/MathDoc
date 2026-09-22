@@ -79,7 +79,7 @@ jobs:
 
       - name: Wait for TerminusDB
         run: |
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl --fail --silent http://127.0.0.1:6363/api/ok; then exit 0; fi
             sleep 1
           done

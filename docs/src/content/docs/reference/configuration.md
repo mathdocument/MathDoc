@@ -20,9 +20,14 @@ terminus_password = "the-existing-database-password"
 ```
 
 The password is plaintext in this private file or the process environment. Protect
-the file with mode 600. It is the password of the existing TerminusDB instance;
-`mdc init` does not generate or change it. With the supplied Docker deployment,
-`MDC_TERMINUS_PASSWORD` also configures `TERMINUSDB_ADMIN_PASS` in the container.
+the file with mode 600. `MDC_TERMINUS_PASSWORD_FILE` instead reads a UTF-8 password
+file, removing trailing line endings. It takes precedence over the TOML password;
+setting both password environment variables is an error. Missing or empty password
+files fail without falling back to another credential. It is the password of the
+existing TerminusDB instance; `mdc init` does not generate or change it. Native
+development's `compose.yaml` uses `MDC_TERMINUS_PASSWORD`. The server deployment
+generates a unique password in `secrets/database-password` on first start and
+mounts it into both containers; no password settings or `.env` are needed there.
 Do not commit credentials or include them in graph exports.
 
 | Environment override | Default without file setting |
@@ -30,6 +35,7 @@ Do not commit credentials or include them in graph exports.
 | `MDC_TERMINUS_URL` | `http://127.0.0.1:6363` |
 | `MDC_TERMINUS_USER` | `admin` |
 | `MDC_TERMINUS_PASSWORD` | Required for direct database operations. |
+| `MDC_TERMINUS_PASSWORD_FILE` | Optional password file; mutually exclusive with `MDC_TERMINUS_PASSWORD`. |
 | `MDC_CACHE_DIR` | `$XDG_CACHE_HOME/mdc` or `~/.cache/mdc` |
 | `MDC_LATEX_PYTHON` | Optional Python executable with the pinned LaTeX runtime installed. |
 | `MDC_LEAN_TIMEOUT_SECONDS` | 300; must be a positive integer. |
@@ -69,6 +75,13 @@ the same public origin and `/p/DATABASE/BRANCH/` routes; no per-branch proxy rul
 are needed.
 
 Set `public_origin` to that exact HTTP(S) origin, then restart the entry server.
+This is the address in the user's browser, such as `https://mathdoc.example.com`,
+regardless of where the browser runs. It is not the proxy's backend address
+(`http://127.0.0.1:17843`) or a client IP allowlist. Without it, localhost and
+loopback Host/Origin pairs are allowed. They remain allowed when an external
+origin is configured. Host/Origin checks protect against cross-site browser
+requests, including WebSocket connections and DNS rebinding; they are not user
+authentication. Configure port exposure separately in Compose.
 The setting permits its Host/Origin pair and controls returned browser URLs;
 paths, queries, fragments and credentials are rejected. Leave it unset for local
 use. The proxy must supply authentication and access control: this setting is

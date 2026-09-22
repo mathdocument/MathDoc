@@ -46,8 +46,9 @@ lifetimes are drained before editor cleanup, preventing late session creation.
 Other branches continue operating. Bare `mdc stop` also waits for management
 operations and closes every branch before the server exits. Save drafts and wait
 for writes before stopping; a request interrupted during a database transaction
-may require reading back its result. Restarting the server starts no branches
-implicitly: load the desired branches with `mdc start DATABASE/BRANCH`.
+may require reading back its result. Restarting a background server starts no
+branches implicitly: load them with `mdc start DATABASE/BRANCH`. Foreground mode,
+used by Docker, persists the selected branches and restores them after restarts.
 
 `status` reads TerminusDB inventory and held cache leases without loading graphs
 or starting Lean. When the server exits or crashes, all branches are stopped.

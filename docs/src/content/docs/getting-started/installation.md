@@ -2,7 +2,7 @@
 title: Installation
 ---
 
-For a server with only Docker and Git, use [Docker and SSH deployment](../server-deployment/).
+For a server with only Docker and Compose, use [Container deployment](../server-deployment/).
 The instructions below describe native installation and local development.
 
 MathDoc runs on a Unix host. Install Rust to build `mdc`, Docker with Compose for

@@ -1,112 +1,140 @@
 ---
-title: Deploy with Docker and SSH
+title: Deploy with Docker Compose
 ---
 
-Use this deployment for a trusted team sharing a Linux server through SSH. The
-host needs Git and Docker with the Compose plugin; it does not need Rust, Node,
-Python, Elan or root access. The current user must be allowed to start containers.
-Linux AMD64 and ARM64 are supported by the runtime Dockerfile.
+The server needs Docker Engine and its Compose plugin. It does not need a Git
+checkout, Rust, Node, Python or a host Lean installation. The deployment runs two
+containers, `mathdoc-runtime` and `mathdoc-database`, and three named volumes.
 
-`compose.server.yaml` is a separate deployment from the native development
-`compose.yaml`. It starts both MDC and TerminusDB with its own named volumes.
-It does not attach to, import or modify an existing local installation.
+The runtime uses Debian Trixie slim and includes the embedded web frontend,
+Python/LaTeX dependencies, Elan and **Lean 4.33.1**. That Lean release works on
+first start without a toolchain download. Project libraries may still need
+network access and compilation. The release workflow currently targets Linux
+AMD64; ARM64 support in the Dockerfile has not been verified end to end.
 
-## Clone and start
+## Deployment files
 
-After logging into the server:
-
-```sh
-git clone https://github.com/mathdocument/MathDoc.git
-cd MathDoc
-docker compose version
-
-# First installation only: create a private, random database password.
-umask 077
-test -e .env || printf 'MDC_TERMINUS_PASSWORD=%s\n' \
-  "$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" > .env
-
-docker compose -f compose.server.yaml up -d --build --wait --wait-timeout 180
-./scripts/mdc-docker status
+```text
+mathdoc/
+├── compose.yaml
+├── config.toml
+├── mdc
+└── secrets/
+    └── database-password     # generated on first start; preserve it
 ```
 
-The `.env` file is ignored by Git and excluded from the image build context. Keep
-it: changing its password does not reset an existing TerminusDB password. Do not
-overwrite it during upgrades. Anyone with the shared Unix account or Docker
-access has access to this deployment and its credentials.
+`compose.yaml` selects the images, published port and storage. `config.toml` is a
+commented template for `public_origin`; it can remain empty for local or SSH
+access. `mdc` is an optional CLI wrapper. No `.env` or database password input is
+required. The database port and account are internal deployment details.
 
-If `docker compose` is missing, install its [official user-level
-plugin](https://docs.docker.com/compose/install/linux/#install-the-plugin-manually)
-under `~/.docker/cli-plugins`; no root access is needed. Image builds also need the
-Docker Buildx plugin on current Docker installations. Both plugins can be copied
-from the official Docker CLI image when the host has only Docker and Git:
+## Download and start
 
-```sh
-mkdir -p "$HOME/.docker/cli-plugins"
-docker run --rm --user "$(id -u):$(id -g)" \
-  -v "$HOME/.docker/cli-plugins:/plugins" --entrypoint sh docker:cli -ec \
-  'cp /usr/local/libexec/docker/cli-plugins/docker-compose /plugins/;
-   cp /usr/local/libexec/docker/cli-plugins/docker-buildx /plugins/'
-docker compose version
-docker buildx version
-```
+The **Publish runtime** workflow publishes the tested image to GHCR and attaches
+`mathdoc-deployment-linux-amd64.tar.gz` to a matching GitHub release. The Compose
+file in that bundle pins the runtime by digest. Until the first such release is
+published, use [Build locally](#build-locally) below.
 
-The first build downloads the base images, npm/Rust dependencies and Python
-packages. A Node build stage generates the frontend from source, then the Rust
-stage embeds it into MDC. The runtime installs pinned Elan and LaTeX parser
-dependencies and runs MDC as a non-root user. Node and Rust stay in build stages;
-neither is installed in the runtime image. Logs go to Docker's bounded local log
-driver.
-
-## Prepare Lean and create a project
-
-Install the default project's pinned Linux toolchain once, before opening its
-editor. It is stored in a persistent volume rather than duplicated in image
-layers. Other project versions can be installed with the same command; missing
-versions are also downloaded by Elan when used.
+Once a release bundle is available:
 
 ```sh
-docker compose -f compose.server.yaml exec -T mdc \
-  elan toolchain install leanprover/lean4:v4.33.1
-./scripts/mdc-docker init myproject
-./scripts/mdc-docker start myproject/main
-./scripts/mdc-docker status
+mkdir mathdoc
+curl --fail --location \
+  https://github.com/mathdocument/MathDoc/releases/latest/download/mathdoc-deployment-linux-amd64.tar.gz \
+  -o mathdoc-deployment.tar.gz
+tar -xzf mathdoc-deployment.tar.gz -C mathdoc
+cd mathdoc
+docker compose pull
+docker compose up -d --wait --wait-timeout 180
+./mdc status
 ```
 
-`init` creates `myproject/main` in the database; it is not needed again after
-restarts. Before importing an existing project, read its `toolchain` setting and
-install that version. Toolchain/library downloads need outbound network access.
-First use of a library may still need a Lake build; later checks reuse its cache.
+The database generates a unique random password before its first initialization.
+It is stored in `secrets/database-password`, readable by the deploying user and
+the runtime's group, and mounted read-only in the runtime. Restarting or upgrading
+does not regenerate it. If the database already exists but the password file is
+missing or empty, startup fails and asks you to restore the original file.
+Passwords are not embedded in either image or Compose's environment values.
 
-## Open through SSH
+Keep the password file with database backups. Anyone administering Docker can
+access the deployment and its credentials. Do not put the deployment's generated
+`secrets/` directory in source control.
 
-Run this on your own computer, keeping the session open:
+## Create a project
+
+```sh
+./mdc init myproject
+./mdc start myproject/main
+./mdc status
+```
+
+`init` creates the graph in TerminusDB and is not needed again after a restart.
+Lean 4.33.1 is already available. Projects with other pinned versions can install
+them into the tools volume:
+
+```sh
+docker compose exec -T runtime elan toolchain install leanprover/lean4:VERSION
+```
+
+Replace `VERSION` with the project's release, such as `v4.33.1`. Project settings,
+including its toolchain and dependency lockfile, remain versioned in the database.
+The tools volume has a `lean/` directory and can accommodate future Rocq
+installations; the deployment does not currently install a Rocq compiler.
+
+## Access from another machine
+
+The runtime listens on `0.0.0.0:17843` inside its container. Compose publishes it
+only at **`127.0.0.1:17843` on the Docker host** by default. The database has no
+published port and uses a private backend network. Runtime downloads use a
+separate network with outbound access.
+
+For SSH access, run this on your computer and keep it open:
 
 ```sh
 ssh -N -o ExitOnForwardFailure=yes -L 17843:127.0.0.1:17843 user@SERVER
 ```
 
-Open `http://localhost:17843` for the project list. The server publishes only
-`127.0.0.1:17843`; TerminusDB has no published host port. SSH authenticates access
-to the tunnel. Shared SSH accounts do not provide per-person or per-project MDC
-permissions. Lean code executes as the container's service user, so authors must
-be trusted.
+Then open `http://localhost:17843`. Leave `public_origin` unset.
 
-If the **server's** port is occupied, add `MDC_PORT=17844` to `.env` and rerun
-Compose, then tunnel that port instead. If only your **computer's** port is
-occupied, use `-L 17844:127.0.0.1:17843` and open `http://localhost:17844`.
-Never change the host binding to `0.0.0.0` merely to avoid using a tunnel.
-For an authenticated web proxy, see [Configuration](../../reference/configuration/).
+For direct access on a trusted LAN, edit the runtime's port mapping in
+`compose.yaml` to `"0.0.0.0:17843:17843"`, and set the address users will open:
+
+```toml
+public_origin = "http://192.0.2.10:17843"
+```
+
+Use the server's real address, then recreate the runtime:
+
+```sh
+docker compose up -d --force-recreate --wait runtime
+```
+
+For public access, put an authenticated HTTPS reverse proxy, optionally backed
+by SSO, in front of MathDoc. With a proxy running on the host, keep the loopback
+port mapping and forward to `http://127.0.0.1:17843`. Preserve the external Host,
+paths and queries, and support WebSocket upgrades and long-lived connections.
+Configure `public_origin` as the **browser-facing** address, for example
+`https://mathdoc.example.com`. A containerized proxy can instead share a network
+with the runtime, with no runtime host port published.
+
+`public_origin` checks website addresses; it neither publishes ports nor logs in
+users. Loopback requests remain allowed. MathDoc currently has no per-project user
+permissions, and Lean programs execute as the runtime user. Access is intended
+for trusted authors. See [Configuration](../../reference/configuration/).
+
+To change the host port, edit only the middle number in the mapping, for example
+`"127.0.0.1:17844:17843"`. The application still uses 17843 inside its container.
+Update the tunnel or proxy accordingly. `MDC_PORT` is also accepted as an optional
+host-port override; there is no need to create an `.env` file for it.
 
 ## CLI and agents
 
-`scripts/mdc-docker` resolves the deployment directory from its own location and
-passes stdin and arguments to `mdc` inside the running container. It works from
-any directory. For convenience, define a shell function with your actual clone
-location:
+The `mdc` wrapper finds the Compose file beside itself and runs the container CLI
+with stdin preserved. It works from any current directory. A shell function can
+make it available as `mdc` everywhere:
 
 ```sh
-mdc() { "$HOME/MathDoc/scripts/mdc-docker" "$@"; }
-
+mdc() { "$HOME/mathdoc/mdc" "$@"; }
 mdc new -p myproject/main -t 'Example'
 mdc show -p myproject/main 'Example'
 # Use the revision returned by show to protect concurrent edits.
@@ -114,13 +142,11 @@ mdc edit -p myproject/main 'Example' --revision "$REV" < proof.lean
 mdc lean check -p myproject/main 'Example'
 ```
 
-The shell reads `proof.lean` on the host and streams it to the container. Agents
-can invoke this wrapper over SSH; they do not need their own Lean installation.
-The CLI still discovers the service inside its container, not over a remote
-`--url` connection.
+The host reads `proof.lean` and streams it to the CLI. Agents can use the wrapper
+over SSH. The CLI discovers the running service inside the container; no remote
+`--url` client or host compiler is needed.
 
-File arguments are container paths. Stream whole-graph import/export through
-stdin/stdout instead of mounting a source workspace:
+File arguments refer to container paths. Stream graph import/export instead:
 
 ```sh
 mdc export -p myproject/main > graph.json
@@ -129,77 +155,112 @@ mdc start imported/main
 mdc import -p imported/main /dev/stdin < graph.json
 ```
 
-For commands with multiple file arguments, such as `project latex set`, copy the
-files into the container with `docker compose -f compose.server.yaml cp` and pass
-their container paths. Remove the temporary copies afterwards. Graph exports
-contain source and project settings, not full database history or compiler caches.
+For multiple input files, such as `project latex set`, use `docker compose cp` to
+copy them into the runtime and remove them afterwards. Graph exports include
+source and project settings, not full database history or compiler caches.
 
-## Restarts and upgrades
+## Restart, upgrade and roll back
 
-The container runs `mdc start --foreground`. Starting a branch records it in
-`active-projects.json` in the MDC volume. Restarting or recreating the container
-restores those branches. Explicitly stopping a branch removes it from that list;
-shutdown of the whole server preserves the list. A failed branch restore is
-logged, and other branches can still start.
+The foreground server remembers started branches in the cache volume and restores
+them after container restarts. Explicitly stopping a branch removes it from that
+selection. Use Compose to stop the whole deployment: bare `mdc stop` exits the
+service process, which Docker's restart policy can start again.
 
 ```sh
-# Pause or resume one branch.
-./scripts/mdc-docker stop myproject/main
-./scripts/mdc-docker start myproject/main
-
-# Upgrade after saving browser drafts.
-git pull --ff-only
-docker compose -f compose.server.yaml up -d --build --wait --wait-timeout 180
-
-# Inspect or stop the deployment without deleting data.
-docker compose -f compose.server.yaml ps
-docker compose -f compose.server.yaml logs --tail 100 -f mdc
-docker compose -f compose.server.yaml stop
+./mdc stop myproject/main
+./mdc start myproject/main
+docker compose logs --tail 100 -f runtime
+docker compose stop
+docker compose up -d --wait
 ```
 
-Use Compose to stop the whole deployment. Bare `mdc stop` exits the container's
-server process, which Docker's `unless-stopped` policy can restart. Normal Docker
-stops send SIGTERM and allow 60 seconds for requests and Lean workers to close.
+For an upgrade, save browser drafts and back up data. Download the new deployment
+bundle into a **separate directory**. Keep a copy of the old Compose file, then
+replace only `compose.yaml` and `mdc` in the existing deployment. Preserve
+`config.toml` and `secrets/`, and reapply any local port/network changes to Compose.
+Then run:
+
+```sh
+docker compose pull
+docker compose up -d --no-build --wait --wait-timeout 180
+```
+
+To return to an older runtime, restore its image digest (or the previous Compose
+file) and recreate the service. Check release notes for data-format compatibility;
+changing an image cannot undo database changes. Do not use `down --volumes` during
+an upgrade or rollback.
 
 ## Persistent storage and backups
 
 | Default volume | Contents |
 | --- | --- |
-| `mathdoc-server_terminus-data` | All databases, branches, source and commit history. Back this up. |
-| `mathdoc-server_mdc-cache` | Per-branch generated sources, dependencies, compiler caches and branch restart selection. |
-| `mathdoc-server_lean-toolchains` | Downloaded Linux Lean toolchains, shared by this service. |
+| `mathdoc-vol-data` | All graphs, source, branches and commit history. |
+| `mathdoc-vol-cache` | Generated sources, dependencies, compiler caches and branch restart selection. |
+| `mathdoc-vol-tools` | Elan state and additional Lean toolchains under `lean/`; room for future compiler tools. |
 
-The Compose project name controls these volume prefixes. Keep it unchanged across
-upgrades. `docker compose ... down` retains named volumes; **`down --volumes`
-deletes them, including all graph data and history**. Do not use it for upgrades.
-Keep `.env` separately with your private backups.
+Lean 4.33.1 itself stays in the image; the tools volume contains a link to it.
+The cache volume can be regenerated, but losing it also loses branch restart
+selection. Do not reuse native compiler caches from a different OS or architecture.
 
-For a consistent full-history backup, stop the deployment and archive its
-TerminusDB volume; restart afterwards. This example uses a temporary helper
-container and works without host root privileges:
+The default Compose project name is `mathdoc`. Using `docker compose -p NAME`
+changes container and volume prefixes consistently; keep that name stable across
+upgrades. This deployment does not automatically attach to native development's
+`mathdoc-terminus-data` or the former server deployment's `mathdoc-server_*` volumes.
+Migrate an existing installation explicitly through graph import or a compatible
+full database restore, including its original password. Never point a fresh
+password at an existing database.
+
+For a consistent full-history backup, stop the services and archive the database
+volume. These commands use the already available runtime image as a helper:
 
 ```sh
-docker compose -f compose.server.yaml stop
-docker run --rm -v mathdoc-server_terminus-data:/data:ro debian:bookworm-slim \
-  tar -C /data -czf - . > terminus-backup.tar.gz
-docker compose -f compose.server.yaml up -d --wait --wait-timeout 180
+docker compose stop
+docker compose run --rm --no-deps --user 0 --entrypoint tar \
+  -v mathdoc-vol-data:/backup-data:ro runtime -C /backup-data -czf - . \
+  > terminus-backup.tar.gz
+tar -czf mathdoc-config-backup.tar.gz compose.yaml config.toml secrets
+docker compose up -d --wait
 ```
 
-Cache volumes can be regenerated, but losing the MDC volume also loses the branch
-restart selection. Keep it for fast incremental checks. Do not copy macOS native
-compiler caches into the Linux volume. Moving existing graph data into this new
-deployment is an explicit import or database restore, not part of `git clone`.
+Use the actual data volume name if the project name was customized. Store the
+configuration backup privately because it includes the database password. Restore
+both data and the original password before starting the deployment. The database
+container reapplies the password file's runtime-readable permissions on startup.
 
-## Deployment verification
+`docker compose down` retains the named volumes. **`docker compose down --volumes`
+deletes all three, including the graphs and history.**
 
-After building the image, developers can run:
+## Build locally
+
+On a development/build machine with a checkout, Docker and Buildx:
 
 ```sh
+docker compose -f compose.server.yaml -f compose.build.yaml build
 python3 tests/docker-smoke.py
+./scripts/package-deployment ./dist/mathdoc-deployment mathdoc-runtime:local
+cd dist/mathdoc-deployment
+docker compose up -d --pull never --wait --wait-timeout 180
+./mdc status
 ```
 
-This creates a separate Compose project, a random password, an unused loopback
-port and disposable volumes. It checks HTTP access, CLI mutations, native Lean
-compilation, LaTeX rendering, restart/recreation and cache reuse, then removes only
-its own containers and volumes. It downloads one Lean toolchain and does not
-compile or modify existing projects. Local native development remains unchanged.
+The export directory must not already exist: the packaging script refuses to
+overwrite configuration or credentials. The exported directory is independent of
+the checkout. Build hosts need no native Rust or Node installations. Native
+application development can continue using the separate root `compose.yaml`.
+
+The Docker test creates an isolated deployment from the exported files, chooses
+unused ports and unique resource names, and removes only its own containers and
+volumes. It checks the bundled toolchain offline, automatic credentials, HTTP
+origins, CLI stdin, Lean compilation, LaTeX, restarts, recreation, down/up, cache
+reuse and recovery from a missing or empty password file.
+
+## Publish a release
+
+Maintainers publish a GitHub release whose tag matches `Cargo.toml`, such as
+`v0.5.0`. The `runtime-release.yml` workflow builds and smoke-tests the Linux AMD64
+image, pushes it to `ghcr.io/mathdocument/mathdoc-runtime:0.5.0`, then packages the
+exact pushed digest and uploads the deployment bundle to the release. Configure
+the GHCR package as public once if servers should pull without registry login.
+
+A manual workflow run publishes a `sha-COMMIT` tag and uploads the deployment
+bundle as a workflow artifact. Local builds and smoke tests never publish images.
