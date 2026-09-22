@@ -1,4 +1,5 @@
 //! Native Lean LSP sessions plus Lake's existing incremental artifact store.
+pub mod cache;
 pub(crate) mod editor;
 mod transport;
 use crate::store::{digest, LeanProject, Node, Snapshot};
@@ -13,7 +14,6 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    process::Command,
     sync::Mutex,
 };
 pub use transport::{command, spawn, Process, Server};
@@ -216,6 +216,8 @@ pub struct CheckResult {
     #[serde(default)]
     pub has_sorry: Option<bool>,
     pub built: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifacts: Option<cache::Artifacts>,
     pub cache_hit: bool,
     pub diagnostics: Vec<Value>,
     pub imports: Vec<Value>,
@@ -245,9 +247,30 @@ async fn artifact_has_sorry(base: &Path, module: &str) -> Option<bool> {
     }))
 }
 
+fn artifact_parts(root: &Path, module: &str) -> Option<Vec<PathBuf>> {
+    let cache = root.join(".lake/cache");
+    if let Some(artifacts) =
+        cache::Artifacts::from_trace(root, module).filter(|a| a.complete(&cache))
+    {
+        return Some(artifacts.parts(&cache));
+    }
+    let file = root
+        .join(".lake/build/lib/lean")
+        .join(crate::store::module_file(module, "olean").ok()?);
+    if !file.is_file() {
+        return None;
+    }
+    let server = file.with_extension("olean.server");
+    if server.is_file() {
+        let private = file.with_extension("olean.private");
+        return private.is_file().then_some(vec![file, server, private]);
+    }
+    Some(vec![file])
+}
+
 /// Lake's content cache restores synthetic traces without warning logs. Inspect
 /// their existing proof bodies once in a batch, using the project's own Lean.
-async fn artifact_sorry_fallback(root: &Path, paths: &[PathBuf]) -> Result<Vec<Option<bool>>> {
+async fn artifact_sorry_fallback(root: &Path, paths: &[Vec<PathBuf>]) -> Result<Vec<Option<bool>>> {
     if paths.is_empty() {
         return Ok(vec![]);
     }
@@ -394,6 +417,7 @@ fn dependency_errors(
 }
 pub struct LeanService {
     root: PathBuf,
+    pool: cache::Pool,
     // ponytail: one CLI compiler per branch; add workers if concurrent check throughput requires it.
     manager: Mutex<Manager>,
     results: RwLock<HashMap<String, CheckResult>>,
@@ -462,10 +486,7 @@ impl LeanService {
                 bail!("editor dependency source changed during checking");
             }
             let base = root.join(".lake/build/lib/lean");
-            if !base
-                .join(crate::store::module_file(&node.module, "olean")?)
-                .is_file()
-            {
+            if artifact_parts(root, &node.module).is_none() {
                 continue; // No compiler evidence: leave the dependency unverified.
             }
             #[derive(Deserialize)]
@@ -502,9 +523,7 @@ impl LeanService {
         let paths = missing
             .iter()
             .map(|id| {
-                Ok(root
-                    .join(".lake/build/lib/lean")
-                    .join(crate::store::module_file(&nodes[id].module, "olean")?))
+                artifact_parts(root, &nodes[id].module).context("Lean import artifacts disappeared")
             })
             .collect::<Result<Vec<_>>>()?;
         for (id, has_sorry) in missing
@@ -536,6 +555,7 @@ impl LeanService {
                 certified: passed && errors.is_empty(),
                 has_sorry,
                 built: false,
+                artifacts: None,
                 cache_hit: false,
                 diagnostics,
                 imports,
@@ -554,6 +574,11 @@ impl LeanService {
             .context("editor check produced no target result")
     }
     pub fn new(root: PathBuf) -> Result<Self> {
+        let pool = root.join(".shared");
+        Self::with_shared_cache(root, pool)
+    }
+    pub fn with_shared_cache(root: PathBuf, shared: PathBuf) -> Result<Self> {
+        let pool = cache::Pool::open(shared)?;
         let lease = crate::service::acquire_lease(&root)?;
         // Restore certificates once, so graph reads need neither disk scans nor
         // compilation. Every lookup still checks the current recursive input key.
@@ -585,6 +610,7 @@ impl LeanService {
                 sources: HashMap::new(),
             }),
             root,
+            pool,
             results: RwLock::new(results),
             _lease: lease,
         })
@@ -629,14 +655,14 @@ impl LeanService {
         project_key: &str,
         build: bool,
     ) -> Option<CheckResult> {
-        let artifact = self
-            .root
-            .join("projects")
-            .join(project_key)
-            .join(".lake/build/lib/lean")
-            .join(crate::store::module_file(&node.module, "olean").ok()?);
+        let cache = self.pool.project(project_key).join("lake");
         if let Some(mut result) = self.cached(&node.fnode, key, &node.revision(), false) {
-            if result.built && !artifact.is_file() {
+            if result.built
+                && !result
+                    .artifacts
+                    .as_ref()
+                    .is_some_and(|a| a.complete(&cache))
+            {
                 result.built = false;
                 self.results
                     .write()
@@ -660,7 +686,10 @@ impl LeanService {
         {
             return None;
         }
-        result.built &= artifact.is_file();
+        result.built &= result
+            .artifacts
+            .as_ref()
+            .is_some_and(|a| a.complete(&cache));
         self.results
             .write()
             .ok()?
@@ -715,13 +744,10 @@ impl LeanService {
         let mut result = result?;
         if build && result.certified {
             build_module(&manager.root, &target.module).await?;
-            let artifact = manager
-                .root
-                .join(".lake/build/lib/lean")
-                .join(crate::store::module_file(&target.module, "olean")?);
-            if !artifact.is_file() {
-                bail!("Lake succeeded without producing the target olean");
-            }
+            let artifacts = cache::Artifacts::from_trace(&manager.root, &target.module)
+                .filter(|a| a.complete(&manager.root.join(".lake/cache")))
+                .context("Lake succeeded without complete native module artifacts")?;
+            result.artifacts = Some(artifacts);
             result.built = true;
             result.cache_hit = false;
             self.persist_result(&result).await?;
@@ -746,6 +772,7 @@ impl LeanService {
             manager.sources.clear();
             manager.root = self.root.join("projects").join(&project_key);
             prepare_project(&manager.root, &input.project).await?;
+            self.pool.attach(&manager.root, &project_key).await?;
             manager.project_key = project_key;
         }
         refresh_editor_sources(&manager.root, input, &mut manager.sources).await
@@ -822,34 +849,8 @@ impl LeanService {
             root.join(".lake/packages"),
         )
         .await?;
-        let artifacts = canonical.join(".lake/cache");
-        tokio::fs::create_dir_all(&artifacts).await?;
-        tokio::fs::symlink(
-            tokio::fs::canonicalize(artifacts).await?,
-            root.join(".lake/cache"),
-        )
-        .await?;
-        // Never wait for a running CLI check. Lake can rebuild the isolated managed
-        // modules from this snapshot while still using the shared external libraries.
-        if let Ok(_manager) = self.manager.try_lock() {
-            if canonical.join(".lake/build").exists() {
-                let mut copy = Command::new("cp");
-                #[cfg(target_os = "macos")]
-                copy.arg("-cR");
-                #[cfg(not(target_os = "macos"))]
-                copy.args(["-R", "--reflink=auto"]);
-                let status = copy
-                    .arg(canonical.join(".lake/build"))
-                    .arg(root.join(".lake"))
-                    .kill_on_drop(true)
-                    .status()
-                    .await?;
-                if !status.success() {
-                    bail!("copying managed module artifacts failed");
-                }
-            }
-        }
-        // Reconcile after copying artifacts so deleted blocks cannot regain an olean.
+        self.pool.attach(&canonical, &input.project_key).await?;
+        self.pool.attach(root, &input.project_key).await?;
         refresh_editor_sources(root, input, &mut SourceState::new()).await?;
         Ok(directory)
     }
@@ -1231,11 +1232,12 @@ mod tests {
             !marker.exists(),
             "restoring Lake artifacts must not execute the compiler again"
         );
-        assert!(second
+        assert!(artifact_parts(second.path(), &node.module).is_some());
+        assert!(!second
             .path()
             .join(".lake/build/lib/lean")
             .join(crate::store::module_file(&node.module, "olean").unwrap())
-            .is_file());
+            .exists());
         node.blocks[0].content.push_str("\n-- new input\n");
         write_source(second.path(), &node, node.source("lean").unwrap())
             .await
@@ -1289,6 +1291,9 @@ mod tests {
         drop(busy);
         let draft = service.editor_project(&input).await.unwrap();
         assert!(!draft.path().join(&deleted_artifact).exists());
+        tokio::fs::create_dir_all(draft.path().join(".lake/build"))
+            .await
+            .unwrap();
         tokio::fs::write(draft.path().join(".lake/build/local.olean"), "draft")
             .await
             .unwrap();

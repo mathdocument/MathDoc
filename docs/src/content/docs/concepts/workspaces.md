@@ -23,7 +23,8 @@ budget. Each loaded branch owns its cache using an OS file lock.
 | --- | --- |
 | Nodes, source blocks, graph links, Lean project settings, history | TerminusDB storage; durable and independent of service processes. |
 | Database credentials and host settings | Private user configuration or environment; outside graph exports. |
-| Generated Lean sources, libraries, artifacts, certificates, branch record | Local cache, separated by endpoint/database/branch; disposable after stopping the service. |
+| Generated Lean sources, libraries, traces, certificates, branch record | Private branch cache, separated by endpoint/database/branch. |
+| Native Lake content objects and output mappings | `CACHE_ROOT/ENDPOINT_HASH/DATABASE/.shared/v1/PLATFORM/PROJECT_KEY/lake/`; shared within the database. |
 | Server record, background runtime log and foreground branch restore list | `CACHE_ROOT/ENDPOINT_HASH/.server/`; no durable graph data. Foreground logs use stdout/stderr. |
 | Unsaved browser drafts | Browser/editor session; save before closing or restarting. |
 
@@ -35,9 +36,12 @@ complete database history; a graph export captures only one branch snapshot.
 
 Caches default to `~/.cache/mdc/ENDPOINT_HASH/DATABASE/BRANCH`, with XDG and explicit
 overrides described in [Configuration](../../reference/configuration/). CLI and
-browser Lean sessions reuse Lake artifacts inside this branch cache. Different
-branches have isolated artifacts; creating a branch does not copy its parent's
-`.olean` files. Toolchains installed by Elan remain host-level installations.
+browser Lean sessions keep private workspaces and reuse native Lake artifacts
+from the database's shared pool. Forking a branch copies no build tree. Keep the
+pool and workspaces on the same filesystem so Lake can hardlink the small outputs
+that require local paths; no reflink support is required. External package
+checkouts remain private to each branch. Toolchains installed by Elan remain
+host-level installations.
 
 Use one cache root consistently for all commands on a host. Service discovery and
 the lock are scoped to that root; a different root cannot see or stop the old
@@ -48,7 +52,7 @@ Lean workers. Ordinary `mdc start` starts an empty server; load desired branches
 runs. Preserve `active-projects.json` in the server cache to retain that selection;
 deleting it forgets which branches to start but does not delete database content.
 Save drafts before stopping their branch or the whole server. `branch del` requires a stopped non-`main` branch and removes
-its cache contents, leaving only the service lock for coordination.
+its private cache contents, preserving the shared pool and coordination locks.
 TerminusDB protects `main`; neither the browser nor CLI can delete it.
 It remains a normal working branch for editing, checking and forking. To delete
 the entire project, `mdc remove DATABASE` stops all its branches and deletes the

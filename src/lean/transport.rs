@@ -28,9 +28,9 @@ pub fn command(root: &Path, args: &[&str]) -> Command {
     c.args(args)
         .current_dir(root)
         // Lake keys artifacts by compiler inputs, including transitive imports.
-        // Editor roots link this directory to the branch's canonical project.
+        // Every workspace links this to its database/project pool.
         .env("LAKE_ARTIFACT_CACHE", "true")
-        .env("LAKE_RESTORE_ARTIFACTS", "true")
+        .env("LAKE_RESTORE_ARTIFACTS", "false")
         .env("LAKE_CACHE_DIR", root.join(".lake/cache"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

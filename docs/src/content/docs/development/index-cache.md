@@ -10,7 +10,9 @@ Lean keys include the environment, stable module identity, Lean source and direc
 
 Checks are cached once per node in memory; certified results and Lake artifacts persist under the service cache directory. Startup scans saved certificates once; lookups require the current complete input key. Graph status reads use the in-memory results. One hot CLI file keeps a live worker; evicted files retain Lake artifacts. One service owns each branch cache. CLI checks currently serialize per branch; browser sessions have eight slots, with two hot document workers per browser tab. Separate database branches/services provide independent work environments.
 
-Lake artifacts are shared by CLI and browser sessions within one branch cache.
-Different branches have separate caches; forking a branch does not copy or share
-its parent's `.olean` files. See [Storage](../../concepts/workspaces/) for paths
-and safe cleanup.
+Lake's native content cache is shared by all branches and browser sessions in a
+database, partitioned by platform and project configuration. Workspaces keep
+private source, traces and new outputs; they read cached Lean objects directly
+instead of copying a build tree. Artifact availability is checked against Lake's
+output descriptors, including split module outputs. Deleting a branch preserves
+the shared pool. See [Storage](../../concepts/workspaces/) for paths and cleanup.

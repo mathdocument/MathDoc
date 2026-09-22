@@ -720,6 +720,13 @@ impl Database {
         self.server.cache_root = root;
         self
     }
+    pub fn shared_cache_path(&self) -> Result<PathBuf> {
+        Ok(self
+            .cache_path()?
+            .parent()
+            .context("database cache root missing")?
+            .join(".shared"))
+    }
     pub fn cache_path(&self) -> Result<PathBuf> {
         Ok(self
             .server

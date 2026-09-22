@@ -31,7 +31,8 @@ pub struct Service {
 }
 impl Service {
     pub async fn open(db: Database) -> Result<Arc<Self>> {
-        let lean = crate::lean::LeanService::new(db.cache_path()?)?;
+        let lean =
+            crate::lean::LeanService::with_shared_cache(db.cache_path()?, db.shared_cache_path()?)?;
         let snapshot = db.load().await?;
         Ok(Arc::new(Self {
             db,
@@ -377,7 +378,7 @@ pub(crate) async fn delete_branch(project: &str) -> Result<Value> {
     let db = Database::from_env(database.into(), branch.into())?;
     let root = db.cache_path()?;
     // Use the service's exclusive lease, including during startup before a port is recorded.
-    let _lease = crate::lean::LeanService::new(root.clone()).map_err(|error| {
+    let _lease = acquire_lease(&root).map_err(|error| {
         anyhow::anyhow!("cannot lock {project}: {error}; run mdc stop {project} before deleting")
     })?;
     db.version().await?;
@@ -391,7 +392,7 @@ pub(crate) async fn delete_branch(project: &str) -> Result<Value> {
 fn clear_branch_cache(root: &std::path::Path) -> Result<()> {
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;
-        if entry.file_name() == "service.lock" {
+        if entry.file_name() == "service.lock" || entry.file_name() == "lease.lock" {
             continue;
         }
         if entry.file_type()?.is_dir() {
@@ -417,13 +418,14 @@ pub(crate) async fn delete_database(database: &str) -> Result<Value> {
     // whose branch references have already been removed from the database.
     let mut leases = Vec::new();
     for entry in &entries {
-        if entry.file_type()?.is_dir() {
+        if entry.file_type()?.is_dir() && entry.file_name() != ".shared" {
             leases.push(
                 acquire_lease(&entry.path())
                     .with_context(|| format!("cannot lock cache {}", entry.path().display()))?,
             );
         }
     }
+    let _pool = crate::lean::cache::lease(&root.join(".shared"), true)?;
     db.delete_database().await?;
     let cleanup = || -> Result<()> {
         for entry in entries {

@@ -282,6 +282,25 @@ async fn native_lean_incremental_diagnostics_goals_and_imports() {
         .join(".lake/build/lib/lean")
         .join(mathdoc::store::module_file(&a.module, "olean").unwrap());
     std::fs::remove_file(&artifact).unwrap();
+    assert!(
+        service
+            .cached_or_load(
+                &a,
+                &snapshot.lean_keys[&a.fnode],
+                &snapshot.project_key,
+                true
+            )
+            .await
+            .is_some(),
+        "local outputs are disposable when shared objects survive"
+    );
+    let shared_object = temp
+        .path()
+        .join("projects")
+        .join(&snapshot.project_key)
+        .join(".lake/cache/artifacts")
+        .join(&fixed.artifacts.as_ref().unwrap().parts[0]);
+    std::fs::remove_file(shared_object).unwrap();
     assert!(service
         .cached_or_load(
             &a,
@@ -424,4 +443,75 @@ async fn native_lean_incremental_diagnostics_goals_and_imports() {
         restored.certified && restored.cache_hit,
         "restart must reuse input-matched persisted certification"
     );
+}
+
+#[tokio::test]
+#[ignore = "requires native Lean and Lake"]
+async fn branches_reuse_native_objects_after_the_producer_is_deleted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let shared = tmp.path().join(".shared");
+    let a = LeanService::with_shared_cache(tmp.path().join("a"), shared.clone()).unwrap();
+    let b = LeanService::with_shared_cache(tmp.path().join("b"), shared.clone()).unwrap();
+    let marker = tmp.path().join("compiled");
+    let mut dep = Node::new("Shared dependency".into()).unwrap();
+    dep.blocks.push(Block { srctype: "lean".into(), content: format!(
+        "module\npublic import Lean\nrun_cmd Lean.Elab.Command.liftIO <| IO.FS.writeFile {} \"compiled\"\npublic theorem commonTruth : True := by trivial\n",
+        serde_json::to_string(&marker.to_string_lossy()).unwrap()), ..Default::default() });
+    let mut node = Node::new("Shared target".into()).unwrap();
+    node.depens.push(dep.fnode.clone());
+    node.blocks.push(Block {
+        srctype: "lean".into(),
+        content: format!(
+            "import {}\ntheorem targetTruth : True := commonTruth\n",
+            dep.module
+        ),
+        ..Default::default()
+    });
+    let mut snapshot = Snapshot {
+        version: "fork".into(),
+        nodes: [dep.clone(), node.clone()]
+            .into_iter()
+            .map(|n| (n.fnode.clone(), n.into()))
+            .collect(),
+        project: LeanProject::default().into(),
+        latex_project: Default::default(),
+        project_key: String::new(),
+        latex_project_key: String::new(),
+        modules: Default::default(),
+        lean_prefixes: HashMap::new(),
+        depths: HashMap::new(),
+        lean_keys: HashMap::new(),
+        referrers: HashMap::new(),
+    };
+    snapshot.recompute();
+    let input = Input::capture(&snapshot, &node.fnode).unwrap();
+    assert!(a.check(input.clone(), true).await.unwrap().built);
+    assert!(marker.exists());
+    std::fs::remove_file(&marker).unwrap();
+    let result = b.check(input.clone(), true).await.unwrap();
+    assert!(result.built && result.certified, "{result:?}");
+    assert!(
+        !marker.exists(),
+        "a fork must reuse the compiled dependency"
+    );
+    let workspace = tmp.path().join("b/projects").join(&snapshot.project_key);
+    assert!(!workspace
+        .join(".lake/build/lib/lean")
+        .join(mathdoc::store::module_file(&dep.module, "olean").unwrap())
+        .exists());
+    assert_eq!(
+        b.formal_status(&dep, &snapshot.lean_keys[&dep.fnode]),
+        "verified"
+    );
+    a.shutdown().await;
+    drop(a);
+    std::fs::remove_dir_all(tmp.path().join("a")).unwrap();
+    assert!(b.check(input.clone(), true).await.unwrap().cache_hit);
+    let draft = b.editor_project(&input).await.unwrap();
+    assert!(
+        !draft.path().join(".lake/build").exists(),
+        "never copy a whole build tree"
+    );
+    assert!(draft.path().join(".lake/cache").is_symlink());
+    b.shutdown().await;
 }
