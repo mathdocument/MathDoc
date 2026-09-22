@@ -20,7 +20,7 @@ use tokio::{
 };
 pub use transport::{command, spawn, Process, Server};
 
-fn timeout() -> Result<Duration> {
+pub(crate) fn timeout() -> Result<Duration> {
     let seconds = std::env::var("MDC_LEAN_TIMEOUT_SECONDS")
         .ok()
         .map(|value| value.parse::<u64>())

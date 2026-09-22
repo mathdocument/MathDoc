@@ -41,6 +41,9 @@ Older certificates without sorry evidence remain yellow until checked again.
 Graph queries use in-memory certificates and never launch Lean. Certificates
 are restored once at service startup; saving or certifying Lean refreshes graph
 colors while preserving the graph viewport.
+Certification runs separately from LSP message forwarding and does not lock graph
+operations. It uses the configured Lean timeout; a timeout reports a check error
+without closing the editor connection, so checking can be retried in place.
 
 Managed Lean imports must agree with declared graph dependencies. Maintain edges
 with `mdc dep`, and edit the corresponding imports in Lean source. Generated

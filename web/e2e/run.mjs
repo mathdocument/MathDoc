@@ -3,11 +3,11 @@ import { test } from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { once } from "node:events";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { chromium, webkit } from "playwright";
 import { createServer } from "node:net";
@@ -17,19 +17,19 @@ const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const binary = resolve(process.env.MDC_BIN ?? resolve(webRoot, "../target/debug/mdc"));
 
 const env = { ...process.env };
-async function startServer(cwd, database) {
+async function startServer(cwd, database, overrides = {}) {
   const reservation = createServer();
   await new Promise(resolve => reservation.listen(0, "127.0.0.1", resolve));
   const port = reservation.address().port;
   await new Promise(resolve => reservation.close(resolve));
   const { stdout } = await run(binary, ["start", `${database}/main`, "--port", String(port)], {
-    cwd, env: { ...env, MDC_CACHE_DIR: resolve(cwd, "cache") }, timeout: 30000,
+    cwd, env: { ...env, ...overrides, MDC_CACHE_DIR: resolve(cwd, "cache") }, timeout: 30000,
   });
   const info = JSON.parse(stdout);
   return { ...info, url: info.url.replace(/\/$/, ""), output: () => readFileSync(info.log, "utf8").slice(-16000) };
 }
 
-async function fixture(browser, body, extraNodes = [], expectedPageErrors = []) {
+async function fixture(browser, body, extraNodes = [], expectedPageErrors = [], serverEnv = {}) {
   const root = await mkdtemp(resolve(tmpdir(), "mdc-e2e-"));
   let server;
   let context;
@@ -37,7 +37,7 @@ async function fixture(browser, body, extraNodes = [], expectedPageErrors = []) 
   const cli = (...args) => run(binary, (args[0] === "init" ? ["init", database] : [args[0], "--proj", `${database}/main`, ...args.slice(1)]), { cwd: root, env: { ...env, MDC_CACHE_DIR: resolve(root, "cache") }, timeout: 30000, maxBuffer: 16 * 1024 * 1024 });
   try {
     await cli("init");
-    server = await startServer(root, database);
+    server = await startServer(root, database, serverEnv);
     const bundle = JSON.parse((await cli("export")).stdout);
     bundle.nodes = ["Alpha", "Beta", "Gamma"].map(title => {
       const fnode = randomUUID();
@@ -668,6 +668,71 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           await fetch(path, { method: "DELETE" });
         }
       }, [node]);
+    });
+    await suite.test("slow certification leaves LSP and graph responsive and timeout is recoverable", () => {
+      const node = { fnode: randomUUID(), title: "Certification", module: "Lib.Certification", depens: [], blocks: [{ srctype: "lean", content: "theorem truth : True := by trivial\n" }] };
+      return fixture(browser, async ({ root, cli, url }) => {
+        const current = JSON.parse((await cli("show", node.fnode)).stdout);
+        const checked = await (await fetch(`${url}/api/node/${node.fnode}/lean/check`, {
+          method: "POST", headers: { "content-type": "application/json", "if-match": `"${current.revision}"` }, body: JSON.stringify({ build: false }),
+        })).json();
+        assert.equal(checked.certified, true, JSON.stringify(checked));
+        const key = createHash("sha256").update(checked.input_key).digest("hex");
+        const files = await readdir(resolve(root, "cache"), { recursive: true });
+        const lock = files.find(name => name.includes("certificates-v2/") && name.endsWith(`/${key}.lock`));
+        assert.ok(lock, "native certificate publication lock exists");
+        // Hold the real publication lock to reproduce slow certification without
+        // a large library, sleeps in production code, or a fake Lean server.
+        const holder = execFile("python3", ["-u", "-c", "import fcntl,sys; f=open(sys.argv[1], 'a'); fcntl.flock(f, fcntl.LOCK_EX); print('ready'); sys.stdin.read()", resolve(root, "cache", lock)]);
+        await once(holder.stdout, "data");
+        let ws, path;
+        const pending = new Map();
+        let serial = 0;
+        try {
+          const session = await (await fetch(`${url}/api/node/${node.fnode}/lean/session`, {
+            method: "POST", headers: { "if-match": `"${current.revision}"` },
+          })).json();
+          path = `${url}/api/lean/session/${session.id}`;
+          ws = new WebSocket(`${path.replace("http:", "ws:")}/ws`);
+          const send = message => ws.send(JSON.stringify({ jsonrpc: "2.0", ...message }));
+          const rpc = (method, params) => new Promise((resolve, reject) => {
+            const id = serial++;
+            pending.set(id, { resolve, reject }); send({ id, method, params });
+          });
+          ws.addEventListener("message", ({ data }) => {
+            const message = JSON.parse(data);
+            if (message.method && message.id !== undefined) send({ id: message.id, result: null });
+            else if (pending.has(message.id)) {
+              const reply = pending.get(message.id); pending.delete(message.id);
+              message.error ? reply.reject(new Error(message.error.message)) : reply.resolve(message.result);
+            }
+          });
+          ws.addEventListener("close", () => { for (const p of pending.values()) p.reject(new Error("Lean connection closed")); pending.clear(); });
+          await once(ws, "open");
+          await rpc("initialize", { processId: null, rootUri: "file:///project", capabilities: {} });
+          send({ method: "initialized", params: {} });
+          const uri = `file://${session.filename}`;
+          send({ method: "textDocument/didOpen", params: { textDocument: { uri, languageId: "lean4", version: 1, text: session.source } } });
+          await rpc("textDocument/waitForDiagnostics", { uri, version: 1 });
+          await rpc("$/lean/moduleHierarchy/imports", { module: { name: node.module, uri } });
+          const params = { fnode: node.fnode, revision: current.revision, version: 1 };
+          let settled = false;
+          const certification = rpc("mdc/certify", params).catch(error => { settled = true; return error; });
+          const goal = () => rpc("$/lean/plainGoal", { textDocument: { uri }, position: { line: 0, character: 26 } });
+          await Promise.race([goal(), new Promise((_, reject) => setTimeout(() => reject(new Error("certification blocked LSP")), 3000))]);
+          const graph = await fetch(`${url}/api/graph/full`, { signal: AbortSignal.timeout(3000) });
+          assert.equal(graph.status, 200);
+          assert.equal(settled, false, "other work finishes while certification is waiting");
+          assert.match((await certification).message, /request timed out/);
+          assert.equal(ws.readyState, WebSocket.OPEN);
+          await goal();
+          holder.stdin.end(); await once(holder, "exit");
+          assert.equal((await rpc("mdc/certify", params)).certified, true, "retry succeeds on the same connection");
+        } finally {
+          holder.kill(); ws?.close();
+          if (path) await fetch(path, { method: "DELETE" });
+        }
+      }, [node], [], { MDC_LEAN_TIMEOUT_SECONDS: "10" });
     });
     await suite.test("native Lean editor renders goals, diagnostics and saves to the database", () => {
       const source = "theorem demo : True ∧ True := by\n  constructor\n  · trivial\n  · trivial\n";

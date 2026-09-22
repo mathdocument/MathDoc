@@ -1380,17 +1380,74 @@ async fn bridge_editor(
         .map(|(node, _)| (node.fnode.clone(), node.clone()))
         .collect();
     let document = editor_document(input)?;
-    let mut allowed = HashSet::from([crate::lean::file_uri(std::path::Path::new(
+    let allowed = HashSet::from([crate::lean::file_uri(std::path::Path::new(
         document["filename"].as_str().unwrap(),
     ))?]);
     let mut observer = Observer::default();
     observer.prepare(allowed.iter().next().unwrap().clone(), input.clone());
+    let allowed = std::sync::Mutex::new(allowed);
     let observer = std::sync::Mutex::new(observer);
     let mut server = crate::lean::Server::start(root)?;
     let (mut send, mut receive) = socket.split();
     let result = {
         let native_input = server.sender();
         let (replies, mut outgoing) = tokio::sync::mpsc::channel(32);
+        let (requests, mut incoming) = tokio::sync::mpsc::channel::<Value>(32);
+        // Workspace changes are serial, but never hold up ordinary LSP traffic.
+        // Cancelling the session drops this future and its inspector process too.
+        let custom_requests = async {
+            while let Some(value) = incoming.recv().await {
+                let method = value["method"].as_str().unwrap_or("");
+                let limit = if method == "mdc/certify" {
+                    crate::lean::timeout()?
+                } else {
+                    std::time::Duration::from_secs(30)
+                };
+                let selected: Result<Value> = tokio::time::timeout(limit, async {
+                    let id = value["params"]["fnode"].as_str().context("node required")?;
+                    let revision = value["params"]["revision"].as_str().context("revision required")?;
+                    let next = {
+                        let snapshot = service.read().await?;
+                        if snapshot.resolve(id)?.revision() != revision { bail!("node changed; reload and retry"); }
+                        crate::lean::Input::capture(&snapshot, id)?
+                    };
+                    if next.project_key != input.project_key { bail!("Lean project changed; reload environment"); }
+                    let document = editor_document(&next)?;
+                    let uri = crate::lean::file_uri(std::path::Path::new(document["filename"].as_str().unwrap()))?;
+                    if method == "mdc/selectNode" {
+                        crate::lean::refresh_editor_sources(root, &next, &mut sources).await?;
+                        allowed.lock().unwrap().insert(uri.clone());
+                        observer.lock().unwrap().prepare(uri, next);
+                        Ok(document)
+                    } else if method == "mdc/validationState" {
+                        let version = observer.lock().unwrap().document(&uri, &next)?.version;
+                        Ok(json!({"uri":uri,"version":version,"module":{"name":next.chain.last().unwrap().0.module,"uri":uri}}))
+                    } else {
+                        let version = value["params"]["version"].as_u64().context("Lean version required")?;
+                        let (diagnostics, imports) = observer.lock().unwrap().evidence(&uri, &next, version)?;
+                        // Evidence is keyed to this immutable input. Graph reads
+                        // and edits must not wait for artifact inspection/publication.
+                        let result = service.lean.record_editor_check(root, &next, diagnostics, imports).await?;
+                        let snapshot = service.read().await?;
+                        if snapshot.lean_keys.get(id) != Some(&result.input_key) { bail!("Lean inputs changed during checking"); }
+                        observer.lock().unwrap().evidence(&uri, &next, version)?;
+                        Ok(json!(result))
+                    }
+                }).await.unwrap_or_else(|_| Err(anyhow::anyhow!("Lean editor request timed out; retry checking")));
+                let reply = match selected {
+                    Ok(document) => {
+                        json!({"jsonrpc":"2.0","id":value["id"],"result":document})
+                    }
+                    Err(error) => {
+                        json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":-32000,"message":error.to_string()}})
+                    }
+                };
+                replies
+                    .send(Message::Text(serde_json::to_string(&reply)?))
+                    .await?;
+            }
+            Ok::<_, anyhow::Error>(())
+        };
         // Neither direction may wait for the other to drain its bounded queue.
         // Native output also keeps flowing while a custom request prepares files.
         let from_client = async {
@@ -1404,48 +1461,13 @@ async fn bridge_editor(
                             "mdc/selectNode" | "mdc/validationState" | "mdc/certify"
                         ) {
                             let value: Value = serde_json::from_str(&text)?;
-                            let selected: Result<Value> = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                                let id = value["params"]["fnode"].as_str().context("node required")?;
-                                let revision = value["params"]["revision"].as_str().context("revision required")?;
-                                let next = {
-                                    let snapshot = service.read().await?;
-                                    if snapshot.resolve(id)?.revision() != revision { bail!("node changed; reload and retry"); }
-                                    crate::lean::Input::capture(&snapshot, id)?
-                                };
-                                if next.project_key != input.project_key { bail!("Lean project changed; reload environment"); }
-                                let document = editor_document(&next)?;
-                                let uri = crate::lean::file_uri(std::path::Path::new(document["filename"].as_str().unwrap()))?;
-                                if method == "mdc/selectNode" {
-                                    crate::lean::refresh_editor_sources(root, &next, &mut sources).await?;
-                                    allowed.insert(uri.clone());
-                                    observer.lock().unwrap().prepare(uri, next);
-                                    Ok(document)
-                                } else if method == "mdc/validationState" {
-                                    let version = observer.lock().unwrap().document(&uri, &next)?.version;
-                                    Ok(json!({"uri":uri,"version":version,"module":{"name":next.chain.last().unwrap().0.module,"uri":uri}}))
-                                } else {
-                                    let version = value["params"]["version"].as_u64().context("Lean version required")?;
-                                    let (diagnostics, imports) = observer.lock().unwrap().evidence(&uri, &next, version)?;
-                                    // Serialize publication with graph mutations. An older
-                                    // editor can never certify newly saved dependencies.
-                                    let snapshot = service.read().await?;
-                                    let target = next.chain.last().unwrap();
-                                    if snapshot.lean_keys.get(id) != Some(&target.1) { bail!("Lean inputs changed during checking"); }
-                                    let result = service.lean.record_editor_check(root, &next, diagnostics, imports).await?;
-                                    Ok(json!(result))
-                                }
-                            }).await.context("Lean editor request timed out")?;
-                            let reply = match selected {
-                                Ok(document) => {
-                                    json!({"jsonrpc":"2.0","id":value["id"],"result":document})
-                                }
-                                Err(error) => {
-                                    json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":-32000,"message":error.to_string()}})
-                                }
-                            };
-                            replies
-                                .send(Message::Text(serde_json::to_string(&reply)?))
-                                .await?;
+                            if let Err(error) = requests.try_send(value) {
+                                let value = error.into_inner();
+                                let reply = json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":-32000,"message":"Lean editor is busy; retry the request"}});
+                                replies
+                                    .send(Message::Text(serde_json::to_string(&reply)?))
+                                    .await?;
+                            }
                             continue;
                         }
                         if matches!(
@@ -1455,7 +1477,11 @@ async fn bridge_editor(
                                 | "textDocument/didSave"
                         ) {
                             let change: DocumentChange = serde_json::from_str(&text)?;
-                            if !allowed.contains(&change.params.document.uri) {
+                            if !allowed
+                                .lock()
+                                .unwrap()
+                                .contains(&change.params.document.uri)
+                            {
                                 bail!("editor may only change its selected draft modules");
                             }
                         }
@@ -1498,6 +1524,7 @@ async fn bridge_editor(
             _ = cancelled.changed() => Ok(()),
             result = from_client => result,
             result = to_client => result,
+            result = custom_requests => result,
         }
     };
     // Finish the WebSocket handshake before dropping the transport. An explicit
