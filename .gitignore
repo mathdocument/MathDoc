@@ -10,3 +10,7 @@ node_modules/
 __pycache__/
 *.py[cod]
 *.log
+
+# Local server deployment state (never commit credentials).
+/config.toml
+/secrets/

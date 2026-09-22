@@ -355,6 +355,7 @@ impl Terminus {
         if !["http", "https"].contains(&parsed.scheme()) {
             bail!("invalid database URL");
         }
+        let password = settings.terminus_password()?;
         Ok(Self {
             client: Client::builder()
                 .pool_idle_timeout(std::time::Duration::from_secs(2))
@@ -365,10 +366,7 @@ impl Terminus {
                 .ok()
                 .or(settings.terminus_user)
                 .unwrap_or("admin".into()),
-            password: std::env::var("MDC_TERMINUS_PASSWORD")
-                .ok()
-                .or(settings.terminus_password)
-                .context("set terminus_password in the user config or MDC_TERMINUS_PASSWORD")?,
+            password,
             cache_root,
         })
     }

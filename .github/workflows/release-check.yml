@@ -140,6 +140,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Build Linux server runtime
-        run: docker build -t mathdoc-runtime:local .
+        run: docker compose -f compose.server.yaml -f compose.build.yaml build
       - name: Test isolated Docker deployment
         run: python3 tests/docker-smoke.py

@@ -1,0 +1,5 @@
+# Leave unset for localhost / SSH tunnel access.
+# For LAN access, also change the host binding in compose.yaml to 0.0.0.0.
+# public_origin = "http://192.0.2.10:17843"
+# For an authenticated reverse proxy, use the browser's external site address:
+# public_origin = "https://mathdoc.example.com"

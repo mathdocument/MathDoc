@@ -27,6 +27,23 @@ fn user_dir(variable: &str, fallback: &str) -> Result<PathBuf> {
 }
 
 impl Settings {
+    pub fn terminus_password(&self) -> Result<String> {
+        let value = std::env::var("MDC_TERMINUS_PASSWORD").ok();
+        if let Some(path) = std::env::var_os("MDC_TERMINUS_PASSWORD_FILE") {
+            anyhow::ensure!(
+                value.is_none(),
+                "set only one of MDC_TERMINUS_PASSWORD and MDC_TERMINUS_PASSWORD_FILE"
+            );
+            let text = std::fs::read_to_string(path).context("read database password file")?;
+            let password = text.trim_end_matches(['\r', '\n']);
+            anyhow::ensure!(!password.is_empty(), "database password file is empty");
+            return Ok(password.into());
+        }
+        value.or_else(|| self.terminus_password.clone()).context(
+            "set terminus_password in the user config, MDC_TERMINUS_PASSWORD or MDC_TERMINUS_PASSWORD_FILE",
+        )
+    }
+
     pub fn listen_address(&self) -> Result<std::net::Ipv4Addr> {
         let value = std::env::var("MDC_LISTEN_ADDRESS").unwrap_or_else(|_| "127.0.0.1".into());
         anyhow::ensure!(

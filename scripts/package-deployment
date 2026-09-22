@@ -1,0 +1,31 @@
+#!/bin/sh
+# Export the server files into a new directory; never overwrite local settings.
+set -eu
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+    echo "Usage: $0 DIRECTORY [RUNTIME_IMAGE]" >&2
+    exit 2
+fi
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+destination=$1
+image=${2:-}
+case "$image" in
+    *[!a-zA-Z0-9._/@:-]*) echo 'Invalid runtime image reference' >&2; exit 2 ;;
+esac
+if [ -e "$destination" ]; then
+    echo 'Destination already exists; export to a new directory to preserve configuration and credentials.' >&2
+    exit 1
+fi
+mkdir -p -- "$destination"
+awk -v image="$image" '
+    /^[[:space:]]*image: \$\{MATHDOC_IMAGE:/ && image != "" {
+        print "    image: " image
+        next
+    }
+    { print }
+' "$root/compose.server.yaml" > "$destination/compose.yaml"
+cp "$root/config.example.toml" "$destination/config.toml"
+cp "$root/scripts/mdc-docker" "$destination/mdc"
+chmod 755 "$destination/mdc"
+# Preserve the deploying user's ownership when the database creates its secret.
+mkdir -m 700 "$destination/secrets"
+echo "Deployment files written to $destination"

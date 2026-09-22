@@ -1,49 +1,96 @@
-name: mathdoc-server
+name: mathdoc
 services:
-  terminusdb:
+  database:
+    container_name: ${COMPOSE_PROJECT_NAME:-mathdoc}-database
     image: terminusdb/terminusdb-server@sha256:385faf298ad77aaf2d4d6df5e84a4cbe3596d01dab2e3b991af905639ae56388
     restart: unless-stopped
     environment:
-      TERMINUSDB_ADMIN_PASS: ${MDC_TERMINUS_PASSWORD:?Set MDC_TERMINUS_PASSWORD in .env}
+      TERMINUSDB_ADMIN_PASS_FILE: /run/mathdoc-secrets/database-password
       TERMINUSDB_SERVER_PORT: "6363"
+    # Generate the password before invoking the pinned image's original entrypoint.
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        secret=/run/mathdoc-secrets/database-password
+        chgrp 10001 /run/mathdoc-secrets
+        chmod 0750 /run/mathdoc-secrets
+        if [ ! -e "$$secret" ]; then
+          if [ -d /app/terminusdb/storage/db ]; then
+            echo 'Database exists but secrets/database-password is missing; restore the original password file.' >&2
+            exit 1
+          fi
+          umask 077
+          temporary=$$(mktemp /run/mathdoc-secrets/.password.XXXXXX)
+          trap 'rm -f "$$temporary"' EXIT
+          od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$$temporary"
+          printf '\n' >> "$$temporary"
+          chown "$$(stat -c %u /run/mathdoc-secrets):10001" "$$temporary"
+          chmod 0440 "$$temporary"
+          mv "$$temporary" "$$secret"
+          trap - EXIT
+        fi
+        if [ ! -s "$$secret" ]; then
+          echo 'Database password file is empty; restore the original password file.' >&2
+          exit 1
+        fi
+        exec /app/terminusdb/init_docker.sh
     volumes:
-      - terminus-data:/app/terminusdb/storage
+      - data:/app/terminusdb/storage
+      - ./secrets:/run/mathdoc-secrets
+    networks: [backend]
     healthcheck:
       test: ["CMD", "swipl", "-q", "-g", "use_module(library(http/http_open)),setup_call_cleanup(http_open('http://127.0.0.1:6363/api/ok', S, [timeout(5)]),read_string(S,_,_),close(S)),halt", "-t", "halt(1)"]
-      interval: 10s
+      interval: 5s
       timeout: 10s
-      retries: 12
+      retries: 24
       start_period: 30s
     logging:
       driver: local
-  mdc:
-    build: .
-    image: mathdoc-runtime:local
+  runtime:
+    container_name: ${COMPOSE_PROJECT_NAME:-mathdoc}-runtime
+    image: ${MATHDOC_IMAGE:-ghcr.io/mathdocument/mathdoc-runtime:0.5.0}
     init: true
     restart: unless-stopped
     stop_grace_period: 60s
     depends_on:
-      terminusdb:
+      database:
         condition: service_healthy
-    command: ["start", "--foreground", "--port", "${MDC_PORT:-17843}"]
     environment:
-      MDC_TERMINUS_URL: http://terminusdb:6363
-      MDC_TERMINUS_PASSWORD: ${MDC_TERMINUS_PASSWORD:?Set MDC_TERMINUS_PASSWORD in .env}
+      MDC_CONFIG: /etc/mathdoc/config.toml
+      MDC_TERMINUS_URL: http://database:6363
+      MDC_TERMINUS_PASSWORD_FILE: /run/mathdoc-secrets/database-password
       MDC_LISTEN_ADDRESS: 0.0.0.0
+    # Edit 127.0.0.1 to 0.0.0.0 for trusted LAN access, and set public_origin.
+    # The container always uses 17843; MDC_PORT changes only the host port.
     ports:
-      - "127.0.0.1:${MDC_PORT:-17843}:${MDC_PORT:-17843}"
+      - "127.0.0.1:${MDC_PORT:-17843}:17843"
     volumes:
-      - mdc-cache:/var/lib/mdc/cache
-      - lean-toolchains:/var/lib/mdc/elan
+      - cache:/var/lib/mdc/cache
+      - tools:/var/lib/mdc/tools
+      - type: bind
+        source: ./config.toml
+        target: /etc/mathdoc/config.toml
+        read_only: true
+        bind:
+          create_host_path: false
+      - ./secrets:/run/mathdoc-secrets:ro
+    networks: [backend, outbound]
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "--output", "/dev/null", "http://127.0.0.1:${MDC_PORT:-17843}/"]
-      interval: 10s
+      test: ["CMD", "curl", "--fail", "--silent", "--output", "/dev/null", "http://127.0.0.1:17843/api/status"]
+      interval: 5s
       timeout: 5s
-      retries: 12
-      start_period: 60s
+      retries: 24
+      start_period: 30s
     logging:
       driver: local
+networks:
+  backend:
+    internal: true
+  outbound:
 volumes:
-  terminus-data:
-  mdc-cache:
-  lean-toolchains:
+  data:
+    name: ${COMPOSE_PROJECT_NAME:-mathdoc}-vol-data
+  cache:
+    name: ${COMPOSE_PROJECT_NAME:-mathdoc}-vol-cache
+  tools:
+    name: ${COMPOSE_PROJECT_NAME:-mathdoc}-vol-tools
