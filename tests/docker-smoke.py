@@ -160,8 +160,20 @@ def main():
             assert not password_file.exists()
             assert "restore the original password file" in run("logs", "database")
             run("stop", "database")
+            password_file.write_text("\n")
+            failed = subprocess.run([*compose, "up", "-d", "--no-build", "--pull", "never",
+                                     "--wait", "--wait-timeout", "15", "database"],
+                                    env=env, cwd=temporary, capture_output=True, text=True, timeout=45)
+            assert failed.returncode != 0
+            assert "Database password file is empty" in run("logs", "database")
+            run("stop", "database")
+            password_file.unlink()
             saved_password.rename(password_file)
+            # Restoring a file need not retain its original container group.
+            password_file.chmod(0o600)
+            os.chown(password_file, -1, os.getgid())
             up()
+            assert password_file.stat().st_mode & 0o777 == 0o440
             assert cli("show", "-p", "smoke/main", node["fnode"])["title"] == "Container proof"
             print("Docker smoke passed: source-free startup, credentials, HTTP origins, CLI, bundled Lean, "
                   "LaTeX, restart, recreation, down/up, cache reuse and lost-secret recovery.", flush=True)

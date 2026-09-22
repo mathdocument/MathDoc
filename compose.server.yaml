@@ -24,15 +24,16 @@ services:
           trap 'rm -f "$$temporary"' EXIT
           od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$$temporary"
           printf '\n' >> "$$temporary"
-          chown "$$(stat -c %u /run/mathdoc-secrets):10001" "$$temporary"
-          chmod 0440 "$$temporary"
           mv "$$temporary" "$$secret"
           trap - EXIT
         fi
-        if [ ! -s "$$secret" ]; then
-          echo 'Database password file is empty; restore the original password file.' >&2
+        if [ ! -f "$$secret" ] || [ -z "$$(cat "$$secret")" ]; then
+          echo 'Database password file is empty or invalid; restore the original password file.' >&2
           exit 1
         fi
+        # Reapply access after a backup is restored by a different host user.
+        chown "$$(stat -c %u /run/mathdoc-secrets):10001" "$$secret"
+        chmod 0440 "$$secret"
         exec /app/terminusdb/init_docker.sh
     volumes:
       - data:/app/terminusdb/storage
