@@ -47,7 +47,7 @@ JSON result. No command performs a source-workspace refresh.
 | `mdc start [DATABASE/BRANCH] [--port PORT]` | Start/reuse the entry server; optionally start one branch. Return URL, entry port, process PID and log path. |
 | `mdc start --foreground [--port PORT]` | Run a supervised server in the current process and restore its previously started branches. |
 | `mdc stop [DATABASE/BRANCH]` | Unload one branch and stop its Lean workers, or stop the entire server and all branches when no branch is given. Retain graph data and caches. |
-| `mdc cache stats DATABASE` | Report local shared artifact, mapping and certificate counts and sizes; no database connection or compilation. |
+| `mdc cache stats DATABASE` | Report shared artifact, mapping and certificate counts and readable sizes (KiB/MiB/GiB). Requires a running branch of this database; does not compile. |
 | `mdc cache gc DATABASE [--dry-run] [--older-than-days DAYS] [--max-bytes BYTES] [--certificates]` | Reclaim shared entries after all this database's branches are stopped. Defaults to a seven-day publication grace period. |
 
 Cache GC evicts the oldest eligible Lake mappings, then unreferenced objects.

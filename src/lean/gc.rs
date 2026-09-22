@@ -46,7 +46,21 @@ fn totals<'a>(files: impl Iterator<Item = &'a File>) -> Value {
             allocated += file.meta.blocks() * 512;
         }
     }
-    json!({"files":count,"logical_bytes":logical,"allocated_bytes":allocated})
+    json!({"files":count,"logical_size":size(logical),"allocated_size":size(allocated)})
+}
+fn size(bytes: u64) -> String {
+    let mut value = bytes as f64;
+    for unit in ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"] {
+        if value < 1024.0 || unit == "EiB" {
+            return if unit == "B" {
+                format!("{bytes} B")
+            } else {
+                format!("{value:.2} {unit}")
+            };
+        }
+        value /= 1024.0;
+    }
+    unreachable!()
 }
 fn parts<'a>(root: &Path, file: &'a File) -> Vec<&'a std::ffi::OsStr> {
     file.path.strip_prefix(root).unwrap().iter().collect()
@@ -224,7 +238,11 @@ mod tests {
         }
         let pool = super::super::cache::Pool::open(root.clone()).unwrap();
         assert!(collect(&root, 0, None, false, false).is_err());
-        assert_eq!(stats(&root).unwrap()["artifacts"]["files"], 3);
+        let report = stats(&root).unwrap();
+        assert_eq!(report["artifacts"]["files"], 3);
+        assert_eq!(report["artifacts"]["logical_size"], "12.00 KiB");
+        assert_eq!(size(0), "0 B");
+        assert_eq!(size(5 * 1024 * 1024 * 1024), "5.00 GiB");
         drop(pool);
         let preview = collect(&root, 0, Some(4096), false, true).unwrap();
         assert_eq!(preview["artifact_bytes_after"], 4096);

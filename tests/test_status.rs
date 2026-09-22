@@ -911,6 +911,7 @@ async fn branch_deletion_requires_stopped_service_and_cleans_only_its_cache() {
     let root = cache.path();
     let main = format!("{}/main", fixture.db.database);
     let copy = format!("{}/copy", fixture.db.database);
+    reject(root, &["cache", "stats", &fixture.db.database], "mdc start").await;
     let _source = Started::start(root, &main, None).await;
     run(root, &["new", "--proj", &main, "-t", "Original"]).await;
     let original = run(root, &["export", "--proj", &main]).await;
@@ -998,6 +999,11 @@ async fn branch_deletion_requires_stopped_service_and_cleans_only_its_cache() {
     let _recreated = Started::start(root, &copy, None).await;
     assert!(!cache_file.exists());
     assert_eq!(run(root, &["export", "--proj", &copy]).await, original);
+    run(root, &["stop", &main]).await;
+    // Another running branch is sufficient for database-wide statistics.
+    run(root, &["cache", "stats", &fixture.db.database]).await;
+    run(root, &["stop", &copy]).await;
+    reject(root, &["cache", "stats", &fixture.db.database], "mdc start").await;
 }
 
 #[tokio::test]

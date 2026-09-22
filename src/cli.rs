@@ -339,7 +339,7 @@ fn stdin() -> Result<String> {
 
 #[derive(Subcommand)]
 enum Cache {
-    /// Report shared objects, mappings and certificates without compiling.
+    /// Report shared cache sizes; start a branch of this database first.
     Stats { database: String },
     /// Reclaim old shared entries; all branches of this database must be stopped.
     Gc {
@@ -481,7 +481,19 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
                 .context("database cache path")?
                 .join(".shared");
             Some(match command {
-                Cache::Stats { .. } => crate::lean::gc::stats(&root)?,
+                Cache::Stats { .. } => {
+                    let status = crate::server::status().await?;
+                    anyhow::ensure!(
+                        status["projects"]
+                            .as_object()
+                            .is_some_and(|projects| projects
+                                .iter()
+                                .any(|(name, state)| name.starts_with(&format!("{database}/"))
+                                    && state["running"] == true)),
+                        "no running branch of {database}; run mdc start {database}/BRANCH first"
+                    );
+                    crate::lean::gc::stats(&root)?
+                }
                 Cache::Gc {
                     dry_run,
                     older_than_days,

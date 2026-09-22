@@ -60,7 +60,9 @@ the entire project, `mdc remove DATABASE` stops all its branches and deletes the
 database, its history and local branch caches. Other projects and shared Elan
 toolchains are unaffected; empty cache lock files remain for coordination.
 
-Use `mdc cache stats DATABASE` to inspect the shared pool. `mdc cache gc DATABASE
+Start a branch, then use `mdc cache stats DATABASE` to inspect the shared pool.
+Sizes are reported in readable units, including logical size and allocated disk space.
+`mdc cache gc DATABASE
 --dry-run` previews reclamation; omit `--dry-run` to execute it. Every branch in
 that database must be stopped first, including for a preview. Other databases
 can remain running. The default retains entries published in the last seven
