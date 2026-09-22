@@ -32,10 +32,8 @@ required. The database port and account are internal deployment details.
 
 The **Publish runtime** workflow publishes the tested image to GHCR and attaches
 `mathdoc-deployment-linux-amd64.tar.gz` to a matching GitHub release. The Compose
-file in that bundle pins the runtime by digest. Until the first such release is
-published, use [Build locally](#build-locally) below.
-
-Once a release bundle is available:
+file in that bundle pins the runtime by digest. Releases starting with **v0.6.0**
+use this deployment format.
 
 ```sh
 mkdir mathdoc
@@ -258,11 +256,23 @@ reuse and recovery from a missing or empty password file.
 
 ## Publish a release
 
-Maintainers publish a GitHub release whose tag matches `Cargo.toml`, such as
-`v0.5.0`. The `runtime-release.yml` workflow builds and smoke-tests the Linux AMD64
-image, pushes it to `ghcr.io/mathdocument/mathdoc-runtime:0.5.0`, then packages the
-exact pushed digest and uploads the deployment bundle to the release. Configure
-the GHCR package as public once if servers should pull without registry login.
+1. Update the package version in `Cargo.toml` and `Cargo.lock`, the default runtime
+   image in `compose.server.yaml`, and version examples in the documentation.
+   Commit the changes and run `./scripts/check`.
+2. Push the commit and wait for **Release check** to pass on that exact commit.
+3. Create and push the matching annotated tag, for example `v0.6.0`, then publish
+   a GitHub release for that tag with release notes. Pushing a tag alone does not
+   publish the runtime.
+4. Wait for **Publish runtime** to finish. The `runtime-release.yml` workflow
+   builds and smoke-tests the Linux AMD64 image, pushes it to
+   `ghcr.io/mathdocument/mathdoc-runtime:0.6.0`, then packages the exact pushed
+   digest and uploads `mathdoc-deployment-linux-amd64.tar.gz` to the release.
+5. Configure the GHCR package as public once so servers can pull without registry
+   login. Download the release bundle into a fresh directory, pull the images
+   without registry credentials, and verify startup before announcing the release.
+
+Keep published tags and versioned images fixed. Ship corrections under a new
+version instead of replacing an existing release's code or image.
 
 A manual workflow run publishes a `sha-COMMIT` tag and uploads the deployment
 bundle as a workflow artifact. Local builds and smoke tests never publish images.

@@ -49,7 +49,7 @@ services:
       driver: local
   runtime:
     container_name: ${COMPOSE_PROJECT_NAME:-mathdoc}-runtime
-    image: ${MATHDOC_IMAGE:-ghcr.io/mathdocument/mathdoc-runtime:0.5.0}
+    image: ${MATHDOC_IMAGE:-ghcr.io/mathdocument/mathdoc-runtime:0.6.0}
     init: true
     restart: unless-stopped
     stop_grace_period: 60s
