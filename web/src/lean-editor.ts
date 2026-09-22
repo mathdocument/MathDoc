@@ -3,7 +3,7 @@ import { CancellationTokenSource, Uri, KeyCode, KeyMod, editor as MonacoEditor }
 import { createModelReference } from "vscode/monaco";
 import { getService, ICommandService } from "vscode/services";
 import { FileUri } from "lean4monaco/dist/vscode-lean4/vscode-lean4/src/utils/exturi";
-import { CloseAction, ErrorAction } from "vscode-languageclient/lib/common/client.js";
+import { CloseAction, ErrorAction, ConnectionError, ConnectionErrors } from "vscode-languageclient/lib/common/api.js";
 import { projectPath } from "./lib/project-path";
 import { chainEditorScroll } from "./lib/editor-scroll";
 import { nativeMonacoScroll } from "./lib/monaco-scroll";
@@ -298,6 +298,19 @@ async function start() {
     // socket inside vscode-languageclient races that recovery, including at init.
     clientOptions: {
       documentSelector: [{ language: "lean4" }],
+      middleware: {
+        async provideInlayHints(document, range, token, next) {
+          try {
+            return await next(document, range, token);
+          } catch (error) {
+            // A queued viewport refresh can outlive the branch's connection.
+            // Treat that as cancellation, without hiding other provider errors.
+            if (error instanceof ConnectionError &&
+                (error.code === ConnectionErrors.Closed || error.code === ConnectionErrors.Disposed)) return null;
+            throw error;
+          }
+        },
+      },
       errorHandler: {
         error: () => ({ action: ErrorAction.Continue }),
         closed: () => {
