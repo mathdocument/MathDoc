@@ -47,7 +47,7 @@ JSON result. No command performs a source-workspace refresh.
 | `mdc start [DATABASE/BRANCH] [--port PORT]` | Start/reuse the entry server; optionally start one branch. Return URL, entry port, process PID and log path. |
 | `mdc start --foreground [--port PORT]` | Run a supervised server in the current process and restore its previously started branches. |
 | `mdc stop [DATABASE/BRANCH]` | Unload one branch and stop its Lean workers, or stop the entire server and all branches when no branch is given. Retain graph data and caches. |
-| `mdc cache stats DATABASE` | Report shared artifact, mapping and certificate counts and readable sizes (KiB/MiB/GiB). Requires a running branch of this database; does not compile. |
+| `mdc cache stats DATABASE` | Report local shared artifact, mapping and certificate counts and readable sizes (KiB/MiB/GiB), whether branches are running or stopped. Requires neither a service nor a database connection; does not compile. |
 | `mdc cache gc DATABASE [--dry-run] [--older-than-days DAYS] [--max-bytes BYTES] [--certificates]` | Reclaim shared entries after all this database's branches are stopped. Defaults to a seven-day publication grace period. |
 
 Cache GC evicts the oldest eligible Lake mappings, then unreferenced objects.
@@ -61,7 +61,10 @@ GC is explicit, never part of a check or branch deletion.
 
 `stats` reports logical bytes and allocated file blocks, counting each inode
 once for allocated bytes within the reported set. Private workspaces and
-directory metadata are excluded. GC's `reclaimable_file_bytes` excludes objects
+directory metadata are excluded. In particular, older branch-local Lake caches
+are not counted until a Lean operation attaches them to the shared pool; a zero
+shared total does not mean that all branch-local caches are empty. `stop` retains
+caches and never resets these statistics. GC's `reclaimable_file_bytes` excludes objects
 with additional hardlinks: a private producer output may still retain those
 bytes after the pool entry is removed. Stopped branch workspaces are removed by
 `branch del`; this also releases their links. Empty lock files remain.

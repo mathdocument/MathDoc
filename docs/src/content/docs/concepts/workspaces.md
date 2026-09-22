@@ -60,7 +60,9 @@ the entire project, `mdc remove DATABASE` stops all its branches and deletes the
 database, its history and local branch caches. Other projects and shared Elan
 toolchains are unaffected; empty cache lock files remain for coordination.
 
-Start a branch, then use `mdc cache stats DATABASE` to inspect the shared pool.
+Use `mdc cache stats DATABASE` to inspect the local shared pool with branches
+running or stopped, even when TerminusDB is offline. This excludes private
+workspace caches, including older Lake caches not yet attached to the shared pool.
 Sizes are reported in readable units, including logical size and allocated disk space.
 `mdc cache gc DATABASE
 --dry-run` previews reclamation; omit `--dry-run` to execute it. Every branch in

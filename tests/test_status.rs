@@ -94,6 +94,37 @@ async fn main_branch_deletion_is_rejected_without_database_access() {
 }
 
 #[tokio::test]
+async fn cache_stats_reads_disk_without_a_service_or_database_connection() {
+    let cache = tempfile::tempdir().unwrap();
+    let config = cache.path().join("offline.toml");
+    std::fs::write(&config, "terminus_url = 'http://127.0.0.1:1'").unwrap();
+    let shared = cache
+        .path()
+        .join(&mathdoc::store::digest(b"http://127.0.0.1:1")[..12])
+        .join("demo/.shared");
+    let artifact = shared.join("v1/test/project/lake/artifacts/shared.olean");
+    std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+    std::fs::write(artifact, [0u8; 4096]).unwrap();
+    let output = command(cache.path())
+        .env("MDC_CONFIG", config)
+        .env("MDC_TERMINUS_URL", "http://127.0.0.1:1")
+        .env_remove("MDC_TERMINUS_PASSWORD")
+        .args(["cache", "stats", "demo"])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["path"], shared.to_str().unwrap());
+    assert_eq!(report["artifacts"]["files"], 1);
+    assert_eq!(report["artifacts"]["logical_size"], "4.00 KiB");
+}
+
+#[tokio::test]
 #[ignore = "requires local TerminusDB and MDC_TERMINUS_PASSWORD"]
 async fn remove_database_offline_guards_leases_and_cleans_all_branch_caches() {
     let fixture = common::TestDatabase::new("mdcremove").await;
@@ -911,7 +942,10 @@ async fn branch_deletion_requires_stopped_service_and_cleans_only_its_cache() {
     let root = cache.path();
     let main = format!("{}/main", fixture.db.database);
     let copy = format!("{}/copy", fixture.db.database);
-    reject(root, &["cache", "stats", &fixture.db.database], "mdc start").await;
+    assert_eq!(
+        run(root, &["cache", "stats", &fixture.db.database]).await["artifacts"]["files"],
+        0
+    );
     let _source = Started::start(root, &main, None).await;
     run(root, &["new", "--proj", &main, "-t", "Original"]).await;
     let original = run(root, &["export", "--proj", &main]).await;
@@ -1000,10 +1034,14 @@ async fn branch_deletion_requires_stopped_service_and_cleans_only_its_cache() {
     assert!(!cache_file.exists());
     assert_eq!(run(root, &["export", "--proj", &copy]).await, original);
     run(root, &["stop", &main]).await;
-    // Another running branch is sufficient for database-wide statistics.
-    run(root, &["cache", "stats", &fixture.db.database]).await;
+    let active = run(root, &["cache", "stats", &fixture.db.database]).await;
     run(root, &["stop", &copy]).await;
-    reject(root, &["cache", "stats", &fixture.db.database], "mdc start").await;
+    let stopped = run(root, &["cache", "stats", &fixture.db.database]).await;
+    assert_eq!(
+        active, stopped,
+        "stopping must not change shared cache statistics"
+    );
+    assert_eq!(stopped["artifacts"]["files"], 1);
 }
 
 #[tokio::test]
