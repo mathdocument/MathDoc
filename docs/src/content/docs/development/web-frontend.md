@@ -59,7 +59,9 @@ when a socket closes during initialization, and safely finish client shutdown.
 Both build and development prebundling verify the upstream code before patching.
 The same runtime supplies identical syntax, themes and fonts
 in both modes. The first reveal waits for the native TextMate grammar and a
-rendered viewport, with no plaintext/loading placeholder. The iframe fills the
+rendered viewport, with no plaintext/loading placeholder. Reveal frames run on
+the parent page's clock because Firefox throttles the hidden iframe's own
+animation frames until it becomes visible. The iframe fills the
 space remaining below the block controls, so its final lines remain reachable.
 After startup, the page has an isolated native WebSocket session,
 with source on the left and Infoview on the right. The start button becomes

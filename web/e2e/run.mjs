@@ -9,7 +9,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { chromium, webkit } from "playwright";
+import { chromium, firefox, webkit } from "playwright";
 import { createServer } from "node:net";
 
 const run = promisify(execFile);
@@ -17,6 +17,11 @@ const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const binary = resolve(process.env.MDC_BIN ?? resolve(webRoot, "../target/debug/mdc"));
 
 const env = { ...process.env };
+function launchBrowser() {
+  if (env.MDC_E2E_BROWSER === 'firefox') return firefox.launch();
+  if (env.MDC_E2E_BROWSER === 'webkit') return webkit.launch();
+  return chromium.launch({headless: true, channel: 'chromium'});
+}
 async function startServer(cwd, database, overrides = {}) {
   const reservation = createServer();
   await new Promise(resolve => reservation.listen(0, "127.0.0.1", resolve));
@@ -128,7 +133,7 @@ const beta = (page) => page.getByRole("complementary", { name: "Dependencies" })
   .getByRole("button", { name: /^Beta \(/ });
 
 await test('project directory creates, forks, starts, stops and deletes branches', {timeout: 90000}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const browser = await launchBrowser();
   try {
     await fixture(browser, async ({page, url}) => {
       const base = new URL(url).origin, main = new URL(url).pathname.slice(3);
@@ -245,7 +250,7 @@ await test('project directory creates, forks, starts, stops and deletes branches
 });
 
 await test("large relation lists filter and retain natural card heights", { timeout: 90000 }, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === "webkit" ? await webkit.launch() : await chromium.launch({ headless: true, channel: "chromium" });
+  const browser = await launchBrowser();
   const node = (title, fnode = randomUUID(), depens = []) => ({ fnode, title, module: `Lib.N_${fnode.replaceAll("-", "")}`, depens, blocks: [] });
   const hub = node("Shared foundation");
   const leaves = Array.from({length: 8500}, (_, i) => node(
@@ -316,7 +321,7 @@ await test("large relation lists filter and retain natural card heights", { time
 });
 
 await test('node operation dialogs share layout, focus and Escape handling', {timeout: 60000}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const browser = await launchBrowser();
   try {
     await fixture(browser, async ({page}) => {
       const toolbar = page.locator('.bar-end');
@@ -384,9 +389,7 @@ await test('node operation dialogs share layout, focus and Escape handling', {ti
 });
 
 await test("browser with the real MathDoc backend", { timeout: 240000 }, async (suite) => {
-  const browser = process.env.MDC_E2E_BROWSER === "webkit"
-    ? await webkit.launch()
-    : await chromium.launch({ headless: true, channel: "chromium" });
+  const browser = await launchBrowser();
   try {
     await suite.test("node deletion detaches referrers and dependency dialogs share their layout", () =>
       fixture(browser, async ({ cli, page, url }) => {
@@ -1136,7 +1139,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
 });
 
 await test('Monaco source blocks retain highlighting, edits and undo across layout changes', {timeout: 60000}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const browser = await launchBrowser();
   const node = {fnode: randomUUID(), title: 'Shared editors', module: 'Lib.Shared', depens: [], blocks: [
     {srctype: 'text', content: '# Heading\nA **bold** statement.\n'},
     {srctype: 'latex', content: '% comment\n\\section{Heading}\nA statement.\n'},
@@ -1172,7 +1175,7 @@ await test('Monaco source blocks retain highlighting, edits and undo across layo
 });
 
 await test('LaTeX macros, scoped completion, citations and draft previews', {timeout: 90000}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const browser = await launchBrowser();
   try {
     await fixture(browser, async ({root, cli, page, url}) => {
       const ids = {};
@@ -1492,7 +1495,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
 });
 
 await test('LaTeX tables, colors and TikZ diagrams render shared macros locally', {timeout: 90000}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const browser = await launchBrowser();
   const node = {fnode: randomUUID(), title: 'Rich LaTeX', module: 'Lib.RichLatex', depens: [], blocks: [{srctype: 'latex', content: String.raw`
     {\color{brand}Colored text} and $\textcolor{brand}{x+y}$.
     \begin{tabular}{|l|c|}\hline Left & Right\\\hline \multicolumn{2}{c}{Together}\\\hline\end{tabular}
@@ -1603,10 +1606,11 @@ await test('LaTeX tables, colors and TikZ diagrams render shared macros locally'
   } finally { await browser.close(); }
 });
 
-await test('Lean first paint waits for syntax highlighting without a server', {timeout: 60000}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+await test('Lean first paint waits for syntax without waiting for hidden iframe frames', {timeout: 60000}, async () => {
+  const browser = await launchBrowser();
   const node = {fnode: randomUUID(), title: 'Highlighted first paint', module: 'Lib.FirstPaint', depens: [], blocks: [
     {srctype: 'lean', content: '-- highlighted comment\ntheorem firstPaint : True := by trivial\n'},
+    {srctype: 'latex', content: 'A formula: $x^2$.'},
   ]};
   try {
     await fixture(browser, async ({page, url}) => {
@@ -1618,6 +1622,26 @@ await test('Lean first paint waits for syntax highlighting without a server', {t
       });
       page.on('request', r => { if (r.method() === 'POST' && r.url().endsWith('/lean/session')) sessions++; });
       await page.addInitScript(() => {
+        if (window !== top) {
+          // Deterministically simulate Firefox's hidden-iframe rAF throttling.
+          // Freeze the child clock at selection, after runtime initialization;
+          // the parent must reveal rendered source before we release it.
+          const requestFrame = window.requestAnimationFrame.bind(window);
+          let held = false;
+          const pending = [];
+          window.addEventListener('message', event => {
+            if (event.origin === location.origin && event.source === parent && event.data?.type === 'lean-select') held = true;
+          });
+          window.requestAnimationFrame = callback => requestFrame(time => {
+            if (held) pending.push(callback);
+            else callback(time);
+          });
+          window.releaseLeanFrames = () => {
+            held = false;
+            pending.splice(0).forEach(callback => requestFrame(callback));
+          };
+          return;
+        }
         const observe = () => {
           const frame = document.querySelector('iframe[title="Lean source and Infoview"]');
           const lines = frame?.contentDocument?.querySelectorAll('.view-line span');
@@ -1625,6 +1649,7 @@ await test('Lean first paint waits for syntax highlighting without a server', {t
             window.firstLeanPaint = [...new Set([...lines].map(el => frame.contentWindow.getComputedStyle(el).color))];
           } else requestAnimationFrame(observe);
         };
+        window.observeLeanPaint = observe;
         requestAnimationFrame(observe);
       });
       try {
@@ -1635,17 +1660,39 @@ await test('Lean first paint waits for syntax highlighting without a server', {t
         assert.equal(await page.getByLabel('Lean source while editor loads').isVisible(), false);
         assert.equal(await page.locator('iframe[title="Lean source and Infoview"]').isVisible(), false, 'hold the editor until its grammar is loaded');
       } finally { release(); }
-      await page.locator('.native-editor:not(.pending)').waitFor();
-      await page.waitForFunction(() => window.firstLeanPaint);
-      assert.ok((await page.evaluate(() => window.firstLeanPaint)).length >= 2, 'the first visible frame must already contain syntax colors');
-      await page.frameLocator('iframe[title="Lean source and Infoview"]').getByText('firstPaint', {exact: true}).waitFor();
+      const painted = async () => {
+        await page.locator('.native-editor:not(.pending)').waitFor();
+        await page.waitForFunction(() => window.firstLeanPaint);
+        assert.ok((await page.evaluate(() => window.firstLeanPaint)).length >= 2, 'the first visible frame must already contain syntax colors');
+        const frame = page.frames().find(frame => frame.url().includes('/lean.html?'));
+        await frame.getByText('firstPaint', {exact: true}).waitFor();
+        await frame.evaluate(() => window.releaseLeanFrames());
+      };
+      await painted();
+      // Knowledge refresh creates a new hidden iframe and must reveal it too.
+      await page.reload();
+      await painted();
+      await page.getByRole('button', {name: 'Graph', exact: true}).click();
+      const canvas = page.locator('.graph-container canvas');
+      await canvas.click({position: {x: 10, y: 10}});
+      await page.getByText('no node selected', {exact: true}).waitFor();
+      await page.evaluate(() => {
+        window.retainedLeanFrame = document.querySelector('iframe[title="Lean source and Infoview"]');
+        window.firstLeanPaint = null;
+        requestAnimationFrame(window.observeLeanPaint);
+      });
+      await page.getByRole('button', {name: /Search nodes/}).click();
+      await page.getByPlaceholder('Search by title or fnode…').fill(node.title);
+      await page.getByRole('button', {name: new RegExp(node.title)}).click();
+      await painted();
+      assert.equal(await page.evaluate(() => window.retainedLeanFrame === document.querySelector('iframe[title="Lean source and Infoview"]')), true);
       assert.equal(sessions, 0);
     }, [node]);
   } finally { await browser.close(); }
 });
 
 await test('Lean hover stays above the active Infoview', {timeout: 45000}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const browser = await launchBrowser();
   const node = {fnode: randomUUID(), title: 'Hover', module: 'Lib.Hover', depens: [], blocks: [
     {srctype: 'lean', content: '/-- Documentation with enough text to extend across the narrow source pane into the active Infoview. -/\ndef hoverTargetWithALongName : Nat := 42\n#check hoverTargetWithALongName\n'},
   ]};
@@ -1672,7 +1719,7 @@ await test('Lean hover stays above the active Infoview', {timeout: 45000}, async
 });
 
 await test('wrapped Lean sources reach the last line before and after server startup', {timeout: 60000}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const browser = await launchBrowser();
   const node = {fnode: randomUUID(), title: 'Wrapped Lean', module: 'Lib.Wrapped', depens: [], blocks: [
     {srctype: 'lean', content: Array.from({length: 60}, (_, i) => `-- ${i} ${'Long wrapped Lean source. '.repeat(9)}`).join('\n') + '\n-- DOCUMENT END'},
   ]};
@@ -1712,7 +1759,7 @@ await test('wrapped Lean sources reach the last line before and after server sta
 });
 
 await test('stopping an unfinished Lean check clears progress and Infoview connections', {timeout: 90000}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const browser = await launchBrowser();
   const node = {fnode: randomUUID(), title: 'Interruptible', module: 'Lib.Interruptible', depens: [], blocks: [
     {srctype: 'lean', content: '#eval IO.sleep 60000\nexample : True := by trivial\n'},
   ]};
@@ -1753,7 +1800,7 @@ await test('stopping an unfinished Lean check clears progress and Infoview conne
 });
 
 await test('Lean session state survives navigation through nodes without Lean', {timeout: 60000}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const browser = await launchBrowser();
   const nodes = ['First', 'Second'].map(title => ({fnode: randomUUID(), title, module: `Lib.${title}`, depens: [], blocks: [
     {srctype: 'lean', content: 'example : True := by trivial\n'},
   ]}));
@@ -1801,7 +1848,7 @@ await test('Lean session state survives navigation through nodes without Lean', 
 });
 
 await test('Lean browsing stays offline until explicitly started and preserves static drafts', {timeout: 90000}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const browser = await launchBrowser();
   const nodes = ['First', 'Second'].map((title, i) => ({fnode: randomUUID(), title, module: `Lib.Offline${i}`, depens: [], blocks: [
     {srctype: 'lean', content: `-- A highlighted comment\ntheorem offline${i} : True := by trivial\n`},
   ]}));
@@ -1839,10 +1886,11 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       assert.notEqual(light.color, dark.color, 'offline syntax responds to the theme');
       assert.equal(await frame.locator('#infoview').isVisible(), false);
       await input.press('ControlOrMeta+End');
-      await page.keyboard.insertText('-- saved without a server\n');
+      // Exercise normal typing; Firefox can duplicate synthetic insertText IME input.
+      await page.keyboard.type('-- saved without a server\n');
       await block.getByRole('button', {name: 'Save', exact: true}).click();
       await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
-      assert.match(JSON.parse((await cli('show', nodes[0].fnode)).stdout).blocks[0].content, /saved without a server/);
+      assert.equal(JSON.parse((await cli('show', nodes[0].fnode)).stdout).blocks[0].content.trimEnd(), (nodes[0].blocks[0].content + '-- saved without a server\n').trimEnd());
       const select = async name => {
         await page.getByRole('button', {name: /Search nodes/}).click();
         await page.getByPlaceholder('Search by title or fnode…').fill(name);
@@ -1859,14 +1907,14 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       assert.equal(processes.filter(line => line.includes(root) && /--worker|lake serve/.test(line)).length, 0);
       // Saving offline must update the revision used by the next attachment.
       await input.press('ControlOrMeta+End');
-      await page.keyboard.insertText('-- offline revision\n');
+      await page.keyboard.type('-- offline revision\n');
       await block.getByRole('button', {name: 'Save', exact: true}).click();
       await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
       persistentEditor = await frame.locator('.monaco-editor[role=code]').elementHandle();
       await input.press('ControlOrMeta+End');
       // A trailing newline is its own Monaco undo group. Use a single-line
       // edit so one Undo specifically tests history surviving attachment.
-      await page.keyboard.insertText('-- draft before startup');
+      await page.keyboard.type('-- draft before startup');
       await block.getByText('Unsaved', {exact: true}).waitFor();
       await block.getByRole('button', {name: 'Collapse block'}).click();
       await block.getByRole('button', {name: 'Start Lean server', exact: true}).click();
@@ -1901,7 +1949,7 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       const oldId = await sessionId(page), otherId = await sessionId(other);
       persistentEditor = await frame.locator('.monaco-editor[role=code]').elementHandle();
       await input.press('ControlOrMeta+End');
-      await page.keyboard.insertText('-- draft survives stop');
+      await page.keyboard.type('-- draft survives stop');
       const closed = socket.waitForEvent('close');
       const stoppedSession = page.waitForResponse(r => r.request().method() === 'DELETE' && r.url().endsWith(`/lean/session/${oldId}`));
       await block.getByRole('button', {name: 'Stop Lean server', exact: true}).click();
@@ -1919,7 +1967,7 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       assert.equal((await fetch(`${url}/api/lean/session/${otherId}`)).status, 200);
       const otherFrame = other.frameLocator('iframe[title="Lean source and Infoview"]');
       await otherFrame.getByRole('textbox', {name: /Editor content/}).press('ControlOrMeta+A');
-      await other.keyboard.insertText('example : True := by exact 42');
+      await other.keyboard.type('example : True := by exact 42');
       await otherFrame.locator('.squiggly-error').first().waitFor();
       await block.getByRole('button', {name: 'Start Lean server', exact: true}).click();
       await page.getByText('Lean editor ready', {exact: true}).waitFor();
@@ -1972,7 +2020,7 @@ await test('Lean browsing stays offline until explicitly started and preserves s
 });
 
 await test('collapsed Lean editors recheck without recreating the browser viewport', {timeout: 60000}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const browser = await launchBrowser();
   const node = {fnode: randomUUID(), title: 'Collapsed reload', module: 'Lib.Collapsed', depens: [], blocks: [
     {srctype: 'lean', content: 'example : True := by trivial\n'},
   ]};
@@ -1997,7 +2045,7 @@ await test('collapsed Lean editors recheck without recreating the browser viewpo
 });
 
 await test('editors and previews pass scrolling to the node pane at both boundaries', {timeout: 180000}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const browser = await launchBrowser();
   const lines = Array.from({length: 100}, (_, i) => `Line ${i + 1}.`);
   const node = {fnode: randomUUID(), title: 'Scrolling', module: 'Lib.Scrolling', depens: [], blocks: [
     {srctype: 'text', content: lines.join('\n')},
@@ -2142,7 +2190,7 @@ await test('editors and previews pass scrolling to the node pane at both boundar
 });
 
 await test('view changes reveal measured editors and loaded pages without intermediate frames', {timeout: 60000}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const browser = await launchBrowser();
   try {
     await fixture(browser, async ({cli, page, url}) => {
       const node = JSON.parse((await cli('show', 'Alpha')).stdout);

@@ -78,8 +78,10 @@ Do not use a production database or start a test project inside the checkout.
 The browser suite uses the actual backend and native editor, including draft
 preservation, revision conflicts, certification reuse and process cleanup. The
 LaTeX case exercises uploads, scoped completions, macro expansion, bibliography,
-draft previews and cross-node navigation in Chromium or WebKit
-(`MDC_E2E_BROWSER=webkit`).
+draft previews and cross-node navigation. Chromium is the default browser;
+`MDC_E2E_BROWSER=firefox` or `MDC_E2E_BROWSER=webkit` selects another installed
+Playwright browser. The Lean first-paint regression also suspends iframe animation
+frames to cover Firefox's hidden-frame throttling on refresh and graph refocus.
 `MDC_BIN` optionally selects a prebuilt binary for browser tests. The Lean cases
 also exercise bidirectional backpressure, superseded selections and a real
 30-second preparation timeout. Error checks require native diagnostics for the

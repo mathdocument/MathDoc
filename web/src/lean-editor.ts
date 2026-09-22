@@ -61,7 +61,10 @@ function progressText(processing: { range: { start: { line: number } } }[]) {
 function showProgress() { send("lean-progress", !id || connectionFailure ? "" : preview ? "Preparing Lean environment…" : selected?.progress ?? ""); }
 function reveal(generation: number) {
   const current = selection;
-  requestAnimationFrame(() => requestAnimationFrame(() => {
+  // The parent keeps this iframe hidden until lean-ready. Firefox throttles
+  // animation frames in hidden iframes, so use the visible parent's clock to
+  // settle layout and render syntax before asking it to reveal the editor.
+  parent.requestAnimationFrame(() => parent.requestAnimationFrame(() => {
     if (current.signal.aborted) return;
     renderSource(editor);
     send("lean-ready", undefined, generation);
