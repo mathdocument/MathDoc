@@ -24,7 +24,10 @@ impl Drop for Process {
     }
 }
 pub fn command(root: &Path, args: &[&str]) -> Result<Command> {
-    let mut c = Command::new("lake");
+    native_command(root, "lake", args)
+}
+fn native_command(root: &Path, program: &str, args: &[&str]) -> Result<Command> {
+    let mut c = Command::new(program);
     c.args(args)
         .current_dir(root)
         .env_remove("ELAN_TOOLCHAIN")
@@ -54,9 +57,21 @@ pub fn command(root: &Path, args: &[&str]) -> Result<Command> {
     Ok(c)
 }
 pub fn spawn(root: &Path, args: &[&str]) -> Result<Process> {
-    let child = command(root, args)?
+    spawn_command(command(root, args)?)
+}
+pub(super) fn spawn_inspector(root: &Path, toolchain: &str, script: &str) -> Result<Process> {
+    // The inspector imports only Lean's core libraries. Loading the whole Lake
+    // project per worker wastes time and memory (especially with Mathlib).
+    let mut command = native_command(root, "elan", &["run", toolchain, "lean", "--run", script])?;
+    for name in ["LEAN_PATH", "LEAN_SRC_PATH", "LEAN_SYSROOT"] {
+        command.env_remove(name);
+    }
+    spawn_command(command)
+}
+fn spawn_command(mut command: Command) -> Result<Process> {
+    let child = command
         .spawn()
-        .context("start Lake; install the pinned Lean toolchain first")?;
+        .context("start Lean process; install the pinned Lean toolchain first")?;
     let pid = child.id().context("compiler process has no PID")? as i32;
     Ok(Process { child, pid })
 }

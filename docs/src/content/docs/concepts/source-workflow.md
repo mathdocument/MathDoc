@@ -38,6 +38,10 @@ own Lean result, not a transitive axiom audit; a complete proof may still depend
 on an admitted result. Comments and strings containing `sorry` do not count.
 
 Older certificates without sorry evidence remain yellow until checked again.
+When Lake restores artifacts without diagnostic logs, MathDoc inspects their
+compiled proof bodies once with the pinned Lean compiler. Large closures use up
+to four inspector processes, capped across the service; small closures use one.
+The resulting certificates are persisted and shared across matching branches.
 Graph queries use in-memory certificates and never launch Lean. Certificates
 are restored once at service startup; saving or certifying Lean refreshes graph
 colors while preserving the graph viewport.

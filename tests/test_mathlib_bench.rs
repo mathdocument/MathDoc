@@ -206,3 +206,66 @@ async fn mathlib_lake_and_mdc_incremental_builds() {
     }
     service.shutdown().await;
 }
+
+/// Measure recovery from existing native artifacts without compiling any Mathlib module.
+#[tokio::test]
+#[ignore = "set MDC_BENCH_BUNDLE, MDC_BENCH_NATIVE_CACHE and MDC_BENCH_PACKAGES; no compilation"]
+async fn mathlib_certificate_recovery() {
+    let mut snapshot = load_snapshot();
+    snapshot.recompute();
+    let root = snapshot
+        .nodes
+        .values()
+        .find(|n| n.module == "Mathlib")
+        .unwrap();
+    let input = Input::capture(&snapshot, &root.fnode).unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let service = LeanService::new(cache.path().to_path_buf()).unwrap();
+    let draft = service.editor_project(&input).await.unwrap();
+    for (name, variable) in [
+        ("cache", "MDC_BENCH_NATIVE_CACHE"),
+        ("packages", "MDC_BENCH_PACKAGES"),
+    ] {
+        let link = draft.path().join(".lake").join(name);
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(std::env::var(variable).unwrap(), link).unwrap();
+    }
+    let started = Instant::now();
+    let output =
+        mathdoc::lean::command(draft.path(), &["--no-build", "setup-file", "Mathlib.lean"])
+            .unwrap()
+            .output()
+            .await
+            .unwrap();
+    assert!(
+        output.status.success(),
+        "cache incomplete: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    eprintln!("Mathlib cached setup: {:?}", started.elapsed());
+    // The fixture is the import-only umbrella. Only recovery is timed here;
+    // interactive diagnostics and source-version guards have separate real-LSP tests.
+    let imports = root
+        .depens
+        .iter()
+        .map(|id| json!({"module":{"name":snapshot.nodes[id].module}}))
+        .collect::<Vec<_>>();
+    for phase in ["cold", "warm"] {
+        let started = Instant::now();
+        let result = service
+            .record_editor_check(draft.path(), &input, vec![], imports.clone())
+            .await
+            .unwrap();
+        assert!(result.certified, "{result:?}");
+        eprintln!(
+            "Mathlib {phase} certificate recovery: {:?}; verified={}",
+            started.elapsed(),
+            snapshot
+                .nodes
+                .values()
+                .filter(|n| service.formal_status(n, &snapshot.lean_keys[&n.fnode]) == "verified")
+                .count()
+        );
+    }
+}

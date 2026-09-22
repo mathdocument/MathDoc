@@ -276,19 +276,38 @@ async fn artifact_sorry_fallback(root: &Path, paths: &[Vec<PathBuf>]) -> Result<
     if paths.is_empty() {
         return Ok(vec![]);
     }
+    // Amortize Lean startup for small closures; large recoveries use up to four cores.
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |n| n.get().min(4))
+        .min(paths.len().div_ceil(128));
+    let batches = paths.chunks(paths.len().div_ceil(workers));
+    let toolchain = tokio::fs::read_to_string(root.join("lean-toolchain")).await?;
+    Ok(futures_util::future::try_join_all(
+        batches.map(|batch| inspect_artifacts(root, toolchain.trim(), batch)),
+    )
+    .await?
+    .into_iter()
+    .flatten()
+    .collect())
+}
+async fn inspect_artifacts(
+    root: &Path,
+    toolchain: &str,
+    paths: &[Vec<PathBuf>],
+) -> Result<Vec<Option<bool>>> {
+    // Bound CPU/memory across simultaneous browser and CLI recoveries, not just
+    // within one request. Each child frees module data before opening the next.
+    static INSPECTORS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+    let _permit = INSPECTORS.acquire().await?;
     let script = tempfile::Builder::new().suffix(".lean").tempfile_in(root)?;
     tokio::fs::write(script.path(), include_str!("lean/artifact_status.lean")).await?;
-    let mut process = spawn(
+    let mut process = transport::spawn_inspector(
         root,
-        &[
-            "env",
-            "lean",
-            "--run",
-            script
-                .path()
-                .to_str()
-                .context("invalid artifact inspector path")?,
-        ],
+        toolchain,
+        script
+            .path()
+            .to_str()
+            .context("invalid artifact inspector path")?,
     )?;
     let mut stdin = process
         .child
@@ -524,6 +543,8 @@ impl LeanService {
             .filter(|(_, (has_sorry, _, _))| has_sorry.is_none())
             .map(|(id, _)| id.clone())
             .collect();
+        let metadata_ms = started.elapsed().as_millis();
+        let inspection_started = Instant::now();
         let paths = missing
             .iter()
             .map(|id| {
@@ -536,6 +557,8 @@ impl LeanService {
         {
             observed.get_mut(id).unwrap().0 = has_sorry;
         }
+        let inspection_ms = inspection_started.elapsed().as_millis();
+        let publication_started = Instant::now();
         let mut final_result = None;
         for (node, key) in &input.chain {
             let Some((has_sorry, diagnostics, imports)) = observed.remove(&node.fnode) else {
@@ -578,6 +601,9 @@ impl LeanService {
             final_result = Some(result);
         }
         self.synced.lock().await.1 = 0;
+        if started.elapsed() >= Duration::from_secs(1) {
+            eprintln!("Lean certification: nodes={} metadata={}ms inspect={}ms ({} modules) publish={}ms total={}ms", input.chain.len(), metadata_ms, inspection_ms, missing.len(), publication_started.elapsed().as_millis(), started.elapsed().as_millis());
+        }
         final_result
             .filter(|r| r.fnode == target.fnode)
             .context("editor check produced no target result")
