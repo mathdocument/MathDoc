@@ -4,6 +4,67 @@ use mathdoc::{
 };
 use std::collections::HashMap;
 
+#[test]
+#[ignore = "requires native Lean and Lake"]
+fn lazy_toolchain_installation_preserves_shared_cache_single_flight() {
+    use std::{os::unix::fs::PermissionsExt, process::Command};
+
+    let toolchain = LeanProject::default().toolchain;
+    let located = Command::new("elan")
+        .args(["which", "lean"])
+        .env("ELAN_TOOLCHAIN", &toolchain)
+        .output()
+        .unwrap();
+    assert!(located.status.success(), "install {toolchain} first");
+    let compiler = std::path::PathBuf::from(String::from_utf8(located.stdout).unwrap().trim());
+    let root = tempfile::tempdir().unwrap();
+    let bin = root.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    // Reproduce Elan's lazy installation without a network download. Only the
+    // child process sees the empty ELAN_HOME; the first Lake invocation makes
+    // the preinstalled compiler available after both branches start checking.
+    let lake = bin.join("lake");
+    std::fs::write(
+        &lake,
+        r#"#!/bin/sh
+set -eu
+toolchain="$ELAN_HOME/toolchains/leanprover--lean4---v4.33.1"
+if [ ! -e "$toolchain" ]; then
+    sleep 1
+    mkdir -p "$ELAN_HOME/toolchains"
+    ln -s "$MATHDOC_TEST_COMPILER" "$toolchain" 2>/dev/null || test -L "$toolchain"
+fi
+exec elan run leanprover/lean4:v4.33.1 lake "$@"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&lake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "branches_reuse_native_objects_after_the_producer_is_deleted",
+            "--nocapture",
+        ])
+        .env("PATH", path)
+        .env("ELAN_HOME", root.path().join("elan"))
+        .env_remove("ELAN_TOOLCHAIN")
+        .env(
+            "MATHDOC_TEST_COMPILER",
+            compiler.parent().unwrap().parent().unwrap(),
+        )
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "lazy installation must preserve single-flight and reuse"
+    );
+}
+
 #[tokio::test]
 #[ignore = "requires native Lean and Lake"]
 async fn native_project_keeps_module_names_configuration_and_dependency_guards() {

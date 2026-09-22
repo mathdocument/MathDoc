@@ -824,20 +824,24 @@ impl LeanService {
         if let Some(result) = self.cached_input(&input, build).await {
             return Ok(result);
         }
-        // Exact input single-flight across branches; unrelated targets still run concurrently.
-        let store = self
+        // Lock before resolving compiler evidence: on a fresh Elan home the
+        // first Lake process installs Lean, so no certificate store exists yet.
+        // The waiter must retry that resolution after the producer finishes.
+        let key = digest(input.chain.last().unwrap().1.as_bytes());
+        let _flight = cache::lock(
+            self.pool
+                .project(&input.project_key)
+                .join(format!("{key}.check.lock")),
+        )
+        .await?;
+        if let Some(store) = self
             .certificates(&input.project, &input.project_key, true)
-            .await;
-        let _flight = if let Some(store) = &store {
-            let key = digest(input.chain.last().unwrap().1.as_bytes());
-            let lock = cache::lock(store.root.join(format!("{key}.check.lock"))).await?;
+            .await
+        {
             store
                 .refresh(input.chain.iter().map(|(_, k)| k.clone()).collect())
                 .await?;
-            Some(lock)
-        } else {
-            None
-        };
+        }
         let target_id = target.fnode.clone();
         let mut manager = self.manager.lock().await;
         if let Some(result) = self.cached_input(&input, build).await {
