@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Test a source-free deployment with isolated names, ports and disposable volumes.
 
-Build: docker compose -f compose.server.yaml -f compose.build.yaml build
+Build: docker build -t mathdoc-runtime:local .
 Run:   python3 tests/docker-smoke.py [--image mathdoc-runtime:local]
 """
 import argparse

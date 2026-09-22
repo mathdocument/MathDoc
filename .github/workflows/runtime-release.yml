@@ -47,7 +47,7 @@ jobs:
           PY
 
       - name: Build Linux AMD64 runtime
-        run: docker compose -f compose.server.yaml -f compose.build.yaml build
+        run: docker build -t mathdoc-runtime:local .
 
       - name: Verify source-free deployment before publishing
         run: python3 tests/docker-smoke.py

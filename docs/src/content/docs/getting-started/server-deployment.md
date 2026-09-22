@@ -235,7 +235,7 @@ deletes all three, including the graphs and history.**
 On a development/build machine with a checkout, Docker and Buildx:
 
 ```sh
-docker compose -f compose.server.yaml -f compose.build.yaml build
+docker build -t mathdoc-runtime:local .
 python3 tests/docker-smoke.py
 ./scripts/package-deployment ./dist/mathdoc-deployment mathdoc-runtime:local
 cd dist/mathdoc-deployment
@@ -246,7 +246,9 @@ docker compose up -d --pull never --wait --wait-timeout 180
 The export directory must not already exist: the packaging script refuses to
 overwrite configuration or credentials. The exported directory is independent of
 the checkout. Build hosts need no native Rust or Node installations. Native
-application development can continue using the separate root `compose.yaml`.
+application development uses the root `compose.yaml` for its development database;
+`compose.server.yaml` is the template exported for server deployment. Image builds
+use the Dockerfile directly, without another Compose file or a development image.
 
 The Docker test creates an isolated deployment from the exported files, chooses
 unused ports and unique resource names, and removes only its own containers and

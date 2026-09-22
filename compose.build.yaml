@@ -1,5 +1,0 @@
-# Developer-only override. Production deployments use compose.server.yaml alone.
-services:
-  runtime:
-    image: mathdoc-runtime:local
-    build: .
