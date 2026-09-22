@@ -1,5 +1,6 @@
 //! Native Lean LSP sessions plus Lake's existing incremental artifact store.
 pub mod cache;
+mod certificates;
 pub(crate) mod editor;
 mod transport;
 use crate::store::{digest, LeanProject, Node, Snapshot};
@@ -372,7 +373,7 @@ fn dependency_errors(
     node: &Node,
     imports: &[Value],
     known: &BTreeMap<PathBuf, String>,
-    keys: &BTreeMap<String, String>,
+    keys: &HashMap<String, String>,
     results: &HashMap<String, CheckResult>,
     root: &Path,
     project: &LeanProject,
@@ -421,6 +422,8 @@ pub struct LeanService {
     // ponytail: one CLI compiler per branch; add workers if concurrent check throughput requires it.
     manager: Mutex<Manager>,
     results: RwLock<HashMap<String, CheckResult>>,
+    certificates: Mutex<HashMap<String, Option<Arc<certificates::Certificates>>>>,
+    synced: Mutex<(String, u64)>,
     _lease: std::fs::File,
 }
 impl LeanService {
@@ -438,7 +441,7 @@ impl LeanService {
         verify_manifest(root, &input.project).await?;
         let target = &input.chain.last().context("no Lean target")?.0;
         let known = &input.modules;
-        let keys: BTreeMap<_, _> = input
+        let keys: HashMap<_, _> = input
             .chain
             .iter()
             .map(|(n, k)| (n.fnode.clone(), k.clone()))
@@ -547,6 +550,10 @@ impl LeanService {
                 root,
                 &input.project,
             )?;
+            let artifacts = (node.fnode != target.fnode)
+                .then(|| cache::Artifacts::from_trace(root, &node.module))
+                .flatten()
+                .filter(|a| a.complete(&root.join(".lake/cache")));
             let result = CheckResult {
                 fnode: node.fnode.clone(),
                 revision: node.revision(),
@@ -554,21 +561,22 @@ impl LeanService {
                 passed,
                 certified: passed && errors.is_empty(),
                 has_sorry,
-                built: false,
-                artifacts: None,
+                built: artifacts.is_some(),
+                artifacts,
                 cache_hit: false,
                 diagnostics,
                 imports,
                 dependency_errors: errors,
                 elapsed_ms: started.elapsed().as_millis(),
             };
-            self.persist_result(&result).await?;
+            self.persist_result(input, &result, root).await?;
             self.results
                 .write()
                 .unwrap()
                 .insert(node.fnode.clone(), result.clone());
             final_result = Some(result);
         }
+        self.synced.lock().await.1 = 0;
         final_result
             .filter(|r| r.fnode == target.fnode)
             .context("editor check produced no target result")
@@ -580,28 +588,6 @@ impl LeanService {
     pub fn with_shared_cache(root: PathBuf, shared: PathBuf) -> Result<Self> {
         let pool = cache::Pool::open(shared)?;
         let lease = crate::service::acquire_lease(&root)?;
-        // Restore certificates once, so graph reads need neither disk scans nor
-        // compilation. Every lookup still checks the current recursive input key.
-        let mut results = HashMap::new();
-        if let Ok(entries) = std::fs::read_dir(root.join("checks-v1")) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().is_none_or(|ext| ext != "json") {
-                    continue;
-                }
-                if let Some(result) = std::fs::read(&path)
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice::<CheckResult>(&bytes).ok())
-                    .filter(|r| {
-                        r.certified
-                            && r.passed
-                            && path.file_stem().is_some_and(|id| id == r.fnode.as_str())
-                    })
-                {
-                    results.insert(result.fnode.clone(), result);
-                }
-            }
-        }
         Ok(Self {
             manager: Mutex::new(Manager {
                 project_key: String::new(),
@@ -611,7 +597,9 @@ impl LeanService {
             }),
             root,
             pool,
-            results: RwLock::new(results),
+            results: RwLock::new(HashMap::new()),
+            certificates: Mutex::new(HashMap::new()),
+            synced: Mutex::new((String::new(), 0)),
             _lease: lease,
         })
     }
@@ -671,58 +659,133 @@ impl LeanService {
             }
             return (!build || result.built).then_some(result);
         }
-        let bytes = tokio::fs::read(
-            self.root
-                .join("checks-v1")
-                .join(format!("{}.json", node.fnode)),
+        None
+    }
+    async fn certificates(
+        &self,
+        project: &LeanProject,
+        key: &str,
+        retry: bool,
+    ) -> Option<Arc<certificates::Certificates>> {
+        let mut stores = self.certificates.lock().await;
+        if let Some(store) = stores.get(key) {
+            if store.is_some() || !retry {
+                return store.clone();
+            }
+        }
+        let store = tokio::time::timeout(
+            Duration::from_secs(5),
+            certificates::Certificates::open(self.pool.project(key), &project.toolchain),
         )
         .await
-        .ok()?;
-        let mut result: CheckResult = serde_json::from_slice(&bytes).ok()?;
-        if result.fnode != node.fnode
-            || result.input_key != key
-            || !result.certified
-            || !result.passed
-        {
-            return None;
-        }
-        result.built &= result
-            .artifacts
-            .as_ref()
-            .is_some_and(|a| a.complete(&cache));
-        self.results
-            .write()
-            .ok()?
-            .insert(node.fnode.clone(), result);
-        self.cached(&node.fnode, key, &node.revision(), build)
+        .ok()
+        .and_then(Result::ok);
+        stores.insert(key.into(), store.clone());
+        store
     }
-    async fn persist_result(&self, result: &CheckResult) -> Result<()> {
-        if !result.certified {
-            return Ok(());
+    async fn persist_result(&self, input: &Input, result: &CheckResult, root: &Path) -> Result<()> {
+        if let Some(store) = self
+            .certificates(&input.project, &input.project_key, true)
+            .await
+        {
+            store.publish(result, root).await?;
         }
-        let root = self.root.join("checks-v1");
-        tokio::fs::create_dir_all(&root).await?;
-        let temporary = root.join(format!("{}.{}.tmp", result.fnode, uuid::Uuid::new_v4()));
-        tokio::fs::write(&temporary, serde_json::to_vec(result)?).await?;
-        tokio::fs::rename(temporary, root.join(format!("{}.json", result.fnode))).await?;
         Ok(())
     }
+    fn restore_results<'a>(
+        &self,
+        store: &certificates::Certificates,
+        project: &LeanProject,
+        project_key: &str,
+        nodes: impl IntoIterator<Item = (&'a Node, &'a String)>,
+        modules: &BTreeMap<PathBuf, String>,
+        keys: &HashMap<String, String>,
+    ) {
+        let shared = store.results.read().unwrap();
+        let mut results = self.results.write().unwrap();
+        let root = self.root.join("projects").join(project_key);
+        for (node, key) in nodes {
+            if let Some(mut result) = shared.get(key).cloned() {
+                result.fnode = node.fnode.clone();
+                result.revision = node.revision();
+                result.dependency_errors = dependency_errors(
+                    node,
+                    &result.imports,
+                    modules,
+                    keys,
+                    &results,
+                    &root,
+                    project,
+                )
+                .unwrap_or_else(|e| vec![e.to_string()]);
+                result.certified = result.passed && result.dependency_errors.is_empty();
+                results.insert(node.fnode.clone(), result);
+            }
+        }
+    }
+    /// Refresh all matching statuses once per graph/evidence version, not per node view.
+    pub async fn sync_snapshot(&self, snapshot: &Snapshot) {
+        let Some(store) = self
+            .certificates(&snapshot.project, &snapshot.project_key, false)
+            .await
+        else {
+            return;
+        };
+        let generation = store.generation();
+        let mut synced = self.synced.lock().await;
+        if synced.0 == snapshot.version && synced.1 == generation {
+            return;
+        }
+        let mut nodes: Vec<_> = snapshot.nodes.values().collect();
+        nodes.sort_by_key(|n| snapshot.depths.get(&n.fnode).copied().unwrap_or(0));
+        self.restore_results(
+            &store,
+            &snapshot.project,
+            &snapshot.project_key,
+            nodes
+                .into_iter()
+                .map(|n| (n.as_ref(), &snapshot.lean_keys[&n.fnode])),
+            &snapshot.modules,
+            &snapshot.lean_keys,
+        );
+        *synced = (snapshot.version.clone(), generation);
+    }
     async fn cached_input(&self, input: &Input, build: bool) -> Option<CheckResult> {
+        if let Some(store) = self
+            .certificates(&input.project, &input.project_key, false)
+            .await
+        {
+            let keys = input
+                .chain
+                .iter()
+                .map(|(n, k)| (n.fnode.clone(), k.clone()))
+                .collect();
+            self.restore_results(
+                &store,
+                &input.project,
+                &input.project_key,
+                input.chain.iter().map(|(n, k)| (n.as_ref(), k)),
+                &input.modules,
+                &keys,
+            );
+        }
         let (target, key) = input.chain.last()?;
         let result = self
             .cached_or_load(target, key, &input.project_key, build)
             .await?;
-        if result.certified {
-            let results = self.results.read().ok()?;
-            if input.chain.iter().any(|(node, key)| {
-                !results
+        if !result.certified {
+            return None;
+        }
+        let results = self.results.read().ok()?;
+        input
+            .chain
+            .iter()
+            .all(|(node, key)| {
+                results
                     .get(&node.fnode)
                     .is_some_and(|r| r.certified && r.has_sorry.is_some() && &r.input_key == key)
-            }) {
-                return None;
-            }
-        }
-        Some(result)
+            })
+            .then_some(result)
     }
     pub async fn check(&self, input: Input, build: bool) -> Result<CheckResult> {
         let start = Instant::now();
@@ -730,6 +793,20 @@ impl LeanService {
         if let Some(result) = self.cached_input(&input, build).await {
             return Ok(result);
         }
+        // Exact input single-flight across branches; unrelated targets still run concurrently.
+        let store = self
+            .certificates(&input.project, &input.project_key, true)
+            .await;
+        let _flight = if let Some(store) = &store {
+            let key = digest(input.chain.last().unwrap().1.as_bytes());
+            let lock = cache::lock(store.root.join(format!("{key}.check.lock"))).await?;
+            store
+                .refresh(input.chain.iter().map(|(_, k)| k.clone()).collect())
+                .await?;
+            Some(lock)
+        } else {
+            None
+        };
         let target_id = target.fnode.clone();
         let mut manager = self.manager.lock().await;
         if let Some(result) = self.cached_input(&input, build).await {
@@ -750,7 +827,7 @@ impl LeanService {
             result.artifacts = Some(artifacts);
             result.built = true;
             result.cache_hit = false;
-            self.persist_result(&result).await?;
+            self.persist_result(&input, &result, &manager.root).await?;
         }
         result.fnode = target_id;
         result.elapsed_ms = start.elapsed().as_millis();
@@ -758,6 +835,7 @@ impl LeanService {
             .write()
             .map_err(|_| anyhow::anyhow!("Lean cache lock poisoned"))?
             .insert(result.fnode.clone(), result.clone());
+        self.synced.lock().await.1 = 0;
         Ok(result)
     }
     pub async fn shutdown(&self) {
@@ -1070,6 +1148,7 @@ mod tests {
         service.shutdown().await;
         drop(service);
         let reopened = LeanService::new(cache.path().to_path_buf()).unwrap();
+        assert!(reopened.cached_input(&input, false).await.is_some());
         assert_eq!(reopened.formal_status(&dependency, "dep-key"), "unverified");
         // The latest target certificate was deliberately invalidated above.
         // Its earlier successful persisted certificate is still keyed correctly.
@@ -1148,7 +1227,17 @@ mod tests {
         for node in [&leaf, &gap] {
             let mut result = service.results.read().unwrap()[&node.fnode].clone();
             result.has_sorry = None;
-            service.persist_result(&result).await.unwrap();
+            let shared = service
+                .certificates(&input.project, &input.project_key, false)
+                .await
+                .unwrap();
+            shared.results.write().unwrap().remove(&result.input_key);
+            std::fs::remove_file(
+                shared
+                    .root
+                    .join(format!("{}.json", digest(result.input_key.as_bytes()))),
+            )
+            .unwrap();
             service
                 .results
                 .write()
@@ -1183,7 +1272,7 @@ mod tests {
             Some(true)
         );
         assert_eq!(service.formal_status(&gap, &gap.fnode), "unverified");
-        assert!(service.check(input, false).await.unwrap().cache_hit);
+        assert!(service.check(input.clone(), false).await.unwrap().cache_hit);
         let root = service.manager.lock().await.root.clone();
         assert_eq!(
             artifact_has_sorry(&root.join(".lake/build/lib/lean"), &leaf.module).await,
@@ -1192,6 +1281,7 @@ mod tests {
         service.shutdown().await;
         drop(service);
         let reopened = LeanService::new(cache.path().to_path_buf()).unwrap();
+        assert!(reopened.cached_input(&input, false).await.is_some());
         assert_eq!(reopened.formal_status(&leaf, &leaf.fnode), "verified");
         assert_eq!(reopened.formal_status(&gap, &gap.fnode), "unverified");
     }

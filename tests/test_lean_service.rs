@@ -485,11 +485,40 @@ async fn branches_reuse_native_objects_after_the_producer_is_deleted() {
     };
     snapshot.recompute();
     let input = Input::capture(&snapshot, &node.fnode).unwrap();
-    assert!(a.check(input.clone(), true).await.unwrap().built);
+    let (first, simultaneous) =
+        tokio::join!(a.check(input.clone(), true), b.check(input.clone(), true));
+    let (first, simultaneous) = (first.unwrap(), simultaneous.unwrap());
+    assert!(first.built && simultaneous.built);
+    assert_ne!(
+        first.cache_hit, simultaneous.cache_hit,
+        "only one cold request should compile"
+    );
+    b.sync_snapshot(&snapshot).await;
+    assert_eq!(
+        b.formal_status(&node, &snapshot.lean_keys[&node.fnode]),
+        "verified"
+    );
+    let mut reclassified = Node::new("Reclassified import".into()).unwrap();
+    reclassified.module = "Lean".into();
+    snapshot.apply(
+        vec![reclassified.clone()],
+        "module ownership changed".into(),
+    );
+    b.sync_snapshot(&snapshot).await;
+    assert_eq!(
+        b.formal_status(&dep, &snapshot.lean_keys[&dep.fnode]),
+        "unverified",
+        "unchanged source keys cannot bypass changed module ownership"
+    );
+    snapshot.remove(&reclassified.fnode, "restore ownership".into());
+    b.sync_snapshot(&snapshot).await;
     assert!(marker.exists());
     std::fs::remove_file(&marker).unwrap();
     let result = b.check(input.clone(), true).await.unwrap();
-    assert!(result.built && result.certified, "{result:?}");
+    assert!(
+        result.built && result.certified && result.cache_hit,
+        "{result:?}"
+    );
     assert!(
         !marker.exists(),
         "a fork must reuse the compiled dependency"
@@ -514,4 +543,17 @@ async fn branches_reuse_native_objects_after_the_producer_is_deleted() {
     );
     assert!(draft.path().join(".lake/cache").is_symlink());
     b.shutdown().await;
+    drop(b);
+    drop(draft);
+    let c = LeanService::with_shared_cache(tmp.path().join("c"), shared).unwrap();
+    c.sync_snapshot(&snapshot).await;
+    assert_eq!(
+        c.formal_status(&node, &snapshot.lean_keys[&node.fnode]),
+        "verified"
+    );
+    assert!(c.check(input, true).await.unwrap().cache_hit);
+    assert!(
+        !tmp.path().join("c/projects").exists(),
+        "shared certificates need no workspace or compiler"
+    );
 }

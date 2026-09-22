@@ -34,6 +34,7 @@ impl Service {
         let lean =
             crate::lean::LeanService::with_shared_cache(db.cache_path()?, db.shared_cache_path()?)?;
         let snapshot = db.load().await?;
+        lean.sync_snapshot(&snapshot).await;
         Ok(Arc::new(Self {
             db,
             snapshot: Mutex::new(snapshot),
@@ -71,6 +72,7 @@ impl Service {
         if self.db.version().await? != snapshot.version {
             *snapshot = self.db.load().await?;
         }
+        self.lean.sync_snapshot(&snapshot).await;
         Ok(snapshot)
     }
     pub async fn save(
@@ -770,15 +772,6 @@ async fn resolve(
 async fn view(State(s): State<Arc<Service>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     let snapshot = s.read().await?;
     let n = snapshot.resolve(&id)?;
-    let _ = s
-        .lean
-        .cached_or_load(
-            n,
-            &snapshot.lean_keys[&n.fnode],
-            &snapshot.project_key,
-            false,
-        )
-        .await;
     Ok(Json(json!({"node":detail(&snapshot,n,&s.lean),
         "referrers":snapshot.referrers.get(&n.fnode).into_iter().flatten().map(|id|preview(&snapshot,&snapshot.nodes[id],&s.lean)).collect::<Vec<_>>(),
         "children":n.depens.iter().filter_map(|id|snapshot.nodes.get(id)).map(|n|preview(&snapshot,n,&s.lean)).collect::<Vec<_>>()})))
@@ -1320,7 +1313,7 @@ async fn editor_socket(
 }
 /// Validate with serde's iterative skip parser and rewrite individual string
 /// values, without constructing, serializing or dropping a deeply nested tree.
-fn rewrite_uris(text: &str, from: &str, to: &str) -> Result<String> {
+pub(crate) fn rewrite_uris(text: &str, from: &str, to: &str) -> Result<String> {
     let _: serde::de::IgnoredAny = serde_json::from_str(text)?;
     let bytes = text.as_bytes();
     let mut output = String::with_capacity(text.len());

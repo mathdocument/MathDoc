@@ -27,6 +27,7 @@ pub fn command(root: &Path, args: &[&str]) -> Command {
     let mut c = Command::new("lake");
     c.args(args)
         .current_dir(root)
+        .env_remove("ELAN_TOOLCHAIN")
         // Lake keys artifacts by compiler inputs, including transitive imports.
         // Every workspace links this to its database/project pool.
         .env("LAKE_ARTIFACT_CACHE", "true")
