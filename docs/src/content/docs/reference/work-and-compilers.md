@@ -14,6 +14,13 @@ existing Lean/Lake caches. A cold check starts a native Lean worker and prepares
 required imports. `--build` additionally requires the target's `.olean`; it does
 not force a rebuild when matching artifacts already exist.
 
+Branches of the same database and project configuration share native Lake
+objects and saved check facts. A new branch can reuse matching results without
+starting Lean. Imports and dependency certification are checked against its
+current graph. Different configurations and compiler identities are isolated.
+Deleting a branch leaves shared results available to other branches. See
+[Storage](../../concepts/workspaces/) for reclamation and disk accounting.
+
 `goals` queries native Lean proof goals at the requested position. Line and column
 are zero-based LSP positions; columns count UTF-16 code units and default to 0.
 Both commands accept `--revision` from `show` to reject a changed target. Lean

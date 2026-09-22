@@ -8,7 +8,7 @@ title: CLI commands
 
 | Scope | Commands |
 | --- | --- |
-| Project and service management | `status`, `init`, `remove`, `start`, `stop` |
+| Project and service management | `status`, `init`, `remove`, `start`, `stop`, `cache` |
 | Entire branch | `search`, `graph`, `export`, `import`, `history`, `branch`, `project` |
 | Single node | `new`, `del`, `dep`, `show`, `edit`, `rename`, `metric`, `lean` |
 
@@ -28,7 +28,7 @@ mdc status --meas
 
 There is no default project, `--url` option or `MDC_URL` setting. The entry server
 defaults to port 17843; clients discover it through its local lease. The root and
-`status/init/remove/start/stop` do not accept `-p/--proj`.
+`status/init/remove/start/stop/cache` do not accept `-p/--proj`.
 `mdc -m`, `mdc -m graph check` and `mdc -p myproject/main graph check` are invalid.
 
 Successful operations print JSON to stdout; lists such as search and history can
@@ -47,6 +47,24 @@ JSON result. No command performs a source-workspace refresh.
 | `mdc start [DATABASE/BRANCH] [--port PORT]` | Start/reuse the entry server; optionally start one branch. Return URL, entry port, process PID and log path. |
 | `mdc start --foreground [--port PORT]` | Run a supervised server in the current process and restore its previously started branches. |
 | `mdc stop [DATABASE/BRANCH]` | Unload one branch and stop its Lean workers, or stop the entire server and all branches when no branch is given. Retain graph data and caches. |
+| `mdc cache stats DATABASE` | Report local shared artifact, mapping and certificate counts and sizes; no database connection or compilation. |
+| `mdc cache gc DATABASE [--dry-run] [--older-than-days DAYS] [--max-bytes BYTES] [--certificates]` | Reclaim shared entries after all this database's branches are stopped. Defaults to a seven-day publication grace period. |
+
+Cache GC evicts the oldest eligible Lake mappings, then unreferenced objects.
+With `--max-bytes`, eviction stops when shared artifact logical bytes fit the
+budget; newer entries can keep `budget_met` false. Without a budget it removes
+all age-eligible mappings and unreferenced objects. `--older-than-days 0` permits
+immediate cleanup. Certificates are retained unless `--certificates` is supplied;
+that option removes age-eligible proof records independently of the artifact
+budget. Unknown or malformed native mappings abort the plan before deletion.
+GC is explicit, never part of a check or branch deletion.
+
+`stats` reports logical bytes and allocated file blocks, counting each inode
+once for allocated bytes within the reported set. Private workspaces and
+directory metadata are excluded. GC's `reclaimable_file_bytes` excludes objects
+with additional hardlinks: a private producer output may still retain those
+bytes after the pool entry is removed. Stopped branch workspaces are removed by
+`branch del`; this also releases their links. Empty lock files remain.
 
 An optional branch must already exist and be stopped; missing branches and
 duplicate branch starts fail. `mdc start` without a branch is safe to repeat.
@@ -139,9 +157,10 @@ Each loaded branch keeps its own graph, Lean environment and cache; `status` ide
 already be stopped; a running or starting service blocks deletion. TerminusDB
 protects `main`, so both CLI and browser reject its deletion before touching
 its caches, regardless of how many other branches exist. The command
-cleans that branch's Lean artifacts, certificates, editor workspaces, libraries
-and logs in the configured cache root. Only an empty service lock remains for
-coordination. Other branches and caches are unaffected. Immutable database
+cleans that branch's private build outputs, editor workspaces, libraries and
+logs in the configured cache root. Only an empty service lock remains for
+coordination. The database's shared objects and certificates survive; reclaim
+them explicitly with `cache gc`. Other branches are unaffected. Immutable database
 commits remain after their branch reference is removed.
 
 There is no CLI merge, rebase, or checkout command. These operations use

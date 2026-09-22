@@ -115,7 +115,7 @@ async fn mathlib_lake_and_mdc_incremental_builds() {
         eprintln!("Lake {}: {}", root.display(), args.join(" "));
         let output = tokio::time::timeout(
             std::time::Duration::from_secs(1800),
-            mathdoc::lean::command(root, args).output(),
+            mathdoc::lean::command(root, args).unwrap().output(),
         )
         .await
         .expect("native benchmark command timed out")

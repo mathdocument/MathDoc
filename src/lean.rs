@@ -2,6 +2,7 @@
 pub mod cache;
 mod certificates;
 pub(crate) mod editor;
+pub mod gc;
 mod transport;
 use crate::store::{digest, LeanProject, Node, Snapshot};
 use anyhow::{bail, Context, Result};
@@ -1337,6 +1338,14 @@ mod tests {
             marker.exists(),
             "changed source must miss the old artifact cache"
         );
+        let editor = Lsp::start(second.path()).await.unwrap();
+        drop(service);
+        assert!(
+            cache::lease(&cache.path().join(".shared"), true).is_err(),
+            "a native Lake/Lean server must protect the pool independently of its service"
+        );
+        editor.server.shutdown().await;
+        assert!(cache::lease(&cache.path().join(".shared"), true).is_ok());
     }
 
     #[tokio::test]

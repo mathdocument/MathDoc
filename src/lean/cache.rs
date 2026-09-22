@@ -11,10 +11,22 @@ use std::{
 pub struct Pool {
     pub root: PathBuf,
     // ponytail: GC requires stopped branches; use per-closure pins if live GC becomes necessary.
-    _lease: fs::File,
+    _lease: Lease,
 }
 
-pub fn lease(root: &Path, exclusive: bool) -> Result<fs::File> {
+pub struct Lease(Option<fs::File>);
+impl Drop for Lease {
+    fn drop(&mut self) {
+        // Release explicitly: another thread may have forked just before close.
+        if let Some(file) = &self.0 {
+            unsafe {
+                libc::flock(file.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+    }
+}
+
+pub fn lease(root: &Path, exclusive: bool) -> Result<Lease> {
     fs::create_dir_all(root)?;
     let file = fs::OpenOptions::new()
         .read(true)
@@ -28,9 +40,13 @@ pub fn lease(root: &Path, exclusive: bool) -> Result<fs::File> {
         libc::LOCK_SH
     };
     if unsafe { libc::flock(file.as_raw_fd(), mode | libc::LOCK_NB) } != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::WouldBlock {
+            return Err(error).context("lock Lean shared cache");
+        }
         bail!("Lean shared cache is in use; stop this database's branches before cleaning it");
     }
-    Ok(file)
+    Ok(Lease(Some(file)))
 }
 
 impl Pool {
@@ -79,6 +95,35 @@ impl Pool {
         tokio::fs::symlink(destination, local).await?;
         Ok(())
     }
+}
+
+/// A native child retains its own lease even if mdc crashes or cancels its task.
+/// Only clear CLOEXEC in the child, so unrelated concurrent spawns cannot inherit it.
+pub(super) fn inherit_lease(command: &mut tokio::process::Command, workspace: &Path) -> Result<()> {
+    let local = workspace.join(".lake/cache");
+    if !local.is_symlink() {
+        return Ok(());
+    }
+    let target = fs::canonicalize(local)?;
+    let ancestors: Vec<_> = target.ancestors().take(5).collect();
+    if ancestors.len() != 5
+        || target.file_name().is_none_or(|n| n != "lake")
+        || ancestors[3].file_name().is_none_or(|n| n != "v1")
+    {
+        return Ok(());
+    }
+    // This particular file description must stay locked until the final native
+    // child closes it, rather than explicitly unlocking when Command is dropped.
+    let lease = lease(ancestors[4], false)?.0.take().unwrap();
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(lease.as_raw_fd(), libc::F_SETFD, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
 }
 
 /// Cancellable, cross-process single-flight without blocking a Tokio worker.
@@ -147,15 +192,7 @@ impl Artifacts {
         let parts: Vec<String> = serde_json::from_value(data["o"].clone()).ok()?;
         let ilean = data["i"].as_str()?.to_owned();
         let mut files = vec![];
-        fn collect(value: &Value, paths: &mut Vec<String>) {
-            match value {
-                Value::String(s) => paths.push(s.clone()),
-                Value::Array(values) => values.iter().for_each(|v| collect(v, paths)),
-                Value::Object(values) => values.values().for_each(|v| collect(v, paths)),
-                _ => (),
-            }
-        }
-        collect(data, &mut files);
+        object_names(data, &mut files);
         if parts.is_empty() || files.iter().any(|s| !valid_object(s)) {
             return None;
         }
@@ -185,7 +222,15 @@ impl Artifacts {
             .collect()
     }
 }
-fn valid_object(name: &str) -> bool {
+pub(super) fn object_names(value: &Value, paths: &mut Vec<String>) {
+    match value {
+        Value::String(s) => paths.push(s.clone()),
+        Value::Array(values) => values.iter().for_each(|v| object_names(v, paths)),
+        Value::Object(values) => values.values().for_each(|v| object_names(v, paths)),
+        _ => (),
+    }
+}
+pub(super) fn valid_object(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('.')
         && name
@@ -224,5 +269,38 @@ mod tests {
             Artifacts::from_outputs(&serde_json::json!({"o":["../outside"],"i":"a.ilean"}))
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn native_child_keeps_gc_blocked_after_the_service_lease_is_dropped() {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("shared");
+        let pool = Pool::open(root.clone()).unwrap();
+        let workspace = tmp.path().join("workspace");
+        pool.attach(&workspace, "project").await.unwrap();
+        let mut command = tokio::process::Command::new("sh");
+        command
+            .args(["-c", "echo ready; read stop"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        inherit_lease(&mut command, &workspace).unwrap();
+        let mut child = command.spawn().unwrap();
+        drop(command);
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .await
+            .unwrap();
+        assert_eq!(line.trim(), "ready");
+        drop(pool);
+        assert!(
+            lease(&root, true).is_err(),
+            "the child, not mdc, must retain the lock"
+        );
+        drop(child.stdin.take());
+        child.wait().await.unwrap();
+        assert!(lease(&root, true).is_ok());
     }
 }

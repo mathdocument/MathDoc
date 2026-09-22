@@ -23,7 +23,7 @@ impl Drop for Process {
         }
     }
 }
-pub fn command(root: &Path, args: &[&str]) -> Command {
+pub fn command(root: &Path, args: &[&str]) -> Result<Command> {
     let mut c = Command::new("lake");
     c.args(args)
         .current_dir(root)
@@ -50,10 +50,11 @@ pub fn command(root: &Path, args: &[&str]) -> Command {
             c.env_remove(key);
         }
     }
-    c
+    super::cache::inherit_lease(&mut c, root)?;
+    Ok(c)
 }
 pub fn spawn(root: &Path, args: &[&str]) -> Result<Process> {
-    let child = command(root, args)
+    let child = command(root, args)?
         .spawn()
         .context("start Lake; install the pinned Lean toolchain first")?;
     let pid = child.id().context("compiler process has no PID")? as i32;

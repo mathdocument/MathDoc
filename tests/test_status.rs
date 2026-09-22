@@ -107,6 +107,9 @@ async fn remove_database_offline_guards_leases_and_cleans_all_branch_caches() {
         .cache_path()
         .unwrap();
     let database_cache = main_cache.parent().unwrap();
+    let shared_file = database_cache.join(".shared/v1/test/project/lake/artifacts/shared.olean");
+    std::fs::create_dir_all(shared_file.parent().unwrap()).unwrap();
+    std::fs::write(&shared_file, "shared").unwrap();
     let outside = root.join("outside");
     std::fs::create_dir(&outside).unwrap();
     std::fs::write(outside.join("keep"), "other project").unwrap();
@@ -135,11 +138,21 @@ async fn remove_database_offline_guards_leases_and_cleans_all_branch_caches() {
     assert!(fixture.db.version().await.is_ok());
     assert!(main_cache.join("projects/build/keep.olean").exists());
     drop(busy);
+    let shared_lease = mathdoc::lean::cache::Pool::open(database_cache.join(".shared")).unwrap();
+    reject(
+        root,
+        &["remove", &fixture.db.database],
+        "Lean shared cache is in use",
+    )
+    .await;
+    assert!(shared_file.exists() && fixture.db.version().await.is_ok());
+    drop(shared_lease);
     assert_eq!(
         run(root, &["remove", &fixture.db.database]).await,
         serde_json::json!({"database":fixture.db.database,"deleted":true})
     );
     assert!(fixture.db.version().await.is_err());
+    assert!(!shared_file.exists());
     assert_eq!(
         std::fs::read_to_string(outside.join("keep")).unwrap(),
         "other project"
@@ -906,6 +919,22 @@ async fn branch_deletion_requires_stopped_service_and_cleans_only_its_cache() {
         .unwrap()
         .with_cache_root(root.into());
     let copy_root = copied.cache_path().unwrap();
+    let shared_file = copied
+        .shared_cache_path()
+        .unwrap()
+        .join("v1/test/project/lake/artifacts/shared.olean");
+    std::fs::create_dir_all(shared_file.parent().unwrap()).unwrap();
+    std::fs::write(&shared_file, "shared object").unwrap();
+    assert_eq!(
+        run(root, &["cache", "stats", &fixture.db.database]).await["artifacts"]["files"],
+        1
+    );
+    reject(
+        root,
+        &["cache", "gc", &fixture.db.database, "--dry-run"],
+        "stop this database",
+    )
+    .await;
     let cache_file = copy_root.join("projects/toolchain/.lake/build/Lib.olean");
     std::fs::create_dir_all(cache_file.parent().unwrap()).unwrap();
     std::fs::write(&cache_file, "cached olean").unwrap();
@@ -942,6 +971,10 @@ async fn branch_deletion_requires_stopped_service_and_cleans_only_its_cache() {
         serde_json::json!({"project":copy,"deleted":true})
     );
     assert!(copied.version().await.is_err());
+    assert!(
+        shared_file.exists(),
+        "branch deletion must preserve shared native objects"
+    );
     assert!(!status(root).await.contains_key(&copy));
     let remaining: Vec<_> = std::fs::read_dir(&copy_root)
         .unwrap()

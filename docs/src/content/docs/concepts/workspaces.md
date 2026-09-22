@@ -23,8 +23,9 @@ budget. Each loaded branch owns its cache using an OS file lock.
 | --- | --- |
 | Nodes, source blocks, graph links, Lean project settings, history | TerminusDB storage; durable and independent of service processes. |
 | Database credentials and host settings | Private user configuration or environment; outside graph exports. |
-| Generated Lean sources, libraries, traces, certificates, branch record | Private branch cache, separated by endpoint/database/branch. |
+| Generated Lean sources, libraries, traces, branch record | Private branch cache, separated by endpoint/database/branch. |
 | Native Lake content objects and output mappings | `CACHE_ROOT/ENDPOINT_HASH/DATABASE/.shared/v1/PLATFORM/PROJECT_KEY/lake/`; shared within the database. |
+| Certified Lean results | The same shared project directory, under `certificates-v2/COMPILER_ID/`; reused only for matching inputs and current dependencies. |
 | Server record, background runtime log and foreground branch restore list | `CACHE_ROOT/ENDPOINT_HASH/.server/`; no durable graph data. Foreground logs use stdout/stderr. |
 | Unsaved browser drafts | Browser/editor session; save before closing or restarting. |
 
@@ -58,6 +59,17 @@ It remains a normal working branch for editing, checking and forking. To delete
 the entire project, `mdc remove DATABASE` stops all its branches and deletes the
 database, its history and local branch caches. Other projects and shared Elan
 toolchains are unaffected; empty cache lock files remain for coordination.
+
+Use `mdc cache stats DATABASE` to inspect the shared pool. `mdc cache gc DATABASE
+--dry-run` previews reclamation; omit `--dry-run` to execute it. Every branch in
+that database must be stopped first, including for a preview. Other databases
+can remain running. The default retains entries published in the last seven
+days; this is publication age, not last access. `--older-than-days 0` removes the
+grace period; `--max-bytes BYTES` limits eviction to the requested artifact
+budget. `--certificates` also removes old proof facts. Without it, artifact
+cleanup preserves certification, while a later build may need to recreate
+objects. Neither operation touches graph content or history. See the
+[CLI reference](../../reference/workspace-commands/) for accounting and limits.
 
 No project folder or source mirror is required. Generated Lean files are owned
 by the service: editing them does not edit nodes. Import/export are explicit

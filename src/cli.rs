@@ -40,6 +40,11 @@ enum Commands {
         #[arg(value_name = "DATABASE/BRANCH", value_parser = parse_project)]
         project: Option<String>,
     },
+    /// Inspect or reclaim a database's shared Lean cache.
+    Cache {
+        #[command(subcommand)]
+        command: Cache,
+    },
     /// Search branch nodes by title or UUID.
     Search {
         query: String,
@@ -332,9 +337,31 @@ fn stdin() -> Result<String> {
     Ok(s)
 }
 
+#[derive(Subcommand)]
+enum Cache {
+    /// Report shared objects, mappings and certificates without compiling.
+    Stats { database: String },
+    /// Reclaim old shared entries; all branches of this database must be stopped.
+    Gc {
+        database: String,
+        /// Preview deletions without removing files.
+        #[arg(long)]
+        dry_run: bool,
+        /// Minimum publication age; 0 allows immediate cleanup.
+        #[arg(long, value_name = "DAYS", default_value = "7")]
+        older_than_days: u64,
+        /// Target budget for shared artifact logical bytes.
+        #[arg(long, value_name = "BYTES")]
+        max_bytes: Option<u64>,
+        /// Also discard old proof certificates.
+        #[arg(long)]
+        certificates: bool,
+    },
+}
+
 fn command_group(name: &str) -> u8 {
     match name {
-        "status" | "init" | "remove" | "start" | "stop" => 0,
+        "status" | "init" | "remove" | "start" | "stop" | "cache" => 0,
         "new" | "del" | "show" | "edit" | "rename" | "dep" | "metric" | "lean" => 2,
         _ => 1,
     }
@@ -442,6 +469,34 @@ pub fn run() -> i32 {
 async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
     let _profile = crate::profile::scope("service.request");
     let local = match &cli.command {
+        Commands::Cache { command } => {
+            let database = match command {
+                Cache::Stats { database } | Cache::Gc { database, .. } => database,
+            };
+            crate::config::validate_name(database)?;
+            let branch =
+                crate::config::Settings::load()?.project_cache(&format!("{database}/main"))?;
+            let root = branch
+                .parent()
+                .context("database cache path")?
+                .join(".shared");
+            Some(match command {
+                Cache::Stats { .. } => crate::lean::gc::stats(&root)?,
+                Cache::Gc {
+                    dry_run,
+                    older_than_days,
+                    max_bytes,
+                    certificates,
+                    ..
+                } => crate::lean::gc::collect(
+                    &root,
+                    *older_than_days,
+                    *max_bytes,
+                    *certificates,
+                    *dry_run,
+                )?,
+            })
+        }
         Commands::Status => Some(crate::server::status().await?),
         Commands::Init { database } => {
             Database::from_env(database.clone(), "main".into())?
@@ -495,7 +550,8 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
         token: service.token,
     };
     let value = match cli.command {
-        Commands::Status
+        Commands::Cache { .. }
+        | Commands::Status
         | Commands::Init { .. }
         | Commands::Remove { .. }
         | Commands::Start { .. }
@@ -865,7 +921,7 @@ mod tests {
         assert_eq!(
             names,
             [
-                vec!["status", "init", "remove", "start", "stop"],
+                vec!["status", "init", "remove", "start", "stop", "cache"],
                 vec!["search", "graph", "export", "import", "history", "branch", "project"],
                 vec!["new", "del", "dep", "show", "edit", "rename", "metric", "lean"],
             ]
