@@ -3,6 +3,8 @@
 !Cargo.lock
 !src/
 !src/**
+!docker/
+!docker/runtime-entrypoint.sh
 !web/
 !web/**
 web/node_modules/
