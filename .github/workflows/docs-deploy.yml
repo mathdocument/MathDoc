@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "docs/**"
+      - "web/src/design.css"
       - ".github/workflows/docs-deploy.yml"
   workflow_dispatch:
 
@@ -30,13 +31,15 @@ jobs:
         uses: withastro/action@v6
         with:
           path: docs
-          node-version: 24
+          node-version: 26
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
+      # Publish the site without adding an environment deployment history entry.
+      deployment: false
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy to GitHub Pages

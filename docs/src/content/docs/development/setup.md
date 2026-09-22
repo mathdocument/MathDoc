@@ -9,6 +9,31 @@ installed binary. The build and CI use Node.js 26.
 
 ## Build and fast checks
 
+The shared local/CI entry point is `./scripts/check`. Install Node.js 26, stable
+Rust (including rustfmt and clippy), Elan, Docker Compose, and Python with
+`src/latex/requirements.txt` first. Set `MDC_LATEX_PYTHON` to your Python virtual
+environment's executable when using one.
+
+```sh
+./scripts/check fast    # frontend, docs, Rust and Python; no running database
+./scripts/check native  # fast checks plus native Lean, database and browser tests
+./scripts/check docker  # build the runtime and test a source-free deployment
+./scripts/check         # both CI suites; use before pushing
+```
+
+`native` installs the pinned Lean toolchain and Playwright Chromium if missing,
+then creates its own database with a random loopback port, password and volume.
+Fixtures run serially because lifecycle tests inspect the server-wide database
+registry; their explicit concurrent-request checks still run concurrently.
+It removes that database and volume on exit and does not reuse your development
+or server database. On minimal Linux systems, install Chromium's system libraries
+once with `npm exec --prefix web -- playwright install-deps chromium`.
+GitHub's Linux jobs call these same `native` and `docker` commands; macOS Rust
+tests additionally run on GitHub. Network outages and runner failures can still
+cause remote failures after a successful local run.
+
+For individual checks during development:
+
 ```sh
 npm --prefix web ci
 npm --prefix web run check
@@ -41,7 +66,7 @@ Playwright Chromium once with `npm exec --prefix web -- playwright install
 --no-shell chromium`.
 
 ```sh
-cargo test --locked --test test_database --test test_service --test test_lean_service --test test_latex_service --test test_status -- --ignored --nocapture
+cargo test --locked --lib --test test_database --test test_service --test test_lean_service --test test_latex_service --test test_status -- --ignored --nocapture --test-threads=1
 MDC_LATEX_PYTHON=/tmp/mdc-latex-venv/bin/python npm --prefix web run test:e2e
 ```
 

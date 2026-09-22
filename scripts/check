@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Run the same checks locally and in CI: check [all|fast|native|docker]."""
+import argparse
+import http.client
+import os
+from pathlib import Path
+import secrets
+import socket
+import subprocess
+import tempfile
+import time
+import urllib.request
+
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+def run(*command, env=None, capture=False):
+    print("+", " ".join(map(str, command)), flush=True)
+    return subprocess.run(command, cwd=REPO, env=env, check=True, text=True,
+                          stdout=subprocess.PIPE if capture else None).stdout
+
+
+def fast(python):
+    tracked = run("git", "ls-files", "--", "web/dist", "docs/dist", "target",
+                  "web/node_modules", "docs/node_modules", "dist", "config.toml",
+                  "secrets", capture=True)
+    if tracked.strip():
+        raise RuntimeError(f"Generated files or deployment state tracked in Git:\n{tracked}")
+    for project in ("web", "docs"):
+        run("npm", "--prefix", project, "ci")
+        run("npm", "--prefix", project, "run", "check")
+        if project == "web":
+            run("npm", "--prefix", project, "test")
+        run("npm", "--prefix", project, "run", "build")
+    run("cargo", "+stable", "fmt", "--check")
+    run("cargo", "+stable", "clippy", "--locked", "--all-targets", "--", "-D", "warnings")
+    run("cargo", "+stable", "test", "--locked")
+    run(python, "-B", "-m", "unittest", "discover", "-s", "src/latex", "-p", "test_*.py")
+
+
+def native(python):
+    # Setting Elan's default alone does not install Lean. Resolve it before any
+    # concurrent integration checks, just as on a newly provisioned workstation.
+    run("elan", "run", "--install", "leanprover/lean4:v4.33.1", "lean", "--version")
+    run("npm", "exec", "--prefix", "web", "--", "playwright", "install", "--no-shell", "chromium")
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    # Always use a disposable database, including when a developer has a live
+    # runtime, custom credentials or a configured native database on this host.
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("MDC_", "MATHDOC_", "COMPOSE_"))}
+    env.update(COMPOSE_PROJECT_NAME="mathdoc-check-" + secrets.token_hex(4),
+               MDC_TERMINUS_PORT=str(port), MDC_TERMINUS_URL=f"http://127.0.0.1:{port}",
+               MDC_TERMINUS_USER="admin",
+               MDC_TERMINUS_PASSWORD=secrets.token_hex(32), MDC_LATEX_PYTHON=python)
+    if "MDC_E2E_ARTIFACTS" in os.environ:
+        env["MDC_E2E_ARTIFACTS"] = os.environ["MDC_E2E_ARTIFACTS"]
+    compose = ("docker", "compose", "-f", str(REPO / "compose.yaml"))
+    with tempfile.TemporaryDirectory(prefix="mathdoc-check-") as temporary:
+        config = Path(temporary) / "config.toml"
+        config.write_text("")
+        env["MDC_CONFIG"] = str(config)
+        try:
+            run(*compose, "up", "-d", "--pull", "missing", env=env)
+            for _ in range(90):
+                try:
+                    with urllib.request.urlopen(env["MDC_TERMINUS_URL"] + "/api/ok", timeout=1):
+                        break
+                except (OSError, http.client.HTTPException):
+                    time.sleep(1)
+            else:
+                raise RuntimeError("Test TerminusDB did not become ready")
+            # Lifecycle fixtures enumerate the server-wide database registry.
+            # Run fixtures serially so a concurrent create/delete in another
+            # test cannot expose a half-initialized database. Tests still run
+            # their explicit parallel requests and shared-cache races.
+            run("cargo", "+stable", "test", "--locked", "--lib", "--test", "test_database",
+                "--test", "test_service", "--test", "test_lean_service", "--test", "test_status",
+                "--test", "test_latex_service", "--", "--ignored", "--nocapture",
+                "--test-threads=1", env=env)
+            run("cargo", "+stable", "build", "--locked", env=env)
+            run("npm", "--prefix", "web", "run", "test:e2e", env=env)
+        except BaseException:
+            subprocess.run([*compose, "logs", "--no-color", "--tail", "80"], cwd=REPO, env=env)
+            raise
+        finally:
+            run(*compose, "down", "--volumes", "--remove-orphans", env=env)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("suite", nargs="?", default="all", choices=("all", "fast", "native", "docker"))
+    args = parser.parse_args()
+    python = os.environ.get("MDC_LATEX_PYTHON", "python3")
+    if args.suite in ("all", "fast", "native"):
+        fast(python)
+    if args.suite in ("all", "native"):
+        native(python)
+    if args.suite in ("all", "docker"):
+        run("docker", "build", "-t", "mathdoc-runtime:local", ".")
+        run("python3", "tests/docker-smoke.py")
+    print(f"Checks passed: {args.suite}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

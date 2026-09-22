@@ -51,13 +51,13 @@ jobs:
         run: >-
           node web/perf/run.mjs
           --root perf-base/web
-          --output $RUNNER_TEMP/frontend-perf-base.json
+          --output "$RUNNER_TEMP/frontend-perf-base.json"
 
       - name: Compare current revision
         run: >-
           node perf/run.mjs
-          --output $RUNNER_TEMP/frontend-perf-current.json
-          --compare $RUNNER_TEMP/frontend-perf-base.json
+          --output "$RUNNER_TEMP/frontend-perf-current.json"
+          --compare "$RUNNER_TEMP/frontend-perf-base.json"
         working-directory: web
 
       - name: Upload reports

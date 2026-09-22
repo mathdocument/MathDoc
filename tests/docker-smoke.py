@@ -23,7 +23,7 @@ def main():
     repo = Path(__file__).resolve().parents[1]
     print("Checking the bundled toolchain offline with a fresh tools volume…", flush=True)
     subprocess.run([
-        "docker", "run", "--rm", "--network", "none", "--mount",
+        "docker", "run", "--rm", "--pull", "never", "--network", "none", "--mount",
         "type=volume,destination=/var/lib/mdc/tools", "--entrypoint", "sh", args.image,
         "-ec", "mathdoc-entrypoint --help >/dev/null; lean --version; lake --version; "
         "test -L \"$ELAN_HOME/toolchains/leanprover--lean4---v4.33.1\"",
@@ -89,6 +89,9 @@ def main():
         assert config["services"]["runtime"]["ports"][0]["host_ip"] == "127.0.0.1"
         assert config["networks"]["backend"]["internal"]
         assert config["services"]["database"]["networks"] == {"backend": None}
+        # A fresh CI runner has only the runtime we just built. Fetch the pinned
+        # database explicitly before testing source-free, offline-image startup.
+        run("pull", "--policy", "missing", "database", timeout=600)
         password_file = deployment / "secrets/database-password"
         saved_password = deployment / "secrets/database-password.saved"
         try:

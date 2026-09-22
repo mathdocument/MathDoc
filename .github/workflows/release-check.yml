@@ -10,6 +10,7 @@ permissions:
 jobs:
   release-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -21,92 +22,29 @@ jobs:
             web/package-lock.json
             docs/package-lock.json
 
-      - name: Install frontend dependencies
-        run: npm ci
-        working-directory: web
-
-      - name: Check frontend
-        run: npm run check
-        working-directory: web
-
-      - name: Test frontend
-        run: npm test
-        working-directory: web
-
-      - name: Build frontend
-        run: npm run build
-        working-directory: web
-
-      - name: Keep generated files out of Git
-        run: test -z "$(git ls-files -- web/dist docs/dist target web/node_modules docs/node_modules)"
-
-      - name: Install documentation dependencies
-        run: npm ci
-        working-directory: docs
-
-      - name: Check documentation
-        run: npm run check
-        working-directory: docs
-
-      - name: Build documentation
-        run: npm run build
-        working-directory: docs
-
       - name: Install stable Rust
         run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy --no-self-update
-
-      - name: Check Rust formatting and lints
-        run: |
-          cargo +stable fmt --check
-          cargo +stable clippy --locked --all-targets -- -D warnings
-
-      - name: Test Rust
-        run: cargo +stable test --locked
 
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
 
-      - name: Test LaTeX renderer
-        run: |
-          python -m pip install -r src/latex/requirements.txt
-          python -B -m unittest discover -s src/latex -p 'test_*.py'
+      - name: Install LaTeX dependencies
+        run: python -m pip install -r src/latex/requirements.txt
 
-      - name: Start local TerminusDB
-        env:
-          MDC_TERMINUS_PASSWORD: local-ci-mathdoc
-        run: docker compose up -d
-
-      - name: Wait for TerminusDB
+      - name: Install Elan
         run: |
-          for _ in $(seq 1 60); do
-            if curl --fail --silent http://127.0.0.1:6363/api/ok; then exit 0; fi
-            sleep 1
-          done
-          exit 1
-
-      - name: Install native Lean
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain leanprover/lean4:v4.33.1
+          curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
-      - name: Test database and native Lean integration
-        env:
-          MDC_TERMINUS_PASSWORD: local-ci-mathdoc
-          MDC_LATEX_PYTHON: python3
-        run: cargo test --locked --test test_database --test test_service --test test_lean_service --test test_status --test test_latex_service -- --ignored --nocapture
+      - name: Install Chromium system libraries
+        run: npx --yes "playwright@$(node -p 'require("./web/package-lock.json").packages["node_modules/playwright"].version')" install-deps chromium
 
-      - name: Install browser for integration tests
-        run: npx playwright install --with-deps --no-shell chromium
-        working-directory: web
-
-      - name: Test browser with real backend
+      - name: Run shared native checks
         env:
-          MDC_TERMINUS_PASSWORD: local-ci-mathdoc
           MDC_LATEX_PYTHON: python3
           MDC_E2E_ARTIFACTS: ${{ runner.temp }}/mdc-e2e-artifacts
-        run: npm run test:e2e
-        working-directory: web
+        run: ./scripts/check native
 
       - name: Upload browser diagnostics
         if: failure()
@@ -139,7 +77,5 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - name: Build Linux server runtime
-        run: docker build -t mathdoc-runtime:local .
-      - name: Test isolated Docker deployment
-        run: python3 tests/docker-smoke.py
+      - name: Run shared container checks
+        run: ./scripts/check docker

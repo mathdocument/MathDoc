@@ -46,11 +46,8 @@ jobs:
               print(f"image={image}:{tag}", file=output)
           PY
 
-      - name: Build Linux AMD64 runtime
-        run: docker build -t mathdoc-runtime:local .
-
-      - name: Verify source-free deployment before publishing
-        run: python3 tests/docker-smoke.py
+      - name: Build and verify Linux AMD64 deployment
+        run: ./scripts/check docker
 
       - name: Publish the tested image
         id: publish
