@@ -9,17 +9,11 @@ export class WorkspaceSession {
   stale = $state(false);
   private request = 0;
 
-  get issueCount(): number {
-    const report = this.report;
-    return report ? report.missing.length + report.invalid.length + report.cycles.length : 0;
-  }
-
   get title(): string {
     if (this.error) return this.error;
-    if (this.stale) return "Graph counts updated locally; refresh to recheck issues";
+    if (this.stale) return "Graph counts updated locally; refresh to recheck";
     if (!this.report) return "Checking graph";
-    return this.issueCount === 0 ? "Graph check: no issues"
-      : `Graph check: ${this.issueCount} issue${this.issueCount === 1 ? "" : "s"}`;
+    return "Graph counts";
   }
 
   cancel(): void {

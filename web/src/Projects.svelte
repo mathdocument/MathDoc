@@ -96,6 +96,7 @@
 <div class="directory">
   <header class="app-header">
     <a class="app-brand" href="/" aria-label="MathDoc projects"><img src="/mdc-logo.svg" alt="" /><strong>MathDoc</strong></a>
+    <button class="header-refresh" class:spinning={refreshing} onclick={() => void refresh()} disabled={refreshing} title="Refresh projects" aria-label="Refresh projects"><RefreshCw size={16} strokeWidth={1.8} /></button>
     <button class="header-theme" onclick={toggleTheme} title="Toggle theme" aria-label="Toggle theme">
       {#if theme === "dark"}<Sun size={16} strokeWidth={1.8} />{:else}<Moon size={16} strokeWidth={1.8} />{/if}
     </button>
@@ -119,7 +120,6 @@
           <button aria-pressed={filter === "running"} onclick={() => filter = "running"}>Running</button>
           <button aria-pressed={filter === "stopped"} onclick={() => filter = "stopped"}>Stopped</button>
         </div>
-        <button class="icon-button" class:refreshing onclick={() => void refresh()} disabled={refreshing} title="Refresh projects" aria-label="Refresh projects"><RefreshCw size={16} /></button>
       </div>
     </div>
   </div>
@@ -183,6 +183,10 @@
 
 <style>
   .directory { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+  .header-refresh { display: grid; place-items: center; flex: 0 0 32px; width: 32px; height: 32px; padding: 0; margin-left: auto; color: var(--mdc-dim); background: transparent; border: 1px solid transparent; border-radius: var(--mdc-radius-sm); }
+  .header-refresh:hover:not(:disabled) { color: var(--mdc-fg); background: var(--mdc-card-hover); }
+  .header-refresh.spinning :global(svg) { animation: spin 1s linear infinite; }
+  .app-header :global(.header-theme) { margin-left: 0; }
   .page-head { flex: none; border-bottom: 1px solid var(--mdc-border); background: color-mix(in srgb, var(--mdc-panel) 82%, transparent); backdrop-filter: blur(12px) saturate(160%); }
   .head-content { max-width: 1144px; margin: 0 auto; padding: 30px 32px 22px; }
   main { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }

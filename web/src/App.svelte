@@ -665,7 +665,6 @@
       class="graph-stats"
       class:checking={workspaceSession.loading}
       class:stale={workspaceSession.stale}
-      class:issues={workspaceSession.issueCount > 0}
       class:error={workspaceSession.error !== null}
       title={workspaceSession.title}
       aria-live="polite"
@@ -961,10 +960,6 @@
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--mdc-accent-down) 16%, transparent);
   }
   .graph-stats.checking .graph-stats-dot { animation: mdc-pulse 1s ease-in-out infinite; }
-  .graph-stats.issues .graph-stats-dot {
-    background: var(--mdc-warning);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--mdc-warning) 16%, transparent);
-  }
   .graph-stats.stale .graph-stats-dot {
     background: var(--mdc-muted);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--mdc-muted) 16%, transparent);
