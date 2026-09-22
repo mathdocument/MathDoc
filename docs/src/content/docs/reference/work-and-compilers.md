@@ -28,7 +28,8 @@ inputs are checked again after compilation so a changed dependency cannot be
 certified using an old result.
 
 Results distinguish `passed` (no Lean errors), `certified` (passed plus exact
-managed imports and certified dependencies), and `built` (target artifacts ready).
+managed imports and certified dependencies), and `built` (target and managed
+import artifacts ready).
 `cache_hit` indicates a reused result. A check exits with code 1 when uncertified,
 while retaining its JSON result. Lean's `sorry` warnings remain warnings.
 `has_sorry` records native sorry evidence (`null` when unavailable). A certified

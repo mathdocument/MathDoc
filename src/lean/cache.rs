@@ -75,25 +75,29 @@ impl Pool {
         let destination = tokio::fs::canonicalize(destination).await?;
         let local = workspace.join(".lake/cache");
         tokio::fs::create_dir_all(local.parent().unwrap()).await?;
-        let _lock = lock(local.with_extension("lock")).await?;
-        if local.is_symlink() {
-            if tokio::fs::canonicalize(&local).await? == destination {
-                return Ok(());
+        let lock = lock(local.with_extension("lock")).await?;
+        let lease = lease(&self.root, false)?;
+        // Blocking filesystem work outlives a cancelled await. Its guards must
+        // move with it, including the final replacement of the legacy directory.
+        tokio::task::spawn_blocking(move || {
+            let (_lock, _lease) = (lock, lease);
+            if local.is_symlink() {
+                if fs::canonicalize(&local)? == destination {
+                    return Ok(());
+                }
+                bail!(
+                    "workspace points to a different Lean cache: {}",
+                    local.display()
+                );
             }
-            bail!(
-                "workspace points to a different Lean cache: {}",
-                local.display()
-            );
-        }
-        // Upgrade a stopped branch's old native cache once, without copying object bytes.
-        if local.is_dir() {
-            let from = local.clone();
-            let to = destination.clone();
-            tokio::task::spawn_blocking(move || import_cache(&from, &to)).await??;
-            tokio::fs::remove_dir_all(&local).await?;
-        }
-        tokio::fs::symlink(destination, local).await?;
-        Ok(())
+            if local.is_dir() {
+                import_cache(&local, &destination)?;
+                fs::remove_dir_all(&local)?;
+            }
+            std::os::unix::fs::symlink(destination, local)?;
+            Ok(())
+        })
+        .await?
     }
 }
 

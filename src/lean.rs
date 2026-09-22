@@ -778,13 +778,17 @@ impl LeanService {
             return None;
         }
         let results = self.results.read().ok()?;
+        let artifacts = self.pool.project(&input.project_key).join("lake");
         input
             .chain
             .iter()
             .all(|(node, key)| {
-                results
-                    .get(&node.fnode)
-                    .is_some_and(|r| r.certified && r.has_sorry.is_some() && &r.input_key == key)
+                results.get(&node.fnode).is_some_and(|r| {
+                    r.certified
+                        && r.has_sorry.is_some()
+                        && &r.input_key == key
+                        && (!build || r.artifacts.as_ref().is_some_and(|a| a.complete(&artifacts)))
+                })
             })
             .then_some(result)
     }
@@ -822,13 +826,33 @@ impl LeanService {
         let mut result = result?;
         if build && result.certified {
             build_module(&manager.root, &target.module).await?;
-            let artifacts = cache::Artifacts::from_trace(&manager.root, &target.module)
-                .filter(|a| a.complete(&manager.root.join(".lake/cache")))
-                .context("Lake succeeded without complete native module artifacts")?;
-            result.artifacts = Some(artifacts);
-            result.built = true;
-            result.cache_hit = false;
-            self.persist_result(&input, &result, &manager.root).await?;
+            for (node, key) in &input.chain {
+                let mut checked = if node.fnode == target_id {
+                    result.clone()
+                } else {
+                    self.results
+                        .read()
+                        .unwrap()
+                        .get(&node.fnode)
+                        .filter(|r| &r.input_key == key)
+                        .cloned()
+                        .context("dependency evidence changed during build")?
+                };
+                let artifacts = cache::Artifacts::from_trace(&manager.root, &node.module)
+                    .filter(|a| a.complete(&manager.root.join(".lake/cache")))
+                    .context("Lake succeeded without complete native module artifacts")?;
+                checked.artifacts = Some(artifacts);
+                checked.built = true;
+                checked.cache_hit = false;
+                self.persist_result(&input, &checked, &manager.root).await?;
+                self.results
+                    .write()
+                    .unwrap()
+                    .insert(node.fnode.clone(), checked.clone());
+                if node.fnode == target_id {
+                    result = checked;
+                }
+            }
         }
         result.fnode = target_id;
         result.elapsed_ms = start.elapsed().as_millis();

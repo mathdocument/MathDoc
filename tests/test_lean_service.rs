@@ -523,7 +523,13 @@ async fn branches_reuse_native_objects_after_the_producer_is_deleted() {
         !marker.exists(),
         "a fork must reuse the compiled dependency"
     );
-    let workspace = tmp.path().join("b/projects").join(&snapshot.project_key);
+    // Either branch can win the race. Only the consumer promises no local outputs.
+    let consumer = if first.cache_hit { "a" } else { "b" };
+    let workspace = tmp
+        .path()
+        .join(consumer)
+        .join("projects")
+        .join(&snapshot.project_key);
     assert!(!workspace
         .join(".lake/build/lib/lean")
         .join(mathdoc::store::module_file(&dep.module, "olean").unwrap())
@@ -551,9 +557,36 @@ async fn branches_reuse_native_objects_after_the_producer_is_deleted() {
         c.formal_status(&node, &snapshot.lean_keys[&node.fnode]),
         "verified"
     );
-    assert!(c.check(input, true).await.unwrap().cache_hit);
+    assert!(c.check(input.clone(), true).await.unwrap().cache_hit);
     assert!(
         !tmp.path().join("c/projects").exists(),
         "shared certificates need no workspace or compiler"
     );
+    let dep_result = c
+        .check(Input::capture(&snapshot, &dep.fnode).unwrap(), true)
+        .await
+        .unwrap();
+    let object = tmp
+        .path()
+        .join(".shared/v1")
+        .join(format!(
+            "{}-{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        ))
+        .join(&snapshot.project_key)
+        .join("lake/artifacts")
+        .join(&dep_result.artifacts.unwrap().parts[0]);
+    std::fs::remove_file(object).unwrap();
+    assert!(
+        c.check(input.clone(), false).await.unwrap().cache_hit,
+        "proof facts survive artifact cleanup"
+    );
+    let rebuilt = c.check(input.clone(), true).await.unwrap();
+    assert!(
+        rebuilt.built && !rebuilt.cache_hit,
+        "build must check the whole import closure"
+    );
+    assert!(c.check(input, true).await.unwrap().cache_hit);
+    c.shutdown().await;
 }

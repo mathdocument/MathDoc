@@ -127,8 +127,13 @@ impl Certificates {
             }
         }
         let bytes = serde_json::to_vec(&result)?;
+        let lease = super::cache::lease(
+            root.ancestors().nth(5).context("certificate pool path")?,
+            false,
+        )?;
         tokio::task::spawn_blocking(move || -> Result<()> {
             use std::io::Write;
+            let (_publication, _lease) = (_lock, lease);
             let mut temp = tempfile::NamedTempFile::new_in(&root)?;
             temp.write_all(&bytes)?;
             temp.persist(root.join(format!("{key}.json")))
