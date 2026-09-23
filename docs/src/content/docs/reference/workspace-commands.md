@@ -57,14 +57,17 @@ all age-eligible mappings and unreferenced objects. `--older-than-days 0` permit
 immediate cleanup. Certificates are retained unless `--certificates` is supplied;
 that option removes age-eligible proof records independently of the artifact
 budget. Unknown or malformed native mappings abort the plan before deletion.
-GC is explicit, never part of a check or branch deletion.
+GC is explicit, never part of a check or branch deletion. All reported sizes use
+readable binary units (B/KiB/MiB/GiB), including `max_size`, `artifact_size_before`,
+`artifact_size_after` and `reclaimable_file_size`; `max_size` is null when no budget
+is supplied. The `--max-bytes` input remains an exact byte count.
 
 `stats` reports logical bytes and allocated file blocks, counting each inode
 once for allocated bytes within the reported set. Private workspaces and
 directory metadata are excluded. In particular, older branch-local Lake caches
 are not counted until a Lean operation attaches them to the shared pool; a zero
 shared total does not mean that all branch-local caches are empty. `stop` retains
-caches and never resets these statistics. GC's `reclaimable_file_bytes` excludes objects
+caches and never resets these statistics. GC's `reclaimable_file_size` excludes objects
 with additional hardlinks: a private producer output may still retain those
 bytes after the pool entry is removed. Stopped branch workspaces are removed by
 `branch del`; this also releases their links. Empty lock files remain.

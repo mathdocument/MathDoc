@@ -188,9 +188,9 @@ pub fn collect(
         .filter(|f| f.meta.nlink() == 1)
         .map(|f| f.meta.blocks() * 512)
         .sum();
-    let result = json!({"path":root,"dry_run":dry_run,"older_than_days":days,"max_bytes":max_bytes,
-        "selected":totals(selected.iter().copied()),"reclaimable_file_bytes":reclaimable,
-        "artifact_bytes_before":before,"artifact_bytes_after":remaining,
+    let result = json!({"path":root,"dry_run":dry_run,"older_than_days":days,"max_size":max_bytes.map(size),
+        "selected":totals(selected.iter().copied()),"reclaimable_file_size":size(reclaimable),
+        "artifact_size_before":size(before),"artifact_size_after":size(remaining),
         "budget_met":max_bytes.is_none_or(|limit| remaining <= limit)});
     if !dry_run {
         // Mappings/certificates disappear before their objects. Interruption can
@@ -245,7 +245,13 @@ mod tests {
         assert_eq!(size(5 * 1024 * 1024 * 1024), "5.00 GiB");
         drop(pool);
         let preview = collect(&root, 0, Some(4096), false, true).unwrap();
-        assert_eq!(preview["artifact_bytes_after"], 4096);
+        assert_eq!(preview["max_size"], "4.00 KiB");
+        assert_eq!(preview["artifact_size_before"], "12.00 KiB");
+        assert_eq!(preview["artifact_size_after"], "4.00 KiB");
+        assert_eq!(
+            preview["reclaimable_file_size"],
+            preview["selected"]["allocated_size"]
+        );
         assert!(a.exists() && b.exists());
         let bad = lake.join("outputs/test/corrupt.json");
         fs::write(&bad, b"{").unwrap();
@@ -253,7 +259,7 @@ mod tests {
         assert!(a.exists() && lake.join("artifacts/a.olean").exists());
         fs::remove_file(bad).unwrap();
         let result = collect(&root, 0, Some(4096), false, false).unwrap();
-        assert_eq!(result["artifact_bytes_after"], 4096);
+        assert_eq!(result["artifact_size_after"], "4.00 KiB");
         assert!(
             b.exists() && lake.join("artifacts/b.olean").exists(),
             "kept mapping pins the shared output"
