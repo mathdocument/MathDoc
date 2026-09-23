@@ -14,7 +14,7 @@ function node(revision: string): NodeDetail {
     revision,
     depens: [revision],
     blocks: [{ srctype: "text", content: revision, metadata: {} }],
-    formalization: { lean: "no_code", rocq: "no_code" },
+    formalization: { lean: "unverified", rocq: "unverified" },
   };
 }
 

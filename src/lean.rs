@@ -217,6 +217,10 @@ pub struct CheckResult {
     /// Native sorry evidence for this module; absent in older certificates.
     #[serde(default)]
     pub has_sorry: Option<bool>,
+    /// Derived from current dependency certificates in topological order.
+    /// Recompute on restore instead of trusting a saved graph-dependent status.
+    #[serde(skip)]
+    dependencies_have_sorry: Option<bool>,
     pub built: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifacts: Option<cache::Artifacts>,
@@ -436,6 +440,21 @@ fn dependency_errors(
     }
     Ok(errors)
 }
+fn dependencies_have_sorry(
+    node: &Node,
+    keys: &HashMap<String, String>,
+    results: &HashMap<String, CheckResult>,
+) -> Option<bool> {
+    let mut has_sorry = false;
+    for dep in &node.depens {
+        let result = results
+            .get(dep)
+            .filter(|r| r.certified && keys.get(dep) == Some(&r.input_key))?;
+        has_sorry |= result.has_sorry? | result.dependencies_have_sorry?;
+    }
+    Some(has_sorry)
+}
+
 pub struct LeanService {
     root: PathBuf,
     pool: cache::Pool,
@@ -562,6 +581,13 @@ impl LeanService {
         let mut final_result = None;
         for (node, key) in &input.chain {
             let Some((has_sorry, diagnostics, imports)) = observed.remove(&node.fnode) else {
+                // A cached parent may have been restored before incomplete
+                // transitive evidence was recovered in this same check.
+                let mut results = self.results.write().unwrap();
+                let has_sorry = dependencies_have_sorry(node, &keys, &results);
+                if let Some(result) = results.get_mut(&node.fnode).filter(|r| &r.input_key == key) {
+                    result.dependencies_have_sorry = has_sorry;
+                }
                 continue;
             };
             let passed = !diagnostics.iter().any(|d| d["severity"] == 1);
@@ -585,6 +611,11 @@ impl LeanService {
                 passed,
                 certified: passed && errors.is_empty(),
                 has_sorry,
+                dependencies_have_sorry: dependencies_have_sorry(
+                    node,
+                    &keys,
+                    &self.results.read().unwrap(),
+                ),
                 built: artifacts.is_some(),
                 artifacts,
                 cache_hit: false,
@@ -635,18 +666,18 @@ impl LeanService {
             .source("lean")
             .is_none_or(|source| source.trim().is_empty())
         {
-            return "no_code";
+            return "unverified";
         }
-        if self
-            .results
-            .read()
-            .unwrap()
+        let results = self.results.read().unwrap();
+        match results
             .get(&node.fnode)
-            .is_some_and(|r| r.input_key == key && r.certified && r.has_sorry == Some(false))
+            .filter(|r| r.input_key == key && r.certified)
+            .map(|r| (r.has_sorry, r.dependencies_have_sorry))
         {
-            "verified"
-        } else {
-            "unverified"
+            Some((Some(true), _)) => "sorry",
+            Some((Some(false), Some(true))) => "conditional",
+            Some((Some(false), Some(false))) => "verified",
+            _ => "unverified",
         }
     }
     pub fn cached(&self, id: &str, key: &str, revision: &str, build: bool) -> Option<CheckResult> {
@@ -746,6 +777,7 @@ impl LeanService {
                 )
                 .unwrap_or_else(|e| vec![e.to_string()]);
                 result.certified = result.passed && result.dependency_errors.is_empty();
+                result.dependencies_have_sorry = dependencies_have_sorry(node, keys, &results);
                 results.insert(node.fnode.clone(), result);
             }
         }
@@ -1154,9 +1186,9 @@ mod tests {
             .unwrap();
         assert!(result.certified, "{result:?}");
         assert_eq!(result.has_sorry, Some(false));
-        assert_eq!(service.formal_status(&target, "target-key"), "verified");
+        assert_eq!(service.formal_status(&target, "target-key"), "conditional");
         assert_eq!(service.formal_status(&target, "stale-key"), "unverified");
-        assert_eq!(service.formal_status(&dependency, "dep-key"), "unverified");
+        assert_eq!(service.formal_status(&dependency, "dep-key"), "sorry");
         assert_eq!(
             service
                 .cached(&dependency.fnode, "dep-key", &dependency.revision(), false)
@@ -1165,7 +1197,7 @@ mod tests {
             Some(true)
         );
         let empty = Node::new("No Lean".into()).unwrap();
-        assert_eq!(service.formal_status(&empty, "unused"), "no_code");
+        assert_eq!(service.formal_status(&empty, "unused"), "unverified");
         assert!(
             service
                 .cached(&dependency.fnode, "dep-key", &dependency.revision(), false)
@@ -1204,10 +1236,10 @@ mod tests {
         drop(service);
         let reopened = LeanService::new(cache.path().to_path_buf()).unwrap();
         assert!(reopened.cached_input(&input, false).await.is_some());
-        assert_eq!(reopened.formal_status(&dependency, "dep-key"), "unverified");
+        assert_eq!(reopened.formal_status(&dependency, "dep-key"), "sorry");
         // The latest target certificate was deliberately invalidated above.
         // Its earlier successful persisted certificate is still keyed correctly.
-        assert_eq!(reopened.formal_status(&target, "target-key"), "verified");
+        assert_eq!(reopened.formal_status(&target, "target-key"), "conditional");
     }
 
     #[tokio::test]
@@ -1300,6 +1332,7 @@ mod tests {
                 .insert(node.fnode.clone(), result);
         }
         assert!(service.cached_input(&input, false).await.is_none());
+        assert_eq!(service.formal_status(&middle, &middle.fnode), "unverified");
         editor.server.shutdown().await;
         drop(draft);
         std::fs::remove_file(&marker).unwrap();
@@ -1314,7 +1347,11 @@ mod tests {
         for node in [&leaf, &middle, &target] {
             assert_eq!(
                 service.formal_status(node, &node.fnode),
-                "verified",
+                if node.fnode == leaf.fnode {
+                    "verified"
+                } else {
+                    "conditional"
+                },
                 "{}",
                 node.title
             );
@@ -1326,7 +1363,7 @@ mod tests {
                 .has_sorry,
             Some(true)
         );
-        assert_eq!(service.formal_status(&gap, &gap.fnode), "unverified");
+        assert_eq!(service.formal_status(&gap, &gap.fnode), "sorry");
         assert!(service.check(input.clone(), false).await.unwrap().cache_hit);
         let root = service.manager.lock().await.root.clone();
         assert_eq!(
@@ -1338,7 +1375,11 @@ mod tests {
         let reopened = LeanService::new(cache.path().to_path_buf()).unwrap();
         assert!(reopened.cached_input(&input, false).await.is_some());
         assert_eq!(reopened.formal_status(&leaf, &leaf.fnode), "verified");
-        assert_eq!(reopened.formal_status(&gap, &gap.fnode), "unverified");
+        assert_eq!(reopened.formal_status(&gap, &gap.fnode), "sorry");
+        assert_eq!(
+            reopened.formal_status(&target, &target.fnode),
+            "conditional"
+        );
     }
 
     #[tokio::test]

@@ -136,7 +136,7 @@ fn summary(snapshot: &Snapshot, node: &Node) -> Value {
 fn preview(snapshot: &Snapshot, node: &Node, lean: &crate::lean::LeanService) -> Value {
     let mut value = summary(snapshot, node);
     value["formalization"] = json!({"lean":lean.formal_status(node, &snapshot.lean_keys[&node.fnode]),
-        "rocq":if node.source("rocq").is_some(){"unverified"}else{"no_code"}});
+        "rocq":"unverified"});
     value
 }
 pub fn detail(snapshot: &Snapshot, node: &Node, lean: &crate::lean::LeanService) -> Value {

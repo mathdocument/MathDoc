@@ -258,7 +258,7 @@ async fn api_mutations_use_database_revisions_without_workspace_files() {
     assert_eq!(child_view["referrers"][0]["fnode"], id);
     assert_eq!(
         child_view["referrers"][0]["formalization"],
-        json!({"lean":"unverified","rocq":"no_code"})
+        json!({"lean":"unverified","rocq":"unverified"})
     );
     let before = db.version().await.unwrap();
     assert_eq!(

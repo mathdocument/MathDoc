@@ -3,7 +3,7 @@
   let { language, status, compact = false }: {
     language: "Lean" | "Rocq"; status: FormalCodeStatus; compact?: boolean;
   } = $props();
-  const labels = { no_code: "No code", unverified: "Unverified", verified: "Verified" };
+  const labels = { unverified: "Unverified", sorry: "Sorry", conditional: "Conditional", verified: "Verified" };
   const label = $derived(`${language}: ${labels[status]}`);
 </script>
 
@@ -26,11 +26,15 @@
     flex: 0 0 auto;
     border-radius: 50%;
   }
-  .formal-status[data-status="no_code"] .status-light {
+  .formal-status[data-status="unverified"] .status-light {
     background: var(--mdc-muted);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--mdc-muted) 18%, transparent);
   }
-  .formal-status[data-status="unverified"] .status-light {
+  .formal-status[data-status="sorry"] .status-light {
+    background: var(--mdc-error);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--mdc-error) 20%, transparent);
+  }
+  .formal-status[data-status="conditional"] .status-light {
     background: var(--mdc-warning);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--mdc-warning) 20%, transparent);
   }

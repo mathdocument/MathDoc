@@ -30,14 +30,20 @@ artifacts and, on `mdc lean check Example -p myproject/main --build`, the target
 `.olean`. Matching artifacts are reused rather than rebuilt unconditionally.
 
 The Lean block's **Lean import** disclosure shows the module name to use from
-other nodes. The graph and the node's Lean status use the same colors: gray for
-no Lean source (including an empty block), yellow for unchecked/failed checks or
-native `sorry` warnings, and green for a current successful check without those
-warnings. Rocq does not affect graph colors. Colors describe the saved node's
-own Lean result, not a transitive axiom audit; a complete proof may still depend
-on an admitted result. Comments and strings containing `sorry` do not count.
+other nodes. The graph and the node's Lean status use the same colors:
 
-Older certificates without sorry evidence remain yellow until checked again.
+| Label | Color | Meaning |
+| --- | --- | --- |
+| Unverified | Gray | No Lean source (including an empty block), or unchecked, failed, stale or incomplete compiler evidence. |
+| Sorry | Red | A current certified module has native `sorry` evidence. |
+| Conditional | Yellow | A current certified module has no own `sorry`, but a direct or transitive managed dependency does. |
+| Verified | Green | Current complete evidence reports no `sorry` in the module or its managed dependency closure. |
+
+Rocq does not affect graph colors. Comments and strings containing `sorry` do not
+count. Changing a dependency invalidates downstream statuses until checked again.
+This tracks managed graph dependencies, not arbitrary axioms in external libraries.
+
+Older certificates without sorry evidence remain Unverified until checked again.
 When Lake restores artifacts without diagnostic logs, MathDoc inspects their
 compiled proof bodies once with the pinned Lean compiler. Large closures use up
 to four inspector processes, capped across the service; small closures use one.

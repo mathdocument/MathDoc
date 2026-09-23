@@ -17,9 +17,11 @@ Narrow screens retain the stacked layout. Switching views preserves the active
 Lean session and unsaved edits.
 
 **Lean import** is inside the Lean source block and shows the module name other
-nodes should import. Graph nodes share the Lean status colors: gray for no Lean
-code, yellow for unchecked/failed checks or reported sorry, and green for a
-successful check without reported sorry. Rocq does not affect graph colors. Knowledge view cards show both Lean and Rocq
+nodes should import. Graph nodes share the Lean status colors: gray for Unverified
+(no Lean code, or unchecked, failed or stale evidence), red for Sorry,
+yellow for Conditional (a direct or transitive managed dependency uses sorry), and
+green for Verified (complete sorry-free evidence across the managed dependency
+closure). Rocq does not affect graph colors. Knowledge view cards show Lean and Rocq
 status lights after the node ID and depth, refreshed after saved edits and Lean
 certification. The bottom bar shows the node ID, status dot and title; long titles
 use an ellipsis and show their full text on hover.

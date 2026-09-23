@@ -33,9 +33,13 @@ import artifacts ready).
 `cache_hit` indicates a reused result. A check exits with code 1 when uncertified,
 while retaining its JSON result. Lean's `sorry` warnings remain warnings.
 `has_sorry` records native sorry evidence (`null` when unavailable). A certified
-result with `has_sorry: true` remains usable as a dependency, but displays yellow;
-green additionally requires `has_sorry: false`. This is local to the checked
-module, not a sorry-free claim about its entire dependency tree.
+result with `has_sorry: true` remains usable as a dependency, but displays red
+(Sorry). A certified module without its own sorry displays yellow (Conditional)
+if a direct or transitive managed dependency has sorry evidence. Green (Verified)
+requires complete sorry-free evidence across the managed dependency closure.
+`has_sorry` itself remains local to the checked module; graph queries propagate
+that evidence without compiling. Unknown, stale or failed evidence and absent or empty Lean source are all gray
+(Unverified).
 
 Saving in the browser stores source; the existing editor automatically certifies
 that exact saved version once native diagnostics and import information are ready.

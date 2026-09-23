@@ -35,7 +35,7 @@ function nodeView(withEditor) {
       blocks: withEditor
         ? [{ srctype: "latex", content: latexSource, metadata: {} }]
         : [],
-      formalization: { lean: "no_code", rocq: "no_code" },
+      formalization: { lean: "unverified", rocq: "unverified" },
     },
     referrers: [],
     children: [],
@@ -60,7 +60,7 @@ export function apiBodies(scenario) {
   const view = nodeView(scenario === "editor");
   if (scenario === "relations") {
     view.children = Array.from({ length: RELATION_COUNT }, (_, i) => ({
-      ...summary(i + 1), formalization: { lean: i % 2 ? "verified" : "unverified", rocq: "no_code" },
+      ...summary(i + 1), formalization: { lean: i % 2 ? "verified" : "unverified", rocq: "unverified" },
     }));
     view.node.depens = view.children.map(node => node.fnode);
   }

@@ -87,10 +87,15 @@ automatically certified by checking a node they import.
 
 `certified` still means compilation and
 dependency matching succeeded, so admitted declarations remain usable during
-staged formalization. The green status additionally requires `has_sorry: false`.
+staged formalization. Direct sorry evidence produces red Sorry. The service
+propagates evidence through current managed dependencies in topological order:
+a sorry-free module depending on an admitted node is yellow Conditional, including
+through multiple dependency levels. Green Verified requires complete sorry-free
+evidence throughout that closure. Missing or stale evidence is gray Unverified.
+This derived dependency state is recomputed from certificates when restoring a
+graph, including existing certificates, and adds no compiler work to graph queries.
 The warning-based paths respect configured `warn.sorry` behavior; artifact
-inspection detects direct uses even with warnings disabled. Neither is a
-transitive axiom audit. Graph colors do not propagate admitted assumptions
-through downstream nodes.
+inspection detects direct uses even with warnings disabled. This is not a full
+axiom audit of external libraries.
 
 Dependency changes reopen the importing document so Lean reloads its import environment. Proof edits preserve the live worker and its elaboration snapshots. Native `lake build +MODULE` generates target artifacts on an explicit build request. On disconnect, the shared CLI/browser transport sends LSP `shutdown` and `exit`, draining stdout until Lean has reaped its workers (which use separate process groups). The writer gets up to one second to finish queued frames before the two-second shutdown handshake. A broken or unfinished frame forces termination without appending shutdown bytes to it. Service shutdown waits for editor and CLI cleanup before stopping the async runtime.

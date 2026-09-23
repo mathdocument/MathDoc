@@ -2,7 +2,7 @@
 
 export type NodeSummary = { fnode: string, title: string, broken: boolean, depth: number, };
 
-export type FormalCodeStatus = "no_code" | "unverified" | "verified";
+export type FormalCodeStatus = "unverified" | "sorry" | "conditional" | "verified";
 
 export type FormalizationStatus = { lean: FormalCodeStatus, rocq: FormalCodeStatus, };
 

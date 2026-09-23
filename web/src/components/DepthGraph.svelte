@@ -50,8 +50,9 @@
   // Canvas cannot read CSS custom properties, so these mirror the accent tokens
   // in app.css. Keep them in step when the palette changes.
   const DARK_PALETTE = {
-    no_code: "#79828f",
-    unverified: "#f0b661",
+    unverified: "#79828f",
+    sorry: "#ff6f85",
+    conditional: "#f0b661",
     verified: "#4fd6ae",
     outgoing: "79, 214, 174",
     incoming: "180, 140, 255",
@@ -60,8 +61,9 @@
     label: "198, 205, 218",
   };
   const LIGHT_PALETTE = {
-    no_code: "#69727f",
-    unverified: "#96601a",
+    unverified: "#69727f",
+    sorry: "#c8384d",
+    conditional: "#96601a",
     verified: "#0a7d64",
     outgoing: "10, 125, 100",
     incoming: "116, 64, 208",
@@ -397,14 +399,14 @@
     }
 
     const labelStride = Math.max(1, Math.ceil(visibleNodes.length / 500));
-    const paths = { no_code: new Path2D(), unverified: new Path2D(), verified: new Path2D() };
+    const paths = { unverified: new Path2D(), sorry: new Path2D(), conditional: new Path2D(), verified: new Path2D() };
     for (const n of visibleNodes) {
       const r = nodeRadius(n, graphSelection);
       const path = paths[n.lean];
       path.moveTo(n.x + r, n.y);
       path.arc(n.x, n.y, r, 0, 2 * Math.PI);
     }
-    for (const status of ["no_code", "unverified", "verified"] as const) {
+    for (const status of ["unverified", "sorry", "conditional", "verified"] as const) {
       ctx.fillStyle = palette[status];
       ctx.fill(paths[status]);
     }
@@ -868,8 +870,9 @@
       : ""} Use Search to select a node.
   </p>
   <div class="graph-legend" aria-label="Lean verification colors">
-    <span class="no-code">No Lean code</span>
-    <span class="unverified">Unverified / sorry</span>
+    <span class="unverified">Unverified</span>
+    <span class="sorry">Sorry</span>
+    <span class="conditional">Conditional</span>
     <span class="verified">Verified</span>
   </div>
   <canvas
@@ -896,7 +899,8 @@
   .graph-legend { position: absolute; z-index: 1; top: .75rem; left: .75rem; display: flex; flex-wrap: wrap; gap: .75rem; padding: .4rem .6rem; color: var(--mdc-fg-soft); background: var(--mdc-panel); border: 1px solid var(--mdc-border); border-radius: var(--mdc-radius-sm); font-size: var(--mdc-text-xs); pointer-events: none; }
   .graph-legend span { display: inline-flex; align-items: center; gap: .35rem; }
   .graph-legend span::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--mdc-muted); }
-  .graph-legend .unverified::before { background: var(--mdc-warning); }
+  .graph-legend .sorry::before { background: var(--mdc-error); }
+  .graph-legend .conditional::before { background: var(--mdc-warning); }
   .graph-legend .verified::before { background: var(--mdc-accent-down); }
   .graph-container {
     position: relative;

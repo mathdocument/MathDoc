@@ -586,8 +586,11 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
       ].map(([title, srctype, content], i) => ({
         fnode: randomUUID(), title, module: `Lib.Color${i}`, depens: [], blocks: [{ srctype, content }],
       }));
+      const conditional = { fnode: randomUUID(), title: "Conditional", module: "Lib.Conditional", depens: [nodes[3].fnode], blocks: [{ srctype: "lean", content: "import Lib.Color3\ntheorem conditional : True := admitted\n" }] };
+      const transitive = { fnode: randomUUID(), title: "Transitive", module: "Lib.Transitive", depens: [conditional.fnode], blocks: [{ srctype: "lean", content: "import Lib.Conditional\ntheorem transitive : True := conditional\n" }] };
+      nodes.push(conditional, transitive);
       return fixture(browser, async ({ cli, page, url }) => {
-        for (const title of ["Admitted", "Proven"]) {
+        for (const title of ["Admitted", "Proven", "Transitive"]) {
           const check = JSON.parse((await cli("lean", "check", title)).stdout);
           assert.equal(check.certified, true);
           assert.equal(check.has_sorry, title === "Admitted");
@@ -595,20 +598,23 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         const response = page.waitForResponse(r => r.url().endsWith("/graph/full"));
         await page.getByRole("button", { name: "Graph", exact: true }).click();
         const graph = await (await response).json();
-        const expected = { "Rocq only": "no_code", "Empty Lean": "no_code", Unchecked: "unverified", Admitted: "unverified", Proven: "verified" };
+        const expected = { "Rocq only": "unverified", "Empty Lean": "unverified", Unchecked: "unverified", Admitted: "sorry", Proven: "verified", Conditional: "conditional", Transitive: "conditional" };
         for (const node of nodes) {
           const status = graph.nodes.find(n => n.fnode === node.fnode).lean;
           assert.equal(status, expected[node.title]);
           const view = await (await fetch(`${url}/api/node/${node.fnode}/view`)).json();
           assert.equal(view.node.formalization.lean, status);
         }
-        await page.getByLabel("Lean verification colors").waitFor();
+        const legend = page.getByLabel("Lean verification colors");
+        for (const label of ["Unverified", "Sorry", "Conditional", "Verified"]) {
+          await legend.getByText(label, { exact: true }).waitFor();
+        }
         await page.waitForFunction(() => {
           const canvas = document.querySelector('.graph-container canvas');
           if (!canvas?.width) return false;
           const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
           const style = getComputedStyle(canvas);
-          return ['--mdc-muted', '--mdc-warning', '--mdc-accent-down'].every(token => {
+          return ['--mdc-muted', '--mdc-error', '--mdc-warning', '--mdc-accent-down'].every(token => {
             const hex = style.getPropertyValue(token).trim().slice(1);
             const rgb = [0, 2, 4].map(i => parseInt(hex.slice(i, i + 2), 16));
             for (let i = 0; i < pixels.length; i += 4) {
@@ -620,6 +626,32 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         if (process.env.MDC_E2E_ARTIFACTS) {
           await mkdir(process.env.MDC_E2E_ARTIFACTS, { recursive: true });
           await page.screenshot({ path: resolve(process.env.MDC_E2E_ARTIFACTS, "graph-colors.png"), fullPage: true });
+        }
+        await page.getByRole("button", { name: "Knowledge", exact: true }).click();
+        for (const [name, label, token] of [["Empty Lean", "Unverified", "--mdc-muted"], ["Unchecked", "Unverified", "--mdc-muted"], ["Admitted", "Sorry", "--mdc-error"], ["Conditional", "Conditional", "--mdc-warning"], ["Proven", "Verified", "--mdc-accent-down"]]) {
+          await page.getByRole("button", { name: /Search nodes/ }).click();
+          await page.getByPlaceholder("Search by title or fnode...").fill(name);
+          await page.getByRole("dialog", { name: "search", exact: true }).getByRole("button", { name: new RegExp(name) }).click();
+          await title(page, name);
+          const light = center(page).getByLabel(`Lean: ${label}`, { exact: true }).locator('.status-light');
+          await light.waitFor();
+          assert.ok(await light.evaluate((el, token) => {
+            const probe = document.createElement('span');
+            probe.style.backgroundColor = `var(${token})`; el.append(probe);
+            const expected = getComputedStyle(probe).backgroundColor; probe.remove();
+            return getComputedStyle(el).backgroundColor === expected;
+          }, token));
+        }
+        const admitted = JSON.parse((await cli("show", "Admitted")).stdout);
+        const changed = await fetch(`${url}/api/node/${admitted.fnode}/block/lean`, {
+          method: "PUT", headers: { "content-type": "application/json", "if-match": `"${admitted.revision}"` },
+          body: JSON.stringify({ content: "theorem admitted : True := by trivial\n" }),
+        });
+        assert.equal(changed.status, 200);
+        assert.equal(JSON.parse((await cli("show", "Transitive")).stdout).formalization.lean, "unverified");
+        await cli("lean", "check", "Transitive");
+        for (const name of ["Admitted", "Conditional", "Transitive"]) {
+          assert.equal(JSON.parse((await cli("show", name)).stdout).formalization.lean, "verified");
         }
       }, nodes);
     });
@@ -1121,7 +1153,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.equal(await leanStatus(dep.fnode), "verified", "the editor's compiled imports must certify dependencies too");
         const dependencyCard = page.locator(`.card[data-fnode="${dep.fnode}"]`);
         await dependencyCard.getByLabel("Lean: Verified", { exact: true }).waitFor();
-        await dependencyCard.getByLabel("Rocq: No code", { exact: true }).waitFor();
+        await dependencyCard.getByLabel("Rocq: Unverified", { exact: true }).waitFor();
         const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
         assert.equal(await frame.locator(".squiggly-error").count(), 0);
         await put(dep.fnode, "def anchor : Nat := 2\n");
