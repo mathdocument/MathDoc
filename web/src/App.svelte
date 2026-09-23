@@ -105,7 +105,7 @@
   }));
 
   async function findDefaultFnode(): Promise<string | null> {
-    const roots = (await api.roots()).filter((node) => !node.broken);
+    const roots = await api.roots();
     if (roots.length > 0) {
       return roots.sort((a, b) => b.topo_depth - a.topo_depth)[0]!.fnode;
     }
@@ -401,8 +401,8 @@
   let activeNode = $derived(
     view === "force" && nodeSession.selectionCleared ? null : nodeSession.node,
   );
-  // Whether the active node is editable (non-broken).
-  let activeReady = $derived(activeFnode !== null && activeNode !== null && !activeNode.broken);
+  // Whether the active node is loaded and editable.
+  let activeReady = $derived(activeFnode !== null && activeNode !== null);
   let activeRevision = $derived(activeNode?.revision ?? null);
   // Depens of the active node.
   let activeDepens = $derived(activeNode?.depens ?? []);

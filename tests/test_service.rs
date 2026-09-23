@@ -100,6 +100,9 @@ async fn delete_node_atomically_detaches_referrers_and_invalidates_affected_keys
         assert_ne!(after.nodes[id].revision(), before.nodes[id].revision());
     }
     drop(live);
+    let (status, report) = call(&app, "GET", "/api/graph/check", Value::Null, None).await;
+    assert_eq!(status, 200);
+    assert_eq!(report, json!({"nodes": 3, "edges": 2}));
     assert!(db
         .delete_node(
             &dependency.fnode,

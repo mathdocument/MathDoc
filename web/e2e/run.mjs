@@ -502,8 +502,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         const refreshed = page.waitForResponse((response) => response.url().endsWith("/graph/check"));
         await page.getByRole("button", { name: "Refresh database view" }).click();
         const report = await (await refreshed).json();
-        assert.deepEqual(report.cycles, []);
-        assert.equal(report.edges, 2);
+        assert.deepEqual(report, { nodes: 3, edges: 2 });
       }));
     await suite.test("project directory tracks branch services without disconnecting other Lean editors", () => {
       const node = { fnode: randomUUID(), title: "Directory proof", module: "Lib.Directory", depens: [], blocks: [{ srctype: "lean", content: "theorem directoryProof : True := by trivial\n" }] };

@@ -1,8 +1,6 @@
 mod algorithms;
 
-pub use algorithms::{
-    all_topo_depths, representative_cycles, strongly_connected_components, weak_component_sizes,
-};
+pub use algorithms::{all_topo_depths, strongly_connected_components, weak_component_sizes};
 
 /// Make untrusted text inert before writing it to a terminal.
 pub fn escape_terminal(value: &str) -> String {

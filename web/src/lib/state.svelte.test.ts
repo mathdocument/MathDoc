@@ -9,7 +9,6 @@ function node(revision: string): NodeDetail {
   return {
     fnode: "node",
     title: `Node ${revision}`,
-    broken: false,
     depth: 1,
     revision,
     depens: [revision],
@@ -90,7 +89,6 @@ describe("NodeSession", () => {
     const relation: NodePreview = {
       fnode: "relation",
       title: "Relation",
-      broken: false,
       depth: 2,
       formalization: { lean: "verified", rocq: "unverified" },
     };

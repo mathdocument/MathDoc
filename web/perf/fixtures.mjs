@@ -21,7 +21,6 @@ function summary(index = 0) {
   return {
     fnode: index === 0 ? rootFnode : `perf-node-${String(index).padStart(5, "0")}`,
     title: index === 0 ? "Performance fixture" : `Deterministic graph node ${index}`,
-    broken: false,
     depth: Math.floor(Math.log2(index + 1)),
   };
 }
@@ -73,9 +72,6 @@ export function apiBodies(scenario) {
     ["/api/graph/check", {
       nodes: scenario === "graph" ? GRAPH_NODE_COUNT : 1,
       edges: scenario === "graph" ? GRAPH_EDGE_COUNT : 0,
-      missing: [],
-      invalid: [],
-      cycles: [],
     }],
     ["/api/graph/full", fullGraph],
     [`/api/node/${rootFnode}/view`, view],

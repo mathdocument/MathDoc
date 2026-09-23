@@ -33,10 +33,8 @@
   let alive = true;
 
   function moveSelection(direction: -1 | 1) {
-    const index = direction === 1
-      ? results.findIndex((item, index) => index > selected && !item.broken)
-      : results.findLastIndex((item, index) => index < selected && !item.broken);
-    if (index >= 0) {
+    const index = selected + direction;
+    if (index >= 0 && index < results.length) {
       selected = index;
       list?.children[index]?.scrollIntoView({ block: "nearest" });
     }
@@ -77,7 +75,7 @@
         if (controller.signal.aborted) return;
         candidateEmpty = candidates.empty;
         results = candidates.nodes;
-        selected = results.findIndex((item) => !item.broken);
+        selected = results.length ? 0 : -1;
       } catch (e) {
         if (controller.signal.aborted || isAbortError(e)) return;
         results = [];
@@ -101,16 +99,9 @@
   );
 
   function excludedMessage(empty: Extract<DependencyCandidatesEmpty, { kind: "excluded" }>) {
-    if (empty.source === 0 && empty.invalid_or_duplicate === 0) {
-      return "all matches are already dependencies";
-    }
-    if (empty.existing_dependencies === 0 && empty.invalid_or_duplicate === 0) {
-      return "all matches refer to this node";
-    }
-    if (empty.source === 0 && empty.existing_dependencies === 0) {
-      return `all matches are invalid or duplicate (${empty.invalid_or_duplicate} excluded)`;
-    }
-    return `matches excluded: ${empty.source} source, ${empty.existing_dependencies} existing, ${empty.invalid_or_duplicate} invalid/duplicate`;
+    if (empty.source === 0) return "all matches are already dependencies";
+    if (empty.existing_dependencies === 0) return "all matches refer to this node";
+    return `matches excluded: ${empty.source} source, ${empty.existing_dependencies} existing`;
   }
 
   let emptyMessage = $derived.by(() => {
@@ -126,7 +117,7 @@
 
   async function submit() {
     const node = results[selected];
-    if (!node || node.broken || saving) return;
+    if (!node || saving) return;
     saving = true;
     const clearMutation = trackMutation();
     error = null;
@@ -252,7 +243,7 @@
               class="row modal-row"
               class:selected={i === selected}
               onclick={() => { selected = i; void submit(); }}
-              disabled={r.broken || saving}
+              disabled={saving}
             >
               <span class="choice"><Plus size={15} strokeWidth={1.8} /></span>
               <span class="depth">[{r.depth}]</span>
@@ -287,7 +278,7 @@
       <div class="actions">
         <button class="secondary" onclick={close} disabled={saving}>Cancel</button>
         {#if !createMode}
-          <button class="primary" onclick={() => void submit()} disabled={saving || !results[selected] || results[selected]?.broken}>Add selected</button>
+          <button class="primary" onclick={() => void submit()} disabled={saving || !results[selected]}>Add selected</button>
         {/if}
       </div>
     </footer>

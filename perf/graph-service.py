@@ -98,7 +98,7 @@ def main():
         samples = [request(args.url, path) for _ in range(args.samples)]
         value = samples[-1][0]
         if label == "graph_check":
-            assert value == {**report["graph"], "cycles": [], "missing": [], "invalid": []}
+            assert value == report["graph"]
         report["reads"][label] = {
             **statistics_ms([sample[1] for sample in samples]),
             "response_bytes": samples[-1][2],
@@ -149,7 +149,7 @@ def main():
             a, ms, _ = request(args.url, f"/node/{a['fnode']}/dep/rm", "POST", {"dep_fnodes": [b["fnode"]]}, a["revision"])
             timings["remove_edge"].append(ms)
         after, _, _ = request(args.url, "/graph/check")
-        assert after == {"nodes": len(nodes) + args.samples + 2, "edges": len(edges), "missing": [], "cycles": [], "invalid": []}
+        assert after == {"nodes": len(nodes) + args.samples + 2, "edges": len(edges)}
         report["writes"] = {label: statistics_ms(values) for label, values in timings.items()}
     with open(args.output, "w") as file:
         json.dump(report, file, indent=2, ensure_ascii=False)

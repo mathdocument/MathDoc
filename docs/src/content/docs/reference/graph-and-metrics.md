@@ -15,7 +15,9 @@ summaries, with `-n/--max-results` in 0–200 (default 200). It does not search 
 contents or fuzzy-match names, and it does not paginate beyond that limit.
 
 Graph operations read the service's validated projection. `check` returns node
-and edge counts and missing/invalid/cycle lists; it does not compile Lean.
+and edge counts; it does not compile Lean. Invalid nodes, missing dependencies
+and cycles are rejected when loading or committing a graph, so a failed graph
+load returns an error instead of a partial projection with issue lists.
 `full` returns node summaries, each with its cached `lean` status, and index-pair
 edges for visualization. It does not compile Lean to obtain colors. `roots`
 returns unreferenced nodes with topological depth and weak component size.

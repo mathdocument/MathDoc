@@ -26,7 +26,7 @@
   }: Props = $props();
 
   function ariaLabel(n: NodePreview): string {
-    return `${n.broken ? "broken " : ""}${n.title} (${shortFnode(n.fnode)})`;
+    return `${n.title} (${shortFnode(n.fnode)})`;
   }
 
   let direction = $derived(accent === "up" ? "Upstream" : "Downstream");
@@ -133,11 +133,9 @@
 
   async function moveFocus(event: KeyboardEvent, index: number) {
     if (!virtual || event.altKey || event.ctrlKey || event.metaKey) return;
-    let target = { ArrowDown: index + 1, ArrowUp: index - 1, Home: 0, End: matches.length - 1 }[event.key];
+    const target = { ArrowDown: index + 1, ArrowUp: index - 1, Home: 0, End: matches.length - 1 }[event.key];
     if (target === undefined) return;
     event.preventDefault();
-    const step = event.key === "ArrowUp" || event.key === "End" ? -1 : 1;
-    while (target >= 0 && target < matches.length && matches[target]!.broken) target += step;
     if (target < 0 || target >= matches.length) return;
     // A key can arrive just after showing the column, before ResizeObserver.
     height = list.clientHeight;
@@ -178,14 +176,12 @@
         style:top={virtual ? `calc(0.5rem + ${offsets[start + i]}px)` : null}>
         <button
           class="card"
-          class:broken={item.broken}
           class:last-visited={item.fnode === lastVisitedFnode}
           data-fnode={item.fnode}
           data-index={start + i}
           aria-label={ariaLabel(item)}
           onclick={() => onSelect(item.fnode)}
           onkeydown={(event) => moveFocus(event, start + i)}
-          disabled={item.broken}
         >
           <span class="title">{item.title}</span>
           <span class="card-meta">
@@ -332,13 +328,6 @@
   .card:focus-visible::before,
   .card.last-visited::before {
     opacity: 1;
-  }
-  .card:disabled {
-    cursor: not-allowed;
-    opacity: 0.55;
-  }
-  .card.broken {
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mdc-error) 45%, transparent);
   }
   .card.last-visited {
     background: color-mix(in srgb, var(--mdc-card-selected) 45%, transparent);

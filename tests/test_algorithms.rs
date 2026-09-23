@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
-use mathdoc::core::{
-    all_topo_depths, representative_cycles, strongly_connected_components, weak_component_sizes,
-};
+use mathdoc::core::{all_topo_depths, strongly_connected_components, weak_component_sizes};
 
 fn graph(edges: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
     edges
@@ -25,26 +23,6 @@ fn scc_with_cycle() {
     let cyclic: Vec<_> = sccs.iter().filter(|c| c.len() > 1).collect();
     assert_eq!(cyclic.len(), 1);
     assert_eq!(cyclic[0].len(), 3);
-}
-
-#[test]
-fn representative_cycles_include_self_loop() {
-    let g = graph(&[("a", &["a"])]);
-    assert_eq!(representative_cycles(&g), vec![vec!["a", "a"]]);
-}
-
-#[test]
-fn representative_cycles_include_multi_node_cycle() {
-    let g = graph(&[("a", &["b"]), ("b", &["c"]), ("c", &["a"])]);
-    let cycle = representative_cycles(&g).pop().unwrap();
-    assert_eq!(cycle.first(), cycle.last());
-    assert!(cycle.len() >= 2);
-}
-
-#[test]
-fn representative_cycles_exclude_acyclic_components() {
-    let g = graph(&[("a", &["b"]), ("b", &[])]);
-    assert!(representative_cycles(&g).is_empty());
 }
 
 #[test]

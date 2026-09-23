@@ -57,9 +57,7 @@ async fn graph_checks_on_47435_nodes_and_368017_edges() {
         let report: serde_json::Value =
             serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap()).unwrap();
         assert_eq!(status, 200, "{report}");
-        assert_eq!(report["nodes"], 47435);
-        assert_eq!(report["edges"], 368017);
-        assert_eq!(report["cycles"], serde_json::json!([]));
+        assert_eq!(report, serde_json::json!({"nodes": 47435, "edges": 368017}));
         times.push(started.elapsed().as_secs_f64() * 1000.0);
     }
     times.sort_by(f64::total_cmp);

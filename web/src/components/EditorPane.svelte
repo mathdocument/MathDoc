@@ -204,7 +204,6 @@
       <div class="meta" aria-label="node metadata">
         <code class="meta-item fnode" title={node.fnode}><Hash size={12} strokeWidth={2} />{shortFnode(node.fnode)}</code>
         <span class="meta-item depth"><Layers3 size={12} strokeWidth={1.8} />Depth {node.depth}</span>
-        {#if node.broken}<span class="meta-item broken"><X size={12} strokeWidth={2.2} />Broken</span>{/if}
         <span class="meta-sep" aria-hidden="true"></span>
         <FormalStatus language="Lean" status={node.formalization.lean} />
         <FormalStatus language="Rocq" status={node.formalization.rocq} />
@@ -408,10 +407,6 @@
   }
   .depth {
     font-variant-numeric: tabular-nums;
-  }
-  .broken {
-    color: var(--mdc-error);
-    font-weight: 620;
   }
   .blocks {
     --block-head-height: 38px;

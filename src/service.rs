@@ -131,7 +131,7 @@ fn check_revision(headers: &HeaderMap, node: &Node) -> ApiResult<()> {
     Ok(())
 }
 fn summary(snapshot: &Snapshot, node: &Node) -> Value {
-    json!({"fnode":node.fnode,"title":node.title,"broken":false,"depth":snapshot.depths.get(&node.fnode).copied().unwrap_or(0)})
+    json!({"fnode":node.fnode,"title":node.title,"depth":snapshot.depths.get(&node.fnode).copied().unwrap_or(0)})
 }
 fn preview(snapshot: &Snapshot, node: &Node, lean: &crate::lean::LeanService) -> Value {
     let mut value = summary(snapshot, node);
@@ -160,8 +160,7 @@ fn revision_response(
 }
 pub fn graph_report(snapshot: &Snapshot) -> Value {
     // All commits are validated before publication; graph checks read this validated projection.
-    json!({"nodes":snapshot.nodes.len(),"edges":snapshot.nodes.values().map(|n|n.depens.len()).sum::<usize>(),
-        "missing":[],"invalid":[],"cycles":[]})
+    json!({"nodes":snapshot.nodes.len(),"edges":snapshot.nodes.values().map(|n|n.depens.len()).sum::<usize>()})
 }
 
 pub fn router(service: Arc<Service>) -> Router {
@@ -970,7 +969,7 @@ async fn candidates(
     } else if available > 0 {
         json!({"kind":"result_limit","available":available})
     } else if source + existing > 0 {
-        json!({"kind":"excluded","source":source,"existing_dependencies":existing,"invalid_or_duplicate":0})
+        json!({"kind":"excluded","source":source,"existing_dependencies":existing})
     } else {
         json!({"kind":"no_match"})
     };

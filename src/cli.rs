@@ -131,7 +131,7 @@ enum Commands {
 }
 #[derive(Subcommand)]
 enum Graph {
-    /// Validate the branch graph and report missing links or cycles.
+    /// Report node and edge counts from the validated branch graph.
     Check,
     /// List unreferenced graph roots and their component sizes.
     Roots,

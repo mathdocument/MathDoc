@@ -20,10 +20,8 @@
   let inputEl = $state<HTMLInputElement | null>(null);
 
   function moveSelection(direction: -1 | 1) {
-    const index = direction === 1
-      ? results.findIndex((item, index) => index > selected && !item.broken)
-      : results.findLastIndex((item, index) => index < selected && !item.broken);
-    if (index >= 0) selected = index;
+    const index = selected + direction;
+    if (index >= 0 && index < results.length) selected = index;
   }
 
   $effect(() => {
@@ -45,7 +43,7 @@
         const fresh = await api.search(q, 50, controller.signal);
         if (controller.signal.aborted) return;
         results = fresh;
-        selected = fresh.findIndex((item) => !item.broken);
+        selected = fresh.length ? 0 : -1;
       } catch (e) {
         if (controller.signal.aborted || isAbortError(e)) return;
         results = [];
@@ -66,7 +64,7 @@
 
   function submit() {
     const node = results[selected];
-    if (node && !node.broken) {
+    if (node) {
       onPick(node.fnode);
     }
   }
@@ -125,7 +123,6 @@
             class="row modal-row modal-result-row"
             class:selected={i === selected}
             onclick={() => onPick(r.fnode)}
-            disabled={r.broken}
           >
             <span class="depth">[{r.depth}]</span>
             <span class="fnode">{shortFnode(r.fnode)}</span>
