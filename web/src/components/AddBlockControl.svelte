@@ -101,7 +101,7 @@
             onclick={() => add(s)}
             disabled={adding !== null}
           >
-            {#if adding === s}<span class="spinner">adding…</span>{:else}<Braces size={13} strokeWidth={1.8} />{s}{/if}
+            {#if adding === s}<span class="spinner">adding...</span>{:else}<Braces size={13} strokeWidth={1.8} />{s}{/if}
           </button>
         </li>
       {/each}

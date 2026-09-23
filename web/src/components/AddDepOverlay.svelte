@@ -226,7 +226,7 @@
         type="search"
         bind:value={query}
         aria-label="Search dependencies"
-        placeholder="Search for a dependency…"
+        placeholder="Search for a dependency..."
         autocomplete="off"
         spellcheck="false"
         disabled={saving}
@@ -274,7 +274,7 @@
           {:else if emptyMessage}
             <li class="empty modal-empty">{emptyMessage}</li>
           {:else}
-            <li class="empty modal-empty">{loading ? "Searching…" : "Search by title or fnode"}</li>
+            <li class="empty modal-empty">{loading ? "Searching..." : "Search by title or fnode"}</li>
           {/if}
         {/each}
       {/if}

@@ -533,7 +533,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           let opened = 0, closed = 0, currentSocket;
           page.on("websocket", socket => { currentSocket = socket; opened++; socket.on("close", () => closed++); });
           await page.getByRole("button", { name: /Search nodes/ }).click();
-          await page.getByPlaceholder("Search by title or fnode…").fill(node.title);
+          await page.getByPlaceholder("Search by title or fnode...").fill(node.title);
           await page.getByRole("dialog").getByRole("button", { name: new RegExp(node.title) }).click();
           await page.getByRole("button", { name: "Start Lean server", exact: true }).click();
           await page.getByText("Lean editor ready", { exact: true }).waitFor();
@@ -773,7 +773,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await page.goto(`${url}/?node=${a.fnode}`);
         // Select by exact name through the same browser search used by authors.
         await page.getByRole("button", { name: /Search nodes/ }).click();
-        await page.getByPlaceholder("Search by title or fnode…").fill("Lean Example");
+        await page.getByPlaceholder("Search by title or fnode...").fill("Lean Example");
         await page.getByRole("button", { name: /Lean Example/ }).click();
         await page.getByRole("button", { name: "Start Lean server", exact: true }).click();
         await page.frameLocator('iframe[title="Lean source and Infoview"]').locator('#infoview-pending').waitFor();
@@ -849,7 +849,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await page.getByRole("button", { name: "Graph", exact: true }).click();
         const saveButton = leanBlock.getByRole("button", { name: "Save", exact: true });
         await saveButton.click();
-        const activity = page.getByRole("status").filter({ hasText: /^Saving…$/ });
+        const activity = page.getByRole("status").filter({ hasText: /^Saving\.\.\.$/ });
         await activity.waitFor();
         assert.equal(await saveButton.textContent(), "Save");
         const buttonBox = await saveButton.boundingBox(), activityBox = await activity.boundingBox();
@@ -879,7 +879,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.equal(await leanBlock.getByRole("button", { name: /Save & (check|build)/ }).count(), 0);
         const select = async name => {
           await page.getByRole("button", { name: /Search nodes/ }).click();
-          await page.getByPlaceholder("Search by title or fnode…").fill(name);
+          await page.getByPlaceholder("Search by title or fnode...").fill(name);
           await page.getByRole("button", { name: new RegExp(name) }).last().click();
           await title(page, name);
         };
@@ -959,7 +959,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await page.reload();
         await page.getByRole("button", { name: "Start Lean server", exact: true }).click();
         await page.getByText(/Lean (?:connection closed;|failed to initialize:)/).first().waitFor({ timeout: 10000 });
-        await page.waitForFunction(() => /Lean (?:connection closed;|failed to initialize:)/.test(document.body.innerText) && !document.body.innerText.includes("Reconnecting Lean…"));
+        await page.waitForFunction(() => /Lean (?:connection closed;|failed to initialize:)/.test(document.body.innerText) && !document.body.innerText.includes("Reconnecting Lean..."));
         assert.equal(attempts, 2, "only one automatic reconnect is allowed");
         const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
         await frame.getByRole("textbox", { name: /Editor content/ }).press(await page.evaluate(() => /Mac/.test(navigator.platform)) ? "Meta+ArrowDown" : "Control+End");
@@ -1020,7 +1020,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await frame.getByText("-- typed before Lean initialized", { exact: true }).waitFor();
         const select = async name => {
           await page.getByRole("button", { name: /Search nodes/ }).click();
-          await page.getByPlaceholder("Search by title or fnode…").fill(name);
+          await page.getByPlaceholder("Search by title or fnode...").fill(name);
           await page.getByRole("button", { name: new RegExp(name) }).last().click();
           await title(page, name);
         };
@@ -1109,7 +1109,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         }));
         const select = async name => {
           await page.getByRole("button", { name: /Search nodes/ }).click();
-          await page.getByPlaceholder("Search by title or fnode…").fill(name);
+          await page.getByPlaceholder("Search by title or fnode...").fill(name);
           await page.getByRole("button", { name: new RegExp(name) }).last().click();
           await title(page, name);
         };
@@ -1281,7 +1281,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       assert.equal(await back.isDisabled(), true);
       assert.equal(await forward.isDisabled(), true);
       // A slow renderer must leave the current readable node in place, not
-      // replace it with a new heading and "Preparing preview…".
+      // replace it with a new heading and "Preparing preview...".
       let releasePreview, previewRequested;
       const previewGate = new Promise(resolve => { releasePreview = resolve; });
       const previewStarted = new Promise(resolve => { previewRequested = resolve; });
@@ -1656,7 +1656,7 @@ await test('Lean first paint waits for syntax without waiting for hidden iframe 
         await page.goto(`${url}/?first-paint#ref=${node.fnode}`);
         await grammar;
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-        assert.equal(await page.getByText('Loading Lean editor…', {exact: true}).isVisible(), false);
+        assert.equal(await page.getByText('Loading Lean editor...', {exact: true}).isVisible(), false);
         assert.equal(await page.getByLabel('Lean source while editor loads').isVisible(), false);
         assert.equal(await page.locator('iframe[title="Lean source and Infoview"]').isVisible(), false, 'hold the editor until its grammar is loaded');
       } finally { release(); }
@@ -1682,7 +1682,7 @@ await test('Lean first paint waits for syntax without waiting for hidden iframe 
         requestAnimationFrame(window.observeLeanPaint);
       });
       await page.getByRole('button', {name: /Search nodes/}).click();
-      await page.getByPlaceholder('Search by title or fnode…').fill(node.title);
+      await page.getByPlaceholder('Search by title or fnode...').fill(node.title);
       await page.getByRole('button', {name: new RegExp(node.title)}).click();
       await painted();
       assert.equal(await page.evaluate(() => window.retainedLeanFrame === document.querySelector('iframe[title="Lean source and Infoview"]')), true);
@@ -1811,7 +1811,7 @@ await test('Lean session state survives navigation through nodes without Lean', 
       page.on('websocket', () => sockets++);
       const select = async name => {
         await page.getByRole('button', {name: /Search nodes/}).click();
-        await page.getByPlaceholder('Search by title or fnode…').fill(name);
+        await page.getByPlaceholder('Search by title or fnode...').fill(name);
         await page.getByRole('dialog').getByRole('button', {name: new RegExp(name)}).click();
         await title(page, name);
       };
@@ -1878,7 +1878,7 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       const sameEditor = async () => {
         assert.equal(await persistentEditor.evaluate(el => el.isConnected), true, 'start/stop retain the editor DOM and iframe');
         assert.equal(await block.locator('.native-editor.pending').count(), 0, 'start/stop never hide the source');
-        assert.equal(await page.getByText('Starting Lean editor…', {exact: true}).count(), 0);
+        assert.equal(await page.getByText('Starting Lean editor...', {exact: true}).count(), 0);
       };
       await page.getByRole('button', {name: 'Switch to dark mode'}).click();
       await frame.locator('.monaco-editor[role=code].vs-dark').waitFor();
@@ -1893,7 +1893,7 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       assert.equal(JSON.parse((await cli('show', nodes[0].fnode)).stdout).blocks[0].content.trimEnd(), (nodes[0].blocks[0].content + '-- saved without a server\n').trimEnd());
       const select = async name => {
         await page.getByRole('button', {name: /Search nodes/}).click();
-        await page.getByPlaceholder('Search by title or fnode…').fill(name);
+        await page.getByPlaceholder('Search by title or fnode...').fill(name);
         await page.getByRole('dialog').getByRole('button', {name: new RegExp(name)}).click();
         await title(page, name);
         await page.locator('.native-editor:not(.pending)').waitFor();

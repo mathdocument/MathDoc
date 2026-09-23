@@ -594,7 +594,7 @@
     <div class="force-canvas-wrap" class:hidden={view !== "force"}>
       {#if graphModule}
         {#await graphModule}
-            <p role="status">Loading graph…</p>
+            <p role="status">Loading graph...</p>
         {:then { default: DepthGraph }}
           <DepthGraph
             bind:this={depthGraph}
@@ -673,7 +673,7 @@
       {#if workspaceSession.report}
         {workspaceSession.report.nodes.toLocaleString()} nodes · {workspaceSession.report.edges.toLocaleString()} edges
       {:else if workspaceSession.loading}
-        Checking graph…
+        Checking graph...
       {:else}
         Graph check unavailable
       {/if}

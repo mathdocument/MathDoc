@@ -127,7 +127,7 @@
       <div class="modal-search-field">
         <Search size={18} strokeWidth={1.8} />
         <input type="search" bind:value={query} oninput={() => changePage(0)}
-          aria-label="Filter dependencies" placeholder="Filter by title or fnode…" disabled={saving} />
+          aria-label="Filter dependencies" placeholder="Filter by title or fnode..." disabled={saving} />
       </div>
       <ul class="list modal-list modal-results" bind:this={list}>
         {#each visible as c, i (c.fnode)}

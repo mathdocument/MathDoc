@@ -167,7 +167,7 @@
   <label class="filter">
     <Search size={13} strokeWidth={1.8} aria-hidden="true" />
     <input type="search" bind:value={query} aria-label={`Filter ${title.toLowerCase()}`}
-      placeholder="Filter by title or fnode…" spellcheck="false" />
+      placeholder="Filter by title or fnode..." spellcheck="false" />
   </label>
   <ul class="cards" class:virtual bind:this={list} bind:clientHeight={height} bind:clientWidth={width}
     onscroll={() => scrollTop = list.scrollTop}>

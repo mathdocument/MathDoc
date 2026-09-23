@@ -5,9 +5,9 @@
   let matches = $derived(imports?.filter(item => `${item.title} ${item.fnode}`.toLowerCase().includes(query.toLowerCase())) ?? []);
 </script>
 <details class="latex-imports">
-  <summary>{imports ? `${imports.length} imported dependencies` : 'Loading reference scope…'}</summary>
+  <summary>{imports ? `${imports.length} imported dependencies` : 'Loading reference scope...'}</summary>
   <div class="imports-body">
-    {#if (imports?.length ?? 0) > 20}<input aria-label="Filter LaTeX imports" placeholder="Filter dependencies…" bind:value={query} />{/if}
+    {#if (imports?.length ?? 0) > 20}<input aria-label="Filter LaTeX imports" placeholder="Filter dependencies..." bind:value={query} />{/if}
     <ul>
       {#each matches.slice(0, 50) as item (item.fnode)}
         <li title={`${item.fnode} ${item.title}`}><code>{item.fnode.slice(0, 8)}</code> <span>{item.title}</span></li>

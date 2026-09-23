@@ -120,7 +120,7 @@
     // retry. The editor and its unsaved model survive the connection change.
     if (!reconnectTimer && reconnects < 1 && block) {
       reconnects++;
-      progress = "Reconnecting Lean…";
+      progress = "Reconnecting Lean...";
       reconnectTimer = setTimeout(() => { if (alive) void open(); }, 500);
     }
   }
@@ -207,8 +207,8 @@
   {#if module}
     <details class="module-import"><summary>Lean import</summary><code>import {module}</code></details>
   {/if}
-  {#if action}<div class="status activity" role="status" aria-live="polite">{{ save: "Saving…", delete: "Deleting…" }[action]}</div>{/if}
-  {#if validating && !dirty}<div class="status activity" role="status" aria-live="polite">Verifying saved version…</div>{/if}
+  {#if action}<div class="status activity" role="status" aria-live="polite">{{ save: "Saving...", delete: "Deleting..." }[action]}</div>{/if}
+  {#if validating && !dirty}<div class="status activity" role="status" aria-live="polite">Verifying saved version...</div>{/if}
   {#if ready && progress}<div class="status" role="status">{progress}</div>{/if}
   <div class="editor-surface" class:collapsed={!expanded}>
   {#if mounted}

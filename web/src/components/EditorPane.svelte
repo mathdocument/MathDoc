@@ -225,7 +225,7 @@
           <button onclick={ensureBlockEditorLoaded}>retry</button>
         </div>
       {:else if !BlockEditorComponent && node.blocks.some(block => block.srctype !== "lean")}
-        <div class="editor-loading" aria-busy="true">Loading editor…</div>
+        <div class="editor-loading" aria-busy="true">Loading editor...</div>
       {/if}
       {/if}
       {#each SOURCE_TYPES as srctype (srctype)}

@@ -493,7 +493,7 @@ def parse(preamble, source):
         if richtext.render(node, parts, lambda child: render(child, depth + 1)):
             return
         if name == 'tikzcd':
-            parts.append(f'<div class="latex-diagram" data-tex="{esc(node.source)}" data-preamble="{esc(diagram_preamble_for(diagram_preamble, node.source))}">Rendering diagram…</div>')
+            parts.append(f'<div class="latex-diagram" data-tex="{esc(node.source)}" data-preamble="{esc(diagram_preamble_for(diagram_preamble, node.source))}">Rendering diagram...</div>')
             return
         if name == 'par' and any(getattr(child, 'blockType', False) for child in children):
             # plasTeX can wrap a bibliography in a paragraph after its definitions.
@@ -515,7 +515,7 @@ def parse(preamble, source):
                 # surrounding math. A TikZ node wrapper nests pictures inside
                 # text's stroke:none scope and makes ordinary arrows invisible.
                 diagram = r'\special{dvisvgm:raw <svg beginpicture>}$' + (r'\displaystyle ' if name != 'math' else '') + source + r'$\special{dvisvgm:raw </svg endpicture>}'
-                parts.append(f'<div class="latex-diagram" data-tex="{esc(diagram)}" data-preamble="{esc(diagram_preamble_for(diagram_preamble, diagram))}">Rendering diagram…</div>')
+                parts.append(f'<div class="latex-diagram" data-tex="{esc(diagram)}" data-preamble="{esc(diagram_preamble_for(diagram_preamble, diagram))}">Rendering diagram...</div>')
                 return
             parts.append(f'<span class="latex-math" data-display="{str(name != "math").lower()}" data-tex="{esc(source)}"></span>')
             return

@@ -13,7 +13,7 @@
   let nameInput = $state<HTMLInputElement>();
   $effect(() => { nameInput?.focus(); });
   const title = $derived(source ? "New branch" : "Init project");
-  const target = $derived(source ? `${source.split('/')[0]}/${name || '…'}` : `${name || '…'}/main`);
+  const target = $derived(source ? `${source.split('/')[0]}/${name || '...'}` : `${name || '...'}/main`);
   function close() { if (!busy) onClose(); }
   async function submit(event: SubmitEvent) {
     event.preventDefault();
@@ -42,7 +42,7 @@
       <div class="target"><GitBranchPlus size={14} /><code>{target}</code></div>
       {#if error}<p class="modal-error" role="alert">{error}</p>{/if}
     </div>
-    <footer><button type="button" class="secondary" onclick={close} disabled={busy}>Cancel</button><button type="submit" class="primary" disabled={busy || !name}>{busy ? "Creating…" : source ? "New branch" : "Init"}</button></footer>
+    <footer><button type="button" class="secondary" onclick={close} disabled={busy}>Cancel</button><button type="submit" class="primary" disabled={busy || !name}>{busy ? "Creating..." : source ? "New branch" : "Init"}</button></footer>
   </form>
 </dialog>
 

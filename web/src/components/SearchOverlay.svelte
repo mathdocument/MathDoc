@@ -111,7 +111,7 @@
       <input
         bind:this={inputEl}
         bind:value={query}
-        placeholder="Search by title or fnode…"
+        placeholder="Search by title or fnode..."
         autocomplete="off"
         spellcheck="false"
       />

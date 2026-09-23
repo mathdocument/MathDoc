@@ -114,7 +114,7 @@
       </div>
 
       <div class="controls">
-        <label class="search"><Search size={17} strokeWidth={1.8} /><input aria-label="Search projects and branches" placeholder="Search projects or branches…" bind:value={query} /></label>
+        <label class="search"><Search size={17} strokeWidth={1.8} /><input aria-label="Search projects and branches" placeholder="Search projects or branches..." bind:value={query} /></label>
         <div class="filters" aria-label="Filter branches">
           <button aria-pressed={filter === "all"} onclick={() => filter = "all"}>All branches</button>
           <button aria-pressed={filter === "running"} onclick={() => filter = "running"}>Running</button>
@@ -131,7 +131,7 @@
         <div class="error" role="alert">Could not delete project {database}: {message}</div>
       {/each}
       {#if !status && !error}
-        <div class="empty" role="status">Loading projects…</div>
+        <div class="empty" role="status">Loading projects...</div>
       {:else if status && branches.length === 0}
         <div class="empty"><FolderOpen size={30} /><h2>No projects yet</h2></div>
       {:else if status && groups.length === 0}

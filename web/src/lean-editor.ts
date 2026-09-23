@@ -56,9 +56,9 @@ let connection = 0;
 const send = (type: string, value?: unknown, generation?: number) => parent.postMessage({ type, value, fnode: shownFnode, generation, session: id }, location.origin);
 function progressText(processing: { range: { start: { line: number } } }[]) {
   return processing.length === 0 ? "Lean editor ready" :
-    processing.some(item => item.range.start.line === 0) ? "Loading Lean imports…" : "Lean is checking edits…";
+    processing.some(item => item.range.start.line === 0) ? "Loading Lean imports..." : "Lean is checking edits...";
 }
-function showProgress() { send("lean-progress", !id || connectionFailure ? "" : preview ? "Preparing Lean environment…" : selected?.progress ?? ""); }
+function showProgress() { send("lean-progress", !id || connectionFailure ? "" : preview ? "Preparing Lean environment..." : selected?.progress ?? ""); }
 function reveal(generation: number) {
   const current = selection;
   // The parent keeps this iframe hidden until lean-ready. Firefox throttles
@@ -185,7 +185,7 @@ async function selectNode(fnode: string, revision: string, generation: number, s
     if (signal.aborted) {
       await reference.object.revert({ soft: true }); reference.dispose(); return;
     }
-    entry = { document: next, reference, view: null, progress: "Loading Lean imports…" };
+    entry = { document: next, reference, view: null, progress: "Loading Lean imports..." };
   }
   documents.delete(next.filename);
   documents.set(next.filename, entry);
@@ -212,7 +212,7 @@ async function selectNode(fnode: string, revision: string, generation: number, s
   if (focused) editor.focus();
   if (restart) {
     entry.checkGeneration = (entry.checkGeneration ?? 0) + 1;
-    entry.progress = "Rechecking Lean…";
+    entry.progress = "Rechecking Lean...";
     // Reopen this file in the existing language client, including when collapsed
     // or unfocused. Other documents and the session's server remain alive.
     runtime.clientProvider!.restartFile(FileUri.fromUriOrError(model.uri));

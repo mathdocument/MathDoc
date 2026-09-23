@@ -485,7 +485,7 @@
     const remainder = characters.slice(firstEnd).join("").trimStart();
     const rest = Array.from(remainder);
     const second = rest.length > maxLineLength
-      ? rest.slice(0, maxLineLength - 1).join("") + "…"
+      ? rest.slice(0, maxLineLength - 3).join("") + "..."
       : remainder;
     return second ? [first, second] : [first];
   }
