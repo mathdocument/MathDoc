@@ -17,6 +17,8 @@ terminus_password = "the-existing-database-password"
 # public_origin = "https://mdc.example.test"
 # cache_dir = "/absolute/path/to/cache"
 # lean_timeout_seconds = 300
+# lean_cli_workers = 4
+# lean_web_sessions = 4
 ```
 
 The password is plaintext in this private file or the process environment. Protect
@@ -50,6 +52,19 @@ native Lean operations, not to CLI argument parsing or service startup.
 `port` selects the entry server's listening port (default 17843); `mdc start
 --port PORT` overrides it. All branches share this one listener; the setting has no
 environment override. A running entry server keeps its port until stopped.
+
+`lean_cli_workers` and `lean_web_sessions` set independent per-branch limits,
+both defaulting to 4. Use positive integers in `config.toml`; these settings have
+no environment overrides. CLI requests queue when all workers are busy. Browser
+session creation fails when all editor slots are occupied; close an idle editor
+to free a slot. Cache hits do not need a CLI worker.
+
+Tune both limits for the CPU and memory available to the host or container,
+accounting for all loaded branches. These are concurrency limits, not CPU thread
+limits: a Lean/Lake process can itself use multiple threads. Defaults do not
+automatically change with CPU count. Restart the service after changing them.
+For Docker deployments, edit the supplied `config.toml` and restart the runtime;
+no image rebuild or Compose change is needed.
 
 Cache overrides must be absolute paths. Cache paths append an endpoint hash,
 database name and branch name. The branch record and generated Lean data

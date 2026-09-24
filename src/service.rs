@@ -41,7 +41,9 @@ impl Service {
             lean,
             latex: crate::latex::LatexService::new(),
             editors: Mutex::new(HashMap::new()),
-            editor_slots: Arc::new(tokio::sync::Semaphore::new(8)),
+            editor_slots: Arc::new(tokio::sync::Semaphore::new(
+                crate::config::Settings::load()?.lean_web_sessions()?,
+            )),
             token: uuid::Uuid::new_v4().to_string(),
             public_origin: crate::config::Settings::load()?.public_origin()?,
             stopping: tokio::sync::watch::channel(false).0,

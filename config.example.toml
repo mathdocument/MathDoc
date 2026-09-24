@@ -3,3 +3,7 @@
 # public_origin = "http://192.0.2.10:17843"
 # For an authenticated reverse proxy, use the browser's external site address:
 # public_origin = "https://mathdoc.example.com"
+
+# Per-branch Lean concurrency. Tune for the host/container CPU and memory budget.
+# lean_cli_workers = 4
+# lean_web_sessions = 4

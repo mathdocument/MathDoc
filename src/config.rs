@@ -11,6 +11,8 @@ pub struct Settings {
     pub terminus_password: Option<String>,
     pub cache_dir: Option<PathBuf>,
     pub lean_timeout_seconds: Option<u64>,
+    pub lean_cli_workers: Option<usize>,
+    pub lean_web_sessions: Option<usize>,
     pub port: Option<u16>,
     pub public_origin: Option<String>,
 }
@@ -27,6 +29,14 @@ fn user_dir(variable: &str, fallback: &str) -> Result<PathBuf> {
 }
 
 impl Settings {
+    pub fn lean_cli_workers(&self) -> Result<usize> {
+        lean_limit(self.lean_cli_workers, "lean_cli_workers")
+    }
+
+    pub fn lean_web_sessions(&self) -> Result<usize> {
+        lean_limit(self.lean_web_sessions, "lean_web_sessions")
+    }
+
     pub fn terminus_password(&self) -> Result<String> {
         let value = std::env::var("MDC_TERMINUS_PASSWORD").ok();
         if let Some(path) = std::env::var_os("MDC_TERMINUS_PASSWORD_FILE") {
@@ -125,6 +135,16 @@ impl Settings {
     }
 }
 
+fn lean_limit(value: Option<usize>, name: &str) -> Result<usize> {
+    let value = value.unwrap_or(4);
+    anyhow::ensure!(
+        (1..=tokio::sync::Semaphore::MAX_PERMITS).contains(&value),
+        "{name} must be between 1 and {}",
+        tokio::sync::Semaphore::MAX_PERMITS
+    );
+    Ok(value)
+}
+
 pub(crate) fn validate_name(name: &str) -> Result<()> {
     anyhow::ensure!(
         !name.is_empty()
@@ -148,6 +168,27 @@ pub(crate) fn project_parts(project: &str) -> Result<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn lean_concurrency_limits_default_to_four_and_validate_overrides() {
+        let defaults = Settings::default();
+        assert_eq!(defaults.lean_cli_workers().unwrap(), 4);
+        assert_eq!(defaults.lean_web_sessions().unwrap(), 4);
+        let settings: Settings =
+            toml::from_str("lean_cli_workers = 2\nlean_web_sessions = 6").unwrap();
+        assert_eq!(settings.lean_cli_workers().unwrap(), 2);
+        assert_eq!(settings.lean_web_sessions().unwrap(), 6);
+        for value in [0, tokio::sync::Semaphore::MAX_PERMITS + 1] {
+            let settings: Settings = toml::from_str(&format!(
+                "lean_cli_workers = {value}\nlean_web_sessions = {value}"
+            ))
+            .unwrap();
+            assert!(settings.lean_cli_workers().is_err());
+            assert!(settings.lean_web_sessions().is_err());
+        }
+        assert!(toml::from_str::<Settings>("lean_cli_workers = -1").is_err());
+        assert!(toml::from_str::<Settings>("lean_web_sessions = 1.5").is_err());
+    }
+
     #[test]
     fn config_is_strict_and_accepts_user_settings() {
         let settings: Settings =
