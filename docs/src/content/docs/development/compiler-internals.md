@@ -11,6 +11,23 @@ skip repeated metadata reads; their recorded imports still lead to any incomplet
 transitive certificates. A dependency is not elaborated again in a separate LSP worker merely to
 refresh its status. Missing or mismatched evidence remains unverified.
 
+Each branch has a CLI worker pool controlled by `lean_cli_workers` (default 4).
+Requests first reuse certificates or wait for an identical input's in-flight check,
+then acquire a worker through a FIFO semaphore. No client session or agent identity
+is required. Each worker retains one LSP and one hot document, with private mutable
+sources and build paths. Workers initialize on demand and remain reusable; cached
+checks require no worker. Goal queries use the same pool. Interrupted LSP requests
+discard their protocol state before the slot can be reused.
+
+The first worker retains `projects/PROJECT_KEY`; additional workers use its
+`.workers/SLOT` subdirectories. They share the pinned package checkout and native
+artifact pool with editor workspaces. Certification keeps request-local evidence
+so concurrent checks of different revisions cannot overwrite each other's inputs
+while publishing results. Branch shutdown closes the queue and shuts down all
+worker transports. Browser sessions have a separate `lean_web_sessions` limit
+(default 4); they do not consume CLI slots. Both limits are per branch and can be
+adjusted in the host or deployment `config.toml`.
+
 The browser bridge forwards framed JSON without constructing a recursive JSON tree.
 URI values are translated independently, so deeply nested Infoview expressions do
 not hit a 128-level deserialization limit. JSON syntax, frame headers and the

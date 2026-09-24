@@ -16,7 +16,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    sync::Mutex,
+    sync::{Mutex, MutexGuard, Semaphore, SemaphorePermit},
 };
 pub use transport::{command, spawn, Process, Server};
 
@@ -388,6 +388,7 @@ impl Input {
     }
 }
 struct Manager {
+    slot: usize,
     project_key: String,
     root: PathBuf,
     lsp: Option<Lsp>,
@@ -458,8 +459,8 @@ fn dependencies_have_sorry(
 pub struct LeanService {
     root: PathBuf,
     pool: cache::Pool,
-    // ponytail: one CLI compiler per branch; add workers if concurrent check throughput requires it.
-    manager: Mutex<Manager>,
+    workers: Vec<Mutex<Manager>>,
+    worker_slots: Semaphore,
     results: RwLock<HashMap<String, CheckResult>>,
     certificates: Mutex<HashMap<String, Option<Arc<certificates::Certificates>>>>,
     synced: Mutex<(String, u64)>,
@@ -476,6 +477,19 @@ impl LeanService {
         diagnostics: Vec<Value>,
         imports: Vec<Value>,
     ) -> Result<CheckResult> {
+        let target = &input.chain.last().context("no Lean target")?.0.fnode;
+        self.record_check(root, input, diagnostics, imports)
+            .await?
+            .remove(target)
+            .context("editor check produced no target result")
+    }
+    async fn record_check(
+        &self,
+        root: &Path,
+        input: &Input,
+        diagnostics: Vec<Value>,
+        imports: Vec<Value>,
+    ) -> Result<HashMap<String, CheckResult>> {
         let started = Instant::now();
         verify_manifest(root, &input.project).await?;
         let target = &input.chain.last().context("no Lean target")?.0;
@@ -486,6 +500,21 @@ impl LeanService {
             .map(|(n, k)| (n.fnode.clone(), k.clone()))
             .collect();
         let nodes: HashMap<_, _> = input.chain.iter().map(|(n, _)| (&n.fnode, n)).collect();
+        // Other workers may certify different revisions of the same nodes.
+        // Keep this request's evidence stable across metadata/publication awaits.
+        let mut evidence: HashMap<_, _> = {
+            let results = self.results.read().unwrap();
+            input
+                .chain
+                .iter()
+                .filter_map(|(node, key)| {
+                    results
+                        .get(&node.fnode)
+                        .filter(|r| &r.input_key == key)
+                        .map(|r| (node.fnode.clone(), r.clone()))
+                })
+                .collect()
+        };
         let mut observed = HashMap::from([(
             target.fnode.clone(),
             (
@@ -513,7 +542,7 @@ impl LeanService {
             let Some(node) = nodes.get(id) else {
                 continue;
             };
-            if let Some(cached) = self.results.read().unwrap().get(id).filter(|r| {
+            if let Some(cached) = evidence.get(id).filter(|r| {
                 r.certified && r.has_sorry.is_some() && keys.get(id) == Some(&r.input_key)
             }) {
                 // A known direct dependency can still have older, incomplete
@@ -578,15 +607,17 @@ impl LeanService {
         }
         let inspection_ms = inspection_started.elapsed().as_millis();
         let publication_started = Instant::now();
-        let mut final_result = None;
         for (node, key) in &input.chain {
             let Some((has_sorry, diagnostics, imports)) = observed.remove(&node.fnode) else {
                 // A cached parent may have been restored before incomplete
                 // transitive evidence was recovered in this same check.
-                let mut results = self.results.write().unwrap();
-                let has_sorry = dependencies_have_sorry(node, &keys, &results);
-                if let Some(result) = results.get_mut(&node.fnode).filter(|r| &r.input_key == key) {
+                let has_sorry = dependencies_have_sorry(node, &keys, &evidence);
+                if let Some(result) = evidence.get_mut(&node.fnode) {
                     result.dependencies_have_sorry = has_sorry;
+                    self.results
+                        .write()
+                        .unwrap()
+                        .insert(node.fnode.clone(), result.clone());
                 }
                 continue;
             };
@@ -596,7 +627,7 @@ impl LeanService {
                 &imports,
                 known,
                 &keys,
-                &self.results.read().unwrap(),
+                &evidence,
                 root,
                 &input.project,
             )?;
@@ -611,11 +642,7 @@ impl LeanService {
                 passed,
                 certified: passed && errors.is_empty(),
                 has_sorry,
-                dependencies_have_sorry: dependencies_have_sorry(
-                    node,
-                    &keys,
-                    &self.results.read().unwrap(),
-                ),
+                dependencies_have_sorry: dependencies_have_sorry(node, &keys, &evidence),
                 built: artifacts.is_some(),
                 artifacts,
                 cache_hit: false,
@@ -629,30 +656,38 @@ impl LeanService {
                 .write()
                 .unwrap()
                 .insert(node.fnode.clone(), result.clone());
-            final_result = Some(result);
+            evidence.insert(node.fnode.clone(), result);
         }
         self.synced.lock().await.1 = 0;
         if started.elapsed() >= Duration::from_secs(1) {
             eprintln!("Lean certification: nodes={} metadata={}ms inspect={}ms ({} modules) publish={}ms total={}ms", input.chain.len(), metadata_ms, inspection_ms, missing.len(), publication_started.elapsed().as_millis(), started.elapsed().as_millis());
         }
-        final_result
-            .filter(|r| r.fnode == target.fnode)
-            .context("editor check produced no target result")
+        Ok(evidence)
     }
     pub fn new(root: PathBuf) -> Result<Self> {
         let pool = root.join(".shared");
         Self::with_shared_cache(root, pool)
     }
     pub fn with_shared_cache(root: PathBuf, shared: PathBuf) -> Result<Self> {
+        let workers = crate::config::Settings::load()?.lean_cli_workers()?;
+        Self::with_worker_count(root, shared, workers)
+    }
+    fn with_worker_count(root: PathBuf, shared: PathBuf, workers: usize) -> Result<Self> {
         let pool = cache::Pool::open(shared)?;
         let lease = crate::service::acquire_lease(&root)?;
         Ok(Self {
-            manager: Mutex::new(Manager {
-                project_key: String::new(),
-                root: root.clone(),
-                lsp: None,
-                sources: HashMap::new(),
-            }),
+            workers: (0..workers)
+                .map(|slot| {
+                    Mutex::new(Manager {
+                        slot,
+                        project_key: String::new(),
+                        root: root.clone(),
+                        lsp: None,
+                        sources: HashMap::new(),
+                    })
+                })
+                .collect(),
+            worker_slots: Semaphore::new(workers),
             root,
             pool,
             results: RwLock::new(HashMap::new()),
@@ -875,29 +910,34 @@ impl LeanService {
                 .await?;
         }
         let target_id = target.fnode.clone();
-        let mut manager = self.manager.lock().await;
         if let Some(result) = self.cached_input(&input, build).await {
             return Ok(result);
         }
-        self.prepare_input(&mut manager, &input).await?;
-        let result = self.check_chain(&mut manager, &input).await;
+        let mut worker = self.worker().await?;
+        let manager = &mut *worker.0;
+        if let Some(result) = self.cached_input(&input, build).await {
+            return Ok(result);
+        }
+        self.prepare_input(manager, &input).await?;
+        let result = self.check_chain(manager, &input).await;
         if result.is_err() {
             manager.lsp = None;
             manager.project_key.clear();
         }
-        let mut result = result?;
+        let mut evidence = result?;
+        let mut result = evidence
+            .get(&target_id)
+            .cloned()
+            .context("no Lean target result")?;
         if build && result.certified {
             build_module(&manager.root, &target.module).await?;
             for (node, key) in &input.chain {
                 let mut checked = if node.fnode == target_id {
                     result.clone()
                 } else {
-                    self.results
-                        .read()
-                        .unwrap()
-                        .get(&node.fnode)
+                    evidence
+                        .remove(&node.fnode)
                         .filter(|r| &r.input_key == key)
-                        .cloned()
                         .context("dependency evidence changed during build")?
                 };
                 let artifacts = cache::Artifacts::from_trace(&manager.root, &node.module)
@@ -926,9 +966,28 @@ impl LeanService {
         Ok(result)
     }
     pub async fn shutdown(&self) {
-        if let Some(lsp) = self.manager.lock().await.lsp.take() {
-            lsp.server.shutdown().await;
-        }
+        self.worker_slots.close();
+        futures_util::future::join_all(self.workers.iter().map(|worker| async {
+            if let Some(lsp) = worker.lock().await.lsp.take() {
+                lsp.server.shutdown().await;
+            }
+        }))
+        .await;
+    }
+    async fn worker(&self) -> Result<(MutexGuard<'_, Manager>, SemaphorePermit<'_>)> {
+        let permit = self
+            .worker_slots
+            .acquire()
+            .await
+            .context("Lean service is stopping")?;
+        let manager = self
+            .workers
+            .iter()
+            .find_map(|worker| worker.try_lock().ok())
+            .context("Lean service is stopping")?;
+        // Keep this tuple intact: unlock the worker before returning its permit.
+        // Semaphore waiters are FIFO; prefer a warm low-numbered worker when idle.
+        Ok((manager, permit))
     }
     async fn prepare_input(&self, manager: &mut Manager, input: &Input) -> Result<()> {
         let project_key = input.project_key.clone();
@@ -936,45 +995,69 @@ impl LeanService {
             manager.lsp = None;
             manager.sources.clear();
             manager.root = self.root.join("projects").join(&project_key);
+            // Keep the first worker's existing workspace and library cache.
+            if manager.slot != 0 {
+                manager.root = manager.root.join(".workers").join(manager.slot.to_string());
+            }
             prepare_project(&manager.root, &input.project).await?;
+            if manager.slot != 0 {
+                self.share_packages(&manager.root, &project_key).await?;
+            }
             self.pool.attach(&manager.root, &project_key).await?;
             manager.project_key = project_key;
         }
         refresh_editor_sources(&manager.root, input, &mut manager.sources).await
     }
-    async fn check_chain(&self, manager: &mut Manager, input: &Input) -> Result<CheckResult> {
+    async fn check_chain(
+        &self,
+        manager: &mut Manager,
+        input: &Input,
+    ) -> Result<HashMap<String, CheckResult>> {
         let (target, _) = input.chain.last().context("no Lean target")?;
-        if let Some(result) = self.cached_input(input, false).await {
-            return Ok(result);
+        if self.cached_input(input, false).await.is_some() {
+            let results = self.results.read().unwrap();
+            let evidence: Option<HashMap<_, _>> = input
+                .chain
+                .iter()
+                .map(|(node, key)| {
+                    results
+                        .get(&node.fnode)
+                        .filter(|r| &r.input_key == key)
+                        .map(|r| (node.fnode.clone(), r.clone()))
+                })
+                .collect();
+            if let Some(evidence) = evidence {
+                return Ok(evidence);
+            }
         }
         let source = target.source("lean").context("node has no Lean block")?;
-        if manager.lsp.is_none() {
-            manager.lsp = Some(Lsp::start(&manager.root).await?);
-        }
+        // An interrupted request must drop its LSP instead of returning a
+        // half-updated document/protocol state to the next pool user.
+        let mut lsp = match manager.lsp.take() {
+            Some(lsp) => lsp,
+            None => Lsp::start(&manager.root).await?,
+        };
         let uri = file_uri(&module_path(&manager.root, &target.module)?)?;
         // Lake prepares the import closure once. Reuse its native artifact
         // metadata, as browser certification does, instead of opening every
         // dependency in a second interactive worker.
-        let (diagnostics, imports) = manager
-            .lsp
-            .as_mut()
-            .unwrap()
-            .check(&uri, source, &input.environment_key()?)
-            .await?;
-        self.record_editor_check(&manager.root, input, diagnostics, imports)
+        let (diagnostics, imports) = lsp.check(&uri, source, &input.environment_key()?).await?;
+        manager.lsp = Some(lsp);
+        self.record_check(&manager.root, input, diagnostics, imports)
             .await
     }
     pub async fn goals(&self, input: Input, line: u32, character: u32) -> Result<Value> {
         let node = input.chain.last().context("no Lean target")?.0.clone();
         self.check(input.clone(), false).await?;
-        let mut manager = self.manager.lock().await;
-        self.prepare_input(&mut manager, &input).await?;
-        if manager.lsp.is_none() {
-            manager.lsp = Some(Lsp::start(&manager.root).await?);
-        }
+        let mut worker = self.worker().await?;
+        let manager = &mut *worker.0;
+        self.prepare_input(manager, &input).await?;
         let uri = file_uri(&module_path(&manager.root, &node.module)?)?;
         let dependency_key = input.environment_key()?;
-        let lsp = manager.lsp.as_mut().unwrap();
+        let mut lsp = match manager.lsp.take() {
+            Some(lsp) => lsp,
+            None => Lsp::start(&manager.root).await?,
+        };
         let result = async {
             // A cached result can outlive its worker; reopen the exact input before querying goals.
             lsp.check(
@@ -990,9 +1073,8 @@ impl LeanService {
             .await
         }
         .await;
-        if result.is_err() {
-            manager.lsp = None;
-            manager.project_key.clear();
+        if result.is_ok() {
+            manager.lsp = Some(lsp);
         }
         result
     }
@@ -1003,21 +1085,26 @@ impl LeanService {
         let directory = tempfile::tempdir_in(drafts)?;
         let root = directory.path();
         prepare_project(root, &input.project).await?;
-        let canonical = self.root.join("projects").join(&input.project_key);
+        self.share_packages(root, &input.project_key).await?;
+        self.pool.attach(root, &input.project_key).await?;
+        refresh_editor_sources(root, input, &mut SourceState::new()).await?;
+        Ok(directory)
+    }
+    async fn share_packages(&self, root: &Path, project_key: &str) -> Result<()> {
+        let canonical = self.root.join("projects").join(project_key);
         // Package revisions and toolchain are pinned by the project key. Share that
         // cache; cloning Mathlib's entire file tree costs seconds even with APFS COW.
         let packages = canonical.join(".lake/packages");
         tokio::fs::create_dir_all(&packages).await?;
         tokio::fs::create_dir_all(root.join(".lake")).await?;
-        tokio::fs::symlink(
-            tokio::fs::canonicalize(packages).await?,
-            root.join(".lake/packages"),
-        )
-        .await?;
-        self.pool.attach(&canonical, &input.project_key).await?;
-        self.pool.attach(root, &input.project_key).await?;
-        refresh_editor_sources(root, input, &mut SourceState::new()).await?;
-        Ok(directory)
+        if !root.join(".lake/packages").is_symlink() {
+            tokio::fs::symlink(
+                tokio::fs::canonicalize(packages).await?,
+                root.join(".lake/packages"),
+            )
+            .await?;
+        }
+        self.pool.attach(&canonical, project_key).await
     }
 }
 pub fn module_path(root: &Path, module: &str) -> Result<PathBuf> {
@@ -1135,6 +1222,178 @@ async fn build_module(root: &Path, module: &str) -> Result<()> {
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn cli_workers_queue_fairly_release_cancelled_waiters_and_close() {
+        let cache = tempfile::tempdir().unwrap();
+        let service = LeanService::new(cache.path().to_path_buf()).unwrap();
+        assert_eq!(
+            service.workers.len(),
+            crate::config::Settings::load()
+                .unwrap()
+                .lean_cli_workers()
+                .unwrap()
+        );
+        assert!(
+            !cache.path().join("projects").exists(),
+            "workers start lazily"
+        );
+        let mut held = Vec::new();
+        for _ in &service.workers {
+            held.push(service.worker().await.unwrap());
+        }
+        let mut first = Box::pin(service.worker());
+        let mut cancelled = Box::pin(service.worker());
+        let mut second = Box::pin(service.worker());
+        assert!(futures_util::poll!(&mut first).is_pending());
+        assert!(futures_util::poll!(&mut cancelled).is_pending());
+        assert!(futures_util::poll!(&mut second).is_pending());
+        drop(cancelled);
+        let released = held.pop().unwrap();
+        let slot = released.0.slot;
+        drop(released);
+        let first = first.await.unwrap();
+        assert_eq!(first.0.slot, slot);
+        assert!(futures_util::poll!(&mut second).is_pending());
+        drop(first);
+        held.push(second.await.unwrap());
+        let mut waiting = Box::pin(service.worker());
+        assert!(futures_util::poll!(&mut waiting).is_pending());
+        let mut shutdown = Box::pin(service.shutdown());
+        assert!(futures_util::poll!(&mut shutdown).is_pending());
+        assert!(waiting.await.is_err(), "shutdown must wake queued requests");
+        drop(held);
+        shutdown.await;
+        assert!(service.worker().await.is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires native Lean and Lake"]
+    async fn cli_workers_isolate_parallel_revisions_deduplicate_and_reuse() {
+        let cache = tempfile::tempdir().unwrap();
+        let service = LeanService::with_worker_count(
+            cache.path().to_path_buf(),
+            cache.path().join(".shared"),
+            2,
+        )
+        .unwrap();
+        let service = Arc::new(service);
+        let dependency = Node::new("Concurrent dependency".into()).unwrap();
+        let target = Node::new("Concurrent target".into()).unwrap();
+        let gate = cache.path().join("release");
+        let input = |value| {
+            let mut dependency = dependency.clone();
+            dependency.blocks.push(crate::store::Block {
+                srctype: "lean".into(),
+                content: format!("def concurrentValue : Nat := {value}\n"),
+                ..Default::default()
+            });
+            let mut target = target.clone();
+            target.depens.push(dependency.fnode.clone());
+            target.blocks.push(crate::store::Block {
+                srctype: "lean".into(),
+                content: format!("import Lean\nimport {}\nrun_cmd Lean.Elab.Command.liftIO <| do\n  IO.FS.writeFile {} \"started\"\n  while !(← System.FilePath.pathExists {}) do\n    IO.sleep 10\ntheorem concurrentProof : concurrentValue = {value} := rfl\n", dependency.module,
+                    serde_json::to_string(&cache.path().join(format!("started-{value}")).to_string_lossy()).unwrap(),
+                    serde_json::to_string(&gate.to_string_lossy()).unwrap()),
+                ..Default::default()
+            });
+            Input {
+                project: LeanProject::default().into(),
+                project_key: LeanProject::default().key(),
+                modules: [&dependency, &target]
+                    .into_iter()
+                    .map(|n| {
+                        (
+                            crate::store::module_file(&n.module, "lean").unwrap(),
+                            n.fnode.clone(),
+                        )
+                    })
+                    .collect::<BTreeMap<_, _>>()
+                    .into(),
+                chain: vec![
+                    (Arc::new(dependency), format!("dependency-{value}")),
+                    (Arc::new(target), format!("target-{value}")),
+                ],
+            }
+        };
+        let start = |input: Input| {
+            let service = service.clone();
+            tokio::spawn(async move { service.check(input, true).await })
+        };
+        async fn started(path: PathBuf) {
+            tokio::time::timeout(Duration::from_secs(30), async {
+                while !path.exists() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("both Lean checks must start before either is released");
+        }
+        let first = start(input(1));
+        started(cache.path().join("started-1")).await;
+        let duplicate = start(input(1));
+        let second = start(input(2));
+        started(cache.path().join("started-2")).await;
+        assert_eq!(service.worker_slots.available_permits(), 0);
+        // A third check must queue; cancelling it must return its input lock.
+        let queued = start(input(3));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!cache.path().join("started-3").exists());
+        queued.abort();
+        assert!(queued.await.unwrap_err().is_cancelled());
+        std::fs::write(&gate, "go").unwrap();
+        let completed = tokio::time::timeout(Duration::from_secs(60), async {
+            tokio::join!(first, duplicate, second)
+        })
+        .await
+        .unwrap();
+        let first = completed.0.unwrap().unwrap();
+        let duplicate = completed.1.unwrap().unwrap();
+        let second = completed.2.unwrap().unwrap();
+        for result in [&first, &duplicate, &second] {
+            assert!(result.certified && result.built, "{result:?}");
+        }
+        assert!(!first.cache_hit && duplicate.cache_hit && !second.cache_hit);
+        let first_worker = service.workers[0].lock().await;
+        let second_worker = service.workers[1].lock().await;
+        assert_ne!(first_worker.root, second_worker.root);
+        assert_eq!(
+            std::fs::canonicalize(first_worker.root.join(".lake/cache")).unwrap(),
+            std::fs::canonicalize(second_worker.root.join(".lake/cache")).unwrap()
+        );
+        assert_ne!(
+            std::fs::read(module_path(&first_worker.root, &dependency.module).unwrap()).unwrap(),
+            std::fs::read(module_path(&second_worker.root, &dependency.module).unwrap()).unwrap()
+        );
+        let sequence = first_worker.lsp.as_ref().unwrap().sequence;
+        drop((first_worker, second_worker));
+        assert!(service.check(input(3), false).await.unwrap().certified);
+        assert!(
+            service.workers[0]
+                .lock()
+                .await
+                .lsp
+                .as_ref()
+                .unwrap()
+                .sequence
+                > sequence,
+            "reuse the warm LSP"
+        );
+        // Interrupt an active LSP request, then reuse its slot with fresh protocol state.
+        std::fs::remove_file(&gate).unwrap();
+        let cancelled = start(input(4));
+        started(cache.path().join("started-4")).await;
+        cancelled.abort();
+        assert!(cancelled.await.unwrap_err().is_cancelled());
+        assert!(service.workers[0].lock().await.lsp.is_none());
+        std::fs::write(&gate, "go").unwrap();
+        assert!(service.check(input(4), false).await.unwrap().certified);
+        service.shutdown().await;
+        for worker in &service.workers {
+            assert!(worker.lock().await.lsp.is_none());
+        }
+        assert!(service.worker().await.is_err());
+    }
+
+    #[tokio::test]
     #[ignore = "requires native Lean and Lake"]
     async fn editor_evidence_certifies_imports_without_a_second_checker() {
         let cache = tempfile::tempdir().unwrap();
@@ -1206,12 +1465,12 @@ mod tests {
         );
         assert!(service.check(input.clone(), false).await.unwrap().cache_hit);
         assert!(
-            service.manager.lock().await.lsp.is_none(),
+            service.workers[0].lock().await.lsp.is_none(),
             "the CLI must reuse editor evidence without creating a checker"
         );
         assert!(service.check(input.clone(), true).await.unwrap().built);
         assert!(
-            service.manager.lock().await.lsp.is_none(),
+            service.workers[0].lock().await.lsp.is_none(),
             "building artifacts must not repeat an already certified LSP check"
         );
         let mut wrong = input.clone();
@@ -1365,7 +1624,7 @@ mod tests {
         );
         assert_eq!(service.formal_status(&gap, &gap.fnode), "sorry");
         assert!(service.check(input.clone(), false).await.unwrap().cache_hit);
-        let root = service.manager.lock().await.root.clone();
+        let root = service.workers[0].lock().await.root.clone();
         assert_eq!(
             artifact_has_sorry(&root.join(".lake/build/lib/lean"), &leaf.module).await,
             None
@@ -1474,7 +1733,7 @@ mod tests {
             .unwrap();
         std::fs::create_dir_all(canonical.join(&deleted_artifact).parent().unwrap()).unwrap();
         std::fs::write(canonical.join(&deleted_artifact), "stale artifact").unwrap();
-        let busy = service.manager.lock().await;
+        let busy = service.workers[0].lock().await;
         let draft = tokio::time::timeout(Duration::from_secs(2), service.editor_project(&input))
             .await
             .unwrap()

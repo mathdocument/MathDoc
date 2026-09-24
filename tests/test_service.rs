@@ -307,7 +307,12 @@ async fn api_mutations_use_database_revisions_without_workspace_files() {
     .await;
     assert_eq!(status, 200, "{checked}");
     assert_eq!(checked["certified"], true);
-    for _ in 0..12 {
+    let limit = mathdoc::config::Settings::load()
+        .unwrap()
+        .lean_web_sessions()
+        .unwrap();
+    let mut sessions = Vec::new();
+    for index in 0..=limit {
         let (status, session) = call(
             &app,
             "POST",
@@ -316,8 +321,15 @@ async fn api_mutations_use_database_revisions_without_workspace_files() {
             child_saved["revision"].as_str(),
         )
         .await;
-        assert_eq!(status, 200, "{session}");
-        let path = format!("/api/lean/session/{}", session["id"].as_str().unwrap());
+        if index == limit {
+            assert_eq!(status, 503, "{session}");
+        } else {
+            assert_eq!(status, 200, "{session}");
+            sessions.push(session["id"].as_str().unwrap().to_owned());
+        }
+    }
+    for session in sessions {
+        let path = format!("/api/lean/session/{session}");
         let response = app
             .clone()
             .oneshot(
@@ -333,6 +345,19 @@ async fn api_mutations_use_database_revisions_without_workspace_files() {
         assert_eq!(response.status(), 204);
         assert_eq!(call(&app, "GET", &path, Value::Null, None).await.0, 404);
     }
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("/api/node/{child}/lean/session"),
+            Value::Null,
+            child_saved["revision"].as_str(),
+        )
+        .await
+        .0,
+        200,
+        "closing editors must release their slots"
+    );
     drop(app);
     let reopened = Service::open(db.clone()).await.unwrap();
     assert_eq!(
