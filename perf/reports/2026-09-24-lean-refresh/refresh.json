@@ -1,0 +1,42 @@
+{
+  "before": [
+    {
+      "ms": 863.3763339999987,
+      "didOpen": 1,
+      "didClose": 1,
+      "cached": false
+    },
+    {
+      "ms": 807.8877499999999,
+      "didOpen": 1,
+      "didClose": 1,
+      "cached": false
+    },
+    {
+      "ms": 807.7472500000003,
+      "didOpen": 1,
+      "didClose": 1,
+      "cached": false
+    }
+  ],
+  "after": [
+    {
+      "ms": 91.09199999999964,
+      "didOpen": 0,
+      "didClose": 0,
+      "cached": false
+    },
+    {
+      "ms": 75.51174999999967,
+      "didOpen": 0,
+      "didClose": 0,
+      "cached": false
+    },
+    {
+      "ms": 72.14345799999955,
+      "didOpen": 0,
+      "didClose": 0,
+      "cached": false
+    }
+  ]
+}

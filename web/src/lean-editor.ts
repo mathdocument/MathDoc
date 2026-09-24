@@ -172,7 +172,7 @@ async function selectNode(fnode: string, revision: string, generation: number, s
   document.getElementById("error")!.textContent = "";
 
   let entry = documents.get(next.filename);
-  const restart = entry && (recheck || entry.document.environment_key !== next.environment_key);
+  const restart = entry && entry.document.environment_key !== next.environment_key;
   if (!entry) {
     // ponytail: two hot documents; larger sets would retain another full Mathlib
     // environment per file. Evicted files keep Lake's shared compiled artifacts.
@@ -210,11 +210,13 @@ async function selectNode(fnode: string, revision: string, generation: number, s
   if (!runtime.infoProvider!.isOpen()) void getService(ICommandService).then(commands => { if (!signal.aborted) return commands.executeCommand("lean4.displayGoal"); });
   document.getElementById("infoview-pending")!.hidden = true;
   if (focused) editor.focus();
-  if (restart) {
+  if (recheck || restart) {
     entry.checkGeneration = (entry.checkGeneration ?? 0) + 1;
+  }
+  if (restart) {
     entry.progress = "Rechecking Lean...";
-    // Reopen this file in the existing language client, including when collapsed
-    // or unfocused. Other documents and the session's server remain alive.
+    // Only changed dependencies need a fresh imported environment. Ordinary
+    // refresh reuses incremental diagnostics and retries saved-version validation.
     runtime.clientProvider!.restartFile(FileUri.fromUriOrError(model.uri));
   } else {
     // A retained model can finish checking before the selection reply arrives.

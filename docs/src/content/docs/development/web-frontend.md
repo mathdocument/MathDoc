@@ -65,7 +65,9 @@ animation frames until it becomes visible. The iframe fills the
 space remaining below the block controls, so its final lines remain reachable.
 After startup, the page has an isolated native WebSocket session,
 with source on the left and Infoview on the right. The start button becomes
-**Recheck Lean**, which refreshes the selected document in the existing client.
+**Recheck Lean**, which refreshes the dependency snapshot and retries saved-version
+validation. Unchanged environments keep the same file worker, diagnostics and
+in-flight elaboration; only changed dependency inputs require reopening the file.
 The adjacent stop button closes only this session and leaves the editor and its
 draft intact. LeanMonaco installs browser providers; its desktop
 extension entry is disabled in the browser manifest. Save reuses the editor's

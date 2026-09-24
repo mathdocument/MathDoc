@@ -17,6 +17,8 @@ const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const binary = resolve(process.env.MDC_BIN ?? resolve(webRoot, "../target/debug/mdc"));
 
 const env = { ...process.env };
+const documentStartKey = process.platform === "darwin" ? "Meta+ArrowUp" : "Control+Home";
+const documentEndKey = process.platform === "darwin" ? "Meta+ArrowDown" : "Control+End";
 function launchBrowser() {
   if (env.MDC_E2E_BROWSER === 'firefox') return firefox.launch();
   if (env.MDC_E2E_BROWSER === 'webkit') return webkit.launch();
@@ -124,6 +126,14 @@ async function fixture(browser, body, extraNodes = [], expectedPageErrors = [], 
 const center = (page) => page.getByRole("region", { name: "current node" });
 async function title(page, name) {
   await center(page).getByRole("button", { name, exact: true }).waitFor();
+}
+async function leanReply(socket, method) {
+  const sent = await socket.waitForEvent("framesent", {predicate: ({payload}) => JSON.parse(String(payload)).method === method});
+  const {id} = JSON.parse(String(sent.payload));
+  const received = await socket.waitForEvent("framereceived", {predicate: ({payload}) => JSON.parse(String(payload)).id === id});
+  const reply = JSON.parse(String(received.payload));
+  assert.equal(reply.error, undefined, JSON.stringify(reply.error));
+  return reply.result;
 }
 async function rename(page, value) {
   await center(page).getByTitle("Click to rename").click();
@@ -959,9 +969,11 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.equal(await page.getByText("Unsaved", { exact: true }).count(), 0);
         for (let i = 0; i < 3; i++) {
           const old = await page.locator(".lean-block").getAttribute("data-session");
-          const rechecked = socket.waitForEvent("framesent", {predicate: ({payload}) => JSON.parse(String(payload)).method === "textDocument/didOpen"});
+          const before = messages.length;
+          const rechecked = leanReply(socket, "mdc/certify");
           await page.getByRole("button", { name: "Recheck Lean", exact: true }).click();
-          await rechecked;
+          assert.equal((await rechecked).certified, true);
+          assert.equal(messages.slice(before).some(m => ["textDocument/didClose", "textDocument/didOpen"].includes(m.method)), false, "refresh must retain the imported environment");
           assert.equal((await fetch(`${url}/api/lean/session/${old}`)).status, 200, "recheck must retain the LSP session");
           assert.equal(messages.filter(m => m.method === "initialize").length, 1);
         }
@@ -1043,7 +1055,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
         const input = frame.getByRole("textbox", { name: /Editor content/ });
         await frame.getByText("alpha", { exact: true }).waitFor({ timeout: 3000 });
-        await input.press("ControlOrMeta+End");
+        await input.press(documentEndKey);
         await page.keyboard.insertText("-- typed before Lean initialized\n");
         await page.getByText("Unsaved", { exact: true }).waitFor();
         releaseInit();
@@ -1059,7 +1071,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         selectionGate = new Promise(resolve => { releaseSelect = resolve; });
         await select("Gamma");
         await frame.getByText("gamma", { exact: true }).waitFor({ timeout: 1000 });
-        await input.press("ControlOrMeta+End");
+        await input.press(documentEndKey);
         await page.keyboard.insertText("-- typed while preparing node\n");
         await page.getByText("Unsaved", { exact: true }).waitFor();
         blockSelect = false; releaseSelect();
@@ -1095,7 +1107,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         selectionGate = new Promise(resolve => { releaseSelect = resolve; });
         await select("Gamma");
         await frame.getByText("gamma", { exact: true }).waitFor();
-        await input.press("ControlOrMeta+End");
+        await input.press(documentEndKey);
         await page.keyboard.insertText("-- draft must survive a disconnect\n");
         await page.getByText("Unsaved", { exact: true }).waitFor();
         const sessionPath = () => page.locator(".lean-block").getAttribute("data-session");
@@ -1796,6 +1808,8 @@ await test('stopping an unfinished Lean check clears progress and Infoview conne
   ]};
   try {
     await fixture(browser, async ({page, url, root}) => {
+      let socket;
+      page.on('websocket', ws => { socket = ws; });
       await page.goto(`${url}/?stop#ref=${node.fnode}`);
       const block = page.locator('.lean-block');
       const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
@@ -1809,6 +1823,12 @@ await test('stopping an unfinished Lean check clears progress and Infoview conne
         await info.getByText('All Messages', {exact: true}).waitFor();
         assert.doesNotMatch(await info.locator('body').innerText(), /No connection to Lean|Error updating/);
         assert.ok((await workers()).length > 0, 'a native Lean process is checking the unfinished source');
+        const beforeRefresh = await workers();
+        const refreshed = leanReply(socket, 'mdc/selectNode');
+        await block.getByRole('button', {name: 'Recheck Lean', exact: true}).click();
+        await refreshed;
+        assert.deepEqual(await workers(), beforeRefresh, 'refresh during elaboration keeps the in-flight worker');
+        await gutter.first().waitFor();
         const instance = await frame.locator('.monaco-editor[role=code]').elementHandle();
         const stopped = page.waitForResponse(r => r.request().method() === 'DELETE' && /\/lean\/session\//.test(r.url()));
         const start = Date.now();
@@ -1886,8 +1906,9 @@ await test('Lean browsing stays offline until explicitly started and preserves s
   try {
     await fixture(browser, async ({page, url, cli, root}) => {
       let sessions = 0, sockets = 0, socket;
+      const messages = [];
       page.on('request', request => { if (request.method() === 'POST' && request.url().endsWith('/lean/session')) sessions++; });
-      page.on('websocket', ws => { sockets++; socket = ws; });
+      page.on('websocket', ws => { sockets++; socket = ws; ws.on('framesent', ({payload}) => messages.push(JSON.parse(String(payload)))); });
       await page.goto(`${url}/?offline#ref=${nodes[0].fnode}`);
       const block = page.locator('.lean-block');
       const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
@@ -1916,7 +1937,7 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       const dark = await styled();
       assert.notEqual(light.color, dark.color, 'offline syntax responds to the theme');
       assert.equal(await frame.locator('#infoview').isVisible(), false);
-      await input.press('ControlOrMeta+End');
+      await input.press(documentEndKey);
       // Exercise normal typing; Firefox can duplicate synthetic insertText IME input.
       await page.keyboard.type('-- saved without a server\n');
       await block.getByRole('button', {name: 'Save', exact: true}).click();
@@ -1937,12 +1958,12 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       const processes = (await run('ps', ['-axo', 'command='])).stdout.split('\n');
       assert.equal(processes.filter(line => line.includes(root) && /--worker|lake serve/.test(line)).length, 0);
       // Saving offline must update the revision used by the next attachment.
-      await input.press('ControlOrMeta+End');
+      await input.press(documentEndKey);
       await page.keyboard.type('-- offline revision\n');
       await block.getByRole('button', {name: 'Save', exact: true}).click();
       await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
       persistentEditor = await frame.locator('.monaco-editor[role=code]').elementHandle();
-      await input.press('ControlOrMeta+End');
+      await input.press(documentEndKey);
       // A trailing newline is its own Monaco undo group. Use a single-line
       // edit so one Undo specifically tests history surviving attachment.
       await page.keyboard.type('-- draft before startup');
@@ -1961,11 +1982,13 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       await input.press('ControlOrMeta+Shift+z');
       await frame.getByText('-- draft before startup', {exact: true}).waitFor();
       assert.doesNotMatch(JSON.parse((await cli('show', nodes[0].fnode)).stdout).blocks[0].content, /draft before startup/);
-      const rechecked = socket.waitForEvent('framesent', {predicate: ({payload}) => JSON.parse(String(payload)).method === 'textDocument/didOpen'});
+      const beforeRefresh = messages.length;
+      const rechecked = leanReply(socket, 'mdc/selectNode');
       await block.getByRole('button', {name: 'Recheck Lean', exact: true}).click();
       await rechecked;
       await page.getByText('Lean editor ready', {exact: true}).waitFor();
       await frame.getByText('-- draft before startup', {exact: true}).waitFor();
+      assert.equal(messages.slice(beforeRefresh).some(m => ['textDocument/didClose', 'textDocument/didOpen', 'mdc/certify'].includes(m.method)), false, 'refresh preserves the worker and does not certify an unsaved draft');
       assert.equal(sessions, 1);
       assert.equal(sockets, 1);
       await select('Second');
@@ -1979,7 +2002,7 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       const sessionId = p => p.locator(".lean-block").getAttribute("data-session");
       const oldId = await sessionId(page), otherId = await sessionId(other);
       persistentEditor = await frame.locator('.monaco-editor[role=code]').elementHandle();
-      await input.press('ControlOrMeta+End');
+      await input.press(documentEndKey);
       await page.keyboard.type('-- draft survives stop');
       const closed = socket.waitForEvent('close');
       const stoppedSession = page.waitForResponse(r => r.request().method() === 'DELETE' && r.url().endsWith(`/lean/session/${oldId}`));
@@ -2057,13 +2080,21 @@ await test('collapsed Lean editors recheck without recreating the browser viewpo
   ]};
   try {
     await fixture(browser, async ({page, url}) => {
+      let socket;
+      const messages = [];
+      page.on('websocket', ws => { socket = ws; ws.on('framesent', ({payload}) => messages.push(JSON.parse(String(payload)))); });
       await page.goto(`${url}/?collapsed-reload#ref=${node.fnode}`);
       await page.getByRole('button', {name: 'Start Lean server', exact: true}).click();
       const block = page.locator('.lean-block');
       const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
       await page.getByText('Lean editor ready', {exact: true}).waitFor();
+      await center(page).getByLabel('Lean: Verified', {exact: true}).waitFor();
       await block.getByRole('button', {name: 'Collapse block'}).click();
+      const before = messages.length;
+      const checked = leanReply(socket, 'mdc/certify');
       await block.getByRole('button', {name: 'Recheck Lean'}).click();
+      assert.equal((await checked).certified, true);
+      assert.equal(messages.slice(before).some(m => ['textDocument/didClose', 'textDocument/didOpen'].includes(m.method)), false);
       await page.getByText('Lean editor ready', {exact: true}).waitFor();
       assert.equal(await block.getByRole('button', {name: 'Expand block'}).count(), 1, 'recheck preserves the collapsed state');
       assert.equal(await frame.locator('#error').textContent(), '');
@@ -2167,7 +2198,7 @@ await test('editors and previews pass scrolling to the node pane at both boundar
       await nativeBoundary(preview);
       const input = frame.getByRole('textbox', {name: /Editor content/});
       await check(page.locator('[data-srctype="lean"]'), frame.locator('.monaco-editor[role=code]'), async direction => {
-        await input.press(direction > 0 ? 'ControlOrMeta+Home' : 'ControlOrMeta+End');
+        await input.press(direction > 0 ? documentStartKey : documentEndKey);
       });
       for (const reducedMotion of ['no-preference', 'reduce']) {
         await page.emulateMedia({reducedMotion});

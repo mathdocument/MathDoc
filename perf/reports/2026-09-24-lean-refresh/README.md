@@ -58,3 +58,33 @@ python3 perf/lean-editor-phases.py /absolute/external/workspace \
 
 Raw measurements are in `phases.json`. The browser refresh comparison is measured
 separately on the isolated development service at port 17844.
+
+
+## Browser refresh fix
+
+On port 17844, the same saved `import Lean` + `1 + 1 = 2` proof was opened in
+Chromium and refreshed three times. Time runs from the button click through the
+browser's `lean-certified` event, including backend validation and UI transport.
+
+| | Before | After |
+| --- | ---: | ---: |
+| Three samples (ms) | 863, 808, 808 | 91, 76, 72 |
+| Median (ms) | 808 | 76 |
+| File close/open pairs per refresh | 1 | 0 |
+
+Source and imported environment stay in the existing worker. Refresh still
+refreshes the dependency snapshot and retries exact saved-version certification;
+changed dependencies still reopen the file. Drafts stay unsaved, and a refresh
+during elaboration keeps the in-flight worker. The result's `cache_hit` remains
+false because certification is explicitly retried using live editor evidence;
+it does not imply imports were loaded again.
+
+The new collapsed-refresh assertion failed on the old binary because it observed
+`didClose`/`didOpen`. It passed on the new binary. All 17 selected real-backend
+browser tests passed across the suite run and the corrected macOS shortcut
+rerun. Coverage includes repeated refresh, drafts, collapsed editors, dependency
+invalidation, interrupted checks, selection cancellation and reconnection.
+The test harness now uses macOS's document-end shortcut instead of assuming
+Cmd+End moves the caret. Svelte type checking and the release build also passed.
+The development service was updated; the current production listener retained
+PID 3338 throughout the implementation and deployment checks.
