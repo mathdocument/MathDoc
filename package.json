@@ -8,7 +8,8 @@
   },
   "workspaces": [
     "coordinator",
-    "app"
+    "app",
+    "web"
   ],
   "scripts": {
     "build": "npm run build -w @mathdoc/coordinator && npm run build -w @mathdoc/app",
