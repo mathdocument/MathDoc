@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the server image with isolated volumes; never touch user projects.
 
-Build first: docker compose -f compose.server.yaml build
+Build first: docker compose -f compose.legacy.yaml build
 Run: python3 tests/docker-smoke.py
 """
 import json
@@ -27,7 +27,7 @@ def main():
         env_file = Path(temporary) / "empty.env"
         env_file.touch()
         compose = ["docker", "compose", "--env-file", str(env_file), "-p",
-                   project_name, "-f", str(repo / "compose.server.yaml")]
+                   project_name, "-f", str(repo / "compose.legacy.yaml")]
 
         def run(*args, content=None, timeout=180):
             result = subprocess.run([*compose, *args], env=env, input=content,
