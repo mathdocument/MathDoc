@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mathdoc.local/contracts/v1/proof-environment.schema.json",
+  "title": "MathDoc proof environment contract v1 draft",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "environment_id", "base", "context", "options", "minimum_trust", "document", "project_lean_compatibility"],
+  "properties": {
+    "schema_version": { "const": "mathdoc.proof-environment.v1-draft" },
+    "environment_id": { "type": "string", "minLength": 1 },
+    "base": { "type": "object" },
+    "context": { "type": "object" },
+    "options": { "type": "object" },
+    "minimum_trust": { "enum": ["claimed", "audited", "trusted"] },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["database", "branch", "data_version"],
+      "properties": {
+        "database": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+        "branch": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+        "data_version": { "type": "string", "minLength": 1 }
+      }
+    },
+    "project_lean_compatibility": { "const": "preserved_unmodified" },
+    "replaces_environment_id": { "type": "string", "minLength": 1 }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mathdoc.local/contracts/v1/document-permission.schema.json",
+  "title": "MathDoc document permission contract v1 draft",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "workspace_id", "owner", "branch_rules", "authorization_matrix"],
+  "properties": {
+    "schema_version": { "const": "mathdoc.document-permission.v1-draft" },
+    "workspace_id": { "type": "string", "minLength": 1 },
+    "owner": { "type": "string", "minLength": 1 },
+    "branch_rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["branch", "inherit_workspace_role", "grants"],
+        "properties": {
+          "branch": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+          "inherit_workspace_role": { "type": "boolean" },
+          "grants": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["actor", "role"],
+              "properties": {
+                "actor": { "type": "string", "minLength": 1 },
+                "role": { "enum": ["owner", "editor", "viewer"] }
+              }
+            }
+          }
+        }
+      }
+    },
+    "authorization_matrix": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["action", "roles"],
+        "properties": {
+          "action": { "enum": ["read", "write", "history", "branch_create", "branch_delete", "export", "import", "database_create", "database_delete", "member_manage", "proof_request_create"] },
+          "roles": { "type": "array", "items": { "enum": ["admin", "owner", "editor", "viewer"] }, "uniqueItems": true }
+        }
+      }
+    }
+  }
+}

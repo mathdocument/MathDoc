@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mathdoc.local/contracts/v1/writeback-batch.schema.json",
+  "title": "MathDoc multi-node writeback contract v1 draft",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "batch_id", "replay_key", "review_branch", "source_proof_request_id", "operations", "conflict_resolution", "certification_visibility"],
+  "properties": {
+    "schema_version": { "const": "mathdoc.writeback-batch.v1-draft" },
+    "batch_id": { "type": "string", "minLength": 1 },
+    "replay_key": { "type": "string", "minLength": 1 },
+    "review_branch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["database", "branch", "data_version"],
+      "properties": {
+        "database": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+        "branch": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+        "data_version": { "type": "string", "minLength": 1 }
+      }
+    },
+    "source_proof_request_id": { "type": "string", "minLength": 1 },
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operation_id", "kind", "node_id", "source_sha256", "preserve_public_declaration_name"],
+        "properties": {
+          "operation_id": { "type": "string", "minLength": 1 },
+          "kind": { "enum": ["update_lean_block", "create_definition_node", "create_goal_node"] },
+          "node_id": { "type": "string", "format": "uuid" },
+          "expected_node_revision": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "source_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "certification_id": { "type": "string", "minLength": 1 },
+          "definition_id": { "type": "string", "minLength": 1 },
+          "preserve_public_declaration_name": { "type": "boolean" }
+        }
+      }
+    },
+    "conflict_resolution": { "enum": ["abort_entire_batch", "certified_batch_wins", "reviewer_merge_required"] },
+    "certification_visibility": { "const": "after_full_batch_commit" }
+  }
+}
