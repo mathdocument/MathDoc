@@ -751,7 +751,7 @@ def handle(request):
             if command == 'eqref': text = '(' + text + ')'
             if ref['fnode'] != target['fnode']:
                 if ref['number'] or command != 'nameref' or not ref['name']:
-                    kind = ref['type'] if command == 'Cref' else ref['type'].lower()
+                    kind = ref['type'][:1].upper() + ref['type'][1:]
                     text = kind + (f' {ref["number"]}' if ref['number'] else f' ({name})')
                 text = f'{ref["node_name"]}::{text}'
             output.append(f'<a href="#{esc(ref["anchor"])}" data-latex-node="{esc(ref["fnode"])}" data-latex-label="{esc(ref["label"])}" title="{esc(ref["node_name"])}">{esc(text)}</a>')

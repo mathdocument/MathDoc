@@ -101,14 +101,14 @@
         <span class="lbl">Name</span>
         <input
           bind:value={name}
-          placeholder="MX.Dot32.Exact"
+          placeholder="Example.Dev.Node"
           aria-invalid={!!name && !!nodeNameError(name)}
           aria-describedby="node-name-hint"
           autocomplete="off"
           disabled={saving}
         />
       </label>
-      <small id="node-name-hint">{name && nodeNameError(name) || "Unique module name, e.g. MX.Dot32.Exact. No spaces."}</small>
+      <small id="node-name-hint">{name && nodeNameError(name) || "Unique module name, e.g. Example.Dev.Node. No spaces."}</small>
       {#if error}
         <div class="error-bar modal-error">{error}</div>
       {/if}

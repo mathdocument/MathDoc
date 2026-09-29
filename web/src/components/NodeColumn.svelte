@@ -167,7 +167,7 @@
     <input type="search" bind:value={query} aria-label={`Filter ${title.toLowerCase()}`}
       placeholder="Filter by name or UUID..." spellcheck="false" />
   </label>
-  <ul class="cards" class:virtual bind:this={list} bind:clientHeight={height} bind:clientWidth={width}
+  <ul class="cards" class:virtual class:populated={matches.length > 0} bind:this={list} bind:clientHeight={height} bind:clientWidth={width}
     onscroll={() => scrollTop = list.scrollTop}>
     {#if virtual}<li class="spacer" aria-hidden="true" style:height={`${offsets[matches.length]}px`}></li>{/if}
     {#each visible as item, i (item.fnode)}
@@ -267,13 +267,25 @@
     font-variant-numeric: tabular-nums;
   }
   .cards {
+    position: relative;
     list-style: none;
     margin: 0;
     padding: 0.5rem;
     overflow-y: auto;
+    overscroll-behavior-y: contain;
+    min-height: 0;
     flex: 1;
     display: flex;
     flex-direction: column;
+  }
+  /* Like the node pane, short lists need a scroll range for native WebKit bounce. */
+  .cards.populated::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    width: 1px;
+    height: 1px;
+    pointer-events: none;
   }
   .filter { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; margin: 0.5rem 0.65rem 0; padding: 0.35rem 0.45rem; border: 1px solid var(--mdc-border); border-radius: var(--mdc-radius-sm); color: var(--mdc-muted); }
   .filter:focus-within { border-color: var(--mdc-border-strong); }
@@ -281,7 +293,7 @@
   .filter input:focus-visible { outline: none; }
   .filter input::placeholder { color: var(--mdc-muted); }
   .cards > li[data-fnode] { flex-shrink: 0; padding-bottom: 2px; }
-  .cards.virtual { display: block; position: relative; overflow-anchor: none; }
+  .cards.virtual { display: block; overflow-anchor: none; }
   .virtual > li[data-fnode] { position: absolute; left: 0.5rem; right: 0.5rem; }
   /* Title first, metadata second: scanning a column is a title-reading task. */
   .card {

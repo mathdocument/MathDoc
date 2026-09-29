@@ -142,6 +142,30 @@ async function rename(page, value) {
 const beta = (page) => page.getByRole("complementary", { name: "Dependencies" })
   .getByRole("button", { name: /^Beta \(/ });
 
+await test('short relationship lists retain native boundary scrolling', async () => {
+  const browser = await launchBrowser();
+  try {
+    await fixture(browser, async ({page}) => {
+      for (const name of ['Dependencies', 'Referrers']) {
+        const column = page.getByRole('complementary', {name, exact: true});
+        const list = column.locator('.cards');
+        const range = await list.evaluate(el => ({
+          limit: el.scrollHeight - el.clientHeight,
+          overscroll: getComputedStyle(el).overscrollBehaviorY,
+          rows: el.querySelectorAll('li[data-fnode]').length,
+        }));
+        assert.equal(range.rows, 1);
+        assert.ok(range.limit > 0 && range.limit < 20, 'one row retains a minimal native scroll range');
+        assert.equal(range.overscroll, 'contain');
+        await column.getByRole('searchbox').fill('no match');
+        assert.equal(await list.evaluate(el => el.scrollHeight - el.clientHeight), 0);
+        await column.getByRole('searchbox').fill('');
+        if (name === 'Dependencies') { await beta(page).click(); await title(page, 'Beta'); }
+      }
+    });
+  } finally { await browser.close(); }
+});
+
 await test('node names validate creation, collisions and renames in the browser', {timeout: 60000}, async () => {
   const browser = await launchBrowser();
   try {
@@ -158,7 +182,7 @@ await test('node names validate creation, collisions and renames in the browser'
       assert.equal(JSON.parse((await cli('show', 'A.X')).stdout).fnode, original.fnode);
       await page.locator('.bar-end').getByRole('button', {name: 'Create node', exact: true}).click();
       const dialog = page.getByRole('dialog', {name: 'new node', exact: true});
-      const input = dialog.getByPlaceholder('MX.Dot32.Exact');
+      const input = dialog.getByPlaceholder('Example.Dev.Node');
       const create = dialog.getByRole('button', {name: 'Create node', exact: true});
       await input.fill('Invalid name');
       assert.ok(await create.isDisabled());
@@ -507,7 +531,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.equal(await toolbar.getByRole("button", { name: "Delete node", exact: true }).isDisabled(), true);
         await toolbar.getByRole("button", { name: "Create node", exact: true }).click();
         const create = page.getByRole("dialog", { name: "new node", exact: true });
-        await create.getByPlaceholder("MX.Dot32.Exact").fill("Recreated");
+        await create.getByPlaceholder("Example.Dev.Node").fill("Recreated");
         await create.getByRole("button", { name: "Create node", exact: true }).click();
         await title(page, "Recreated");
       }));

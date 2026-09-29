@@ -122,7 +122,7 @@ async fn latex_project_previews_follow_dependencies_and_preserve_configuration()
     assert!(preview["html"]
         .as_str()
         .unwrap()
-        .contains(&format!("{}::theorem 1</a>", a.name)));
+        .contains(&format!("{}::Theorem 1</a>", a.name)));
     assert!(preview["html"].as_str().unwrap().contains("Aut20"));
     let (_, context) = call(&app, "GET", &context_path, Value::Null, None).await;
     assert!(preview["context_key"].is_string());
@@ -185,7 +185,7 @@ async fn latex_project_previews_follow_dependencies_and_preserve_configuration()
     assert!(refreshed["html"]
         .as_str()
         .unwrap()
-        .contains(&format!("{}::theorem 2</a>", a.name)));
+        .contains(&format!("{}::Theorem 2</a>", a.name)));
 
     let current = fixture.db.load().await.unwrap();
     let (status, renamed) = call(
@@ -210,7 +210,7 @@ async fn latex_project_previews_follow_dependencies_and_preserve_configuration()
     assert!(renamed_preview["html"]
         .as_str()
         .unwrap()
-        .contains("Renamed.Result::theorem 2</a>"));
+        .contains("Renamed.Result::Theorem 2</a>"));
     assert!(renamed_preview["html"]
         .as_str()
         .unwrap()

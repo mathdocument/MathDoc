@@ -71,7 +71,7 @@ pub fn validate_name(name: &str) -> Result<()> {
             .next()
             .is_some_and(|part| part.eq_ignore_ascii_case("lakefile"))
     {
-        bail!("invalid node name: use dot-separated identifiers (letters or _, then letters, digits, _ or '), such as MX.Dot32.Exact");
+        bail!("invalid node name: use dot-separated identifiers (letters or _, then letters, digits, _ or '), such as Example.Dev.Node");
     }
     Ok(())
 }
@@ -991,7 +991,7 @@ mod tests {
 
     #[test]
     fn node_names_are_unique_qualified_identifiers() {
-        for name in ["A", "MX.Dot32.Exact", "数学.引理", "A._private", "A.x'"] {
+        for name in ["A", "Example.Dev.Node", "数学.引理", "A._private", "A.x'"] {
             assert!(Node::new(name.into()).is_ok(), "{name}");
         }
         for name in [
