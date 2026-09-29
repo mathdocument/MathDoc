@@ -14,6 +14,7 @@
     Sun,
     Trash2,
     Unlink2,
+    Users,
   } from "@lucide/svelte";
   import {
     nodeSession,
@@ -35,6 +36,8 @@
   import RmDepOverlay from "./components/RmDepOverlay.svelte";
   import NewNodeOverlay from "./components/NewNodeOverlay.svelte";
   import ProjectSettings from "./components/ProjectSettings.svelte";
+  import Collaboration from "./components/Collaboration.svelte";
+  import { localLeanEditor } from "./lib/features";
   import type { NodeDetail } from "./lib/types";
   import {
     confirmDiscardDrafts,
@@ -54,7 +57,8 @@
     | { kind: "add-dep"; target: string }
     | { kind: "rm-dep"; target: string }
     | { kind: "new-node" }
-    | { kind: "project" };
+    | { kind: "project" }
+    | { kind: "collaboration"; project: string | null };
 
   let overlay = $state<Overlay>({ kind: "none" });
   let latexTarget = $state<{fnode: string; label: string} | null>(null);
@@ -99,6 +103,19 @@
     applyTheme(theme);
   }
 
+  // Lean nodes open the collaboration views for the proof request they belong to.
+  onMount(() => {
+    const open = (event: Event) => {
+      overlay = { kind: "collaboration", project: (event as CustomEvent<string | null>).detail ?? null };
+    };
+    window.addEventListener("mdc:open-collaboration", open);
+    return () => window.removeEventListener("mdc:open-collaboration", open);
+  });
+  function openNode(fnode: string) {
+    overlay = { kind: "none" };
+    if (view === "force") void onForceSelect(fnode);
+    else { cancelStartup(); void nodeSession.select(fnode); }
+  }
   onMount(() => observeTheme((nextTheme) => {
     theme = nextTheme;
     applyTheme(nextTheme, false);
@@ -539,6 +556,9 @@
         ><Network size={15} strokeWidth={1.8} /><span>Graph</span></button>
       </div>
       <span class="toolbar-divider"></span>
+      {#if !localLeanEditor}
+        <button class="tool icon-only" onclick={() => overlay = { kind: "collaboration", project: null }} title="Collaboration" aria-label="Collaboration"><Users size={16} strokeWidth={1.8} /></button>
+      {/if}
       <button class="tool icon-only" onclick={() => overlay = { kind: "project" }} title="Project settings" aria-label="Project settings"><Settings size={16} /></button>
       <button
         class="tool icon-only"
@@ -690,6 +710,8 @@
 <div class="overlay-layer" inert={historyNavigating}>
 {#if overlay.kind === "project"}
   <ProjectSettings onClose={() => overlay = { kind: "none" }} />
+{:else if overlay.kind === "collaboration"}
+  <Collaboration project={overlay.project} onClose={() => overlay = { kind: "none" }} onOpenNode={openNode} />
 {:else if overlay.kind === "search"}
   <SearchOverlay
     disabled={historyNavigating}

@@ -11,14 +11,26 @@ import {
   Fault,
   createSchema,
   commandSchema,
+  documentCreateSchema,
   newBoard,
+  newDocumentBoard,
   owner,
   requireThat,
   nodeRefSchema,
   ingest,
+  type Board,
 } from "./domain.js";
-import { resolveProject } from "./worker.js";
+import { fetchBase, resolveProject } from "./worker.js";
 import { DocsBackend } from "./docs/routes.js";
+import { DocError } from "./docs/names.js";
+import type { Action } from "./docs/workspace.js";
+import {
+  convert,
+  submission,
+  conclusionProposition,
+  environmentInputSchema,
+  Environments,
+} from "./proof.js";
 async function body(req: IncomingMessage) {
   const chunks: Buffer[] = [];
   let length = 0;
@@ -83,8 +95,35 @@ export function server(
           actors: cfg.actors,
           authenticate: (req) => authenticate(req, cfg),
           readBody: body,
+          boards: (database, branch) => store.bound(database, branch),
         })
       : null;
+  const environments = new Environments(store.pool);
+  // Plan §6.3: collaboration never widens document access. Each project route re-checks
+  // the actor's role on the bound branch; a missing role reads as not found.
+  const documentRole = async (
+    actor: string,
+    database: string,
+    branch: string,
+    action: Action,
+  ) => {
+    requireThat(documents, "documents_not_configured", 503);
+    await documents.workspaces.authorize(actor, database, branch, action);
+  };
+  const membersCanRead = async (
+    members: string[],
+    database: string,
+    branch: string,
+  ) => {
+    for (const m of members)
+      try {
+        await documentRole(m, database, branch, "read");
+      } catch (e) {
+        if (e instanceof DocError)
+          throw new Fault("member_lacks_document_access", 400);
+        throw e;
+      }
+  };
   return createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
@@ -145,13 +184,101 @@ export function server(
         send(res, 200, await docs.load(ref));
         return;
       }
+      const envPath = /^\/api\/environments\/([\w-]+)\/([\w-]+)$/.exec(path);
+      if (envPath) {
+        const [, database, branch] = envPath;
+        if (method === "GET") {
+          await documentRole(actor, database, branch, "read");
+          const env = await environments.get(database, branch);
+          requireThat(env, "environment_not_configured", 404);
+          send(res, 200, env);
+          return;
+        }
+        requireThat(method === "PUT", "method_not_allowed", 405);
+        // The environment decides what every new ProofRequest means: owners only.
+        await documentRole(actor, database, branch, "member_manage");
+        const input = environmentInputSchema.parse(await body(req));
+        const base = await fetchBase(lean, input.base_key);
+        send(
+          res,
+          200,
+          await environments.put(database, branch, input, base, actor),
+        );
+        return;
+      }
       if (path === "/api/projects" && method === "GET") {
-        send(res, 200, await store.list(actor));
+        const q = url.searchParams;
+        const database = q.get("database");
+        const branch = q.get("branch");
+        if (database && branch) {
+          await documentRole(actor, database, branch, "read");
+          send(
+            res,
+            200,
+            await store.list(actor, {
+              database,
+              branch,
+              node: q.get("node") ?? undefined,
+            }),
+          );
+        } else send(res, 200, await store.list(actor));
         return;
       }
       if (path === "/api/projects" && method === "POST") {
+        const raw = await body(req);
+        if (raw && typeof raw === "object" && "document" in raw) {
+          const input = documentCreateSchema.parse(raw);
+          const { database, branch, node } = input.document;
+          await documentRole(actor, database, branch, "proof_request_create");
+          requireThat(
+            input.members.every((m) => Object.hasOwn(cfg.actors, m)),
+            "unknown_member",
+            400,
+          );
+          await membersCanRead(input.members, database, branch);
+          const env = await environments.get(database, branch);
+          requireThat(env, "environment_not_configured");
+          requireThat(documents, "documents_not_configured", 503);
+          const snap = await documents.terminus
+            .database(database, branch)
+            .load();
+          const root = snap.nodes.get(node);
+          requireThat(root, "document_not_found", 404);
+          requireThat(
+            root.blocks.some((x) => x.srctype === "lean"),
+            "root_has_no_lean_block",
+          );
+          const k = key(req);
+          const digest = createHash("sha256")
+            .update(JSON.stringify({ input, env: env.environment_id }))
+            .digest("hex");
+          const id =
+            "mdc-" +
+            createHash("sha256")
+              .update(`${actor}\0${k}`)
+              .digest("hex")
+              .slice(0, 32);
+          const b = {
+            ...newDocumentBoard(id, actor, input, root.title, env),
+            creation_hash: digest,
+          };
+          try {
+            await store.create(b);
+          } catch (e) {
+            if ((e as { code?: string }).code !== "23505") throw e;
+            const existing = await store.get(id, actor);
+            requireThat(
+              (existing as typeof b).creation_hash === digest,
+              "idempotency_conflict",
+            );
+            send(res, 200, existing);
+            return;
+          }
+          send(res, 201, b);
+          return;
+        }
         requireThat(cfg.actors[actor].admin, "admin_required", 403);
-        const input = createSchema.parse(await body(req));
+        const input = createSchema.parse(raw);
         requireThat(
           input.members.every((m) => Object.hasOwn(cfg.actors, m)),
           "unknown_member",
@@ -212,24 +339,74 @@ export function server(
         return;
       }
       const match =
-        /^\/api\/projects\/([\w-]+)(?:\/(commands|jobs|history|documents|document-history|branches|facts)(?:\/([\w-]+))?)?$/.exec(
+        /^\/api\/projects\/([\w-]+)(?:\/(commands|jobs|history|documents|document-history|branches|facts|nodes)(?:\/([\w-]+))?(?:\/(draft))?)?$/.exec(
           path,
         );
       requireThat(match, "not_found", 404);
-      const [, id, operation, child] = match;
-      const b = await store.get(id, actor);
+      const [, id, operation, child, draft] = match;
+      const b: Board = await store.get(id, actor);
+      if (b.request) {
+        try {
+          await documentRole(
+            actor,
+            b.request.database,
+            b.request.branch,
+            "read",
+          );
+        } catch (e) {
+          if (e instanceof DocError) throw new Fault("not_found", 404);
+          throw e;
+        }
+      }
+      if (operation === "nodes" && child && draft && method === "GET") {
+        // Agents start from the converted node: placeholders, definitions and identity.
+        requireThat(b.request?.bound && documents, "no_document_binding");
+        const snap = await documents!.terminus
+          .database(b.request!.database, b.request!.branch)
+          .load();
+        const c = convert(snap.nodes, b.request!.node, b.context as never);
+        const n = c.bindings[child];
+        requireThat(n, "not_found", 404);
+        requireThat(n.role === "theorem", n.reason ?? "not_a_theorem_node");
+        const goalOf = (nid: string) => b.nodes?.[nid]?.goal;
+        send(res, 200, {
+          node: child,
+          goal: goalOf(child) ?? null,
+          proposition: conclusionProposition(c, child),
+          premises: (n.premises ?? []).map((p) => ({
+            node: p,
+            name: c.bindings[p].conclusion,
+            goal: goalOf(p) ?? null,
+          })),
+          definitions: (n.definition_nodes ?? []).flatMap(
+            (d) => b.nodes?.[d]?.definition_ids ?? [],
+          ),
+          ...submission(c, child),
+          state: n.state,
+          reason: n.reason,
+          details: n.details,
+        });
+        return;
+      }
       if (!operation && method === "GET") {
         send(res, 200, b);
         return;
       }
       if (operation === "commands" && method === "POST") {
         const input = commandSchema.parse(await body(req));
-        if (input.type === "members")
+        if (input.type === "members") {
           requireThat(
             input.members.every((m) => Object.hasOwn(cfg.actors, m)),
             "unknown_member",
             400,
           );
+          if (b.request)
+            await membersCanRead(
+              input.members,
+              b.request.database,
+              b.request.branch,
+            );
+        }
         send(
           res,
           200,
@@ -287,7 +464,17 @@ export function server(
       }
       throw new Fault("not_found", 404);
     } catch (e) {
-      if (e instanceof z.ZodError)
+      if (e instanceof DocError)
+        send(res, e.status, {
+          reason:
+            e.status === 404
+              ? "not_found"
+              : e.status === 403
+                ? "document_permission_denied"
+                : "document_error",
+          error: e.message,
+        });
+      else if (e instanceof z.ZodError)
         send(res, 400, {
           reason: "invalid_request",
           issues: e.issues.map((i) => ({ path: i.path, message: i.message })),

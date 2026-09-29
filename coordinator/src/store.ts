@@ -1,6 +1,7 @@
 import pg from "pg";
 import { randomUUID, createHash } from "node:crypto";
 import { Board, Command, command, member, requireThat } from "./domain.js";
+import { ENVIRONMENT_MIGRATION } from "./proof.js";
 export interface Job {
   id: string;
   project: string;
@@ -17,7 +18,7 @@ CREATE TABLE IF NOT EXISTS mdc_command(project text NOT NULL REFERENCES mdc_proj
 CREATE TABLE IF NOT EXISTS mdc_event(sequence bigserial PRIMARY KEY, project text NOT NULL REFERENCES mdc_project(id), actor text NOT NULL, kind text NOT NULL, revision bigint NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS mdc_job(id text PRIMARY KEY, project text NOT NULL REFERENCES mdc_project(id), actor text NOT NULL, kind text NOT NULL, payload jsonb NOT NULL, status text NOT NULL DEFAULT 'queued', epoch integer NOT NULL DEFAULT 0, tries integer NOT NULL DEFAULT 0, expires timestamptz, available_at timestamptz NOT NULL DEFAULT now(), error text, created_at timestamptz NOT NULL DEFAULT now());
 CREATE INDEX IF NOT EXISTS mdc_job_queue ON mdc_job(status,available_at);
-`;
+${ENVIRONMENT_MIGRATION}`;
 export class Store {
   pool: pg.Pool;
   constructor(dsn: string) {
@@ -57,11 +58,31 @@ export class Store {
       await this.enqueue(c, b.id, b.owner, "provision", {});
     });
   }
-  async list(actor: string): Promise<Board[]> {
+  async list(
+    actor: string,
+    document?: { database: string; branch: string; node?: string },
+  ): Promise<Board[]> {
+    if (document)
+      return (
+        await this.pool.query(
+          `SELECT body FROM mdc_project WHERE body->'members' ? $1 AND body->'request'->>'database'=$2
+           AND body->'request'->>'branch'=$3 AND ($4::text IS NULL OR body->'nodes' ? $4) ORDER BY id`,
+          [actor, document.database, document.branch, document.node ?? null],
+        )
+      ).rows.map((r) => r.body);
     return (
       await this.pool.query(
         "SELECT body FROM mdc_project WHERE body->'members' ? $1 ORDER BY id",
         [actor],
+      )
+    ).rows.map((r) => r.body);
+  }
+  /** Every project bound to a branch, for the document view's certification column. */
+  async bound(database: string, branch: string): Promise<Board[]> {
+    return (
+      await this.pool.query(
+        "SELECT body FROM mdc_project WHERE body->'request'->>'database'=$1 AND body->'request'->>'branch'=$2 AND (body->'request'->>'bound')::boolean ORDER BY id",
+        [database, branch],
       )
     ).rows.map((r) => r.body);
   }

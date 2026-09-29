@@ -22,6 +22,11 @@ import { type Database } from "./terminus.js";
 import { Snapshot, weakComponentSizes } from "./graph.js";
 import { LatexService } from "./latex.js";
 import type { Action } from "./workspace.js";
+import type { Board } from "../domain.js";
+import {
+  certificationLookup,
+  type CertificationLookup,
+} from "../certification.js";
 
 export interface Reply {
   status?: number;
@@ -35,6 +40,8 @@ export interface Call {
   headers: Record<string, string | string[] | undefined>;
   body: () => Promise<unknown>;
   actor: string;
+  /** Projects bound to this branch (plan §7.1 certification dimension). */
+  boards?: Board[];
 }
 
 class Lock {
@@ -98,6 +105,9 @@ const formal = (node: Node, language: string) =>
 export class BranchService {
   private snapshot: Snapshot | null = null;
   private lock = new Lock();
+  /** Set per call under the lock. */
+  private certification: CertificationLookup = (n) =>
+    nodeSource(n, "lean") !== undefined ? { status: "not_submitted" } : null;
   readonly latex = new LatexService();
 
   constructor(
@@ -150,11 +160,8 @@ export class BranchService {
         lean: formal(n, "lean"),
         rocq: formal(n, "rocq"),
         // Plan §7.1: formal certification comes from LeanGround, separate from the local
-        // check (which this backend never performs). Proof-request bindings arrive in stage 4.
-        lean_certification:
-          nodeSource(n, "lean") !== undefined
-            ? { status: "not_submitted" }
-            : null,
+        // check (which this backend never performs).
+        lean_certification: this.certification(n),
       },
     };
   }
@@ -202,6 +209,7 @@ export class BranchService {
   private async locked(call: Call): Promise<Reply> {
     const { method, route, query, headers, actor } = call;
     const s = await this.read();
+    this.certification = certificationLookup(call.boards ?? [], s.nodes);
     const node = /^\/node\/([^/]+)(\/.*)?$/.exec(route);
     const id = node ? decodeURIComponent(node[1]) : "";
     const tail = node?.[2] ?? "";

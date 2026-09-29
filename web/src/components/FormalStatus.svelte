@@ -7,6 +7,7 @@
   const certificationLabels = {
     not_submitted: "Not submitted to LeanGround", insufficient: "Insufficient evidence",
     derivable: "Derivable", certified: "Certified",
+    stale: "Changed since submission", rejected: "Not accepted",
   };
   // Two dimensions (plan §7.1): a local check is only an editing aid; certification comes
   // from LeanGround. The legacy backend reports only the local check.
@@ -15,8 +16,9 @@
     if (certification === null) return labels.no_code;
     const base = certificationLabels[certification.status];
     const truncated = certification.status === "insufficient" && certification.truncated ? " (search truncated)" : "";
+    const reason = certification.status === "rejected" && certification.reason ? ` (${certification.reason})` : "";
     const local = status === "verified" ? " · local check passed" : "";
-    return `${base}${truncated}${local}`;
+    return `${base}${truncated}${reason}${local}`;
   });
   const shown = $derived(certification === undefined ? status : certification === null ? "no_code" : certification.status);
   const label = $derived(`${language}: ${text}`);
@@ -56,6 +58,10 @@
   .formal-status[data-status="insufficient"] .status-light {
     background: var(--mdc-warning);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--mdc-warning) 20%, transparent);
+  }
+  .formal-status[data-status="stale"] .status-light, .formal-status[data-status="rejected"] .status-light {
+    background: var(--mdc-error);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--mdc-error) 20%, transparent);
   }
   .formal-status[data-status="derivable"] .status-light {
     background: var(--mdc-accent);

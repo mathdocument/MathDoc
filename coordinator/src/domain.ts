@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import type { NodeBinding, ProofRequest } from "./proof.js";
+import type { Writeback } from "./writeback.js";
 
 export class Fault extends Error {
   constructor(
@@ -51,6 +53,22 @@ export const createSchema = z
   })
   .strict();
 export type Create = z.infer<typeof createSchema>;
+/** A project bound to a document node (a ProofRequest); the environment comes from the branch. */
+export const documentCreateSchema = z
+  .object({
+    title: z.string().trim().min(1).max(200).optional(),
+    document: z
+      .object({
+        database: z.string().regex(/^[\w-]+$/),
+        branch: z.string().regex(/^[\w-]+$/),
+        node: z.string().uuid(),
+      })
+      .strict(),
+    members: z.array(z.string().min(1)).max(100).default([]),
+    budget: z.number().int().min(0).max(1e12),
+  })
+  .strict();
+export type DocumentCreate = z.infer<typeof documentCreateSchema>;
 export interface Goal {
   key: string;
   identity?: Identity;
@@ -127,6 +145,10 @@ export interface Board {
   attempts: Record<string, Attempt>;
   runs: Record<string, Run>;
   accepted?: { certification_id: string; revision: string; operation: string };
+  /** Document-bound projects (stage 4): the ProofRequest, its nodes and writebacks. */
+  request?: ProofRequest;
+  nodes?: Record<string, NodeBinding>;
+  writebacks?: Record<string, Writeback>;
 }
 export function member(b: Board, actor: string) {
   requireThat(b.members.includes(actor), "not_found", 404);
@@ -167,6 +189,55 @@ export function newBoard(
   };
   addGoal(b, goal.key, goal, input.proposition);
   return b;
+}
+export function newDocumentBoard(
+  id: string,
+  actor: string,
+  input: DocumentCreate,
+  title: string,
+  env: {
+    base: Record<string, unknown>;
+    context: Record<string, unknown>;
+    options: Record<string, unknown>;
+    minimum_trust: Trust;
+    environment_id: string;
+    replaces_environment_id?: string;
+  },
+): Board {
+  return {
+    id,
+    title: input.title ?? title,
+    owner: actor,
+    members: [...new Set([actor, ...input.members])],
+    revision: 0,
+    base: env.base,
+    context: env.context,
+    options: env.options,
+    // The root goal is resolved when the worker binds the request.
+    root: "",
+    minimum_trust: env.minimum_trust,
+    notes: "",
+    budget: input.budget,
+    spent: 0,
+    cursor: 0,
+    ready: false,
+    goals: {},
+    facts: {},
+    tasks: {},
+    attempts: {},
+    runs: {},
+    request: {
+      ...input.document,
+      environment_id: env.environment_id,
+      ...(env.replaces_environment_id
+        ? { replaces_environment_id: env.replaces_environment_id }
+        : {}),
+      bound: false,
+      stale: false,
+    },
+    nodes: {},
+    writebacks: {},
+  };
 }
 export function addGoal(
   b: Board,
@@ -337,6 +408,7 @@ export const commandSchema = z.discriminatedUnion("type", [
       type: z.literal("resolve"),
       goal: short,
       proposition: z.string().min(1).max(100000),
+      definitions: z.array(short).max(1000).default([]),
     })
     .strict(),
   z
@@ -392,18 +464,26 @@ export const commandSchema = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("submit"),
-      goal: short,
+      // Omitted only when the conclusion uses a definition registered by this submission.
+      goal: short.optional(),
       source: z.string().min(1).max(2000000),
       expected_root: short,
-      component: short,
+      component: z.enum(["lean-worker", "lean-worker-sketch"]),
       mode: z.enum(["leaf", "sketch"]),
+      definitions: z.array(short).max(1000).default([]),
+      new_definitions: z.array(short).max(100).default([]),
     })
+    .strict(),
+  z
+    .object({ type: z.literal("submit_node"), node: z.string().uuid() })
     .strict(),
   z.object({ type: z.literal("assemble"), component: short }).strict(),
   z.object({ type: z.literal("retry"), run: short }).strict(),
   z.object({ type: z.literal("accept"), run: short }).strict(),
 ]);
 export type Command = z.infer<typeof commandSchema>;
+/** What clients send: fields with defaults may be omitted. */
+export type CommandInput = z.input<typeof commandSchema>;
 export interface JobInput {
   kind: string;
   payload: Record<string, unknown>;
@@ -444,7 +524,11 @@ export function command(
         result: { queued: true },
         job: {
           kind: "resolve",
-          payload: { goal: c.goal, proposition: c.proposition },
+          payload: {
+            goal: c.goal,
+            proposition: c.proposition,
+            definitions: c.definitions,
+          },
         },
       };
     case "notes":
@@ -539,11 +623,33 @@ export function command(
         job: { kind: "import", payload: { certificate: c.certificate } },
       };
     case "submit":
-      requireThat(b.goals[c.goal]?.identity, "goal_identity_unavailable");
+      // Components and modes are paired: sketches only through lean-worker-sketch.
+      requireThat(
+        (c.component === "lean-worker-sketch") === (c.mode === "sketch"),
+        "component_mode_mismatch",
+        400,
+      );
+      if (c.goal === undefined)
+        requireThat(c.new_definitions.length, "goal_required", 400);
+      else
+        requireThat(
+          Object.hasOwn(b.goals, c.goal) && b.goals[c.goal].identity,
+          "goal_identity_unavailable",
+        );
       return {
         result: { queued: true },
         job: { kind: "submit", payload: { ...c } },
       };
+    case "submit_node": {
+      requireThat(b.request?.bound, "no_document_binding");
+      const n = b.nodes?.[c.node];
+      requireThat(n, "not_found", 404);
+      requireThat(n.role === "theorem", "not_a_theorem_node");
+      return {
+        result: { queued: true },
+        job: { kind: "submit_node", payload: { node: c.node } },
+      };
+    }
     case "assemble": {
       owner(b, actor);
       requireThat(
@@ -587,8 +693,17 @@ export function command(
     }
     case "accept":
       owner(b, actor);
-      requireThat(b.node_ref, "no_document_binding");
       requireThat(b.runs[c.run]?.status === "certified", "not_certified");
+      if (b.request) {
+        // Plan §9: a changed statement keeps old results in history but never certifies
+        // the new version. Writeback re-checks every node before committing.
+        requireThat(!b.request.stale, "proof_request_stale");
+        return {
+          result: { queued: true },
+          job: { kind: "writeback", payload: { run: c.run } },
+        };
+      }
+      requireThat(b.node_ref, "no_document_binding");
       return {
         result: { queued: true },
         job: { kind: "accept", payload: { run: c.run } },

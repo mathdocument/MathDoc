@@ -62,12 +62,18 @@ async function startBackend() {
     if (child.exitCode !== null || Date.now() > deadline) throw new Error(`backend did not start:\n${log}`);
     await new Promise(resolve => setTimeout(resolve, 100));
   }
-  // Shared by every test in this file: stop it when the file finishes, and never let it
-  // keep the finished test process alive.
-  child.unref();
-  child.stdout.unref?.();
-  child.stderr.unref?.();
-  process.once("exit", () => child.kill());
+  // The collaboration worker runs next to the API, as in a deployment (plan §8).
+  const worker = spawn(tsx, ["coordinator/src/main.ts", "worker"], { cwd: repoRoot, env: processEnv, stdio: ["ignore", "pipe", "pipe"] });
+  worker.stdout.on("data", collect);
+  worker.stderr.on("data", collect);
+  // Shared by every test in this file: stop them when the file finishes, and never let
+  // them keep the finished test process alive.
+  for (const p of [child, worker]) {
+    p.unref();
+    p.stdout.unref?.();
+    p.stderr.unref?.();
+    process.once("exit", () => p.kill());
+  }
   backend = { child, base: `http://127.0.0.1:${port}`, output: () => log.slice(-16000) };
   return backend;
 }
@@ -1913,6 +1919,64 @@ await test('Lean blocks are source editors certified by LeanGround, without loca
       assert.equal(await settings.getByRole('tab', {name: 'Lean', exact: true}).count(), 0);
       assert.equal(localLean.length, 0, `no local Lean requests: ${localLean.join(', ')}`);
     }, [node]);
+  } finally { await browser.close(); }
+});
+
+// Plan §10 stage 4 in the browser: needs a real LeanGround (LEANGROUND_SERVER_URL,
+// LEANGROUND_FACT_TOKEN) whose base key MDC_E2E_BASE_KEY (default 1) contains Nat.
+await test('a Lean node is submitted to LeanGround, assembled and written back from the collaboration views', {timeout: 240000, skip: (BACKEND !== 'ts' || !env.LEANGROUND_SERVER_URL) && 'needs the TypeScript backend and a LeanGround server'}, async () => {
+  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const make = (title, content, depens = []) => {
+    const fnode = randomUUID();
+    return {fnode, title, module: `Lib.N_${fnode.replaceAll('-', '')}`, depens, blocks: [{srctype: 'lean', content}]};
+  };
+  const def = make('triple', 'def triple (n : Nat) : Nat := n + n + n\n');
+  const lemma = make('triple_eq', 'theorem triple_eq (n : Nat) : triple n = n + n + n := rfl\n', [def.fnode]);
+  const root = make('triple_one', 'theorem triple_one : triple 1 = 3 := by\n  rw [triple_eq]\n', [lemma.fnode, def.fnode]);
+  try {
+    await fixture(browser, async ({page, url}) => {
+      // The proof environment lives in project settings, separate from the Lake project.
+      await page.getByRole('button', {name: 'Project settings', exact: true}).click();
+      const settings = page.getByRole('dialog', {name: 'Project settings'});
+      await settings.getByRole('tab', {name: 'Proof environment'}).click();
+      await settings.getByLabel('Base key').fill(env.MDC_E2E_BASE_KEY ?? '1');
+      await settings.getByRole('button', {name: 'Save proof environment'}).click();
+      await settings.waitFor({state: 'hidden'});
+
+      await page.goto(`${url}/?collab#ref=${root.fnode}`);
+      await title(page, 'triple_one');
+      const current = page.getByRole('region', {name: 'current node'});
+      assert.equal(await current.getByLabel(/^Lean: /).getAttribute('aria-label'), 'Lean: Not submitted to LeanGround');
+      await current.getByRole('button', {name: 'Submit to LeanGround'}).click();
+      await page.getByRole('dialog', {name: 'Submit to LeanGround'}).getByRole('button', {name: 'Submit', exact: true}).click();
+
+      // Proof overview: the definition is registered, the lemma proved, the root a sketch.
+      const collab = page.getByRole('dialog', {name: 'Collaboration'});
+      const overview = collab.getByRole('region', {name: 'Proof overview'});
+      await overview.getByRole('heading', {name: /triple_one derivable/}).waitFor({timeout: 120000});
+      const rows = overview.getByRole('row');
+      await rows.filter({hasText: 'triple_eq'}).getByText('submitted').waitFor();
+      await rows.filter({hasText: 'triple'}).first().waitFor();
+      assert.match(await overview.innerText(), /registered/);
+
+      // Decompositions list the conditional certificate of the root.
+      await collab.getByRole('tab', {name: 'Decompositions'}).click();
+      await collab.getByRole('region', {name: 'Decompositions'}).getByText(/⇐ triple_eq/).waitFor();
+
+      // Review: assemble a route, then write the certified result back in one batch.
+      await collab.getByRole('tab', {name: 'Review'}).click();
+      const review = collab.getByRole('region', {name: 'Review'});
+      await review.getByRole('button', {name: 'Assemble a route'}).click();
+      await review.getByRole('button', {name: 'Accept and write back'}).waitFor({timeout: 120000});
+      await review.getByRole('button', {name: 'Accept and write back'}).click();
+      await review.getByText(/Writeback .* · committed/).waitFor({timeout: 60000});
+      await collab.getByRole('button', {name: 'Close'}).click();
+
+      await page.getByRole('button', {name: 'Refresh database view'}).click();
+      await current.getByLabel('Lean: Certified').waitFor();
+      const saved = await api(`${url}/api/node/${root.fnode}/view`);
+      assert.ok(saved.node.blocks[0].metadata.certification_id, 'the certification is written to the block metadata');
+    }, [def, lemma, root]);
   } finally { await browser.close(); }
 });
 

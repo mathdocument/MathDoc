@@ -3,6 +3,7 @@ import { Store } from "./store.js";
 import { LeanGround } from "./remote.js";
 import { Documents } from "./documents.js";
 import { Worker } from "./worker.js";
+import { Terminus } from "./docs/terminus.js";
 import { server } from "./http.js";
 import { setTimeout as delay } from "node:timers/promises";
 const mode = process.argv[2] ?? "serve";
@@ -46,7 +47,15 @@ if (mode === "migrate") {
     process.once("SIGINT", () => {
       stopped = true;
     });
-    const worker = new Worker(store, lean, docs, cfg.leanActor);
+    const terminus =
+      cfg.terminusUrl && cfg.terminusPassword
+        ? new Terminus({
+            url: cfg.terminusUrl,
+            user: cfg.terminusUser,
+            password: cfg.terminusPassword,
+          })
+        : null;
+    const worker = new Worker(store, lean, docs, cfg.leanActor, terminus);
     while (!stopped) {
       try {
         if (!(await worker.tick())) await delay(1000);

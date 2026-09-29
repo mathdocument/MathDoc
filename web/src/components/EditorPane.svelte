@@ -6,6 +6,7 @@
   import type { Theme } from "../lib/theme";
   import { errMsg, shortFnode } from "../lib/format";
   import FormalStatus from "./FormalStatus.svelte";
+  import LeanGroundSubmit from "./LeanGroundSubmit.svelte";
   import AddBlockControl from "./AddBlockControl.svelte";
   import { localLeanEditor } from "../lib/features";
   import { api } from "../lib/api";
@@ -215,6 +216,13 @@
         <span class="meta-sep" aria-hidden="true"></span>
         <FormalStatus language="Lean" status={node.formalization.lean} certification={node.formalization.lean_certification} />
         <FormalStatus language="Rocq" status={node.formalization.rocq} />
+        {#if !localLeanEditor && node.formalization.lean_certification}
+          <LeanGroundSubmit
+            fnode={node.fnode}
+            submitted={node.formalization.lean_certification.status !== "not_submitted"}
+            onOpen={(project) => window.dispatchEvent(new CustomEvent("mdc:open-collaboration", { detail: project }))}
+          />
+        {/if}
       </div>
     </header>
   {/if}

@@ -9,6 +9,7 @@ import { DocError, projectParts, validateName } from "./names.js";
 import { Terminus, type TerminusConfig } from "./terminus.js";
 import { BranchService, type Reply } from "./service.js";
 import { Workspaces, type Role } from "./workspace.js";
+import type { Board } from "../domain.js";
 
 export interface DocsOptions {
   terminus: TerminusConfig;
@@ -18,6 +19,8 @@ export interface DocsOptions {
   actors: Record<string, { admin: boolean }>;
   authenticate: (req: IncomingMessage) => string;
   readBody: (req: IncomingMessage) => Promise<unknown>;
+  /** Coordination projects bound to a branch, for the certification dimension. */
+  boards?: (database: string, branch: string) => Promise<Board[]>;
 }
 
 function send(
@@ -259,6 +262,7 @@ export class DocsBackend {
       headers: req.headers,
       body: () => this.o.readBody(req),
       actor,
+      boards: await this.o.boards?.(database, branchName),
     });
     send(res, reply.status ?? 200, reply.body, reply.headers);
   }

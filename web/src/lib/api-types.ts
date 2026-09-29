@@ -7,11 +7,17 @@ export type FormalCodeStatus = "no_code" | "unverified" | "verified";
 /**
  * Formal certification from LeanGround (migration plan §7.1), separate from any local check.
  * `not_submitted`: the node is not bound to a proof request yet. `insufficient` with
- * `truncated` means the search stopped early, not that no route exists.
+ * `truncated` means the search stopped early, not that no route exists. `stale`: the Lean
+ * text or a definition it uses changed after submission. `rejected`: the node could not be
+ * converted or LeanGround refused it (`reason`).
  */
 export type LeanCertification =
   | { status: "not_submitted" }
-  | { status: "insufficient" | "derivable" | "certified", goal: string, minimum_trust: string, checked_at: string, truncated: boolean };
+  | {
+      status: "insufficient" | "derivable" | "certified" | "stale" | "rejected",
+      project: string, goal?: string, minimum_trust: string, checked_at: string | null,
+      truncated: boolean, reason?: string, details?: string,
+    };
 
 /** `lean`/`rocq`: the local check. `lean_certification`: sent only by the TypeScript backend. */
 export type FormalizationStatus = { lean: FormalCodeStatus, rocq: FormalCodeStatus, lean_certification?: LeanCertification | null, };

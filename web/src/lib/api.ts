@@ -50,10 +50,13 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
     }
   }
   if (!resp.ok) {
+    // Document routes answer {error}; collaboration routes answer a machine-readable {reason}.
     const msg =
       typeof body === "object" && body !== null && "error" in body
         ? String((body as ErrorResponse).error)
-        : `HTTP ${resp.status}`;
+        : typeof body === "object" && body !== null && "reason" in body
+          ? String((body as { reason: unknown }).reason)
+          : `HTTP ${resp.status}`;
     throw new ApiError(msg, resp.status, body);
   }
   return body as T;

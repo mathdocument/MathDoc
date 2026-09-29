@@ -164,7 +164,7 @@ test(
       }
       if (path.startsWith("/v1/bases/"))
         return reply({ base: { base_key: 1, fingerprint: "base" } });
-      if (path === "/v1/goals/resolve")
+      if (path === "/v1/facts/resolve")
         return reply({ goal_key: identity("T") });
       if (path === "/v1/facts/project") return reply({ id: body.id });
       if (path === "/v1/facts/events")

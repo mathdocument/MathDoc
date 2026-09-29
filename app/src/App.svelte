@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import katex from "katex";
-  import type { Board, Command, Task } from "../../coordinator/src/domain";
+  import type { Board, CommandInput as Command, Task } from "../../coordinator/src/domain";
   import type { DocNode, Snapshot } from "../../coordinator/src/documents";
   let token = $state("");
   let actor = $state("");
@@ -30,7 +30,7 @@
   >([]);
   let source = $state("");
   let expectedRoot = $state("target");
-  let component = $state("lean-worker");
+  let component = $state<"lean-worker" | "lean-worker-sketch">("lean-worker");
   let mode = $state<"leaf" | "sketch">("leaf");
   let goal = $state("");
   let certificate = $state("");
