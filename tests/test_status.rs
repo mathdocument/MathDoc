@@ -1272,6 +1272,54 @@ async fn cli_editing_matches_backend_transactions_and_revision_guards() {
         "HTTP 412",
     )
     .await;
+    let batch_args = [
+        "edit",
+        "Child",
+        "--json",
+        "-p",
+        &project,
+        "--revision",
+        deleted["revision"].as_str().unwrap(),
+    ];
+    let before_batch = run(root, &["history", "-p", &project]).await;
+    let sources = serde_json::json!({"latex":"Statement.\n", "lean":"#check Nat\n", "rocq":""});
+    let output = input(root, &batch_args, &sources.to_string()).await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let batch: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(batch["blocks"].as_array().unwrap().len(), 3);
+    for block in batch["blocks"].as_array().unwrap() {
+        assert_eq!(
+            block["content"],
+            sources[block["srctype"].as_str().unwrap()]
+        );
+    }
+    assert_eq!(run(root, &["show", "Child", "-p", &project]).await, batch);
+    assert_eq!(
+        run(root, &["history", "-p", &project])
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
+        before_batch.as_array().unwrap().len() + 1
+    );
+    let stale = input(root, &batch_args, &sources.to_string()).await;
+    assert!(!stale.status.success());
+    assert!(String::from_utf8_lossy(&stale.stderr).contains("HTTP 412"));
+    for bad in [
+        "not json",
+        "[]",
+        "{}",
+        r#"{"lean":null}"#,
+        r#"{"lean":"partial","tex":"invalid"}"#,
+    ] {
+        let output = input(root, &["edit", "Child", "--json", "-p", &project], bad).await;
+        assert!(!output.status.success(), "accepted {bad}");
+        assert_eq!(run(root, &["show", "Child", "-p", &project]).await, batch);
+    }
     let config = run(root, &["project", "show", "-p", &project]).await;
     let mut changed = config["project"].clone();
     changed["lakefile"] = serde_json::json!(format!(

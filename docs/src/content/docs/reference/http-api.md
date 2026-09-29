@@ -27,6 +27,7 @@ UUIDs; CLI references are resolved by exact name or UUID first.
 | `DELETE /node/ID` | `del SOURCE` | Atomically delete the node and detach all referrers; `{fnode, deleted: true, removed_edges}`. |
 | `PUT /node/ID/title` | `rename` | Body `{title}`; updated node. |
 | `PUT /node/ID/block/TYPE` | `edit --type TYPE` | Body `{content}`; updated node. |
+| `PUT /node/ID/blocks` | `edit --json` | Nonempty `{TYPE: source_string, ...}`; atomically update specified blocks and return the updated node. Omitted blocks and existing metadata are preserved. |
 | `DELETE /node/ID/block/TYPE` | `edit --type TYPE --delete` | Delete text/lean/rocq/latex block; updated node. |
 | `POST /node/ID/dep/add` | `dep add -t TARGET` | Body `{dep_fnode}`; updated source node. |
 | `POST /node/ID/dep/rm` | `dep rm -t TARGET...` | Body `{dep_fnodes:[...]}`; one atomic removal. |
@@ -52,6 +53,11 @@ browser. The CLI identifies its newly added dependency and returns the created
 node, keeping `new` output consistent. A normal unlinked creation returns the
 new node directly. Deleting a node retains all other nodes and their source
 blocks; only dependency edges incident to the deleted node are removed.
+
+Both source update endpoints require the node's quoted `If-Match` revision.
+The batch endpoint validates every type and value before saving, rejects null
+and other non-string values, and writes one commit for the entire request.
+Empty strings retain empty blocks; deletion uses the separate DELETE endpoint.
 
 ## Local management and editor sessions
 

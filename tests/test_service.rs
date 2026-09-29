@@ -34,6 +34,108 @@ async fn call(
 
 #[tokio::test]
 #[ignore = "requires local TerminusDB and MDC_TERMINUS_PASSWORD"]
+async fn block_batch_preserves_untouched_data_and_commits_all_or_nothing() {
+    use mathdoc::store::{Block, Node};
+    let fixture = common::TestDatabase::new("mdcblocks").await;
+    let db = &fixture.db;
+    let before = db.load().await.unwrap();
+    let mut node = Node::new("Batch".into()).unwrap();
+    node.blocks = vec![
+        Block {
+            srctype: "text".into(),
+            content: "Keep this block".into(),
+            ..Default::default()
+        },
+        Block {
+            srctype: "lean".into(),
+            content: "old source".into(),
+            metadata: [("origin".into(), "Keep metadata".into())].into(),
+        },
+    ];
+    let mut parent = Node::new("Referrer".into()).unwrap();
+    parent.depens.push(node.fnode.clone());
+    db.put(
+        &[node.clone(), parent.clone()],
+        &before.version,
+        "Batch fixture",
+    )
+    .await
+    .unwrap();
+    let before = db.load().await.unwrap();
+    let app = service::router(Service::open(db.clone()).await.unwrap());
+    let path = format!("/api/node/{}/blocks", node.fnode);
+    let revision = node.revision();
+    let updates =
+        json!({"lean":"theorem test : True := by trivial\n", "latex":"A true statement."});
+    for (body, revision, expected) in [
+        (updates.clone(), None, 428),
+        (updates.clone(), Some("stale"), 412),
+        (json!({}), Some(revision.as_str()), 422),
+        (
+            json!({"lean":"partial", "python":"invalid"}),
+            Some(revision.as_str()),
+            422,
+        ),
+        (
+            json!({"latex":"partial", "lean":null}),
+            Some(revision.as_str()),
+            422,
+        ),
+        (
+            json!({"latex":"partial", "lean":42}),
+            Some(revision.as_str()),
+            422,
+        ),
+    ] {
+        let (status, error) = call(&app, "PUT", &path, body, revision).await;
+        assert_eq!(status, expected, "{error}");
+        assert_eq!(db.version().await.unwrap(), before.version);
+    }
+    let commits = db.history().await.unwrap().as_array().unwrap().len();
+    let (status, result) = call(&app, "PUT", &path, updates.clone(), Some(&revision)).await;
+    assert_eq!(status, 200, "{result}");
+    let after = db.load().await.unwrap();
+    let saved = &after.nodes[&node.fnode];
+    assert_eq!(saved.blocks.len(), 3);
+    assert_eq!(saved.blocks[0], node.blocks[0]);
+    assert_eq!(saved.blocks[1].metadata, node.blocks[1].metadata);
+    assert_eq!(
+        saved.source("lean").unwrap(),
+        updates["lean"].as_str().unwrap()
+    );
+    assert_eq!(
+        saved.source("latex").unwrap(),
+        updates["latex"].as_str().unwrap()
+    );
+    assert_eq!(saved.title, node.title);
+    assert_eq!(saved.module, node.module);
+    assert_eq!(saved.depens, node.depens);
+    assert_eq!(result["revision"], saved.revision());
+    assert_eq!(
+        db.history().await.unwrap().as_array().unwrap().len(),
+        commits + 1
+    );
+    for id in [&node.fnode, &parent.fnode] {
+        assert_ne!(before.lean_keys[id], after.lean_keys[id]);
+    }
+    assert_eq!(
+        call(&app, "PUT", &path, updates, Some(&revision)).await.0,
+        412
+    );
+    assert_eq!(db.version().await.unwrap(), after.version);
+    let (_, view) = call(
+        &app,
+        "GET",
+        &format!("/api/node/{}/view", node.fnode),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(view["node"], result);
+}
+
+#[tokio::test]
+#[ignore = "requires local TerminusDB and MDC_TERMINUS_PASSWORD"]
 async fn delete_node_atomically_detaches_referrers_and_invalidates_affected_keys() {
     use mathdoc::store::Node;
     let fixture = common::TestDatabase::new("mdcdelete").await;

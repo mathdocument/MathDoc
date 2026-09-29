@@ -12,7 +12,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::Arc,
 };
 use tokio::sync::{Mutex, MutexGuard, RwLock};
@@ -183,6 +183,7 @@ pub fn router(service: Arc<Service>) -> Router {
         .route("/lean/session/:id/ws", get(editor_socket))
         .route("/node/:id/title", put(title))
         .route("/node/:id/block/:language", put(block).delete(delete_block))
+        .route("/node/:id/blocks", put(blocks))
         .route("/node/:id/dep/candidates", get(candidates))
         .route("/node/:id/dep", get(traverse))
         .route("/node/:id/metric/ior", get(ior))
@@ -853,25 +854,46 @@ async fn block(
     headers: HeaderMap,
     Json(body): Json<Content>,
 ) -> ApiResult<Response> {
+    blocks(
+        State(s),
+        Path(id),
+        headers,
+        Json(BTreeMap::from([(language, body.content)])),
+    )
+    .await
+}
+async fn blocks(
+    State(s): State<Arc<Service>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(updates): Json<BTreeMap<String, String>>,
+) -> ApiResult<Response> {
+    if updates.is_empty()
+        || updates
+            .keys()
+            .any(|kind| !BLOCK_TYPES.contains(&kind.as_str()))
+    {
+        return Err(ApiError(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "provide one or more source strings with supported types: text, lean, rocq, latex"
+                .into(),
+        ));
+    }
     let mut snapshot = s.read().await?;
     let mut node = snapshot.resolve(&id)?.clone();
     check_revision(&headers, &node)?;
-    if !BLOCK_TYPES.contains(&language.as_str()) {
-        return Err(ApiError(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "supported types: text, lean, rocq, latex".into(),
-        ));
+    for (language, content) in updates {
+        if let Some(block) = node.blocks.iter_mut().find(|b| b.srctype == language) {
+            block.content = content;
+        } else {
+            node.blocks.push(Block {
+                srctype: language,
+                content,
+                ..Default::default()
+            });
+        }
     }
-    if let Some(block) = node.blocks.iter_mut().find(|b| b.srctype == language) {
-        block.content = body.content;
-    } else {
-        node.blocks.push(Block {
-            srctype: language,
-            content: body.content,
-            ..Default::default()
-        });
-    }
-    s.save(&mut snapshot, vec![node.clone()], "Update source block")
+    s.save(&mut snapshot, vec![node.clone()], "Update source blocks")
         .await?;
     Ok(revision_response(&snapshot, &node, &s.lean))
 }

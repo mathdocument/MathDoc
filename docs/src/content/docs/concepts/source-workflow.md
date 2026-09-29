@@ -15,6 +15,13 @@ mdc edit Example -p myproject/main --type text --delete
 `--delete` removes it and does not read stdin. Source edits and compilation are
 separate operations. Only Lean has integrated compilation and language services.
 
+To save matching LaTeX and Lean sources together, use
+`mdc edit Example -p myproject/main --json --revision NODE_REV < blocks.json`,
+where `blocks.json` maps block types to complete source strings, for example
+`{"latex":"Statement.","lean":"theorem example_true : True := by trivial"}`.
+This saves all specified blocks in one commit and preserves the others. It is
+separate from `--type`/`--delete`; see [Node commands](../../reference/workspace-commands/#nodes).
+
 Read `mdc show Example -p myproject/main` before editing. Pass its `revision` using
 `--revision` to `edit`, `rename`, or dependency mutations to guard work based on
 that read. Without it, the CLI fetches a revision immediately before writing.

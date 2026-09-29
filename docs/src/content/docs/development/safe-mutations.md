@@ -17,7 +17,10 @@ request processing time. There is no caller-selected historical commit or merge
 operation in this CLI.
 
 Graph constraints and supported block types are validated before commit. Linked
-creation writes the new node and parent edge atomically. Batch dependency removal
+creation writes the new node and parent edge atomically. Batch source edits
+validate all supplied block types and strings, preserve omitted blocks and
+existing metadata, and save with one node revision guard and database commit.
+A rejected batch leaves all blocks unchanged. Batch dependency removal
 resolves every target before mutation, so an unknown target cannot produce a
 partial removal. Import validates the complete graph and environment, then
 commits only into an empty destination. Existing UUIDs are never overwritten by

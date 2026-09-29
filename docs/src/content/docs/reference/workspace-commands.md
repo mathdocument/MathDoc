@@ -184,6 +184,7 @@ mdc new -p myproject/main -t 'Another lemma' --parent 'Theorem' --revision PAREN
 mdc show -p myproject/main 'Lemma'
 mdc rename -p myproject/main 'Lemma' 'Renamed lemma' --revision NODE_REV
 printf 'Explanation.\n' | mdc edit -p myproject/main 'Renamed lemma' --type text --revision NODE_REV
+mdc edit -p myproject/main 'Renamed lemma' --json --revision NODE_REV < blocks.json
 mdc edit -p myproject/main 'Renamed lemma' --type text --delete --revision NODE_REV
 mdc del -p myproject/main 'Renamed lemma' --revision NODE_REV
 ```
@@ -198,6 +199,19 @@ changes only its display title, preserving its UUID and Lean module identity.
 `edit` replaces or creates a complete source block from stdin. Types are `text`,
 `lean` (default), `rocq` and `latex`. `--delete` removes that block and reads no
 stdin; an empty source without `--delete` remains an existing block.
+
+Use `--json` to update several blocks in one transaction from a stdin object:
+
+```json
+{"latex":"A true statement.\n","lean":"theorem example_true : True := by trivial\n"}
+```
+
+Each key is a supported block type and each value is its complete source string.
+Specified blocks are created or replaced; omitted blocks and existing block
+metadata are preserved. Empty strings save empty blocks, while an empty object,
+unknown type or non-string value is rejected. All changes share one revision
+guard and one database commit; a failed request saves none of them. `--json`
+cannot be combined with `--type` or `--delete`.
 
 `del SOURCE` deletes the node and removes all incoming dependency edges in one
 commit. Referrer nodes and the deleted node’s dependencies remain; their source

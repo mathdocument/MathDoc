@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use reqwest::{Client, Method};
 use serde_json::{json, Value};
-use std::io::Read;
+use std::{collections::BTreeMap, io::Read};
 
 #[derive(Parser)]
 #[command(
@@ -98,11 +98,15 @@ enum Commands {
     },
     /// Read a node by exact name or complete UUID.
     Show { source: String },
-    /// Replace a source block from stdin, or delete it with --delete.
+    /// Replace source blocks from stdin, or delete a single block with --delete.
     Edit {
         source: String,
+        /// Source block type for plain-text stdin or --delete.
         #[arg(long="type",default_value="lean",value_parser=["text","lean","rocq","latex"])]
         language: String,
+        /// Atomically update blocks from a stdin JSON object mapping types to source strings.
+        #[arg(long, conflicts_with_all = ["language", "delete"])]
+        json: bool,
         /// Require the node revision returned by show.
         #[arg(long)]
         revision: Option<String>,
@@ -612,18 +616,28 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
         Commands::Edit {
             source,
             language,
+            json,
             revision,
             delete,
         } => {
             let body = if delete {
                 None
+            } else if json {
+                let blocks: BTreeMap<String, String> = serde_json::from_str(&stdin()?)
+                    .context("expected a JSON object mapping block types to source strings")?;
+                Some(json!(blocks))
             } else {
                 Some(json!({"content":stdin()?}))
             };
             let node = api.node(&source).await?;
+            let path = if json {
+                format!("/node/{}/blocks", node["fnode"].as_str().unwrap())
+            } else {
+                format!("/node/{}/block/{language}", node["fnode"].as_str().unwrap())
+            };
             api.request(
                 if delete { Method::DELETE } else { Method::PUT },
-                &format!("/node/{}/block/{language}", node["fnode"].as_str().unwrap()),
+                &path,
                 &[],
                 body,
                 Some(
@@ -869,6 +883,27 @@ async fn mutate_dep(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn edit_json_is_separate_from_single_block_options() {
+        for options in [vec![], vec!["--json"], vec!["--type", "latex", "--delete"]] {
+            let mut args = vec!["mdc", "edit", "Node", "-p", "demo/main"];
+            args.extend(options);
+            let matches = grouped_command().try_get_matches_from(args).unwrap();
+            assert!(Cli::from_arg_matches(&matches).is_ok());
+        }
+        for options in [vec!["--type", "lean"], vec!["--delete"]] {
+            let mut args = vec!["mdc", "edit", "Node", "--json", "-p", "demo/main"];
+            args.extend(options);
+            assert_eq!(
+                grouped_command()
+                    .try_get_matches_from(args)
+                    .unwrap_err()
+                    .kind(),
+                clap::error::ErrorKind::ArgumentConflict
+            );
+        }
+    }
+
     #[test]
     fn errors_only_advertise_public_commands() {
         for args in [
