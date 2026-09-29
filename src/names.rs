@@ -134,6 +134,45 @@ pub fn rename_latex_refs(source: &str, old: &str, new: &str) -> String {
         if !source[pos..].starts_with('{') {
             continue;
         }
+        if matches!(command, "ref" | "cref" | "Cref" | "nameref" | "eqref") {
+            pos += 1;
+            let mut depth = 1;
+            let mut key_start = true;
+            let saved = replacements.len();
+            while pos < source.len() && depth > 0 {
+                let ch = source[pos..].chars().next().unwrap();
+                match ch {
+                    '%' => {
+                        pos += source[pos..].find('\n').unwrap_or(source.len() - pos);
+                        continue;
+                    }
+                    '\\' => {
+                        pos += 1;
+                        pos += source[pos..].chars().next().map_or(0, char::len_utf8);
+                        key_start = false;
+                        continue;
+                    }
+                    '{' => {
+                        depth += 1;
+                        key_start = false;
+                    }
+                    '}' => depth -= 1,
+                    ',' if depth == 1 => key_start = true,
+                    ch if ch.is_whitespace() => (),
+                    _ => {
+                        if depth == 1 && key_start && source[pos..].starts_with(&prefix) {
+                            replacements.push(pos..pos + old.len());
+                        }
+                        key_start = false;
+                    }
+                }
+                pos += ch.len_utf8();
+            }
+            if depth != 0 {
+                replacements.truncate(saved);
+            }
+            continue;
+        }
         let arg_start = pos + 1;
         let Some(end) = source[arg_start..].find('}').map(|n| arg_start + n) else {
             break;
@@ -146,22 +185,6 @@ pub fn rename_latex_refs(source: &str, old: &str, new: &str) -> String {
             pos = source[end + 1..]
                 .find(&close)
                 .map_or(source.len(), |n| end + 1 + n + close.len());
-        } else if matches!(command, "ref" | "cref" | "Cref" | "nameref" | "eqref") {
-            let mut offset = arg_start;
-            for key in argument.split(',') {
-                let mut trimmed = key.trim_start();
-                while trimmed.starts_with('%') {
-                    trimmed = trimmed
-                        .find('\n')
-                        .map_or("", |end| trimmed[end..].trim_start());
-                }
-                if trimmed.starts_with(&prefix) {
-                    let start = offset + key.len() - trimmed.len();
-                    replacements.push(start..start + old.len());
-                }
-                offset += key.len() + 1;
-            }
-            pos = end + 1;
         }
     }
     let mut result = source.to_owned();
@@ -216,6 +239,21 @@ B.Result::fourth }"
         }
         assert!(renamed.contains("A.X::ordinary"));
         assert_eq!(rename_latex_refs(&renamed, "B.Result", "A.X"), source);
+    }
+    #[test]
+    fn rename_latex_refs_ignores_delimiters_inside_comments() {
+        let source = r"\cref{local,% }, A.X::comment
+ A.X::real} \nameref{A.X::next} \cref{local,% text, A.X::comment
+ A.X::real}% \ref{A.X::comment}";
+        assert_eq!(
+            rename_latex_refs(source, "A.X", "B.Result"),
+            source
+                .replace("A.X::real", "B.Result::real")
+                .replace("A.X::next", "B.Result::next")
+        );
+        for literal in [r"\ref{A.X::unfinished", r"\ref{\custom{A.X::key}}"] {
+            assert_eq!(rename_latex_refs(literal, "A.X", "B.Result"), literal);
+        }
     }
     #[test]
     fn rename_preserves_import_modes_comments_and_body() {
