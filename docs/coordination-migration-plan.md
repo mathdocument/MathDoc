@@ -211,8 +211,9 @@ TypeScript 后端（coordinator/ 扩展而来）
 - **Lean 块内容不变**；协作相关的标记（例如回写操作 ID、绑定的认证 ID、定义节点登记得到的定义 ID）写进块的
   `metadata`，不改块的源码。
 - **`Project/lean` 原样保存、原样返回**：它继续表示旧 Lake 项目，不能写入 Base/context 等新字段；旧 Rust 类型使用
-  `deny_unknown_fields`，改写其含义会破坏双后端兼容。LeanGround 的 Base、context、options 与文档分支版本
-  存入 PostgreSQL 中独立的证明环境绑定。旧配置到新环境的映射必须由用户显式选择，不能静默推断。
+  `deny_unknown_fields`，改写其含义会破坏双后端兼容。LeanGround 的 Base、context、options、minimum_trust
+  存入 PostgreSQL 中独立的证明环境；ProofRequest 另存 database、branch、根节点与前提/定义依赖节点的修订快照。
+  分支 data_version 只用于审计和回写前置条件，不进入环境或请求身份。旧配置到新环境的映射必须由用户显式选择，不能静默推断。
 - **旧的本地认证缓存**（`CACHE/checks-v1`）不迁移、不再读取；界面上旧的「已检查」不能当作正式认证。
 - **协作数据**全部在 PostgreSQL，与文档数据没有外键；删除协作项目不影响文档。
 
@@ -256,8 +257,11 @@ TypeScript 后端（coordinator/ 扩展而来）
 在大规模移植接口前，先形成版本化 schema、示例 fixture 与确定性合同测试：
 
 1. **文档权限契约**：工作区、分支、角色、继承规则，以及所有读写/分支/导入导出/删除操作的授权矩阵。
-2. **证明环境契约**：独立保存 BaseRef、context、options、最低信任要求和绑定的 TerminusDB 分支版本；不复用
-   `Project/lean` 字段。环境改变创建新的 ProofRequest，不能覆盖旧 Goal 状态。
+2. **证明环境契约**：环境身份仅由完整 BaseRef、context、options、minimum_trust 决定；不复用 `Project/lean`。
+   ProofRequest 另行绑定 database、branch、根节点的 `legacyNodeRevision`，以及前提/定义依赖节点（含传递依赖）的修订快照。
+   分支 data_version 仅作审计快照和回写前置条件，不参与环境或 ProofRequest 身份。
+   环境改变创建新的 ProofRequest，不能覆盖旧 Goal 状态；根节点或依赖节点修订变化才令旧请求过期，
+   同分支无关节点修改不影响环境、请求身份或有效性。fixture 必须分别覆盖这三类节点修改。
 3. **声明绑定契约**：一个 Node/Lean block 怎样判定为定义节点或定理节点；定理节点如何选择唯一结论声明，辅助
    声明（含证明内部定义）如何处理，支持哪些源码形态，怎样生成前提占位、`definitions` 定义 ID 列表和 GoalKey
    （§7.3）。多声明或无法判定的节点必须返回明确的 `unsupported_source`，不能猜测。
@@ -285,7 +289,7 @@ TypeScript 后端（coordinator/ 扩展而来）
 | 协作对象 | 绑定的文档对象 |
 |---|---|
 | DocumentWorkspace | 一个 TerminusDB 数据库及其分支集合；独立保存 owner/editor/viewer，不从 ProofRequest 反推权限 |
-| Project / ProofRequest | 一个节点在某分支、某数据版本上的陈述；固定 LeanGround 的 Base、context、options |
+| Project / ProofRequest | 绑定 database、branch、根节点及前提/定义依赖节点的修订号；固定 BaseRef、context、options、minimum_trust。分支 data_version 只作审计快照和回写前置条件，不参与身份；无关节点修改不令请求过期 |
 | Goal | 按 GoalKey 合并；可关联一个或多个经过明确声明绑定的节点别名 |
 | Decomposition | 引用 LeanGround 的条件认证；审阅、暂停、退役状态只在协作层 |
 | Task / Attempt | 与文档无关；租约带 `lease_epoch` |
