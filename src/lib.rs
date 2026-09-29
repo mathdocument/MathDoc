@@ -9,6 +9,7 @@ pub use cli::run;
 pub mod config;
 #[cfg(unix)]
 pub mod core;
+pub(crate) mod file_lock;
 pub mod latex;
 pub mod lean;
 pub(crate) mod profile;

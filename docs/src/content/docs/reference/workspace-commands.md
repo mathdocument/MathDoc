@@ -70,7 +70,7 @@ shared total does not mean that all branch-local caches are empty. `stop` retain
 caches and never resets these statistics. GC's `reclaimable_file_size` excludes objects
 with additional hardlinks: a private producer output may still retain those
 bytes after the pool entry is removed. Stopped branch workspaces are removed by
-`branch del`; this also releases their links. Empty lock files remain.
+`branch del`; this removes their private directories and releases their links.
 
 An optional branch must already exist and be stopped; missing branches and
 duplicate branch starts fail. `mdc start` without a branch is safe to repeat.
@@ -86,7 +86,7 @@ name, not `DATABASE/BRANCH`, and works with or without a running entry server.
 With a server, it stops only this project's branches and their editor sessions;
 other projects remain running. Save any drafts you intend to keep first.
 Removal deletes every branch, including `main`, and the database history. It
-clears the project's local caches (retaining empty branch lock files), removes
+removes the project's entire local cache directory, including its shared pool, removes
 its foreground restore entries, and leaves shared Elan toolchains installed.
 If a branch cache is owned by another process, removal fails before deleting the
 database. A database deletion failure leaves compiler caches intact; a later
@@ -164,8 +164,8 @@ already be stopped; a running or starting service blocks deletion. TerminusDB
 protects `main`, so both CLI and browser reject its deletion before touching
 its caches, regardless of how many other branches exist. The command
 cleans that branch's private build outputs, editor workspaces, libraries and
-logs in the configured cache root. Only an empty service lock remains for
-coordination. The database's shared objects and certificates survive; reclaim
+logs, including the branch directory and its service lock, in the configured cache
+root. The database's shared objects and certificates survive; reclaim
 them explicitly with `cache gc`. Other branches are unaffected. Immutable database
 commits remain after their branch reference is removed.
 

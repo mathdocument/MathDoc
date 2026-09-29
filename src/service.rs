@@ -306,21 +306,14 @@ pub(crate) fn allowed_origin(headers: &HeaderMap, public_origin: Option<&str>) -
 }
 
 pub(crate) fn acquire_lease(root: &std::path::Path) -> Result<std::fs::File> {
-    use std::os::{
-        fd::AsRawFd,
-        unix::fs::{OpenOptionsExt, PermissionsExt},
-    };
-    std::fs::create_dir_all(root)?;
-    let lease = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(root.join("service.lock"))?;
-    if unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        bail!("this service cache is already owned by another service");
-    }
+    use std::os::unix::fs::PermissionsExt;
+    let lease = crate::file_lock::acquire(&root.join("service.lock"), true).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            anyhow::anyhow!("this service cache is already owned by another service")
+        } else {
+            error.into()
+        }
+    })?;
     lease.set_len(0)?;
     lease.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     Ok(lease)
@@ -347,7 +340,7 @@ pub(crate) fn running_service(root: &std::path::Path) -> Result<Option<RunningSe
     }
     let mut address = String::new();
     file.read_to_string(&mut address)?;
-    if address.is_empty() {
+    if address.is_empty() || !crate::file_lock::is_current(&file, &root.join("service.lock"))? {
         return Ok(None);
     }
     Ok(Some(serde_json::from_str(&address).context(
@@ -379,6 +372,8 @@ pub(crate) async fn delete_branch(project: &str) -> Result<Value> {
         "cannot delete the main branch; use mdc remove {database} to delete the entire project"
     );
     let db = Database::from_env(database.into(), branch.into())?;
+    // Reject an already deleted branch before creating its cache again.
+    db.version().await?;
     let root = db.cache_path()?;
     // Use the service's exclusive lease, including during startup before a port is recorded.
     let _lease = acquire_lease(&root).map_err(|error| {
@@ -386,9 +381,11 @@ pub(crate) async fn delete_branch(project: &str) -> Result<Value> {
     })?;
     db.version().await?;
     // Clean disposable files first so a filesystem error leaves branch data intact.
-    // Keep the lock inode: unlinking it would let a concurrent start bypass our lease.
+    // Keep the lock until the database mutation has finished.
     clear_branch_cache(&root)?;
     db.delete_branch().await?;
+    crate::file_lock::remove_cache(&root)
+        .with_context(|| format!("branch {project} was deleted, but cache cleanup failed"))?;
     Ok(json!({"project":project,"deleted":true}))
 }
 
@@ -430,17 +427,7 @@ pub(crate) async fn delete_database(database: &str) -> Result<Value> {
     }
     let _pool = crate::lean::cache::lease(&root.join(".shared"), true)?;
     db.delete_database().await?;
-    let cleanup = || -> Result<()> {
-        for entry in entries {
-            if entry.file_type()?.is_dir() {
-                clear_branch_cache(&entry.path())?;
-            } else {
-                std::fs::remove_file(entry.path())?;
-            }
-        }
-        Ok(())
-    };
-    cleanup()
+    crate::file_lock::remove_cache(&root)
         .with_context(|| format!("database {database} was deleted, but cache cleanup failed"))?;
     Ok(json!({"database":database,"deleted":true}))
 }

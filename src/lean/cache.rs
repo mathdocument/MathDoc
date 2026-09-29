@@ -27,25 +27,15 @@ impl Drop for Lease {
 }
 
 pub fn lease(root: &Path, exclusive: bool) -> Result<Lease> {
-    fs::create_dir_all(root)?;
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(root.join("lease.lock"))?;
-    let mode = if exclusive {
-        libc::LOCK_EX
-    } else {
-        libc::LOCK_SH
-    };
-    if unsafe { libc::flock(file.as_raw_fd(), mode | libc::LOCK_NB) } != 0 {
-        let error = std::io::Error::last_os_error();
-        if error.kind() != std::io::ErrorKind::WouldBlock {
-            return Err(error).context("lock Lean shared cache");
+    let file = crate::file_lock::acquire(&root.join("lease.lock"), exclusive).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            anyhow::anyhow!(
+                "Lean shared cache is in use; stop this database's branches before cleaning it"
+            )
+        } else {
+            anyhow::Error::from(error).context("lock Lean shared cache")
         }
-        bail!("Lean shared cache is in use; stop this database's branches before cleaning it");
-    }
+    })?;
     Ok(Lease(Some(file)))
 }
 

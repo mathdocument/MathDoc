@@ -188,13 +188,10 @@ async fn remove_database_offline_guards_leases_and_cleans_all_branch_caches() {
         std::fs::read_to_string(outside.join("keep")).unwrap(),
         "other project"
     );
-    for branch in ["main", "agent", "obsolete"] {
-        let remaining: Vec<_> = std::fs::read_dir(database_cache.join(branch))
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        assert_eq!(remaining, vec![std::ffi::OsString::from("service.lock")]);
-    }
+    assert!(
+        !database_cache.exists(),
+        "remove must delete the entire cache directory"
+    );
     assert_eq!(
         serde_json::from_slice::<Value>(&std::fs::read(restore).unwrap()).unwrap(),
         serde_json::json!(["unrelated/main"])
@@ -204,6 +201,10 @@ async fn remove_database_offline_guards_leases_and_cleans_all_branch_caches() {
     reject(root, &["remove", "../main"], "database and branch names").await;
     run(root, &["init", &fixture.db.database]).await;
     assert!(fixture.db.version().await.is_ok());
+    let project = format!("{}/main", fixture.db.database);
+    let _recreated = Started::start(root, &project, None).await;
+    assert!(!shared_file.exists());
+    run(root, &["new", "Recreated", "--proj", &project]).await;
 }
 
 #[tokio::test]
@@ -1011,16 +1012,9 @@ async fn branch_deletion_requires_stopped_service_and_cleans_only_its_cache() {
         "branch deletion must preserve shared native objects"
     );
     assert!(!status(root).await.contains_key(&copy));
-    let remaining: Vec<_> = std::fs::read_dir(&copy_root)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name())
-        .collect();
-    assert_eq!(remaining, vec![std::ffi::OsString::from("service.lock")]);
-    assert_eq!(
-        std::fs::metadata(copy_root.join("service.lock"))
-            .unwrap()
-            .len(),
-        0
+    assert!(
+        !copy_root.exists(),
+        "branch deletion must remove its directory"
     );
     assert_eq!(
         std::fs::read_to_string(outside.join("keep.olean")).unwrap(),
@@ -1028,6 +1022,10 @@ async fn branch_deletion_requires_stopped_service_and_cleans_only_its_cache() {
     );
     assert_eq!(run(root, &["export", "--proj", &main]).await, original);
     reject(root, &["branch", "del", "--proj", &copy], "TerminusDB").await;
+    assert!(
+        !copy_root.exists(),
+        "a repeated deletion must not recreate the cache"
+    );
 
     run(root, &["branch", "new", "copy", "--proj", &main]).await;
     let _recreated = Started::start(root, &copy, None).await;

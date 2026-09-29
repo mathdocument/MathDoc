@@ -53,12 +53,15 @@ Lean workers. Ordinary `mdc start` starts an empty server; load desired branches
 runs. Preserve `active-projects.json` in the server cache to retain that selection;
 deleting it forgets which branches to start but does not delete database content.
 Save drafts before stopping their branch or the whole server. `branch del` requires a stopped non-`main` branch and removes
-its private cache contents, preserving the shared pool and coordination locks.
+its entire private cache directory, preserving the database's shared pool.
 TerminusDB protects `main`; neither the browser nor CLI can delete it.
 It remains a normal working branch for editing, checking and forking. To delete
 the entire project, `mdc remove DATABASE` stops all its branches and deletes the
-database, its history and local branch caches. Other projects and shared Elan
-toolchains are unaffected; empty cache lock files remain for coordination.
+database, its history and entire local cache directory, including the shared pool.
+Other projects and shared Elan toolchains are unaffected. Deletion holds the cache
+locks until the database mutation finishes, then atomically moves the directory
+aside before removing it. Lock acquisition rejects retired files, so concurrent
+same-name recreation cannot bypass a live lock or have its new cache removed.
 
 Use `mdc cache stats DATABASE` to inspect the local shared pool with branches
 running or stopped, even when TerminusDB is offline. This excludes private

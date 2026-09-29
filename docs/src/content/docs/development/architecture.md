@@ -54,7 +54,9 @@ used by Docker, persists the selected branches and restores them after restarts.
 or starting Lean. When the server exits or crashes, all branches are stopped.
 Data and compiled artifacts remain on disk. One consistent cache root is
 required for discovery and exclusive ownership. Branch deletion takes the same
-cache lock and retains its inode to prevent concurrent starts bypassing it.
+cache lock through the database mutation, then atomically retires and deletes
+the cache directory. File locks verify their device/inode against the current
+path after acquisition, rejecting stale handles opened before retirement.
 
 ## Graph and Lean state
 
