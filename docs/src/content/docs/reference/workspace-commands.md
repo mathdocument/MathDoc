@@ -17,7 +17,8 @@ local state and can run on any machine that reaches the server.
 `-p DATABASE/BRANCH` selects the branch explicitly and overrides `MDC_PROJECT`.
 Flags may appear anywhere after `mdc`. From a checkout, run
 `node coordinator/dist/cli.js`; in the Docker image `mdc` is on the `PATH`, and
-`scripts/mdc-docker` runs it in the deployment from the host.
+a deployment's `mdc` wrapper (`scripts/mdc-docker` in a checkout) runs it in the
+`runtime` container from the host.
 
 Output is pretty-printed JSON on stdout. Exit code 2 means a usage error (the
 usage text is printed); 1 means the request failed, with `HTTP STATUS: message`

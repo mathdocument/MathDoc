@@ -1,0 +1,100 @@
+{
+  "root": "/experiment/lake-sharing-m3pcb54u",
+  "lean": "Lean (version 4.33.1, aarch64-unknown-linux-gnu, commit 819816b2e0a3bf405af45ae5c7af2491d8f5bee6, Release)",
+  "lake": "Lake version 5.0.0-src+819816b (Lean version 4.33.1)",
+  "platform": "Linux aarch64",
+  "filesystem": "ext4",
+  "reflink": {
+    "supported": false,
+    "message": "cp: failed to clone '/experiment/lake-sharing-m3pcb54u/reflink-copy' from '/experiment/lake-sharing-m3pcb54u/reflink-source': Operation not supported"
+  },
+  "cold_ms": 1963.6,
+  "pool_baseline": {
+    "files": 6,
+    "allocated_bytes": 2269184
+  },
+  "warm_four_agents": {
+    "ms": [
+      146.1,
+      145.5,
+      143.6,
+      135.7
+    ],
+    "compilations": 0,
+    "private_olean_files": 0,
+    "ilean_hardlinks": true,
+    "additional_allocated_bytes": 65536
+  },
+  "changed_ms": 1343.5,
+  "changed_branch_isolated": true,
+  "lsp_original": {
+    "errors": 0,
+    "goals": [
+      "\u22a2 value = 1"
+    ]
+  },
+  "lsp_reads_pool_without_local_olean": true,
+  "lsp_changed": {
+    "errors": 0,
+    "goals": [
+      "\u22a2 value = 2"
+    ]
+  },
+  "lsp_rejects_other_branch_value": {
+    "errors": 1,
+    "goals": [
+      "\u22a2 value = 2"
+    ]
+  },
+  "lsp_edit_recovers": {
+    "errors": 0,
+    "goals": [
+      "\u22a2 value = 1"
+    ]
+  },
+  "lsp_survives_other_session_and_branch_removal": {
+    "errors": 0,
+    "goals": [
+      "\u22a2 value = 1"
+    ]
+  },
+  "after_deletion_ms": 135.3,
+  "cold_same_input_race": {
+    "ms": [
+      5407.1,
+      5393.2,
+      5395.0,
+      5395.3
+    ],
+    "compiler_events": [
+      "A:7",
+      "A:7",
+      "A:7",
+      "A:7",
+      "B:7",
+      "B:7",
+      "B:7",
+      "B:7"
+    ],
+    "final_output_json_valid": true
+  },
+  "original_after_exclusive_objects_removed_ms": 127.4,
+  "missing_objects_rebuild_ms": 1649.7,
+  "reclaimed_exclusive_objects": 3,
+  "module_mode_reuse_ms": 123.4,
+  "module_mode_shared_extensions": [
+    ".c",
+    ".ilean",
+    ".ir",
+    ".ir.sig",
+    ".olean",
+    ".olean.private",
+    ".olean.server"
+  ],
+  "readonly_pool_hit_ms": 130.9,
+  "readonly_pool_miss": {
+    "exit_code": 1,
+    "permission_denied": true
+  },
+  "complete": true
+}

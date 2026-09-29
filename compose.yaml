@@ -1,11 +1,11 @@
-# Development services: TerminusDB and PostgreSQL on loopback. Run the API and worker
-# from the checkout (see README). The server deployment is compose.server.yaml.
+# Development and test services: TerminusDB and PostgreSQL on loopback. Run the API and
+# worker from the checkout (see the development setup). Deployments use compose.server.yaml.
 services:
   terminusdb:
     restart: unless-stopped
     image: terminusdb/terminusdb-server@sha256:385faf298ad77aaf2d4d6df5e84a4cbe3596d01dab2e3b991af905639ae56388
     ports:
-      - "127.0.0.1:6363:6363"
+      - "127.0.0.1:${MDC_TERMINUS_PORT:-6363}:6363"
     environment:
       TERMINUSDB_ADMIN_PASS: ${MDC_TERMINUS_PASSWORD:?Set MDC_TERMINUS_PASSWORD}
       TERMINUSDB_SERVER_PORT: "6363"
@@ -15,7 +15,7 @@ services:
     restart: unless-stopped
     image: postgres:17-bookworm
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${MDC_POSTGRES_PORT:-5432}:5432"
     environment:
       POSTGRES_USER: mathdoc
       POSTGRES_DB: mathdoc
@@ -24,6 +24,6 @@ services:
       - postgres-data:/var/lib/postgresql/data
 volumes:
   terminus-data:
-    name: mathdoc-terminus-data
+    name: ${COMPOSE_PROJECT_NAME:-mathdoc}-terminus-data
   postgres-data:
-    name: mathdoc-postgres-data
+    name: ${COMPOSE_PROJECT_NAME:-mathdoc}-postgres-data

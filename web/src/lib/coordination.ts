@@ -99,5 +99,5 @@ export const coordination = {
 export function goalName(board: Board, goal: string): string {
   const node = Object.values(board.nodes ?? {}).find((n) => n.goal === goal);
   if (node) return node.title;
-  return board.goals[goal]?.statement || `${goal.slice(0, 10)}…`;
+  return board.goals[goal]?.statement || `${goal.slice(0, 10)}...`;
 }

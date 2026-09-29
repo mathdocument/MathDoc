@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { basename, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { chromium, webkit } from "playwright";
+import { chromium, firefox, webkit } from "playwright";
 import { createServer } from "node:net";
 
 // Browser tests against the MathDoc backend (coordinator/src/main.ts) and its worker.
@@ -18,6 +18,12 @@ const run = promisify(execFile);
 const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(webRoot, "..");
 const env = { ...process.env };
+const documentEndKey = process.platform === "darwin" ? "Meta+ArrowDown" : "Control+End";
+function launchBrowser() {
+  if (env.MDC_E2E_BROWSER === 'firefox') return firefox.launch();
+  if (env.MDC_E2E_BROWSER === 'webkit') return webkit.launch();
+  return chromium.launch({headless: true, channel: 'chromium'});
+}
 
 // One actor for the whole suite; the browser receives the same token.
 const E2E_ACTOR = "e2e";
@@ -209,6 +215,14 @@ const center = (page) => page.getByRole("region", { name: "current node" });
 async function title(page, name) {
   await center(page).getByRole("button", { name, exact: true }).waitFor();
 }
+async function leanReply(socket, method) {
+  const sent = await socket.waitForEvent("framesent", {predicate: ({payload}) => JSON.parse(String(payload)).method === method});
+  const {id} = JSON.parse(String(sent.payload));
+  const received = await socket.waitForEvent("framereceived", {predicate: ({payload}) => JSON.parse(String(payload)).id === id});
+  const reply = JSON.parse(String(received.payload));
+  assert.equal(reply.error, undefined, JSON.stringify(reply.error));
+  return reply.result;
+}
 async function rename(page, value) {
   await center(page).getByTitle("Click to rename").click();
   await page.getByRole("textbox", { name: "Node title" }).fill(value);
@@ -217,7 +231,7 @@ const beta = (page) => page.getByRole("complementary", { name: "Dependencies" })
   .getByRole("button", { name: /^Beta \(/ });
 
 await test('project directory creates, forks and deletes branches and projects', {timeout: 90000}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const browser = await launchBrowser();
   try {
     await fixture(browser, async ({page, url}) => {
       const base = new URL(url).origin, main = new URL(url).pathname.slice(3);
@@ -322,7 +336,7 @@ await test('project directory creates, forks and deletes branches and projects',
 });
 
 await test("large relation lists filter and retain natural card heights", { timeout: 90000 }, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === "webkit" ? await webkit.launch() : await chromium.launch({ headless: true, channel: "chromium" });
+  const browser = await launchBrowser();
   const node = (title, fnode = randomUUID(), depens = []) => ({ fnode, title, module: `Lib.N_${fnode.replaceAll("-", "")}`, depens, blocks: [] });
   const hub = node("Shared foundation");
   const leaves = Array.from({length: 8500}, (_, i) => node(
@@ -393,7 +407,7 @@ await test("large relation lists filter and retain natural card heights", { time
 });
 
 await test('node operation dialogs share layout, focus and Escape handling', {timeout: 60000}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const browser = await launchBrowser();
   try {
     await fixture(browser, async ({page}) => {
       const toolbar = page.locator('.bar-end');
@@ -461,9 +475,7 @@ await test('node operation dialogs share layout, focus and Escape handling', {ti
 });
 
 await test("browser with the real MathDoc backend", { timeout: 240000 }, async (suite) => {
-  const browser = process.env.MDC_E2E_BROWSER === "webkit"
-    ? await webkit.launch()
-    : await chromium.launch({ headless: true, channel: "chromium" });
+  const browser = await launchBrowser();
   try {
     await suite.test("node deletion detaches referrers and dependency dialogs share their layout", () =>
       fixture(browser, async ({ cli, page, url }) => {
@@ -578,14 +590,13 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         const refreshed = page.waitForResponse((response) => response.url().endsWith("/graph/check"));
         await page.getByRole("button", { name: "Refresh database view" }).click();
         const report = await (await refreshed).json();
-        assert.deepEqual(report.cycles, []);
-        assert.equal(report.edges, 2);
+        assert.deepEqual(report, { nodes: 3, edges: 2 });
       }));
   } finally { await browser.close(); }
 });
 
 await test('Monaco source blocks retain highlighting, edits and undo across layout changes', {timeout: 60000}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const browser = await launchBrowser();
   const node = {fnode: randomUUID(), title: 'Shared editors', module: 'Lib.Shared', depens: [], blocks: [
     {srctype: 'text', content: '# Heading\nA **bold** statement.\n'},
     {srctype: 'latex', content: '% comment\n\\section{Heading}\nA statement.\n'},
@@ -602,16 +613,16 @@ await test('Monaco source blocks retain highlighting, edits and undo across layo
         const colors = await block.locator('.view-line span').evaluateAll(spans => [...new Set(spans.map(el => getComputedStyle(el).color))]);
         assert.ok(colors.length >= 2, `${srctype} has native syntax colors`);
         const input = block.getByRole('textbox', {name: new RegExp(`^${srctype} source`)});
-        await input.press(await page.evaluate(() => /Mac/.test(navigator.platform)) ? 'Meta+ArrowDown' : 'Control+End');
+        await input.press(documentEndKey);
         await page.keyboard.insertText('draft');
         await block.getByText('Unsaved', {exact: true}).waitFor();
         await page.getByRole('button', {name: 'Graph', exact: true}).click();
-        await page.waitForFunction(() => !document.documentElement.dataset.vtScope);
+        await page.waitForFunction(() => document.querySelector('button[title="Graph view"]')?.getAttribute('aria-pressed') === 'true' && !document.querySelector('.app[inert]'));
         await input.press('ControlOrMeta+z');
         await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
         assert.equal(JSON.parse((await cli('show', node.fnode)).stdout).blocks.find(b => b.srctype === srctype).content, content);
         await page.getByRole('button', {name: 'Knowledge', exact: true}).click();
-        await page.waitForFunction(() => !document.documentElement.dataset.vtScope);
+        await page.waitForFunction(() => document.querySelector('button[title="Knowledge view"]')?.getAttribute('aria-pressed') === 'true' && !document.querySelector('.app[inert]'));
       }
       await page.getByRole('button', {name: 'Switch to dark mode'}).click();
       for (const {srctype} of node.blocks) await page.locator(`[data-srctype="${srctype}"] .monaco-editor[role=code].vs-dark`).waitFor();
@@ -621,7 +632,7 @@ await test('Monaco source blocks retain highlighting, edits and undo across layo
 });
 
 await test('LaTeX macros, scoped completion, citations and draft previews', {timeout: 90000}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const browser = await launchBrowser();
   try {
     await fixture(browser, async ({root, cli, page, url}) => {
       const ids = {};
@@ -727,7 +738,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       assert.equal(await back.isDisabled(), true);
       assert.equal(await forward.isDisabled(), true);
       // A slow renderer must leave the current readable node in place, not
-      // replace it with a new heading and "Preparing preview…".
+      // replace it with a new heading and "Preparing preview...".
       let releasePreview, previewRequested;
       const previewGate = new Promise(resolve => { releasePreview = resolve; });
       const previewStarted = new Promise(resolve => { previewRequested = resolve; });
@@ -941,7 +952,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
 });
 
 await test('LaTeX tables, colors and TikZ diagrams render shared macros locally', {timeout: 90000}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const browser = await launchBrowser();
   const node = {fnode: randomUUID(), title: 'Rich LaTeX', module: 'Lib.RichLatex', depens: [], blocks: [{srctype: 'latex', content: String.raw`
     {\color{brand}Colored text} and $\textcolor{brand}{x+y}$.
     \begin{tabular}{|l|c|}\hline Left & Right\\\hline \multicolumn{2}{c}{Together}\\\hline\end{tabular}
@@ -1053,7 +1064,7 @@ await test('LaTeX tables, colors and TikZ diagrams render shared macros locally'
 });
 
 await test('Lean blocks are source editors certified by LeanGround, without local Lean', {timeout: 60000}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const browser = await launchBrowser();
   const node = {fnode: randomUUID(), title: 'Lean without a server', module: 'Lib.NoServer', depens: [], blocks: [
     {srctype: 'lean', content: '-- highlighted comment\ntheorem noServer : True := by trivial\n'},
   ]};
@@ -1074,7 +1085,7 @@ await test('Lean blocks are source editors certified by LeanGround, without loca
       assert.equal(await status.getAttribute('aria-label'), 'Lean: Not submitted to LeanGround');
       // Editing and saving still work, and write only the block.
       const input = block.getByRole('textbox', {name: /^lean source/});
-      await input.press(await page.evaluate(() => /Mac/.test(navigator.platform)) ? 'Meta+ArrowDown' : 'Control+End');
+      await input.press(documentEndKey);
       await page.keyboard.insertText('-- saved without Lean\n');
       await block.getByText('Unsaved', {exact: true}).waitFor();
       await page.keyboard.press('ControlOrMeta+s');
@@ -1093,7 +1104,7 @@ await test('Lean blocks are source editors certified by LeanGround, without loca
 // Plan §10 stage 4 in the browser: needs a real LeanGround (LEANGROUND_SERVER_URL,
 // LEANGROUND_FACT_TOKEN) whose base key MDC_E2E_BASE_KEY (default 1) contains Nat.
 await test('a Lean node is submitted to LeanGround, assembled and written back from the collaboration views', {timeout: 240000, skip: !env.LEANGROUND_SERVER_URL && 'needs a LeanGround server (LEANGROUND_SERVER_URL)'}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const browser = await launchBrowser();
   const make = (title, content, depens = []) => {
     const fnode = randomUUID();
     return {fnode, title, module: `Lib.N_${fnode.replaceAll('-', '')}`, depens, blocks: [{srctype: 'lean', content}]};
@@ -1149,7 +1160,7 @@ await test('a Lean node is submitted to LeanGround, assembled and written back f
 });
 
 await test('view changes reveal measured editors and loaded pages without intermediate frames', {timeout: 60000}, async () => {
-  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const browser = await launchBrowser();
   try {
     await fixture(browser, async ({cli, page, url}) => {
       const node = JSON.parse((await cli('show', 'Alpha')).stdout);

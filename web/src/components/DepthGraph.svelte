@@ -34,6 +34,15 @@
   let containerEl = $state<HTMLDivElement | null>(null);
   let nodes: SimNode[] = [];
   let nodeCount = $state(0);
+  const statusLabels = [
+    // Colors follow the local-check dimension; LeanGround certification shows per node.
+    ["no_code", "No Lean code"],
+    ["unverified", "Lean code"],
+    ["verified", "Verified"],
+  ] as const;
+  let statusCounts = $state<Record<FormalCodeStatus, number>>({
+    no_code: 0, unverified: 0, verified: 0,
+  });
   let rafId = 0;
   let running = true;
   let loadError: string | null = $state(null);
@@ -137,13 +146,16 @@
       depth: node.depth,
       inDegree: 0,
       outDegree: 0,
-      lean: node.lean ?? "unverified",
+      lean: node.lean ?? "no_code",
       baseRadius: 6,
       order: 0,
       x: 0,
       y: 0,
     }));
     nodeCount = nodes.length;
+    const counts = { no_code: 0, unverified: 0, verified: 0 };
+    for (const node of nodes) counts[node.lean]++;
+    statusCounts = counts;
     nodesById = new Map(nodes.map((node) => [node.id, node]));
     computeMetadata(nodes, data.edges);
     applyStaticGraphLayout();
@@ -485,7 +497,7 @@
     const remainder = characters.slice(firstEnd).join("").trimStart();
     const rest = Array.from(remainder);
     const second = rest.length > maxLineLength
-      ? rest.slice(0, maxLineLength - 1).join("") + "…"
+      ? rest.slice(0, maxLineLength - 3).join("") + "..."
       : remainder;
     return second ? [first, second] : [first];
   }
@@ -867,11 +879,18 @@
       ? ` Selected node: ${selectedFnode}.`
       : ""} Use Search to select a node.
   </p>
-  <div class="graph-legend" aria-label="Lean verification colors">
-    <span class="no-code">No Lean code</span>
-    <span class="unverified">Unverified / sorry</span>
-    <span class="verified">Verified</span>
-  </div>
+  <table class="graph-legend" aria-label="Lean verification colors">
+    <tbody>
+      {#each statusLabels as [status, label]}
+        <tr>
+          <th scope="row"><span class={status}>{label}</span></th>
+          <td>{statusCounts[status].toLocaleString()}</td>
+          <td class="count-divider">/</td>
+          <td>{nodeCount.toLocaleString()}</td>
+        </tr>
+      {/each}
+    </tbody>
+  </table>
   <canvas
     bind:this={canvasEl}
     aria-hidden="true"
@@ -893,7 +912,11 @@
 </div>
 
 <style>
-  .graph-legend { position: absolute; z-index: 1; top: .75rem; left: .75rem; display: flex; flex-wrap: wrap; gap: .75rem; padding: .4rem .6rem; color: var(--mdc-fg-soft); background: var(--mdc-panel); border: 1px solid var(--mdc-border); border-radius: var(--mdc-radius-sm); font-size: var(--mdc-text-xs); pointer-events: none; }
+  .graph-legend { position: absolute; z-index: 1; top: .75rem; left: .75rem; border-spacing: 0; padding: .4rem .6rem; color: var(--mdc-fg-soft); background: var(--mdc-panel); border: 1px solid var(--mdc-border); border-radius: var(--mdc-radius-sm); font-size: var(--mdc-text-xs); pointer-events: none; }
+  .graph-legend th { padding: .15rem .75rem .15rem 0; text-align: left; font-weight: inherit; }
+  .graph-legend td { padding: .15rem 0; text-align: right; font-family: var(--mdc-mono); font-variant-numeric: tabular-nums; }
+  .graph-legend td:last-child { text-align: left; }
+  .graph-legend .count-divider { padding-inline: .15rem; color: var(--mdc-muted); }
   .graph-legend span { display: inline-flex; align-items: center; gap: .35rem; }
   .graph-legend span::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--mdc-muted); }
   .graph-legend .unverified::before { background: var(--mdc-warning); }

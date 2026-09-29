@@ -149,7 +149,6 @@ export class BranchService {
     return {
       fnode: n.fnode,
       title: n.title,
-      broken: false,
       depth: s.depths.get(n.fnode) ?? 0,
     };
   }
@@ -406,7 +405,6 @@ export class BranchService {
                 kind: "excluded",
                 source,
                 existing_dependencies: existing,
-                invalid_or_duplicate: 0,
               }
             : { kind: "no_match" };
       return { body: { nodes, empty } };

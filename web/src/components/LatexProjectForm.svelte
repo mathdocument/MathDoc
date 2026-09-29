@@ -58,7 +58,7 @@
 </div>
 <footer class="dialog-footer actions">
   <button onclick={onClose} disabled={busy || loadingFiles > 0}>Cancel</button>
-  <button onclick={() => void save()} disabled={busy || loadingFiles > 0 || !revision}>{busy ? 'Preparing…' : 'Save LaTeX project'}</button>
+  <button onclick={() => void save()} disabled={busy || loadingFiles > 0 || !revision}>{busy ? 'Preparing...' : 'Save LaTeX project'}</button>
 </footer>
 <style>
   .body { padding:1rem; }

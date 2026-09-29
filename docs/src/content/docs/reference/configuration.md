@@ -2,10 +2,16 @@
 title: Configuration
 ---
 
-All configuration comes from environment variables; there is no configuration
-file. `config.example.env` lists every variable with comments. When running from
-a checkout, load it into the shell (`set -a; . ./.env; set +a`) or your process
-manager; `compose.server.yaml` reads `.env` itself.
+All configuration comes from environment variables. `config.example.env` lists every
+variable with comments. When running from a checkout, load it into the shell
+(`set -a; . ./.env; set +a`) or your process manager. A Compose deployment reads
+settings from `mathdoc.env` and secrets from files in `secrets/`
+([Server deployment](../../getting-started/server-deployment/)).
+
+Each secret can instead be read from a file: `MDC_ACTORS_FILE`,
+`MDC_TERMINUS_PASSWORD_FILE`, `MDC_DATABASE_PASSWORD_FILE` and
+`LEANGROUND_FACT_TOKEN_FILE`. Setting both a variable and its `_FILE` form is an
+error, as is an empty or unreadable file; values are trimmed.
 
 ## Server (`serve` and `worker`)
 
@@ -13,6 +19,7 @@ manager; `compose.server.yaml` reads `.env` itself.
 | --- | --- | --- |
 | `MDC_ACTORS` | required | JSON map `{"NAME": {"token": "…", "admin": false}}`. Names use letters, digits, `_`, `-`; tokens are at least 16 characters and distinct. |
 | `MDC_DATABASE_URL` | required | PostgreSQL connection URL. Also the only variable `migrate` needs. |
+| `MDC_DATABASE_PASSWORD` | unset | Password added to `MDC_DATABASE_URL` (usually as `MDC_DATABASE_PASSWORD_FILE`). |
 | `MDC_TERMINUS_URL` | unset | TerminusDB URL, e.g. `http://127.0.0.1:6363`. Without it and the password, the document API and editor are disabled. |
 | `MDC_TERMINUS_USER` | `admin` | TerminusDB user. |
 | `MDC_TERMINUS_PASSWORD` | unset | TerminusDB password. |
@@ -28,10 +35,11 @@ manager; `compose.server.yaml` reads `.env` itself.
 | `MDC_CACHE_DIR` | `$XDG_CACHE_HOME/mathdoc` or `~/.cache/mathdoc` | Absolute path; holds the installed LaTeX runtime. |
 | `MDC_APP_DIR` | unset | Serves the archived collaboration prototype (`app/dist`) at `/` instead of the editor. Not for normal use. |
 
-The Compose files also use `MDC_POSTGRES_PASSWORD` (and `MDC_TERMINUS_PASSWORD`)
-to initialize new database volumes; they do not change existing passwords.
+The development `compose.yaml` uses `MDC_TERMINUS_PASSWORD` and `MDC_POSTGRES_PASSWORD`
+(and optional `MDC_TERMINUS_PORT`, `MDC_POSTGRES_PORT`) to initialize its database
+volumes; they do not change existing passwords.
 
-Keep `.env` private (mode 600) and out of Git. Tokens and passwords never appear
+Keep `.env` and a deployment's `secrets/` private and out of Git. Tokens and passwords never appear
 in exports. Changing `MDC_ACTORS` takes effect when the processes restart.
 
 ## CLI

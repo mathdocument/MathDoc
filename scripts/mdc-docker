@@ -1,9 +1,16 @@
 #!/bin/sh
-# Run `mdc` inside the server deployment from any directory; preserves stdin.
-# Needs MDC_TOKEN (your access token) in the environment.
+# Invoke the server deployment's CLI from any working directory; preserve stdin.
+# In an exported deployment this file is `mdc` next to compose.yaml. Needs MDC_TOKEN
+# (your access token); MDC_PROJECT or -p DATABASE/BRANCH selects the branch.
 set -eu
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -f "$directory/compose.yaml" ]; then
+    root=$directory
+    compose=$root/compose.yaml
+else
+    root=$(CDPATH= cd -- "$directory/.." && pwd)
+    compose=$root/compose.server.yaml
+fi
 : "${MDC_TOKEN:?set MDC_TOKEN to your access token}"
-exec docker compose --project-directory "$root" -f "$root/compose.server.yaml" exec -T \
-  -e MDC_TOKEN="$MDC_TOKEN" -e MDC_PROJECT="${MDC_PROJECT:-}" mdc \
-  sh -c 'MDC_URL="http://127.0.0.1:$MDC_PORT" exec mdc "$@"' mdc "$@"
+exec docker compose --project-directory "$root" -f "$compose" exec -T \
+    -e "MDC_TOKEN=$MDC_TOKEN" -e "MDC_PROJECT=${MDC_PROJECT:-}" runtime mdc "$@"

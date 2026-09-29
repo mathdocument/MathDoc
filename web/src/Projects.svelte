@@ -94,86 +94,99 @@
 <div class="directory">
   <header class="app-header">
     <a class="app-brand" href="/" aria-label="MathDoc projects"><img src="/mdc-logo.svg" alt="" /><strong>MathDoc</strong></a>
+    <button class="header-refresh" class:spinning={refreshing} onclick={() => void refresh()} disabled={refreshing} title="Refresh projects" aria-label="Refresh projects"><RefreshCw size={16} strokeWidth={1.8} /></button>
     <button class="header-theme" onclick={toggleTheme} title="Toggle theme" aria-label="Toggle theme">
       {#if theme === "dark"}<Sun size={16} strokeWidth={1.8} />{:else}<Moon size={16} strokeWidth={1.8} />{/if}
     </button>
   </header>
 
+  <div class="page-head">
+    <div class="head-content">
+      <div class="intro">
+        <h1>Projects</h1>
+        <div class="overview" aria-label="Project summary">
+          <span><strong>{projectCount}</strong> {projectCount === 1 ? "project" : "projects"}</span><span><strong>{branches.length}</strong> {branches.length === 1 ? "branch" : "branches"}</span>
+        </div>
+        <button class="init" onclick={() => create = {}} title="Initialize a project" aria-label="Init project"><Plus size={16} /></button>
+      </div>
+
+      <div class="controls">
+        <label class="search"><Search size={17} strokeWidth={1.8} /><input aria-label="Search projects and branches" placeholder="Search projects or branches..." bind:value={query} /></label>
+      </div>
+    </div>
+  </div>
+
   <main>
-    <div class="intro">
-      <h1>Projects</h1>
-      <div class="overview" aria-label="Project summary">
-        <span><strong>{projectCount}</strong> {projectCount === 1 ? "project" : "projects"}</span><span><strong>{branches.length}</strong> {branches.length === 1 ? "branch" : "branches"}</span>
-      </div>
-      <button class="init" onclick={() => create = {}} title="Initialize a project" aria-label="Init project"><Plus size={16} /></button>
-    </div>
-
-    <div class="controls">
-      <label class="search"><Search size={17} strokeWidth={1.8} /><input aria-label="Search projects and branches" placeholder="Search projects or branches…" bind:value={query} /></label>
-      <button class="icon-button" class:refreshing onclick={() => void refresh()} disabled={refreshing} title="Refresh projects" aria-label="Refresh projects"><RefreshCw size={16} /></button>
-    </div>
-
-    {#if error}<div class="error" role="alert">Could not refresh projects: {error}{#if status}<span>Showing the last known states.</span>{/if}</div>{/if}
-    {#each Object.entries(failures).filter(([name]) => !name.includes("/")) as [database, message] (database)}
-      <div class="error" role="alert">Could not delete project {database}: {message}</div>
-    {/each}
-    {#if !status && !error}
-      <div class="empty" role="status">Loading projects…</div>
-    {:else if status && branches.length === 0}
-      <div class="empty"><FolderOpen size={30} /><h2>No projects yet</h2></div>
-    {:else if status && groups.length === 0}
-      <div class="empty"><Search size={28} /><h2>No matching branches</h2><p>Try a different name.</p></div>
-    {:else}
-      <div class="projects">
-        {#each groups as [database, rows] (database)}
-          <section class="project" aria-label={`Project ${database}`}>
-            <div class="project-head">
-              <FolderOpen size={18} strokeWidth={1.7} /><h2>{database}</h2><span>{rows.length} {rows.length === 1 ? "branch" : "branches"}</span>
-              <button class="icon-button delete" disabled={projectPending(database)} onclick={() => void removeProject(database)} title={`Delete entire project ${database}`} aria-label={`Delete project ${database}`}>
-                {#if pending[database]}<RefreshCw size={16} class="spinning" />{:else}<Trash2 size={16} />{/if}
-              </button>
-            </div>
-            {#each rows as row (row.name)}
-              <div class="branch-row" data-project={row.name}>
-                <span class="branch-name" title={row.name}><GitBranch size={16} strokeWidth={1.6} /><span class:main-branch={row.branch === "main"} title={row.branch === "main" ? "Main branch: can only be deleted with the entire project" : undefined}>{row.branch}</span></span>
-                <span class="state" title="Your role on this branch">{row.role ?? ""}</span>
-                <span class="counts" aria-label={`Graph size of ${row.name}`}>
-                  <span>{#if row.nodes !== undefined}<strong>{row.nodes.toLocaleString()}</strong> {row.nodes === 1 ? "node" : "nodes"}{/if}</span>
-                  <span>{#if row.edges !== undefined}<strong>{row.edges.toLocaleString()}</strong> {row.edges === 1 ? "edge" : "edges"}{/if}</span>
-                </span>
-                <div class="actions" aria-label={`Manage ${row.name}`}>
-                  <div class="branch-actions" class:main={row.branch === "main"}>
-                    <button class="icon-button" disabled={!!pending[row.name] || !!pending[database]} onclick={() => create = {source: row.name}} title={`New branch from ${row.name}`} aria-label={`New branch from ${row.name}`}><GitBranchPlus size={16} /></button>
-                    {#if row.branch !== "main"}
-                      <button class="icon-button delete" disabled={!!pending[row.name] || !!pending[database]} onclick={() => void manage(row.name, "delete_branch")} title={`Delete ${row.name}`} aria-label={`Delete ${row.name}`}><Trash2 size={15} /></button>
-                    {/if}
-                  </div>
-                  {#if row.url && !pending[row.name] && !pending[database]}
-                    <a class="open icon-button" href={`/p/${row.name}/`} title={`Open ${row.name}`} aria-label={`Open ${row.name}`}><ArrowUpRight size={17} /></a>
-                  {:else}<span class="open-space" aria-hidden="true"></span>{/if}
-                </div>
-                {#if failures[row.name]}<div class="row-error" role="alert">{failures[row.name]}</div>{/if}
+    <div class="list-content">
+      {#if error}<div class="error" role="alert">Could not refresh projects: {error}{#if status}<span>Showing the last known states.</span>{/if}</div>{/if}
+      {#each Object.entries(failures).filter(([name]) => !name.includes("/")) as [database, message] (database)}
+        <div class="error" role="alert">Could not delete project {database}: {message}</div>
+      {/each}
+      {#if !status && !error}
+        <div class="empty" role="status">Loading projects...</div>
+      {:else if status && branches.length === 0}
+        <div class="empty"><FolderOpen size={30} /><h2>No projects yet</h2></div>
+      {:else if status && groups.length === 0}
+        <div class="empty"><Search size={28} /><h2>No matching branches</h2><p>Try a different name.</p></div>
+      {:else}
+        <div class="projects">
+          {#each groups as [database, rows] (database)}
+            <section class="project" aria-label={`Project ${database}`}>
+              <div class="project-head">
+                <FolderOpen size={18} strokeWidth={1.7} /><h2>{database}</h2><span>{rows.length} {rows.length === 1 ? "branch" : "branches"}</span>
+                <button class="icon-button delete" disabled={projectPending(database)} onclick={() => void removeProject(database)} title={`Delete entire project ${database}`} aria-label={`Delete project ${database}`}>
+                  {#if pending[database]}<RefreshCw size={16} class="spinning" />{:else}<Trash2 size={16} />{/if}
+                </button>
               </div>
-            {/each}
-          </section>
-        {/each}
-      </div>
-    {/if}
-    {#if updated}<footer>Last refreshed {updated}<span>Updates automatically</span></footer>{/if}
+              {#each rows as row (row.name)}
+                <div class="branch-row" data-project={row.name}>
+                  <span class="branch-name" title={row.name}><GitBranch size={16} strokeWidth={1.6} /><span class:main-branch={row.branch === "main"} title={row.branch === "main" ? "Main branch: can only be deleted with the entire project" : undefined}>{row.branch}</span></span>
+                  <span class="state" title="Your role on this branch">{row.role ?? ""}</span>
+                  <span class="counts" aria-label={`Graph size of ${row.name}`}>
+                    <span>{#if row.nodes !== undefined}<strong>{row.nodes.toLocaleString()}</strong> {row.nodes === 1 ? "node" : "nodes"}{/if}</span>
+                    <span>{#if row.edges !== undefined}<strong>{row.edges.toLocaleString()}</strong> {row.edges === 1 ? "edge" : "edges"}{/if}</span>
+                  </span>
+                  <div class="actions" aria-label={`Manage ${row.name}`}>
+                    <div class="branch-actions" class:main={row.branch === "main"}>
+                      <button class="icon-button" disabled={!!pending[row.name] || !!pending[database]} onclick={() => create = {source: row.name}} title={`New branch from ${row.name}`} aria-label={`New branch from ${row.name}`}><GitBranchPlus size={16} /></button>
+                      {#if row.branch !== "main"}
+                        <button class="icon-button delete" disabled={!!pending[row.name] || !!pending[database]} onclick={() => void manage(row.name, "delete_branch")} title={`Delete ${row.name}`} aria-label={`Delete ${row.name}`}><Trash2 size={15} /></button>
+                      {/if}
+                    </div>
+                    {#if row.url && !pending[row.name] && !pending[database]}
+                      <a class="open icon-button" href={`/p/${row.name}/`} title={`Open ${row.name}`} aria-label={`Open ${row.name}`}><ArrowUpRight size={17} /></a>
+                    {:else}<span class="open-space" aria-hidden="true"></span>{/if}
+                  </div>
+                  {#if failures[row.name]}<div class="row-error" role="alert">{failures[row.name]}</div>{/if}
+                </div>
+              {/each}
+            </section>
+          {/each}
+        </div>
+      {/if}
+      {#if updated}<footer>Last refreshed {updated}<span>Updates automatically</span></footer>{/if}
+    </div>
   </main>
 </div>
 {#if create}<ProjectCreate source={create.source} onClose={() => create = null} onCreated={async () => {query = ""; await changed();}} />{/if}
 
 <style>
-  .directory { height: 100%; overflow: auto; }
-  main { max-width: 1144px; padding: 44px 32px 28px; margin: auto; }
+  .directory { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+  .header-refresh { display: grid; place-items: center; flex: 0 0 32px; width: 32px; height: 32px; padding: 0; margin-left: auto; color: var(--mdc-dim); background: transparent; border: 1px solid transparent; border-radius: var(--mdc-radius-sm); }
+  .header-refresh:hover:not(:disabled) { color: var(--mdc-fg); background: var(--mdc-card-hover); }
+  .header-refresh.spinning :global(svg) { animation: spin 1s linear infinite; }
+  .app-header :global(.header-theme) { margin-left: 0; }
+  .page-head { flex: none; border-bottom: 1px solid var(--mdc-border); background: color-mix(in srgb, var(--mdc-panel) 82%, transparent); backdrop-filter: blur(12px) saturate(160%); }
+  .head-content { max-width: 1144px; margin: 0 auto; padding: 30px 32px 22px; }
+  main { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+  .list-content { max-width: 1144px; margin: 0 auto; padding: 24px 32px 28px; }
   .intro { display: flex; align-items: center; gap: 24px; margin-bottom: 28px; }
   h1 { font-size: 34px; line-height: 1.15; font-weight: 630; letter-spacing: -.035em; margin: 0; }
   .overview { display: flex; align-items: center; gap: 19px; color: var(--mdc-dim); font-size: 12px; white-space: nowrap; margin-left: auto; }
   .init { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 0; flex-shrink: 0; border: 1px solid color-mix(in srgb, var(--mdc-accent) 45%, var(--mdc-border)); border-radius: var(--mdc-radius-sm); color: var(--mdc-accent); background: color-mix(in srgb, var(--mdc-accent) 8%, var(--mdc-panel)); }
   .init:hover { background: color-mix(in srgb, var(--mdc-accent) 12%, transparent); }
   .overview strong { font-size: 14px; font-weight: 550; color: var(--mdc-fg-soft); margin-right: 3px; }
-  .controls { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+  .controls { display: flex; align-items: center; gap: 12px; }
   .search { display: flex; align-items: center; gap: 10px; max-width: 430px; min-width: 170px; flex: 1; height: 40px; padding: 0 13px; border: 1px solid var(--mdc-border-strong); border-radius: var(--mdc-radius-sm); background: var(--mdc-panel); color: var(--mdc-dim); }
   .search:focus-within { border-color: var(--mdc-accent); }
   .search input { width: 100%; border: 0; outline: none; background: transparent; color: var(--mdc-fg); font-size: 12px; }
@@ -215,7 +228,8 @@
   .empty p { margin: 0; font-size: 12px; }
   footer { display: flex; justify-content: space-between; color: var(--mdc-muted); font-size: 10px; margin-top: 24px; }
   @media (max-width: 800px) {
-    main { padding: 32px 18px 24px; }
+    .head-content { padding: 22px 18px 16px; }
+    .list-content { padding: 20px 18px 24px; }
     .intro { flex-wrap: wrap; gap: 16px; }
     .overview { order: 3; flex-basis: 100%; margin-left: 0; gap: 16px; }
     .init { margin-left: auto; }

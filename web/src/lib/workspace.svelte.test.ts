@@ -4,7 +4,7 @@ import { WorkspaceSession } from "./workspace.svelte";
 import type { GraphCheckReport } from "./types";
 
 const report = (nodes: number): GraphCheckReport => ({
-  nodes, edges: 0, missing: [], invalid: [], cycles: [],
+  nodes, edges: 0,
 });
 afterEach(() => vi.restoreAllMocks());
 

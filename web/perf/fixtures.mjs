@@ -21,7 +21,6 @@ function summary(index = 0) {
   return {
     fnode: index === 0 ? rootFnode : `perf-node-${String(index).padStart(5, "0")}`,
     title: index === 0 ? "Performance fixture" : `Deterministic graph node ${index}`,
-    broken: false,
     depth: Math.floor(Math.log2(index + 1)),
   };
 }
@@ -35,7 +34,7 @@ function nodeView(withEditor) {
       blocks: withEditor
         ? [{ srctype: "latex", content: latexSource, metadata: {} }]
         : [],
-      formalization: { lean: "no_code", rocq: "no_code" },
+      formalization: { lean: "unverified", rocq: "unverified" },
     },
     referrers: [],
     children: [],
@@ -60,7 +59,7 @@ export function apiBodies(scenario) {
   const view = nodeView(scenario === "editor");
   if (scenario === "relations") {
     view.children = Array.from({ length: RELATION_COUNT }, (_, i) => ({
-      ...summary(i + 1), formalization: { lean: i % 2 ? "verified" : "unverified", rocq: "no_code" },
+      ...summary(i + 1), formalization: { lean: i % 2 ? "verified" : "unverified", rocq: "unverified" },
     }));
     view.node.depens = view.children.map(node => node.fnode);
   }
@@ -73,9 +72,6 @@ export function apiBodies(scenario) {
     ["/api/graph/check", {
       nodes: scenario === "graph" ? GRAPH_NODE_COUNT : 1,
       edges: scenario === "graph" ? GRAPH_EDGE_COUNT : 0,
-      missing: [],
-      invalid: [],
-      cycles: [],
     }],
     ["/api/graph/full", fullGraph],
     [`/api/node/${rootFnode}/view`, view],

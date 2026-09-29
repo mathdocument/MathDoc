@@ -1,0 +1,99 @@
+{
+  "toolchain": "leanprover/lean4:v4.33.1",
+  "worker_memory_limit_mib": 4096,
+  "samples": [
+    {
+      "sample": 0,
+      "module": "Bench",
+      "setup_ms": 201.11908399996992,
+      "imports_ms": 195.1955409999755,
+      "body_ms": 2.8480420000960294,
+      "notification_skew_ms": 0,
+      "total_ms": 399.16266700004144
+    },
+    {
+      "sample": 1,
+      "module": "Bench",
+      "setup_ms": 195.45462499991118,
+      "imports_ms": 132.80454100004135,
+      "body_ms": 2.688959000010982,
+      "notification_skew_ms": 0,
+      "total_ms": 330.9481249999635
+    },
+    {
+      "sample": 2,
+      "module": "Bench",
+      "setup_ms": 194.52016699995056,
+      "imports_ms": 136.06587499998568,
+      "body_ms": 2.8666250000242144,
+      "notification_skew_ms": 0,
+      "total_ms": 333.45266699996046
+    },
+    {
+      "sample": 0,
+      "module": "Mathlib.Algebra.Algebra.Defs",
+      "setup_ms": 702.1832499999618,
+      "imports_ms": 2153.4954170000447,
+      "body_ms": 766.1684170000171,
+      "notification_skew_ms": 0,
+      "total_ms": 3621.8470840000236
+    },
+    {
+      "sample": 1,
+      "module": "Mathlib.Algebra.Algebra.Defs",
+      "setup_ms": 639.152082999999,
+      "imports_ms": 748.7802919999922,
+      "body_ms": 733.0151669999623,
+      "notification_skew_ms": 0,
+      "total_ms": 2120.9475419999535
+    },
+    {
+      "sample": 2,
+      "module": "Mathlib.Algebra.Algebra.Defs",
+      "setup_ms": 643.3060410000735,
+      "imports_ms": 738.3092499999293,
+      "body_ms": 727.2782920000509,
+      "notification_skew_ms": 0,
+      "total_ms": 2108.8935830000537
+    },
+    {
+      "sample": 0,
+      "module": "Mathlib",
+      "setup_ms": 11561.632332999921,
+      "imports_ms": 16374.571584000023,
+      "body_ms": 25.882166000086727,
+      "notification_skew_ms": 0,
+      "total_ms": 27962.08608300003
+    },
+    {
+      "sample": 1,
+      "module": "Mathlib",
+      "setup_ms": 3525.484000000006,
+      "imports_ms": 3801.8623750000415,
+      "body_ms": 24.83829200002674,
+      "notification_skew_ms": 0,
+      "total_ms": 7352.184667000074
+    },
+    {
+      "sample": 2,
+      "module": "Mathlib",
+      "setup_ms": 2289.290334000043,
+      "imports_ms": 3136.7077909999352,
+      "body_ms": 27.173250000032567,
+      "notification_skew_ms": 0,
+      "total_ms": 5453.171375000011
+    }
+  ],
+  "later_unprofiled_totals": [
+    {
+      "sample": 0,
+      "module": "Mathlib.Algebra.Algebra.Defs",
+      "total_ms": 3949.477125000044
+    },
+    {
+      "sample": 0,
+      "module": "Mathlib",
+      "total_ms": 19943.28470800008
+    }
+  ]
+}

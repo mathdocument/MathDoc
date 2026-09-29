@@ -40,7 +40,7 @@
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     <div class="actions">
       <button onclick={() => (open = false)} disabled={busy}>Cancel</button>
-      <button onclick={() => void submit()} disabled={busy}>{busy ? "Submitting…" : "Submit"}</button>
+      <button onclick={() => void submit()} disabled={busy}>{busy ? "Submitting..." : "Submit"}</button>
     </div>
   </div>
 {/if}

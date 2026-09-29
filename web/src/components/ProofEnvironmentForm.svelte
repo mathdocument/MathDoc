@@ -84,7 +84,7 @@
 </div>
 <footer class="dialog-footer actions">
   <button onclick={onClose} disabled={busy}>Cancel</button>
-  <button onclick={() => void save()} disabled={busy || !/^\d+$/.test(baseKey)}>{busy ? "Saving…" : "Save proof environment"}</button>
+  <button onclick={() => void save()} disabled={busy || !/^\d+$/.test(baseKey)}>{busy ? "Saving..." : "Save proof environment"}</button>
 </footer>
 <style>
   .body { padding:1rem; }

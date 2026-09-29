@@ -58,7 +58,7 @@ must be able to read its branch. See [Collaboration](../collaboration/#permissio
 | Nodes, source blocks, edges, LaTeX settings, history | TerminusDB. |
 | Workspace owners and roles, proof environments, proof requests, tasks, events, jobs | PostgreSQL. |
 | Certificates and proof sources | LeanGround; MathDoc stores their IDs. |
-| Access tokens, database credentials | Server environment (`MDC_ACTORS`, `.env`); never in exports. |
+| Access tokens, database credentials | Server environment or a deployment's `secrets/`; never in exports. |
 | Browser access token | The browser's `localStorage` for this site. |
 | LaTeX runtime | `MDC_CACHE_DIR/runtime/` when the backend installs it; regenerable. |
 | Unsaved drafts | The browser tab; save before closing. |

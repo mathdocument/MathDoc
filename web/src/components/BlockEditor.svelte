@@ -223,9 +223,9 @@
     <span class="srctype">{block.srctype}</span>
     <span class="spacer"></span>
     {#if dirty}<span class="dirty" title="Unsaved changes"><span class="dirty-dot"></span><span class="btn-label">Unsaved</span></span>{/if}
-    {#if latex?.working}<span class="saving">rendering…</span>{/if}
-    {#if saving}<span class="saving">saving…</span>{/if}
-    {#if deleting}<span class="saving">deleting…</span>{/if}
+    {#if latex?.working}<span class="saving">rendering...</span>{/if}
+    {#if saving}<span class="saving">saving...</span>{/if}
+    {#if deleting}<span class="saving">deleting...</span>{/if}
     {#if error}<span class="error" title={error}><AlertTriangle size={14} strokeWidth={1.9} /></span>{/if}
     {#if block.srctype === "latex"}
       <button
@@ -255,7 +255,7 @@
     {#if latex?.preview}
       <LatexPreview html={latex.preview.html} labels={latex.preview.labels} {fnode} {focusLabel} onNavigate={onLatexNavigate} />
     {:else if !latex?.error}
-      <div class="preview-loading" aria-busy="true">Preparing preview…</div>
+      <div class="preview-loading" aria-busy="true">Preparing preview...</div>
     {/if}
   {/if}
   {#if latex?.error || latex?.contextError}<div class="error-bar" role="alert">{latex.error ?? latex.contextError}<button onclick={() => { void latex?.refresh(); void latex?.render(); }}>Retry</button></div>{/if}

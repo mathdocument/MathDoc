@@ -1,4 +1,4 @@
-import { config } from "./config.js";
+import { config, databaseUrl } from "./config.js";
 import { Store } from "./store.js";
 import { LeanGround } from "./remote.js";
 import { Documents } from "./documents.js";
@@ -11,9 +11,7 @@ if (!["serve", "worker", "migrate"].includes(mode))
   throw new Error("usage: node coordinator/dist/main.js serve|worker|migrate");
 // Migration only needs PostgreSQL; it must not require service credentials.
 if (mode === "migrate") {
-  if (!process.env.MDC_DATABASE_URL)
-    throw new Error("MDC_DATABASE_URL required");
-  const store = new Store(process.env.MDC_DATABASE_URL);
+  const store = new Store(databaseUrl());
   try {
     await store.migrate();
     console.log("MathDoc coordination schema ready");

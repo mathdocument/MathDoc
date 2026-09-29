@@ -121,7 +121,7 @@
   }));
 
   async function findDefaultFnode(): Promise<string | null> {
-    const roots = (await api.roots()).filter((node) => !node.broken);
+    const roots = await api.roots();
     if (roots.length > 0) {
       return roots.sort((a, b) => b.topo_depth - a.topo_depth)[0]!.fnode;
     }
@@ -417,8 +417,8 @@
   let activeNode = $derived(
     view === "force" && nodeSession.selectionCleared ? null : nodeSession.node,
   );
-  // Whether the active node is editable (non-broken).
-  let activeReady = $derived(activeFnode !== null && activeNode !== null && !activeNode.broken);
+  // Whether the active node is loaded and editable.
+  let activeReady = $derived(activeFnode !== null && activeNode !== null);
   let activeRevision = $derived(activeNode?.revision ?? null);
   // Depens of the active node.
   let activeDepens = $derived(activeNode?.depens ?? []);
@@ -611,7 +611,7 @@
     <div class="force-canvas-wrap" class:hidden={view !== "force"}>
       {#if graphModule}
         {#await graphModule}
-            <p role="status">Loading graph…</p>
+            <p role="status">Loading graph...</p>
         {:then { default: DepthGraph }}
           <DepthGraph
             bind:this={depthGraph}
@@ -681,7 +681,6 @@
       class="graph-stats"
       class:checking={workspaceSession.loading}
       class:stale={workspaceSession.stale}
-      class:issues={workspaceSession.issueCount > 0}
       class:error={workspaceSession.error !== null}
       title={workspaceSession.title}
       aria-live="polite"
@@ -690,7 +689,7 @@
       {#if workspaceSession.report}
         {workspaceSession.report.nodes.toLocaleString()} nodes · {workspaceSession.report.edges.toLocaleString()} edges
       {:else if workspaceSession.loading}
-        Checking graph…
+        Checking graph...
       {:else}
         Graph check unavailable
       {/if}
@@ -979,10 +978,6 @@
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--mdc-accent-down) 16%, transparent);
   }
   .graph-stats.checking .graph-stats-dot { animation: mdc-pulse 1s ease-in-out infinite; }
-  .graph-stats.issues .graph-stats-dot {
-    background: var(--mdc-warning);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--mdc-warning) 16%, transparent);
-  }
   .graph-stats.stale .graph-stats-dot {
     background: var(--mdc-muted);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--mdc-muted) 16%, transparent);

@@ -73,6 +73,25 @@ del、rename、edit、dep、metric）；去掉 start/stop、`lean check/goals`�
 
 两项接口修正由 `coordinator/test/cli.test.ts` 覆盖（格式错误的请求体得到 400；3 MB 的请求体被解析而不是 413）。
 
+### 7. 合并 `main`（PR 冲突）
+
+分支起点 `a4d61e3` 之后，`main` 有 31 个提交、改动 84 个文件。处理方式：
+
+| `main` 的改动 | 处理 |
+|---|---|
+| Rust 后端与本地 Lean（共享 Lake 缓存、跨分支复用认证、缓存回收、Lean 编辑器修复、Lean 工具链打进镜像） | 相关代码在本分支已删除，保持删除 |
+| 图接口去掉失效的文件完整性诊断（`broken`、`missing`/`invalid`/`cycles`、`invalid_or_duplicate`） | 移植到 TypeScript 后端与前端类型 |
+| 本地检查状态改为 `sorry` / `conditional` 四档 | 不采用：描述的是已移除的本地 Lean 检查；本分支保留「本地检查 + LeanGround 认证」两维 |
+| 前端：项目目录表头固定只滚动列表、图例按状态对齐显示节点数、界面省略号统一为三个句点、测试等待视图就绪 | 采用；项目目录在 `main` 的新布局上重新去掉 start/stop；图例改按本分支的三档本地状态计数 |
+| 部署：发布到 GHCR 的运行时镜像、无源码部署包（`scripts/package-deployment`）、首次启动生成数据库密码、内部网络、丢失密钥时拒绝启动、统一检查脚本 `scripts/check`、发布工作流 | 采用其设计并换成新后端（见下） |
+
+部署在 `main` 方案上的改动：服务为 `database`、`postgres`、`migrate`、`runtime`、`worker`；PostgreSQL 密码同样首次
+启动时生成到 `secrets/`，只在其容器进程内传给 PostgreSQL；访问令牌与 LeanGround 令牌由部署者放入
+`secrets/actors.json`、`secrets/leanground-token`；后端新增 `*_FILE` 变量（同时设置两种形式、文件为空或不可读
+都报错）；非机密设置从 `config.toml` 改为 `mathdoc.env`；镜像用户改为 uid/gid 10001 以读取 0440 的密钥文件；
+版本号定为 0.7.0（发布工作流从根 `package.json` 读取）。`scripts/check` 改为 Node 流水线，后端测试按文件串行，
+避免共用一个 TerminusDB 时互相干扰。
+
 ## 结果
 
 测试环境：macOS；LeanGround `3965273`，**Mathlib 基座**（`base/mathlib` 提交 `0df444a`，Lean v4.33.1），
@@ -85,6 +104,7 @@ del、rename、edit、dep、metric）；去掉 start/stop、`lean check/goals`�
   `~/.local/share/leanground/bin` 下每个文件复制成新文件再改名覆盖后，全部可以启动。LeanGround 的
   `install_tools.sh` 应改为「写新文件再改名」，否则下次重装会复现。
 - 你本机端口 8765 上运行的 `leanground-server` 需要重启才会用上新 worker；我没有动它。
+- 部署包要求 LeanGround 满足同样前提，文档的部署页已写明。
 
 ### Mathlib 源码统计（`perf/lean-block-scan.ts`，n = 8,311 个文件、534,073 条顶层命令，确定性扫描，1 次）
 
@@ -122,6 +142,26 @@ del、rename、edit、dep、metric）；去掉 start/stop、`lean check/goals`�
 **Monaco 用例的不稳定**：**[实测]** 切换后共运行 16 次，失败 2 次，两次症状不同（一次是文本块首屏无语法着色，
 一次超时），其余 14 次通过。阶段 3 在字体改动之前观察到约 1/9。样本太少，不能判断去掉字体加载等待是否让它变差；
 原因未定，列为未解决的不稳定用例。
+
+### 合并 `main` 之后的检查
+
+测试环境同上（Mathlib 基座的 LeanGround 为新的临时实例）。
+
+| 检查 | 结果 |
+|---|---|
+| `scripts/check fast` | 通过（类型检查、前端单元测试、构建、文档站、渲染器测试） |
+| 后端测试（`scripts/check native`，按文件串行，含 LeanGround 场景与 Mathlib 测试） | 34/34，1 次 |
+| 浏览器 e2e | 两次全套：第一次 14/15（Monaco 用例，见下），第二次 15/15；均包含对真实 LeanGround 的协作用例 |
+| 容器冒烟（新的无源码部署包） | 2 次均通过：生成的两个密码与 0440 权限、uid 10001、来源检查、令牌、密钥文件规则、容器内 CLI 与 `mdc` 包装、LaTeX、worker、restart / recreate / down-up、日志与 `docker inspect` 中无密码和令牌、两个密码文件丢失或为空时拒绝启动并可恢复 |
+| 文档站 | 0 错误，25 页 |
+
+**[实测，测量伪影]** 冒烟测试第一次失败：本机 colima 只把用户主目录共享给虚拟机，部署包放在系统临时目录时，
+绑定挂载的 `secrets/` 在容器里是另一个空目录。把 `TMPDIR` 设到主目录下后通过；Linux（CI）没有这个问题。已写进
+测试说明与文档。
+
+**Monaco 用例的原因**：**[实测，1 次、3 个块]** 编辑器显示那一刻语法颜色已经正确（markdown 3 种颜色、LaTeX 4、
+Coq 5），随后 4–40 ms 内发生一次重新着色，颜色短暂退回（markdown 1 种），之后恢复；用例恰好在这个窗口里取样就
+失败。这不是合并引入的，已另开任务处理。
 
 ## 结论
 

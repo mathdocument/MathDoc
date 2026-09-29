@@ -75,13 +75,13 @@
   <div class="body">
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     {#if !board}
-      <p class="muted">{boards.length ? "Loading…" : "No proof request on this branch yet. Open a Lean node and use “Submit to LeanGround”."}</p>
+      <p class="muted">{boards.length ? "Loading..." : "No proof request on this branch yet. Open a Lean node and use “Submit to LeanGround”."}</p>
     {:else if tab === "overview"}
       <section aria-label="Proof overview">
         <h3>{board.title} <span class="status" data-status={board.root ? statusOf(board.root) : "insufficient"}>{board.root ? statusOf(board.root) : "binding"}</span></h3>
         {#if board.request?.stale}<p class="warn" role="status">The document changed after this request was bound: its results stay in history but cannot certify the new text. Submit the root node again to start a new request.</p>{/if}
         {#if board.sync_error}<p class="error">Sync: {board.sync_error}</p>{/if}
-        {#if !board.ready && !board.sync_error}<p class="muted">Converting nodes and submitting them to LeanGround…</p>{/if}
+        {#if !board.ready && !board.sync_error}<p class="muted">Converting nodes and submitting them to LeanGround...</p>{/if}
         <dl>
           <dt>Owner</dt><dd>{board.owner}</dd>
           <dt>Members</dt><dd>{board.members.join(", ")}</dd>

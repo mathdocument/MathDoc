@@ -12,7 +12,12 @@ pull request:
 3. Test the LaTeX renderer with its pinned Python packages.
 4. Start TerminusDB and PostgreSQL from `compose.yaml` and run the backend tests
    and the browser suite against them. Tests that need LeanGround are skipped.
-5. Build the Docker image and run `tests/docker-smoke.py`.
+5. Build the Docker image and run `tests/docker-smoke.py` against an exported deployment.
+
+All five run through `scripts/check` (`fast`, `native`, `docker`). Publishing a GitHub
+release `vX.Y.Z` matching the root `package.json` version runs **Publish runtime**:
+it repeats the container checks, pushes the image to GHCR and attaches the deployment
+bundle pinned to the image digest.
 
 Keep the TerminusDB and PostgreSQL images pinned in the Compose files. The
 commands to run the same checks locally are in [Development setup](../setup/).

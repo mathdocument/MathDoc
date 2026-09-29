@@ -7,6 +7,14 @@ The repository is one npm workspace: `coordinator/` (backend, worker, CLI),
 `web/` (editor), `app/` (archived collaboration prototype). `renderer/` is the
 Python LaTeX renderer, `docs/` this site, `perf/` benchmarks. CI uses Node.js 26.
 
+## One command
+
+`scripts/check` runs the same checks as CI: `fast` (type checks, unit tests, builds,
+this site, the LaTeX renderer), `native` (backend and browser tests against
+disposable TerminusDB and PostgreSQL containers from `compose.yaml`, run one test
+file at a time), `docker` (image and exported deployment), or `all` (default).
+Set `MDC_LATEX_PYTHON` to a Python with the renderer's packages.
+
 ## Build and fast checks
 
 ```sh
@@ -66,7 +74,7 @@ MDC_LATEX_PYTHON=/tmp/mdc-latex-venv/bin/python \
 
 `web/e2e/run.mjs` builds nothing: build `web/dist` first. It runs `migrate`,
 `serve` and `worker` from source with a generated token, then drives Chromium
-(`MDC_E2E_BROWSER=webkit` for WebKit). Without `MDC_LATEX_PYTHON` it points the
+(`MDC_E2E_BROWSER=webkit` or `firefox` for the other engines). Without `MDC_LATEX_PYTHON` it points the
 renderer at a nonexistent path rather than installing it, and the LaTeX cases
 fail. LeanGround-dependent cases need `LEANGROUND_SERVER_URL`,
 `LEANGROUND_FACT_TOKEN` and `LEANGROUND_ACTOR`; by default the worker is pointed at
@@ -80,9 +88,10 @@ trace with `npx playwright show-trace /path/to/trace.zip`.
 ## Container
 
 ```sh
-docker build -t mathdoc-runtime:local .
-python3 tests/docker-smoke.py
+./scripts/check docker
 ```
+
+On macOS with colima, run it with `TMPDIR` under your home directory.
 
 See [Server deployment](../../getting-started/server-deployment/#verification).
 

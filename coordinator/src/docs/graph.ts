@@ -249,9 +249,6 @@ export class Snapshot {
     return {
       nodes: this.nodes.size,
       edges,
-      missing: [],
-      invalid: [],
-      cycles: [],
     };
   }
 }
