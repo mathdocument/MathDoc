@@ -25,8 +25,7 @@ window.addEventListener("pagereveal", event => {
     delete document.documentElement.dataset.vtScope;
   });
 });
-// The TypeScript backend identifies every request (401 without a valid token). The
-// legacy backend has no identity endpoint (404) and keeps its same-origin model.
+// Every request carries an access token; a 401 from /api/me shows the sign-in page.
 window.addEventListener("mdc:signed-out", () => location.reload());
 async function start() {
   let signIn = false;

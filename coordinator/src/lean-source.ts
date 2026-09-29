@@ -179,8 +179,14 @@ export function scan(source: string): Scan {
     const line = collapse(comments.slice(start, end));
     const rest = (k: number) => collapse(line.split(/\s+/).slice(k).join(" "));
     const [first, second] = words;
-    if (first === "import") {
-      result.imports.push(rest(1));
+    // Lean's module system: a `module` header and `public`/`meta` imports are imports.
+    if (first === "module" && words.length === 1) {
+      result.prelude.push({ start, end });
+      continue;
+    }
+    const importAt = words.findIndex((w) => w !== "public" && w !== "meta");
+    if (words[importAt] === "import") {
+      result.imports.push(rest(importAt + 1));
       result.prelude.push({ start, end });
       continue;
     }

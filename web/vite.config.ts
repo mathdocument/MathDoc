@@ -6,19 +6,15 @@ import importMetaUrlPlugin from "@codingame/esbuild-import-meta-url-plugin";
 import fs from "node:fs";
 import path from "node:path";
 import mathjaxPackage from "mathjax/package.json" with { type: "json" };
-import { leanSocket, leanSocketDeps } from "./build/lean-socket";
 import { monacoWheel, monacoWheelDeps } from "./build/monaco-wheel";
 
 // Proxy the project APIs and directory to the shared entry server.
 const apiTarget = process.env.MDC_API_PROXY ?? "http://127.0.0.1:17843";
 const mathjaxVersion = mathjaxPackage.version;
-// The native Lean editor (lean.html, Infoview, the Lean WebSocket bridge) is an optional
-// build: the legacy Rust backend needs it, the default build does not (migration plan §4.2).
-const leanEditor = process.env.MDC_WEB_LEAN_EDITOR === "1";
 const sveltePlugins = svelte();
 const localNodeModules = path.resolve("node_modules");
 const workspaceNodeModules = path.resolve("..", "node_modules");
-const nodeModules = fs.existsSync(path.join(localNodeModules, "@leanprover", "infoview"))
+const nodeModules = fs.existsSync(path.join(localNodeModules, "mathjax"))
   ? localNodeModules
   : workspaceNodeModules;
 const dependencyPath = (relativePath: string) => path.join(nodeModules, relativePath);
@@ -28,7 +24,7 @@ sveltePlugins.push({ name: "vite-plugin-svelte:config", api: sveltePlugins[0]!.a
 
 export default defineConfig({
   plugins: [
-    monacoWheel, ...(leanEditor ? [leanSocket] : []),
+    monacoWheel,
     {
       name: "project-editor-page",
       transformIndexHtml: {
@@ -40,20 +36,9 @@ export default defineConfig({
             : html;
         },
       },
-      configureServer(server) {
-        server.middlewares.use((request, _response, next) => {
-          request.url = request.url?.replace(/^\/p\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/(lean\.html(?:\?|$))/, "/$1");
-          next();
-        });
-      },
     },
     nodePolyfills({ overrides: { fs: "memfs" } }),
     viteStaticCopy({ targets: [
-      ...(leanEditor ? [
-        { src: dependencyPath("@leanprover/infoview/dist/*"), dest: "infoview" },
-        { src: dependencyPath("lean4monaco/dist/webview/webview.js"), dest: "infoview" },
-        { src: dependencyPath("@leanprover/infoview/dist/codicon.ttf"), dest: "assets" },
-      ] : []),
       { src: dependencyPath("@drgrice1/tikzjax/dist/{run-tex.js,run-tex.js.map,core.dump.gz,tex.wasm.gz,fonts.css,fonts,tex_files}"), dest: "tikz/1.0.0-beta24" },
       { src: dependencyPath("mathjax/{tex-chtml-nofont.js,LICENSE}"), dest: `mathjax/${mathjaxVersion}` },
       { src: dependencyPath("mathjax/input/tex"), dest: `mathjax/${mathjaxVersion}/input` },
@@ -74,7 +59,6 @@ export default defineConfig({
       "^/p/[^/]+/[^/]+/api(?:/|$)": { target: apiTarget, changeOrigin: false, ws: true },
     },
   },
-  define: { __MDC_LEAN_EDITOR__: JSON.stringify(leanEditor) },
-  optimizeDeps: { esbuildOptions: { plugins: [monacoWheelDeps, ...(leanEditor ? [leanSocketDeps] : []), importMetaUrlPlugin] } },
-  build: { rollupOptions: { input: { main: path.resolve("index.html"), ...(leanEditor ? { lean: path.resolve("lean.html") } : {}) } } },
+  optimizeDeps: { esbuildOptions: { plugins: [monacoWheelDeps, importMetaUrlPlugin] } },
+  build: { rollupOptions: { input: { main: path.resolve("index.html") } } },
 });

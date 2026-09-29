@@ -1,4 +1,4 @@
-"""Run with: python -B -m unittest discover -s src/latex -p 'test_*.py'."""
+"""Run with: python -B -m unittest discover -s renderer -p 'test_*.py'."""
 import unittest
 import json
 from io import StringIO

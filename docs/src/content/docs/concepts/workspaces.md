@@ -1,67 +1,81 @@
 ---
-title: Databases and references
+title: Databases, workspaces and references
 ---
 
-## Projects, branches and services
+## Databases and branches
 
-A MathDoc project is a TerminusDB database. `mdc init NAME` creates `NAME/main`;
-branches within that database have independent graph heads and share database
-history. One entry server serves the project list on port 17843 by default and
-dispatches `/p/DATABASE/BRANCH/` directly to that branch's in-process router.
-Each loaded branch has its own graph state. CLI `-p` uses the same entry server and routes.
-`mdc status` returns `server` and `projects` objects, including stopped branches.
+A MathDoc project is a TerminusDB database. `mdc init NAME` creates the database
+`NAME` with a `main` branch. Branches of one database have independent graph
+heads and share the database's commit history. Address a branch as
+`DATABASE/BRANCH`, for example `myproject/main`; names use letters, digits, `_`
+and `-`.
 
-Several projects can use the same TerminusDB server. They remain separate
-databases, with separate graphs and Lean settings. Several branches can run at
-once within the same mdc process, without internal HTTP ports or forwarding.
-Native Lean processes remain separate; the operating system schedules them; mdc does not pin workers to CPU cores or impose a machine-wide worker
-budget. Each loaded branch owns its cache using an OS file lock.
+One API process serves every branch. A branch is loaded into memory on its first
+request and stays loaded; there is no per-branch start or stop, no per-branch
+port and no local compiler state. `mdc status` lists the branches you can read.
+
+## Identity
+
+Every API request carries `Authorization: Bearer TOKEN`. Tokens are configured in
+`MDC_ACTORS` (see [Configuration](../../reference/configuration/)); each maps to an
+actor name such as `alice` or `agent-1`, and optionally `admin: true`. The actor
+name is recorded as the author of document commits and collaboration commands.
+`GET /api/me` returns `{actor, admin}` for the current token.
+
+## Workspaces and roles
+
+Each database is a **workspace** with one owner and per-branch roles, stored in
+PostgreSQL. Roles are `owner`, `editor` and `viewer`; administrators act as
+`admin` everywhere.
+
+| Action | Roles allowed |
+| --- | --- |
+| read, history, export | admin, owner, editor, viewer |
+| write, branch create, proof request create | admin, owner, editor |
+| branch delete, import, manage members (grant roles, set the proof environment) | admin, owner |
+| database create, database delete | admin |
+
+How a role is determined on a branch:
+
+- The database's owner is `owner` on every branch that inherits the workspace
+  role. `init` makes its caller the owner; `main` inherits.
+- `mdc grant ACTOR ROLE -p DATABASE/BRANCH` gives a role on that one branch;
+  `none` removes it. When several apply, the highest wins.
+- A new branch copies the rules of the branch it was forked from.
+- Someone with no role on a branch gets `404 project not found`, as if it did not
+  exist. A known branch with a role that is too low gets `403`.
+- A database without a workspace record, for example one created by an older
+  MathDoc version, is visible to administrators only. An administrator adopts it
+  with the `set_owner` directory action ([HTTP API](../../reference/http-api/#directory)).
+
+Collaboration never widens these permissions: every member of a proof request
+must be able to read its branch. See [Collaboration](../collaboration/#permissions).
 
 ## Where data lives
 
-| Data | Location and lifetime |
+| Data | Location |
 | --- | --- |
-| Nodes, source blocks, graph links, Lean project settings, history | TerminusDB storage; durable and independent of service processes. |
-| Database credentials and host settings | Private user configuration or environment; outside graph exports. |
-| Generated Lean sources, libraries, artifacts, certificates, branch record | Local cache, separated by endpoint/database/branch; disposable after stopping the service. |
-| Server record, background runtime log and foreground branch restore list | `CACHE_ROOT/ENDPOINT_HASH/.server/`; no durable graph data. Foreground logs use stdout/stderr. |
-| Unsaved browser drafts | Browser/editor session; save before closing or restarting. |
+| Nodes, source blocks, edges, LaTeX settings, history | TerminusDB. |
+| Workspace owners and roles, proof environments, proof requests, tasks, events, jobs | PostgreSQL. |
+| Certificates and proof sources | LeanGround; MathDoc stores their IDs. |
+| Access tokens, database credentials | Server environment (`MDC_ACTORS`, `.env`); never in exports. |
+| Browser access token | The browser's `localStorage` for this site. |
+| LaTeX runtime | `MDC_CACHE_DIR/runtime/` when the backend installs it; regenerable. |
+| Unsaved drafts | The browser tab; save before closing. |
 
-The supplied Compose deployment mounts Docker volume `mathdoc-terminus-data` at
-`/app/terminusdb/storage`. On Docker Desktop this volume lives inside Docker's
-Linux VM, not in a MathDoc project directory. `docker volume inspect
-mathdoc-terminus-data` reports Docker's volume metadata. Preserve this volume for
-complete database history; a graph export captures only one branch snapshot.
+A graph export contains one branch snapshot only; see
+[Export and restore](../import-export/).
 
-Caches default to `~/.cache/mdc/ENDPOINT_HASH/DATABASE/BRANCH`, with XDG and explicit
-overrides described in [Configuration](../../reference/configuration/). CLI and
-browser Lean sessions reuse Lake artifacts inside this branch cache. Different
-branches have isolated artifacts; creating a branch does not copy its parent's
-`.olean` files. Toolchains installed by Elan remain host-level installations.
+## Deleting
 
-Use one cache root consistently for all commands on a host. Service discovery and
-the lock are scoped to that root; a different root cannot see or stop the old
-service. `stop DATABASE/BRANCH` unloads just that branch and retains its cache.
-Bare `mdc stop` shuts down the server and all loaded branches, including their
-Lean workers. Ordinary `mdc start` starts an empty server; load desired branches explicitly.
-`mdc start --foreground` restores the branches remembered by earlier foreground
-runs. Preserve `active-projects.json` in the server cache to retain that selection;
-deleting it forgets which branches to start but does not delete database content.
-Save drafts before stopping their branch or the whole server. `branch del` requires a stopped non-`main` branch and removes
-its cache contents, leaving only the service lock for coordination.
-TerminusDB protects `main`; neither the browser nor CLI can delete it.
-It remains a normal working branch for editing, checking and forking. To delete
-the entire project, `mdc remove DATABASE` stops all its branches and deletes the
-database, its history and local branch caches. Other projects and shared Elan
-toolchains are unaffected; empty cache lock files remain for coordination.
-
-No project folder or source mirror is required. Generated Lean files are owned
-by the service: editing them does not edit nodes. Import/export are explicit
-operations; ordinary commands never scan workspace files.
+`mdc branch del -p DATABASE/BRANCH` deletes a branch other than `main` (owner or
+admin). `main` can only go with the whole database: `mdc remove DATABASE` (admin)
+deletes the database, every branch and its history, and the workspace record.
+Both act immediately, without a prompt; unsaved drafts in open tabs are lost.
 
 ## Node references
 
-A node reference is its exact display name or complete UUID. A duplicate display
-name is ambiguous and requires a UUID. Paths, filenames and UUID prefixes are
-not references. Each node also has a stable Lean module identity such as
-`Lib.N_<uuid_without_hyphens>`; renaming the display title preserves that module.
+A node reference is its exact title or complete UUID. A duplicated title is
+ambiguous and needs the UUID; UUID prefixes and paths are not references. Titles
+can change; the UUID is stable. Nodes also keep a `module` field from the earlier
+Lean integration; it is preserved in exports but not used for checking.

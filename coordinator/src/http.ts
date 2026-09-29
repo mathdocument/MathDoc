@@ -31,12 +31,12 @@ import {
   environmentInputSchema,
   Environments,
 } from "./proof.js";
-async function body(req: IncomingMessage) {
+async function body(req: IncomingMessage, limit = 2200000) {
   const chunks: Buffer[] = [];
   let length = 0;
   for await (const chunk of req) {
     length += chunk.length;
-    requireThat(length <= 2200000, "request_too_large", 413);
+    requireThat(length <= limit, "request_too_large", 413);
     chunks.push(chunk);
   }
   try {

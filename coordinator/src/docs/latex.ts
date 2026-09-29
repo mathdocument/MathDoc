@@ -1,4 +1,4 @@
-// LaTeX preview worker (src/latex/runtime.rs): one lazy Python process per branch,
+// LaTeX preview worker (ported from the legacy runtime.rs): one lazy Python process per branch,
 // JSON lines in both directions, bounded concurrency and a per-request time limit.
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -12,12 +12,12 @@ import { type LatexProject } from "./model.js";
 const MAX_FRAME = 32 * 1024 * 1024;
 const SLOTS = 8;
 
-/** The renderer sources stay in src/latex until the legacy build no longer embeds them. */
+/** renderer/ at the repository root (MDC_RENDERER_DIR in a deployment). */
 function rendererDir() {
   // coordinator/src/docs (or coordinator/dist/docs) -> repository root.
   return (
     process.env.MDC_RENDERER_DIR ??
-    resolve(dirname(fileURLToPath(import.meta.url)), "../../../src/latex")
+    resolve(dirname(fileURLToPath(import.meta.url)), "../../../renderer")
   );
 }
 function cacheRoot() {

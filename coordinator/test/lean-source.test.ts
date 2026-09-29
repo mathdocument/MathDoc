@@ -56,6 +56,15 @@ test("a theorem node: prelude, statement, placeholder and proposition", () => {
   assert.equal(c.role === "theorem" && c.source, "syntax_scan");
 });
 
+test("module headers and public imports are imports", () => {
+  const s = scan(
+    "module\n\npublic import Mathlib.Data.Nat.Basic\npublic meta import Lean\ntheorem t : True := trivial\n",
+  );
+  assert.equal(s.rejection, undefined);
+  assert.deepEqual(s.imports, ["Mathlib.Data.Nat.Basic", "Lean"]);
+  assert.equal(body(s), "theorem t : True := trivial\n");
+});
+
 test("sorry bodies, definitions and placeholder stripping", () => {
   const open = scan("theorem t : 1 = 1 := by sorry\n");
   assert.equal(open.decls[0].sorry, true);

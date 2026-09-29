@@ -1,4 +1,23 @@
+# The MathDoc server: TerminusDB (documents), PostgreSQL (collaboration), the API process
+# and the background worker. LeanGround runs elsewhere: set LEANGROUND_SERVER_URL.
 name: mathdoc-server
+x-mathdoc: &mathdoc
+  build: .
+  image: mathdoc-runtime:local
+  init: true
+  restart: unless-stopped
+  environment: &mathdoc-env
+    MDC_DATABASE_URL: postgresql://mathdoc:${MDC_POSTGRES_PASSWORD:?Set MDC_POSTGRES_PASSWORD in .env}@postgres:5432/mathdoc
+    MDC_TERMINUS_URL: http://terminusdb:6363
+    MDC_TERMINUS_PASSWORD: ${MDC_TERMINUS_PASSWORD:?Set MDC_TERMINUS_PASSWORD in .env}
+    MDC_ACTORS: ${MDC_ACTORS:?Set MDC_ACTORS in .env}
+    MDC_PORT: ${MDC_PORT:-17843}
+    MDC_PUBLIC_ORIGIN: ${MDC_PUBLIC_ORIGIN:-}
+    LEANGROUND_SERVER_URL: ${LEANGROUND_SERVER_URL:?Set LEANGROUND_SERVER_URL in .env}
+    LEANGROUND_FACT_TOKEN: ${LEANGROUND_FACT_TOKEN:?Set LEANGROUND_FACT_TOKEN in .env}
+    LEANGROUND_ACTOR: ${LEANGROUND_ACTOR:?Set LEANGROUND_ACTOR in .env}
+  logging:
+    driver: local
 services:
   terminusdb:
     image: terminusdb/terminusdb-server@sha256:385faf298ad77aaf2d4d6df5e84a4cbe3596d01dab2e3b991af905639ae56388
@@ -16,34 +35,58 @@ services:
       start_period: 30s
     logging:
       driver: local
-  mdc:
-    build: .
-    image: mathdoc-runtime:local
-    init: true
+  postgres:
+    image: postgres:17-bookworm
     restart: unless-stopped
-    stop_grace_period: 60s
+    environment:
+      POSTGRES_USER: mathdoc
+      POSTGRES_DB: mathdoc
+      POSTGRES_PASSWORD: ${MDC_POSTGRES_PASSWORD:?Set MDC_POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "mathdoc", "-d", "mathdoc"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    logging:
+      driver: local
+  migrate:
+    <<: *mathdoc
+    restart: "no"
+    command: ["migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+  mdc:
+    <<: *mathdoc
+    command: ["serve"]
+    stop_grace_period: 30s
     depends_on:
       terminusdb:
         condition: service_healthy
-    command: ["start", "--foreground", "--port", "${MDC_PORT:-17843}"]
-    environment:
-      MDC_TERMINUS_URL: http://terminusdb:6363
-      MDC_TERMINUS_PASSWORD: ${MDC_TERMINUS_PASSWORD:?Set MDC_TERMINUS_PASSWORD in .env}
-      MDC_LISTEN_ADDRESS: 0.0.0.0
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "127.0.0.1:${MDC_PORT:-17843}:${MDC_PORT:-17843}"
     volumes:
       - mdc-cache:/var/lib/mdc/cache
-      - lean-toolchains:/var/lib/mdc/elan
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "--output", "/dev/null", "http://127.0.0.1:${MDC_PORT:-17843}/"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+process.env.MDC_PORT+'/').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 12
-      start_period: 60s
-    logging:
-      driver: local
+      start_period: 20s
+  worker:
+    <<: *mathdoc
+    command: ["worker"]
+    stop_grace_period: 30s
+    depends_on:
+      terminusdb:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 volumes:
   terminus-data:
+  postgres-data:
   mdc-cache:
-  lean-toolchains:

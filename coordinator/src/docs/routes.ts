@@ -9,7 +9,9 @@ import { DocError, projectParts, validateName } from "./names.js";
 import { Terminus, type TerminusConfig } from "./terminus.js";
 import { BranchService, type Reply } from "./service.js";
 import { Workspaces, type Role } from "./workspace.js";
-import type { Board } from "../domain.js";
+import { Fault, type Board } from "../domain.js";
+
+const BRANCH_BODY_LIMIT = 256 * 1024 * 1024;
 
 export interface DocsOptions {
   terminus: TerminusConfig;
@@ -18,7 +20,8 @@ export interface DocsOptions {
   publicOrigin?: string;
   actors: Record<string, { admin: boolean }>;
   authenticate: (req: IncomingMessage) => string;
-  readBody: (req: IncomingMessage) => Promise<unknown>;
+  /** Rejects oversized or malformed bodies with a Fault (413 / 400). */
+  readBody: (req: IncomingMessage, limit?: number) => Promise<unknown>;
   /** Coordination projects bound to a branch, for the certification dimension. */
   boards?: (database: string, branch: string) => Promise<Board[]>;
 }
@@ -180,6 +183,15 @@ export class DocsBackend {
       await this.dispatch(req, res, url, isProject);
     } catch (e) {
       if (e instanceof DocError) send(res, e.status, { error: e.message });
+      else if (e instanceof Fault)
+        send(res, e.status, {
+          error:
+            e.code === "request_too_large"
+              ? "request body too large"
+              : e.code === "invalid_json"
+                ? "Failed to parse the request body as JSON"
+                : e.code,
+        });
       else {
         console.error(
           "document request failed",
@@ -260,7 +272,8 @@ export class DocsBackend {
       route,
       query: url.searchParams,
       headers: req.headers,
-      body: () => this.o.readBody(req),
+      // Branch routes accept whole-graph imports, as the legacy service did (256 MiB).
+      body: () => this.o.readBody(req, BRANCH_BODY_LIMIT),
       actor,
       boards: await this.o.boards?.(database, branchName),
     });

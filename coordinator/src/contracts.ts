@@ -449,7 +449,8 @@ export function bindingRejection(
 // Mirrors Node::revision at baseline a4d61e3. Delegates to the document backend's
 // serializer: a JavaScript object reorders integer-like keys and default sorts compare
 // UTF-16 code units, while Rust's BTreeMap uses UTF-8 byte order
-// (fixture legacy_revision_key_order, checked by the Rust test as well).
+// (fixture legacy_revision_key_order; its digests were checked against the Rust
+// backend before that backend was removed in stage 5).
 export function legacyNodeRevision(node: {
   fnode: string;
   title: string;

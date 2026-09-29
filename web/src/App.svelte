@@ -37,7 +37,6 @@
   import NewNodeOverlay from "./components/NewNodeOverlay.svelte";
   import ProjectSettings from "./components/ProjectSettings.svelte";
   import Collaboration from "./components/Collaboration.svelte";
-  import { localLeanEditor } from "./lib/features";
   import type { NodeDetail } from "./lib/types";
   import {
     confirmDiscardDrafts,
@@ -556,9 +555,7 @@
         ><Network size={15} strokeWidth={1.8} /><span>Graph</span></button>
       </div>
       <span class="toolbar-divider"></span>
-      {#if !localLeanEditor}
         <button class="tool icon-only" onclick={() => overlay = { kind: "collaboration", project: null }} title="Collaboration" aria-label="Collaboration"><Users size={16} strokeWidth={1.8} /></button>
-      {/if}
       <button class="tool icon-only" onclick={() => overlay = { kind: "project" }} title="Project settings" aria-label="Project settings"><Settings size={16} /></button>
       <button
         class="tool icon-only"
@@ -647,7 +644,6 @@
           <EditorPane
             bind:latexPreview={nodeSession.latexPreview}
             load={view === "force" ? nodeSession.selectedLoad : nodeSession.load}
-            selection={nodeSession.editorRevision}
             {theme}
             onRefresh={refreshNode}
             onReady={() => { editorReady = true; }}

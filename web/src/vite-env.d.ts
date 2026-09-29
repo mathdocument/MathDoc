@@ -12,5 +12,3 @@ declare module 'vscode/vscode/vs/base/common/filters' {
     word: string, wordLow: string, wordStart: number): number[] | undefined;
   export const fuzzyScoreGracefulAggressive: typeof fuzzyScore;
 }
-/** Build-time switch for the native Lean editor (MDC_WEB_LEAN_EDITOR=1); see vite.config.ts. */
-declare const __MDC_LEAN_EDITOR__: boolean;

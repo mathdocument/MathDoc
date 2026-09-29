@@ -208,11 +208,14 @@ put ordinary content macros in the shared `.cls` or `.tex` file.
 
 ## Runtime and caching
 
-Python 3.9+ with venv support is required. First use installs the pinned plasTeX and
-Pybtex dependencies into a shared virtual environment under the MDC cache root,
-then reuses it across branches. Initial installation requires network access.
-For preinstalled/offline deployments, install `src/latex/requirements.txt` into a
-virtual environment and set `MDC_LATEX_PYTHON` to its Python executable.
+The API process runs the Python renderer in `renderer/` (`MDC_RENDERER_DIR` in the
+image). Python 3.9+ with venv support is required. Unless `MDC_LATEX_PYTHON` is
+set, first use installs the pinned plasTeX and Pybtex packages into a shared
+virtual environment under `MDC_CACHE_DIR/runtime/` (default
+`~/.cache/mathdoc/runtime/`) and reuses it for all branches; this needs network
+access once. For offline hosts, install `renderer/requirements.txt` into a
+virtual environment and set `MDC_LATEX_PYTHON` to its Python executable. The
+Docker image ships such an environment in `/opt/latex`.
 
 Each branch lazily starts one rendering worker. Parsed results are content-keyed
 and bounded to 128 entries / 32 MiB; bibliography results are cached separately.
@@ -228,5 +231,5 @@ preparation. Draft requests never update persisted
 node labels or another client's document. Unchanged context queries return only
 version information, and rendering checks again for dependency changes before
 returning a result. No full-graph compilation or workspace synchronization occurs.
-Rendering has a 10-second timeout and bounded request/output sizes. Stopping a
-branch also stops its renderer.
+Rendering has a 10-second timeout and bounded request/output sizes. A branch's
+renderer stops when the branch is deleted or the API process exits.

@@ -10,7 +10,7 @@ import { editor, languages, Uri } from 'monaco-editor';
 import type { Theme } from './theme';
 
 export const sourceOptions: editor.IStandaloneEditorConstructionOptions = {
-  automaticLayout: false, fontFamily: 'JuliaMono', fontSize: 13, tabSize: 2,
+  automaticLayout: false, fontFamily: "ui-monospace, 'SF Mono', Menlo, Consolas, 'DejaVu Sans Mono', monospace", fontSize: 13, tabSize: 2,
   wordWrap: 'on', wrappingStrategy: 'simple', minimap: {enabled: false},
   folding: false, stickyScroll: {enabled: false}, lineNumbersMinChars: 1,
   lineDecorationsWidth: 5, scrollBeyondLastLine: false, mouseWheelZoom: false,
@@ -36,9 +36,6 @@ export function initializeMonaco() {
     };
     await initialize({...getConfiguration(), ...getTextmate(), ...getTheme(), ...getLanguages(), ...getModels()}, document.body, {workspaceProvider: {trusted: true, workspace: {workspaceUri: Uri.file('/workspace.code-workspace')}, async open() {return false;}}});
     await (await import('@codingame/monaco-vscode-theme-defaults-default-extension')).whenReady;
-    const font = new FontFace('JuliaMono', `url(${new URL('lean4monaco/dist/fonts/JuliaMono-Regular.ttf', import.meta.url)})`);
-    document.fonts.add(font);
-    await font.load();
   })();
 }
 export async function setMonacoTheme(theme: Theme) {

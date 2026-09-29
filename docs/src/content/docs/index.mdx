@@ -1,19 +1,32 @@
 ---
 title: MathDoc
-description: Versioned mathematical graphs with native Lean editing.
+description: Collaborative mathematical graphs whose Lean proofs are checked by LeanGround.
 ---
 
-MathDoc stores connected mathematical knowledge in **TerminusDB** and serves it
-through a local browser and CLI. One entry point lists all projects and routes
-directly to each branch's isolated graph and Lean environment in one server process. Nodes contain text, Lean, Rocq and LaTeX blocks.
-Lean uses native Lean Server, Monaco and Infoview for incremental proof editing.
-Only Lean compilation is integrated; other block types remain editable sources.
+MathDoc stores mathematical knowledge as a versioned dependency graph in
+**TerminusDB**. Each node holds text, LaTeX, Lean and Rocq blocks and declares
+the nodes it depends on. People and agents edit the same graph through a browser
+editor, the `mdc` command-line client and one HTTP API; every request carries a
+personal access token.
 
-[Install and run MathDoc](getting-started/installation/) · [Quick start](getting-started/quick-start/)
+MathDoc does not run Lean. A Lean node is submitted to
+[LeanGround](https://github.com/YanbiaoLab/LeanGround), an external service that
+checks proofs and stores certificates. MathDoc converts the node and its Lean
+dependencies into LeanGround requests, turns the open parts into tasks that
+people and agents claim, and writes the certified result back into the document
+in one reviewed batch.
 
-All writes are versioned database transactions. There is no filesystem refresh
-before ordinary commands. Explicit import/export replaces source synchronization.
-The browser and agents share the same API and revision checks.
+| Part | Role |
+| --- | --- |
+| TerminusDB | Documents: nodes, edges, source blocks, LaTeX settings and commit history. |
+| PostgreSQL | Collaboration data, workspace permissions and per-branch proof environments. |
+| API process (`serve`) | Document API, collaboration API, the web editor and the LaTeX renderer. |
+| Worker process (`worker`) | Talks to LeanGround: converts nodes, submits, syncs, assembles and writes back. |
+| LeanGround (external) | Checks every Lean proof and stores certificates. |
 
-[CLI commands](reference/workspace-commands/) · [HTTP API](reference/http-api/) ·
-[Storage and references](concepts/workspaces/) · [Development](development/setup/)
+[Install](getting-started/installation/) · [Deploy with Docker](getting-started/server-deployment/) ·
+[Quick start](getting-started/quick-start/)
+
+[Collaboration](concepts/collaboration/) · [Proofs with LeanGround](reference/proofs/) ·
+[Agent interface](reference/agents/) · [CLI](reference/workspace-commands/) ·
+[HTTP API](reference/http-api/) · [Development](development/setup/)

@@ -2,75 +2,89 @@
 title: Development setup
 ---
 
-Use the [installation instructions](../../getting-started/installation/) for a
-local TerminusDB instance and pinned Lean v4.33.1 toolchain. Node.js is required
-to build from source and develop the frontend/documentation, but not to run the
-installed binary. The build and CI use Node.js 26.
+Set up the databases as in [Installation](../../getting-started/installation/).
+The repository is one npm workspace: `coordinator/` (backend, worker, CLI),
+`web/` (editor), `app/` (archived collaboration prototype). `renderer/` is the
+Python LaTeX renderer, `docs/` this site, `perf/` benchmarks. CI uses Node.js 26.
 
 ## Build and fast checks
 
 ```sh
-npm --prefix web ci
-npm --prefix web run check
-npm --prefix web test
-npm --prefix web run build
+npm ci
+npm run check                     # coordinator and app type checks
+npm run check -w mdc-web          # svelte-check
+npm test -w mdc-web               # frontend unit tests
+npm run build -w @mathdoc/coordinator && npm run build -w mdc-web
+
 python3 -m venv /tmp/mdc-latex-venv
-/tmp/mdc-latex-venv/bin/pip install -r src/latex/requirements.txt
-/tmp/mdc-latex-venv/bin/python -B -m unittest discover -s src/latex -p 'test_*.py'
-cargo fmt --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
-cargo build --locked
+/tmp/mdc-latex-venv/bin/pip install -r renderer/requirements.txt
+/tmp/mdc-latex-venv/bin/python -B -m unittest discover -s renderer -p 'test_*.py'
 ```
 
-`web/dist` is generated locally and ignored by Git. Build it before running Cargo
-in a fresh checkout; Cargo embeds those assets into the Rust binary. Rebuild it
-when frontend sources or dependencies change. Backend-only changes can reuse
-existing assets. CI and Docker build the frontend from source. See
-[Browser frontend](../web-frontend/) for the Vite proxy.
+`coordinator/dist`, `web/dist` and `docs/dist` are generated and ignored by Git;
+CI fails if they are committed. Commit sources, lockfiles and intentional
+benchmark baselines. `npm run format` applies Prettier to the backend and the
+prototype.
 
-Commit sources, dependency lockfiles, static source assets and intentional
-benchmark baselines/reports. Build output (`web/dist`, `docs/dist`, `target`),
-installed dependencies, Python bytecode and transient test output stay local.
+During development, `npx tsx coordinator/src/main.ts serve` (and `worker`,
+`migrate`) runs the backend from source without building.
 
-## Native integration checks
-
-Make the test TerminusDB endpoint/user/password available through
-`MDC_TERMINUS_URL`, `MDC_TERMINUS_USER` and `MDC_TERMINUS_PASSWORD`. Install
-Playwright Chromium once with `npm exec --prefix web -- playwright install
---no-shell chromium`.
+## Backend tests
 
 ```sh
-cargo test --locked --test test_database --test test_service --test test_lean_service --test test_latex_service --test test_status -- --ignored --nocapture
-MDC_LATEX_PYTHON=/tmp/mdc-latex-venv/bin/python npm --prefix web run test:e2e
+docker compose up -d
+MDC_TEST_DATABASE_URL=postgresql://mathdoc:PASSWORD@127.0.0.1:5432/mathdoc \
+MDC_TEST_TERMINUS_URL=http://127.0.0.1:6363 \
+MDC_TEST_TERMINUS_PASSWORD=PASSWORD \
+  npm test
 ```
 
-These tests create disposable databases, project files and Lean caches in system
-temporary directories outside the source checkout and remove them afterwards.
-Do not use a production database or start a test project inside the checkout.
-`test_status` covers process lifecycle, branch deletion and CLI transactions;
-`test_service` and `test_lean_service` exercise real Lean and database behavior.
-The browser suite uses the actual backend and native editor, including draft
-preservation, revision conflicts, certification reuse and process cleanup. The
-LaTeX case exercises uploads, scoped completions, macro expansion, bibliography,
-draft previews and cross-node navigation in Chromium or WebKit
-(`MDC_E2E_BROWSER=webkit`).
-`MDC_BIN` optionally selects a prebuilt binary for browser tests. The Lean cases
-also exercise bidirectional backpressure, superseded selections and a real
-30-second preparation timeout. Error checks require native diagnostics for the
-edited document version before asserting that Monaco displays the marker.
+`npm test` runs `coordinator/test/*.test.ts`. Unit tests (domain, contracts,
+scanner) need nothing; tests with real PostgreSQL and TerminusDB run when the
+variables above are set and are skipped otherwise. They create disposable
+databases; never point them at production data.
 
-Browser failures retain a screenshot, Playwright `trace.zip`, `service.log` and
-`diagnostics.json` (recent LSP traffic, document versions and editor viewport
-state). The test prints their directory; it defaults to a separate system temp
-directory that survives fixture cleanup. Set `MDC_E2E_ARTIFACTS` to choose the
-parent directory. Release CI uploads these files as `browser-diagnostics` on
-failure. Inspect a trace with `npx playwright show-trace /path/to/trace.zip`.
+Tests that need a real LeanGround (the full collaboration scenario, the CLI test
+and the Mathlib conversion test) additionally need `MDC_TEST_LEANGROUND_URL` and
+`MDC_TEST_LEANGROUND_TOKEN`; the Mathlib test also needs
+`MDC_TEST_MATHLIB_BASE_KEY` naming a Mathlib base. The LeanGround server must
+meet the [requirements](../../getting-started/installation/#requirements), in
+particular a worker built at or after definition support. The scenario takes
+about half a minute, most of it waiting for a lease to expire. LeanGround keeps
+its data between runs, so rerunning with a fixed idempotency key would reuse
+earlier projects; the tests generate fresh keys.
 
-The optional `test_service_scale` target measures real graph requests on 47,435
-nodes and 368,017 edges without compiling that graph. It is a performance test,
-not part of the normal correctness loop. See [Performance measurements](../performance/)
-for read-only measurements and isolated write benchmarks.
+## Browser tests
+
+```sh
+npm exec -w mdc-web -- playwright install --no-shell chromium
+MDC_DATABASE_URL=postgresql://mathdoc:PASSWORD@127.0.0.1:5432/mathdoc \
+MDC_TERMINUS_URL=http://127.0.0.1:6363 MDC_TERMINUS_PASSWORD=PASSWORD \
+MDC_LATEX_PYTHON=/tmp/mdc-latex-venv/bin/python \
+  npm run test:e2e -w mdc-web
+```
+
+`web/e2e/run.mjs` builds nothing: build `web/dist` first. It runs `migrate`,
+`serve` and `worker` from source with a generated token, then drives Chromium
+(`MDC_E2E_BROWSER=webkit` for WebKit). Without `MDC_LATEX_PYTHON` it points the
+renderer at a nonexistent path rather than installing it, and the LaTeX cases
+fail. LeanGround-dependent cases need `LEANGROUND_SERVER_URL`,
+`LEANGROUND_FACT_TOKEN` and `LEANGROUND_ACTOR`; by default the worker is pointed at
+an unreachable address.
+
+Failures keep a screenshot, a Playwright `trace.zip`, the service log and
+diagnostics in a temporary directory printed by the test; `MDC_E2E_ARTIFACTS`
+chooses the parent directory. CI uploads them as `browser-diagnostics`. Open a
+trace with `npx playwright show-trace /path/to/trace.zip`.
+
+## Container
+
+```sh
+docker build -t mathdoc-runtime:local .
+python3 tests/docker-smoke.py
+```
+
+See [Server deployment](../../getting-started/server-deployment/#verification).
 
 ## Documentation
 
@@ -80,5 +94,5 @@ npm --prefix docs run check
 npm --prefix docs run build
 ```
 
-Detailed usage belongs in these documentation pages. Keep root and frontend
-READMEs short and link here instead of duplicating command instructions.
+Usage belongs in these pages; keep the READMEs short and link here.
+Design and migration records are in `docs/*.md` outside the site.

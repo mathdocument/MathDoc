@@ -2,39 +2,78 @@
 title: Web interface
 ---
 
-Run `mdc start DATABASE/BRANCH` and open its printed `/p/DATABASE/BRANCH/` URL.
-The root page at `http://127.0.0.1:17843/` lists projects and branches, with
-**Running** and **Stopped** labels, search, status filters and links to running
-branches. It refreshes every five seconds while visible. Start or stop branches
-with the CLI; `mdc status` returns the same inventory and access URLs.
+## Sign in
 
-The editor toolbar identifies the current branch. Click the MathDoc logo to
-return to **All projects**; unsaved drafts require confirmation before leaving.
-Within a branch, navigate by search, referrers, dependencies or the graph view.
-Nodes are created with a title; no filename is requested. In Graph view, the
-editor sidebar uses a fixed 3/8 of the available width and the graph uses 5/8.
-Narrow screens retain the stacked layout. Switching views preserves the active
-Lean session and unsaved edits.
+The API process serves the editor at `/`. Without a stored token the page asks
+for an **access token**; it is checked against `/api/me` and kept in this
+browser's `localStorage`. A `401` response clears it and returns to the sign-in
+page. Use a private browser profile on shared machines.
 
-**Lean import** is inside the Lean source block and shows the module name other
-nodes should import. Graph nodes share the Lean status colors: gray for no Lean
-code, yellow for unchecked/failed checks or reported sorry, and green for a
-successful check without reported sorry. Rocq does not affect graph colors. Knowledge view cards show both Lean and Rocq
-status lights after the node ID and depth, refreshed after saved edits and Lean
-certification. The bottom bar shows the node ID, status dot and title; long titles
-use an ellipsis and show their full text on hover.
+## Project directory
 
-Lean blocks initially show a local Monaco editor with syntax highlighting, editing and **Save**, without starting a Lean server or reserving a server slot. Click **Start Lean server** (the play icon) to enable checking and native Infoview on the right, including goals, diagnostics and interactive widgets. This button then becomes **Recheck Lean**, which reopens the current file for checking in the existing server connection. **Stop Lean server**, immediately to its right, closes only this page's session and returns to local editing. Other pages and CLI checks are unaffected. Both modes use the same Lean grammar, font and light/dark themes; the same editor, cursor and undo history survive starting, checking and stopping. Infoview expands or disappears in place; the source is never replaced by a startup screen.
+The root page lists the branches you can read, grouped by database, with your
+role on each and node/edge counts for branches already loaded by the server. It
+offers **Init project** (administrators), **New branch** from any row, branch
+deletion (not for `main`) and **Delete project**; the server enforces the role
+required for each. Branches load on demand, so there are no start or stop
+controls. Workspace roles are managed with `mdc grant`; there is no role editor
+in the browser yet.
 
-**Save** writes to the database. Once started, the editor automatically certifies the saved version using its existing diagnostics and native import information, then refreshes the node status. Successfully compiled dependencies are certified from their compiler metadata with the same strict dependency checks. Unsaved drafts never certify a different database version. There is no separate check/build button or second checker on save. Saving without a server does not perform a Lean check; use the start button or CLI `lean check` when needed.
+## Editor
 
-After explicit startup, each tab keeps an isolated draft environment and one Lean connection across node and layout changes. The two most recently used Lean documents retain their native workers. Selecting or rechecking a node refreshes its dependency snapshot; changed dependencies restart the file worker. Stop and start after project toolchain or Lake configuration changes. New or evicted documents still load imports, while Lake's shared artifact cache retains compiled dependencies after the tab closes. Reopening or reloading the page returns to local editing until started again. The target `.olean` is generated when imported or explicitly requested through CLI `--build`.
+`/p/DATABASE/BRANCH/` opens the editor for one branch. The MathDoc logo returns
+to the directory; unsaved drafts ask for confirmation. Navigate by search,
+dependency and referrer columns, or the graph view. Nodes are created with a
+title only. In the graph view the editor takes 3/8 of the width and the graph
+5/8; narrow screens stack them. Switching views keeps unsaved edits.
 
-Switching nodes cancels any older preparation request. “Preparing Lean
-environment…” means the selected source is displayed while its native file is
-being attached; it does not indicate a full project build. Preparation that takes
-more than 30 seconds triggers one automatic reconnect with the unsaved draft
-retained. If recovery fails again, stop and start the server. Cold imports can
-still take longer and appear separately as “Loading Lean imports…”.
+All block types use Monaco editors with the same controls, fonts and light/dark
+themes. Lean blocks are plain source editors with syntax highlighting; there is
+no Lean server or Infoview. LaTeX blocks add Edit/Preview, reference and citation
+completion and clickable cross-node references ([LaTeX](../latex/)).
 
-The **Project settings → Lean** tab edits the pinned toolchain, Lake configuration (TOML or Lean) and lock manifest, preserving supporting project files and the module namespace. All block types share a header, save/delete controls, collapse behavior and status styling. All source blocks use Monaco with native TextMate highlighting, shared editor options and themes; Lean additionally provides Infoview. Only Lean has a language server in this release. The **LaTeX** settings tab accepts shared macros and a bibliography; LaTeX blocks provide Edit/Preview, scoped reference and citation completion, and clickable cross-node references. See [LaTeX previews](../latex/).
+## Node status
+
+Each node shows a Lean and a Rocq status light. For Lean the light and label
+come from LeanGround certification when the node has a Lean block:
+
+| Label | Meaning |
+| --- | --- |
+| No code | No Lean block. |
+| Not submitted to LeanGround | Not part of any proof request. |
+| Insufficient evidence | Submitted; no accepted proof yet. |
+| Derivable | Follows from certified results through conditional certificates, not yet assembled. |
+| Certified | A certificate without open premises exists. |
+| Changed since submission | The Lean text, or a definition it uses, changed after submission. |
+| Not accepted | The converter or LeanGround rejected the node; the reason is shown. |
+
+The graph view colors nodes only by whether they have Lean code (gray: none,
+yellow: Lean block present); certification is shown on node cards and in the
+node header. Rocq is edited as source only.
+
+## Lean nodes and LeanGround
+
+A Lean node's header has **Submit to LeanGround**. It asks for members and a
+budget and creates a proof request rooted at this node (you need `editor` or
+better, and the branch needs a proof environment). Once submitted, the button
+becomes **Collaboration**.
+
+**Project settings** has two tabs:
+
+- **Proof environment**: LeanGround base key, context lines (`open`,
+  `set_option`, `universe`, `variable`), Lean options as JSON, and minimum trust
+  (`claimed`, `audited`, `trusted`). Owners only; changes apply to new proof
+  requests.
+- **LaTeX**: the shared macro file and bibliography.
+
+The toolbar's **Collaboration** dialog lists the branch's proof requests you are a
+member of and has four views, refreshed every five seconds:
+
+| View | Contents |
+| --- | --- |
+| Proof overview | Root status, owner, members, budget, trust, last sync; every converted node with role, state, reason and status; **Resubmit** and **Sync now**. |
+| Task board | Tasks with lease holder and time left; **Claim**, **Extend**, **Release**; owners add decomposition tasks. |
+| Decompositions | Certificates per goal with premises, trust and state; cycles and route membership marked; owners pause, retire or activate. |
+| Review | Owners **Assemble a route**, **Retry same plan** and **Accept and write back**; writeback batches with their operations or abort reason. |
+
+See [Collaboration](../collaboration/) for what these operations mean.

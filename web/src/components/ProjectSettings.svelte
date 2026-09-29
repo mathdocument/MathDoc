@@ -1,13 +1,11 @@
 <script lang="ts">
   import { modal } from "../lib/modal";
-  import LeanProjectForm from "./LeanProjectForm.svelte";
   import LatexProjectForm from "./LatexProjectForm.svelte";
   import ProofEnvironmentForm from "./ProofEnvironmentForm.svelte";
-  import { localLeanEditor } from "../lib/features";
   let { onClose }: { onClose: () => void } = $props();
-  // The Lake project only configures local Lean; without it the stored configuration is
-  // preserved unchanged (plan §5) and the LeanGround proof environment is set per branch.
-  let tab = $state<"lean" | "proof" | "latex">(localLeanEditor ? "lean" : "proof");
+  // The legacy Lake project is preserved unchanged (plan §5); Lean is checked by LeanGround
+  // in the proof environment set per branch.
+  let tab = $state<"proof" | "latex">("proof");
   let form = $state<{canClose: () => boolean}>();
   function close() { if (form?.canClose()) onClose(); }
   function select(next: typeof tab) { if (next !== tab && form?.canClose()) tab = next; }
@@ -15,12 +13,10 @@
 <dialog class="modal-dialog" aria-label="Project settings" use:modal oncancel={(event) => { event.preventDefault(); close(); }}>
   <header class="dialog-head"><h2>Project settings</h2></header>
   <div class="tabs" role="tablist" aria-label="Project language">
-    {#if localLeanEditor}<button role="tab" aria-selected={tab === 'lean'} onclick={() => select('lean')}>Lean</button>
-    {:else}<button role="tab" aria-selected={tab === 'proof'} onclick={() => select('proof')}>Proof environment</button>{/if}
+    <button role="tab" aria-selected={tab === 'proof'} onclick={() => select('proof')}>Proof environment</button>
     <button role="tab" aria-selected={tab === 'latex'} onclick={() => select('latex')}>LaTeX</button>
   </div>
-  {#if tab === 'lean'}<LeanProjectForm bind:this={form} onClose={close} />
-  {:else if tab === 'proof'}<ProofEnvironmentForm bind:this={form} onClose={close} />
+  {#if tab === 'proof'}<ProofEnvironmentForm bind:this={form} onClose={close} />
   {:else}<LatexProjectForm bind:this={form} onClose={close} />{/if}
 </dialog>
 <style>

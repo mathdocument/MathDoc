@@ -2,121 +2,61 @@
 title: Browser frontend
 ---
 
-The Svelte 5 interface mounts the project directory at `/` and the editor at
-`/p/DATABASE/BRANCH/`. The directory polls `/api/projects` while visible. It can
-initialize a project, start/stop branches, fork either running or stopped branches,
-and delete stopped branches. Running rows show node/edge counts from the loaded
-snapshot; stopped rows leave the same columns empty. A shared
-path helper scopes branch API calls, Lean iframe URLs and WebSocket URLs;
-static assets stay at the root. The editor provides search, graph/column navigation, dependency
-operations and block editing. It tracks unsaved drafts and serializes node
-mutations with revision guards. All four block types use Monaco, consistent controls,
-JuliaMono and VS Code's light/dark themes. `lib/monaco.ts` shares initialization
-and editor options; `lib/monaco-scroll.ts` provides the native scroll viewport.
-Text, LaTeX and Rocq share one runtime in the page. Lean keeps its isolated iframe.
-Both use native TextMate tokenization; `@shikijs/langs` supplies grammar data only.
-LaTeX completion providers are scoped to the current model and disposed with it.
-Ordinary editors and their undo history survive layout and preview changes.
-`web/src/design.css` supplies the shared colors, fonts and header geometry for
-the project directory, editor and documentation site. The documentation theme
-maps Starlight surfaces to these tokens; its header retains native search and
-theme persistence.
+`web/` is a Svelte 5 application served by the API process from `MDC_WEB_DIR`. It
+mounts the project directory at `/` and the editor at `/p/DATABASE/BRANCH/`.
 
-Project-directory navigation retains the outgoing native view-transition snapshot
-until the destination has loaded its data and initialized its editors (or has an
-error to display). Monaco wrapping and gutters are measured before revealing
-the page in one step. Knowledge/Graph switches use the same readiness rule,
-including the first graph fetch. There is no fade for these switches, including
-with reduced motion enabled. Ordinary links, browser history and unsaved-draft
-guards are preserved; browsers without View Transitions use normal navigation.
+## Structure
 
-Relation columns filter locally by title or UUID and render only a viewport
-window for more than 100 matches. Cards use natural one- or two-line titles at
-every list size. ResizeObserver measures mounted rows; cached heights and
-estimated offscreen heights position the window without rendering the full
-list. Scrolling and Arrow/Home/End navigation reach all matches. Filters reset
-when selecting another node. Switching views keeps the columns' scroll positions and the
-same editor session. Node snapshots are replaced atomically instead of deeply
-proxied. The graph component loads on first use and keeps its layout in memory;
-the desktop layout uses fixed 5:3 grid columns for the graph and editor.
-The canvas bitmap fits its own viewport, with an eight-million-pixel budget on
-Retina displays. Window-size and pixel-density changes resize and paint in one
-frame.
-The dependency removal dialog filters by title or UUID and displays 50 results
-per page; selections remain active across pages and filters until submitted.
+| Area | Files |
+| --- | --- |
+| Sign-in and token | `components/SignIn.svelte`, `lib/auth.ts` (token in `localStorage` under `mdc-access-token`, added to every request; a `401` signs out). |
+| Directory | `Projects.svelte`, `components/ProjectCreate.svelte`; polls `/api/projects` while visible. |
+| Editor | `App.svelte`, `components/EditorPane.svelte`, `NodeColumn.svelte`, `DepthGraph.svelte`, `BlockEditor.svelte`, overlays for search and dependencies. |
+| Status | `components/FormalStatus.svelte`: local check and LeanGround certification. |
+| Collaboration | `components/Collaboration.svelte` (four views), `LeanGroundSubmit.svelte`, `ProofEnvironmentForm.svelte`, `lib/coordination.ts` (API client; commands carry `If-Match` and a fresh `Idempotency-Key`). |
+| LaTeX | `components/LatexPreview.svelte`, `LatexProjectForm.svelte`, `lib/latex-session.svelte.ts` (draft requests and cancellation), `lib/latex-completion.ts`, `lib/latex-math.ts` (MathJax 4). |
+| Shared | `lib/project-path.ts` scopes branch API calls; `lib/unsaved.ts` tracks drafts; `lib/monaco.ts` and `lib/monaco-scroll.ts` set up editors. |
 
-Lean uses a lazy-loaded page embedding `lean4monaco` and upstream Infoview. By
-default it uses local Monaco models, with native client creation disabled:
-highlighting, edits and saves require no Lean session or WebSocket. **Start Lean
-server** attaches a session to the existing iframe, editor and source model.
-Local models use the module's native URI so attachment retains undo and cursor
-state. Infoview expands in place; stopping hides it and closes the native client.
-The WebSocket closes gracefully before the backend reaps the session. Pending
-initialization has a bounded shutdown grace period. Navigation during session
-allocation retires the stale allocation before connecting the selected module.
-`build/lean-socket.ts` patches the installed transport wrapper to settle startup
-when a socket closes during initialization, and safely finish client shutdown.
-Both build and development prebundling verify the upstream code before patching.
-The same runtime supplies identical syntax, themes and fonts
-in both modes. The first reveal waits for the native TextMate grammar and a
-rendered viewport, with no plaintext/loading placeholder. The iframe fills the
-space remaining below the block controls, so its final lines remain reachable.
-After startup, the page has an isolated native WebSocket session,
-with source on the left and Infoview on the right. The start button becomes
-**Recheck Lean**, which refreshes the selected document in the existing client.
-The adjacent stop button closes only this session and leaves the editor and its
-draft intact. LeanMonaco installs browser providers; its desktop
-extension entry is disabled in the browser manifest. Save reuses the editor's
-native result for the exact saved source and imports. CLI `lean check --build`
-requests target artifacts when required.
+All block types, Lean included, use Monaco with native TextMate highlighting
+(grammar data from `@shikijs/langs`, `lean4` for Lean), the system monospace
+font and VS Code's light/dark themes, in one runtime per page. There is no Lean language client, Infoview or Lean
+iframe. Editors and their undo history survive layout and preview changes.
+`web/src/design.css` supplies colors, fonts and header geometry shared with this
+documentation site.
 
-All block scrollers share a native gesture handoff, including the same-origin
-Lean and Infoview frames. At a boundary, inner scrolling is suspended until the
-gesture ends; clicks and selection remain enabled. The node pane uses
-`overscroll-behavior-y: contain` so gestures starting at its boundary can still
-rubber-band on macOS. There is no scripted outer scrolling or bounce animation.
-Monaco renders a native scrolling viewport. Its disabled wheel-zoom observer is
-made passive by `web/build/monaco-wheel.ts`, in both Vite builds and dependency
-prebundling; the build fails if the upstream listener changes shape. This avoids
-Safari's synchronous wheel path, which otherwise suppresses boundary feedback.
+Node mutations are serialized and carry the node revision; a `412` keeps the
+draft for reconciliation. Relation columns render only a window of rows above 100
+matches. The graph view loads on first use, keeps its layout in memory and uses
+fixed 5:3 columns; its canvas is capped at eight million pixels on high-density
+displays. Directory and view switches keep the outgoing view until the
+destination is ready, using View Transitions where available.
+
+Scrolling: block scrollers hand gestures to the node pane at their boundary, and
+the node pane uses `overscroll-behavior-y: contain`. `web/build/monaco-wheel.ts`
+makes Monaco's disabled wheel-zoom listener passive, in builds and dependency
+prebundling, so Safari keeps native boundary feedback; the build fails if the
+upstream listener changes shape.
 
 ## Development server
 
-Create a disposable development database once, then start its branch. Keep the
-cache outside the source checkout. The default entry port matches Vite's proxy:
+Run the backend (`serve`, and `worker` for proof work) as in
+[Installation](../../getting-started/installation/), then:
 
 ```sh
-mdc init dev
-mdc start dev/main
-npm --prefix web ci
-npm --prefix web run dev
+npm run dev -w mdc-web
 ```
 
-Open the Vite URL (normally `http://localhost:5173`). Vite serves frontend assets
-for the project list, or `/p/dev/main/` for the editor. Vite proxies `/api` and
-`/p/DATABASE/BRANCH/api` HTTP/WebSocket requests to `http://127.0.0.1:17843`.
-Its development middleware serves nested `lean.html` requests from the shared
-Lean entry page. `MDC_API_PROXY` selects another entry URL if its port was
-changed. It is a Vite development setting, not an mdc client project selector.
-The proxy preserves the incoming Host/Origin pair for backend same-origin checks.
-Stop the branch with `mdc stop dev/main`; `mdc stop` shuts down the server and all loaded branches.
+Open the Vite URL (normally `http://localhost:5173`) and sign in with a token.
+Vite proxies `/api` and `/p/DATABASE/BRANCH/api` to `http://127.0.0.1:17843`,
+preserving Host and Origin for the backend's same-origin check. `MDC_API_PROXY`
+selects another backend URL; it is a Vite setting only.
 
-## Release and validation
+## Build and validation
 
-`npm --prefix web run build` writes `web/dist`; Cargo embeds those assets with
-`rust-embed`. This directory is ignored by Git: commit source changes and lockfile
-updates, then build the frontend before building or installing the Rust binary.
-Docker and CI do both steps. The release binary needs no Node.js runtime.
-
-The real-browser integration suite checks CLI/browser conflicts, navigation,
-graph invariants, Lean goals and diagnostics, draft recovery, saved-editor
-certification reuse and explicit `.olean` builds. Run it using
-[Development setup](../setup/). The frontend performance fixture measures graph
-and non-Lean interaction; native Lean behavior is covered by the real-server
-suite.
-
-On macOS, set `MDC_E2E_NATIVE_SCROLL=1` and run the integration test matching
-`pass scrolling` to additionally open a native WebKit test window. It sends
-phased trackpad events and verifies actual overscroll and gesture ownership.
-Ordinary Playwright wheel events cannot verify macOS rubber-banding. This check
-uses the suite's disposable database and requires the Xcode command-line tools.
+`npm run build -w mdc-web` writes `web/dist`, which the API serves and the Docker
+image copies. The browser suite ([Development setup](../setup/#browser-tests))
+covers the project directory, CLI/browser conflicts, navigation, graph
+invariants, drafts, editor layout, LaTeX, Lean blocks as plain editors, and a Lean
+node submitted, assembled and written back through the collaboration views (with
+a LeanGround server). Frontend performance is in
+[Performance measurements](../performance/#frontend-performance).

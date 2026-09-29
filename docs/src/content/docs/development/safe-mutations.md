@@ -2,35 +2,48 @@
 title: Versioned mutations
 ---
 
-Node edits, renames, dependency mutations, Lean checks/goals and editor creation
-require a quoted `If-Match` node revision. Linked node creation guards the parent
-revision. Project configuration writes use the branch data revision from
-`GET /api/project/lean` instead. Missing or unquoted revisions return 428; stale
-revisions return 412. CLI `--revision` supplies the read version explicitly;
-otherwise the CLI fetches it before writing.
+## Documents
 
-Unlinked node creation, whole-graph import and branch creation do not accept a
-caller revision. Node, project and import transactions compare TerminusDB data
-versions when committing, so concurrent external writes cannot silently overwrite
-one another. Branch creation asks TerminusDB to fork the source branch's head at
-request processing time. There is no caller-selected historical commit or merge
-operation in this CLI.
+Node edits, renames, deletions, dependency changes and linked creation require a
+quoted `If-Match` node revision; linked creation guards the parent. LaTeX (and
+legacy Lean) project writes use the branch data revision from their `GET`.
+Missing or unquoted revisions return `428`; stale ones return `412`. CLI
+`--revision` supplies the revision from an earlier read; otherwise the CLI reads
+it just before writing.
 
-Graph constraints and supported block types are validated before commit. Linked
-creation writes the new node and parent edge atomically. Batch dependency removal
-resolves every target before mutation, so an unknown target cannot produce a
-partial removal. Import validates the complete graph and environment, then
-commits only into an empty destination. Existing UUIDs are never overwritten by
-import.
+Unlinked creation, whole-branch import and branch creation take no caller
+revision. All writes run under the branch lock and commit against the TerminusDB
+data version they read, so a concurrent writer elsewhere (another API process, or
+a writeback by the worker) cannot be silently overwritten. Branch creation forks
+the source head at request time; there is no merge operation.
 
-Lean checks capture immutable source/dependency inputs, release the graph lock
-while checking, and confirm current inputs before returning certification. A
-changed Lean input yields a conflict. Saved editor evidence is bound to the exact
-native document version and dependency environment; the browser cannot provide
-its own successful verdict.
+Graph constraints and block types are validated before commit. Linked creation
+writes the new node and the parent edge in one commit. Batch dependency removal
+resolves every target first, so an unknown target cannot cause a partial removal.
+Import validates the complete bundle and commits only into an empty branch.
 
-The local server rejects non-loopback Host and cross-origin browser requests.
-CLI service tokens also detect port reuse after a restart. This protects a
-trusted-local-author workflow; Lean execution is not an OS sandbox and the API
-has no remote multi-user authentication. See [HTTP API](../../reference/http-api/)
-for route coverage, status codes and request limits.
+## Collaboration
+
+Project commands are guarded twice:
+
+- `If-Match: "REVISION"` must equal the board's current revision
+  (`409 revision_conflict` otherwise).
+- `Idempotency-Key` identifies the intent. The server stores each
+  (project, actor, key) response; the same request again returns the stored
+  response without applying it twice, and a different request under the same key
+  fails with `idempotency_conflict`. Project creation uses the same mechanism.
+
+Leases carry an epoch, so a participant whose lease expired or was reassigned
+gets `stale_lease` instead of overwriting the new holder. Worker jobs recheck
+their own claim before writing results.
+
+Writeback checks every node against the text it was converted from, then commits
+the whole batch at once with the data version it read; any mismatch aborts the
+batch without writing, and a concurrent commit makes the job retry.
+
+## Trust boundary
+
+Requests need an access token; roles limit what each actor can do; the same-origin
+check blocks cross-site browser requests to the document API. The server runs no
+Lean and no TeX: the LaTeX renderer expands macros with plasTeX, and TikZ diagrams
+are rendered by a WebAssembly TeX in the reader's browser. See [HTTP API](../../reference/http-api/) for status codes and limits.

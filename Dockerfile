@@ -1,56 +1,48 @@
-FROM node:26-bookworm-slim AS frontend
-WORKDIR /build/web
-COPY web/package.json web/package-lock.json ./
-RUN npm ci
-COPY web ./
-# The Rust application serves the native Lean editor, an optional web build.
-ENV MDC_WEB_LEAN_EDITOR=1
-RUN npm run build
-
-FROM rust:1.95.0-slim-bookworm AS build
-RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
-    && rm -rf /var/lib/apt/lists/*
+# MathDoc: the TypeScript backend (API and worker), the web/ knowledge editor and the
+# LaTeX renderer. Lean is checked by an external LeanGround; the image has no Lean.
+FROM node:26-bookworm-slim AS build
 WORKDIR /build
-COPY Cargo.toml Cargo.lock ./
-COPY src ./src
-COPY --from=frontend /build/web/dist ./web/dist
-RUN cargo build --release --locked && strip target/release/mdc
+COPY package.json package-lock.json ./
+COPY coordinator/package.json coordinator/
+COPY app/package.json app/
+COPY web/package.json web/
+RUN npm ci
+COPY coordinator coordinator
+COPY web web
+RUN npm run build -w @mathdoc/coordinator && npm run build -w mdc-web
 
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl git build-essential python3 python3-venv zstd unzip \
+# Production dependencies of the backend only.
+FROM node:26-bookworm-slim AS runtime-deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY coordinator/package.json coordinator/
+COPY app/package.json app/
+COPY web/package.json web/
+RUN npm ci --omit=dev -w @mathdoc/coordinator --include-workspace-root=false
+
+FROM node:26-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv \
     && rm -rf /var/lib/apt/lists/*
-
-# Keep Elan's executable in the image and downloaded toolchains in a volume.
-RUN set -eu; \
-    arch="$(uname -m)"; \
-    case "$arch" in \
-      aarch64) checksum=cb69af0803b04157bc30201c29c12fca882bb3ad8b43476b8d2d3064810bc3ac ;; \
-      x86_64) checksum=df0b2b3a439961ffcbb3985214365ffe40f49bc871df04dff268c7d8e21ca8b2 ;; \
-      *) echo "Unsupported architecture: $arch" >&2; exit 1 ;; \
-    esac; \
-    curl --fail --location --retry 3 \
-      "https://github.com/leanprover/elan/releases/download/v4.2.3/elan-$arch-unknown-linux-gnu.tar.gz" -o /tmp/elan.tar.gz; \
-    echo "$checksum  /tmp/elan.tar.gz" | sha256sum -c -; \
-    tar -xzf /tmp/elan.tar.gz -C /tmp; \
-    ELAN_HOME=/opt/elan /tmp/elan-init -y --no-modify-path --default-toolchain none; \
-    rm /tmp/elan.tar.gz /tmp/elan-init
-
-COPY src/latex/requirements.txt /tmp/latex-requirements.txt
+COPY renderer/requirements.txt /tmp/latex-requirements.txt
 RUN python3 -m venv /opt/latex \
     && /opt/latex/bin/pip install --no-cache-dir -r /tmp/latex-requirements.txt \
     && rm /tmp/latex-requirements.txt \
-    && useradd --create-home --uid 10001 mdc \
-    && mkdir -p /var/lib/mdc/cache /var/lib/mdc/elan \
-    && chown -R mdc:mdc /var/lib/mdc
-COPY --from=build /build/target/release/mdc /usr/local/bin/mdc
-ENV HOME=/home/mdc \
-    ELAN_HOME=/var/lib/mdc/elan \
-    MDC_CACHE_DIR=/var/lib/mdc/cache \
+    && mkdir -p /var/lib/mdc/cache && chown node:node /var/lib/mdc/cache
+WORKDIR /app
+COPY --from=runtime-deps /app/node_modules ./node_modules
+COPY coordinator/package.json coordinator/
+COPY --from=build /build/coordinator/dist coordinator/dist
+COPY --from=build /build/web/dist web/dist
+COPY renderer renderer
+RUN chmod +x coordinator/dist/cli.js && ln -s /app/coordinator/dist/cli.js /usr/local/bin/mdc
+ENV NODE_ENV=production \
+    MDC_HOST=0.0.0.0 \
+    MDC_PORT=17843 \
+    MDC_WEB_DIR=/app/web/dist \
+    MDC_RENDERER_DIR=/app/renderer \
     MDC_LATEX_PYTHON=/opt/latex/bin/python \
-    PATH=/opt/elan/bin:$PATH
-USER mdc
-WORKDIR /home/mdc
+    MDC_CACHE_DIR=/var/lib/mdc/cache
+USER node
 EXPOSE 17843
-ENTRYPOINT ["mdc"]
-CMD ["start", "--foreground"]
+ENTRYPOINT ["node", "/app/coordinator/dist/main.js"]
+CMD ["serve"]

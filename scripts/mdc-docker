@@ -1,5 +1,9 @@
 #!/bin/sh
-# Invoke the server deployment's CLI from any working directory; preserve stdin.
+# Run `mdc` inside the server deployment from any directory; preserves stdin.
+# Needs MDC_TOKEN (your access token) in the environment.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-exec docker compose --project-directory "$root" -f "$root/compose.server.yaml" exec -T mdc mdc "$@"
+: "${MDC_TOKEN:?set MDC_TOKEN to your access token}"
+exec docker compose --project-directory "$root" -f "$root/compose.server.yaml" exec -T \
+  -e MDC_TOKEN="$MDC_TOKEN" -e MDC_PROJECT="${MDC_PROJECT:-}" mdc \
+  sh -c 'MDC_URL="http://127.0.0.1:$MDC_PORT" exec mdc "$@"' mdc "$@"

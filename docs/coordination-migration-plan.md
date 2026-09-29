@@ -5,7 +5,8 @@
 > `coordinator/`、`app/` 仍是待接线的实现，不表示本计划已经交付。阶段 2（文档接口对齐）已实现，待评审，
 > 验收结果与未覆盖项见 `docs/coordination-phase-2.md`；阶段 3（移出本地 Lean）已实现，待评审，见
 > `docs/coordination-phase-3.md`；阶段 4（协作视图与闭环）已实现，待评审，见 `docs/coordination-phase-4.md`，
-> 自阶段 4 起维护者决定不再维护旧 Rust 应用的兼容。默认入口仍是旧应用（阶段 5 才切换）。
+> 自阶段 4 起维护者决定不再维护旧 Rust 应用的兼容。阶段 5（切换默认入口并清理）已实现，待评审，见
+> `docs/coordination-phase-5.md`：默认入口已是 TypeScript 后端，旧 Rust 应用与本地 Lean 已删除。
 >
 > 日期：2026-09-28（同日修订 §6.4 契约冻结与 §7.3 声明转换；同日再按 LeanGround `3965273` 修订草图组件与
 > 定义支持，见 §7.3、§11）。基线提交：`a4d61e3`（分支 `codex/mathdoc-coordination`），另有 Codex 未提交的
