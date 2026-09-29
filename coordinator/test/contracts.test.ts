@@ -120,6 +120,11 @@ test("contract rejects guessed declaration bindings and unsafe writeback shapes"
   );
 });
 
+test("legacy node revision follows Rust key order, not JavaScript object order", () => {
+  for (const { node, expected } of fixture.legacy_revision_key_order)
+    assert.equal(legacyNodeRevision(node), expected);
+});
+
 test("legacy node revision is independent of dependency and metadata order", () => {
   for (const { node, expected } of fixture.legacy_revision) {
     assert.equal(legacyNodeRevision(node), expected);

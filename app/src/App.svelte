@@ -66,15 +66,19 @@
     body?: unknown,
     headers: Record<string, string> = {},
   ): Promise<T> {
-    const r = await fetch(`/api${path}`, {
-      method,
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-        ...headers,
+    // Collaboration routes live under /api/coordination (plan §6.3); identity is shared.
+    const r = await fetch(
+      `/api${path === "/me" ? "" : "/coordination"}${path}`,
+      {
+        method,
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          ...headers,
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    );
     const v = await r.json();
     if (!r.ok) throw new Error(v.reason ?? "请求失败");
     return v;

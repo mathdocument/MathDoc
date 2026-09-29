@@ -243,7 +243,7 @@ test(
         body?: unknown,
         headers = {},
       ) =>
-        fetch(`${apiUrl}/api${path}`, {
+        fetch(`${apiUrl}/api${path === "/me" ? "" : "/coordination"}${path}`, {
           method,
           headers: {
             authorization: `Bearer ${token}`,

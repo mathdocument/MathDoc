@@ -18,6 +18,7 @@ import {
   ingest,
 } from "./domain.js";
 import { resolveProject } from "./worker.js";
+import { DocsBackend } from "./docs/routes.js";
 async function body(req: IncomingMessage) {
   const chunks: Buffer[] = [];
   let length = 0;
@@ -66,16 +67,46 @@ export function server(
   lean: LeanGround,
   docs: Documents,
 ) {
+  // Document API and the retained web/ editor (plan §6.1, §6.2). Collaboration lives
+  // under /api/coordination/ (plan §6.3); /api/me is shared.
+  const documents =
+    cfg.terminusUrl && cfg.terminusPassword
+      ? new DocsBackend({
+          terminus: {
+            url: cfg.terminusUrl,
+            user: cfg.terminusUser,
+            password: cfg.terminusPassword,
+          },
+          pool: store.pool,
+          webDir: cfg.webDir ?? "web/dist",
+          publicOrigin: cfg.publicOrigin,
+          actors: cfg.actors,
+          authenticate: (req) => authenticate(req, cfg),
+          readBody: body,
+        })
+      : null;
   return createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
-      const path = url.pathname;
+      if (documents && !cfg.appDir && (await documents.handle(req, res, url)))
+        return;
+      if (
+        documents &&
+        cfg.appDir &&
+        (url.pathname.startsWith("/p/") || url.pathname === "/api/status")
+      )
+        if (await documents.handle(req, res, url)) return;
+      const coordination = url.pathname.startsWith("/api/coordination/");
+      const path = coordination
+        ? `/api${url.pathname.slice("/api/coordination".length)}`
+        : url.pathname;
       const method = req.method;
       if (!path.startsWith("/api/")) {
+        requireThat(cfg.appDir, "not_found", 404);
         requireThat(method === "GET", "method_not_allowed", 405);
         const asset =
           path === "/" ? "index.html" : decodeURIComponent(path).slice(1);
-        const root = resolve(cfg.appDir);
+        const root = resolve(cfg.appDir!);
         const file = resolve(root, asset);
         requireThat(file.startsWith(`${root}/`), "not_found", 404);
         let data: Buffer;
@@ -107,6 +138,7 @@ export function server(
         send(res, 200, { actor, admin: cfg.actors[actor].admin });
         return;
       }
+      requireThat(coordination, "not_found", 404);
       if (path === "/api/documents" && method === "GET") {
         requireThat(cfg.actors[actor].admin, "admin_required", 403);
         const ref = bindingSchema.parse(Object.fromEntries(url.searchParams));

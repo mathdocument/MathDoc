@@ -11,6 +11,7 @@ export interface Job {
   tries: number;
 }
 export const migration = `
+CREATE TABLE IF NOT EXISTS mdc_workspace(database text PRIMARY KEY, body jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS mdc_project(id text PRIMARY KEY, body jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS mdc_command(project text NOT NULL REFERENCES mdc_project(id), actor text NOT NULL, key text NOT NULL, hash text NOT NULL, result jsonb NOT NULL, PRIMARY KEY(project,actor,key));
 CREATE TABLE IF NOT EXISTS mdc_event(sequence bigserial PRIMARY KEY, project text NOT NULL REFERENCES mdc_project(id), actor text NOT NULL, kind text NOT NULL, revision bigint NOT NULL, created_at timestamptz NOT NULL DEFAULT now());

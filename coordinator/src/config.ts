@@ -13,7 +13,12 @@ export interface Config {
   terminusUrl?: string;
   terminusUser: string;
   terminusPassword?: string;
-  appDir: string;
+  /** Coordination prototype (app/); when set it is served at / instead of web/. */
+  appDir?: string;
+  /** The retained knowledge editor (web/), served at / and under /p/<db>/<branch>/. */
+  webDir?: string;
+  /** public_origin of the legacy backend: an HTTP(S) origin accepted besides loopback. */
+  publicOrigin?: string;
 }
 export function config(): Config {
   const actors = z
@@ -48,6 +53,25 @@ export function config(): Config {
     terminusUrl: process.env.MDC_TERMINUS_URL,
     terminusUser: process.env.MDC_TERMINUS_USER ?? "admin",
     terminusPassword: process.env.MDC_TERMINUS_PASSWORD,
-    appDir: process.env.MDC_APP_DIR ?? "app/dist",
+    appDir: process.env.MDC_APP_DIR,
+    webDir: process.env.MDC_WEB_DIR ?? "web/dist",
+    publicOrigin: publicOrigin(process.env.MDC_PUBLIC_ORIGIN),
   };
+}
+
+function publicOrigin(value?: string): string | undefined {
+  if (!value) return undefined;
+  const url = new URL(value);
+  if (
+    !["http:", "https:"].includes(url.protocol) ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  )
+    throw new Error(
+      "MDC_PUBLIC_ORIGIN must be an HTTP(S) origin without credentials, path, query or fragment",
+    );
+  return url.origin;
 }

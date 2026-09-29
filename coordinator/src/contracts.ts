@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { nodeRevision } from "./docs/model.js";
 
 const id = z.string().min(1).max(300);
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
@@ -445,8 +446,10 @@ export function bindingRejection(
     : "local_context_mismatch";
 }
 
-// Mirrors Node::revision at baseline a4d61e3: field order is the Rust struct
-// order, dependencies are sorted, and metadata is a sorted BTreeMap.
+// Mirrors Node::revision at baseline a4d61e3. Delegates to the document backend's
+// serializer: a JavaScript object reorders integer-like keys and default sorts compare
+// UTF-16 code units, while Rust's BTreeMap uses UTF-8 byte order
+// (fixture legacy_revision_key_order, checked by the Rust test as well).
 export function legacyNodeRevision(node: {
   fnode: string;
   title: string;
@@ -458,16 +461,5 @@ export function legacyNodeRevision(node: {
     metadata: Record<string, string>;
   }>;
 }): string {
-  const canonical = {
-    fnode: node.fnode,
-    title: node.title,
-    module: node.module,
-    depens: [...node.depens].sort(),
-    blocks: node.blocks.map((block) => ({
-      srctype: block.srctype,
-      content: block.content,
-      metadata: Object.fromEntries(Object.entries(block.metadata).sort()),
-    })),
-  };
-  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+  return nodeRevision(node);
 }

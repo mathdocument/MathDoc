@@ -19,6 +19,7 @@ import type {
   TitleBody,
 } from "./types";
 import { projectPath } from "./project-path";
+import { authorized, signOut } from "./auth";
 
 export function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
@@ -36,7 +37,8 @@ export class ApiError extends Error {
 }
 
 export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(path, init);
+  const resp = await fetch(path, authorized(init));
+  if (resp.status === 401) signOut();
   const text = await resp.text();
   let body: unknown = null;
   if (text) {
@@ -63,13 +65,13 @@ function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export interface ServiceStatus {
   server: { running: boolean; port: number | null; url: string | null };
-  projects: Record<string, { running: boolean; url: string | null; nodes?: number; edges?: number }>;
+  projects: Record<string, { running: boolean; url: string | null; role?: "admin" | "owner" | "editor" | "viewer"; nodes?: number; edges?: number }>;
 }
 
 export type ProjectAction = {action: "init"; name: string}
   | {action: "remove"; database: string}
   | {action: "new_branch"; project: string; name: string}
-  | {action: "start" | "stop" | "delete_branch"; project: string};
+  | {action: "delete_branch"; project: string};
 export const projectsApi = {
   list: (signal?: AbortSignal) => fetchJson<ServiceStatus>("/api/projects", {signal}),
   change: (body: ProjectAction) => fetchJson<{project?: string; database?: string; deleted?: boolean}>("/api/projects", {

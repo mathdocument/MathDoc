@@ -806,5 +806,30 @@
       ],
       "conclusion": "target"
     }
+  ],
+  "legacy_revision_key_order": [
+    {
+      "node": {
+        "fnode": "85555555-5555-4555-8555-555555555555",
+        "title": "Ordering",
+        "module": "Lib.N_85555555555545558555555555555555",
+        "depens": [],
+        "blocks": [
+          {
+            "srctype": "lean",
+            "content": "theorem t : True := trivial\n",
+            "metadata": {
+              "10": "ten",
+              "9": "nine",
+              "a,b": "comma",
+              "a": "plain",
+              "￿": "bmp",
+              "😀": "astral"
+            }
+          }
+        ]
+      },
+      "expected": "cb115ad74abccbfc396e3efef3893a0716deab83c6c683202699996ea781229f"
+    }
   ]
 }

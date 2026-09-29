@@ -1,43 +1,134 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { once } from "node:events";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve, dirname } from "node:path";
+import { basename, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { chromium, webkit } from "playwright";
 import { createServer } from "node:net";
 
+// Stage 2 of docs/coordination-migration-plan.md: the suite drives the TypeScript
+// backend (coordinator/src/main.ts) instead of the Rust mdc binary. Test data is built
+// through the HTTP API; `cli(...)` below is a thin HTTP shim for the few CLI commands the
+// tests use. Requires MDC_TERMINUS_URL/MDC_TERMINUS_PASSWORD and MDC_DATABASE_URL.
 const run = promisify(execFile);
 const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const binary = resolve(process.env.MDC_BIN ?? resolve(webRoot, "../target/debug/mdc"));
-
+const repoRoot = resolve(webRoot, "..");
 const env = { ...process.env };
-async function startServer(cwd, database) {
+const LOCAL_LEAN_REMOVED = "local Lean execution is not part of the TypeScript backend (plan §6.1, stage 3)";
+
+// One actor for the whole suite; the browser receives the same token.
+const E2E_ACTOR = "e2e";
+const E2E_TOKEN = `e2e-${randomUUID()}`;
+const TOKEN_KEY = "mdc-access-token";
+let backend;
+async function startBackend() {
+  if (backend) return backend;
   const reservation = createServer();
   await new Promise(resolve => reservation.listen(0, "127.0.0.1", resolve));
   const port = reservation.address().port;
   await new Promise(resolve => reservation.close(resolve));
-  const { stdout } = await run(binary, ["start", `${database}/main`, "--port", String(port)], {
-    cwd, env: { ...env, MDC_CACHE_DIR: resolve(cwd, "cache") }, timeout: 30000,
-  });
-  const info = JSON.parse(stdout);
-  return { ...info, url: info.url.replace(/\/$/, ""), output: () => readFileSync(info.log, "utf8").slice(-16000) };
+  const tsx = resolve(repoRoot, "node_modules/.bin/tsx");
+  const processEnv = {
+    ...env,
+    MDC_PORT: String(port),
+    MDC_HOST: "127.0.0.1",
+    MDC_ACTORS: JSON.stringify({ [E2E_ACTOR]: { token: E2E_TOKEN, admin: true } }),
+    MDC_WEB_DIR: resolve(webRoot, "dist"),
+    LEANGROUND_SERVER_URL: env.LEANGROUND_SERVER_URL ?? "http://127.0.0.1:9",
+    LEANGROUND_FACT_TOKEN: env.LEANGROUND_FACT_TOKEN ?? "unused",
+    LEANGROUND_ACTOR: env.LEANGROUND_ACTOR ?? "coordinator",
+    // Never install the LaTeX runtime implicitly during tests.
+    MDC_LATEX_PYTHON: env.MDC_LATEX_PYTHON ?? "/nonexistent/mdc-latex-runtime",
+  };
+  await run(tsx, ["coordinator/src/main.ts", "migrate"], { cwd: repoRoot, env: processEnv, timeout: 60000 });
+  const child = spawn(tsx, ["coordinator/src/main.ts", "serve"], { cwd: repoRoot, env: processEnv, stdio: ["ignore", "pipe", "pipe"] });
+  let log = "";
+  const collect = chunk => { log = (log + chunk).slice(-64000); };
+  child.stdout.on("data", collect);
+  child.stderr.on("data", collect);
+  const deadline = Date.now() + 30000;
+  while (!log.includes("MathDoc http://")) {
+    if (child.exitCode !== null || Date.now() > deadline) throw new Error(`backend did not start:\n${log}`);
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  // Shared by every test in this file: stop it when the file finishes, and never let it
+  // keep the finished test process alive.
+  child.unref();
+  child.stdout.unref?.();
+  child.stderr.unref?.();
+  process.once("exit", () => child.kill());
+  backend = { child, base: `http://127.0.0.1:${port}`, output: () => log.slice(-16000) };
+  return backend;
+}
+
+// Requests from this process to the backend carry the suite's token unless they set their own.
+const nativeFetch = globalThis.fetch;
+globalThis.fetch = (input, init = {}) => {
+  const target = String(input instanceof Request ? input.url : input);
+  if (backend && target.startsWith(backend.base)) {
+    const headers = new Headers(init.headers);
+    if (!headers.has("authorization")) headers.set("authorization", `Bearer ${E2E_TOKEN}`);
+    return nativeFetch(input, { ...init, headers });
+  }
+  return nativeFetch(input, init);
+};
+
+async function api(url, method = "GET", body, revision) {
+  const headers = { "content-type": "application/json" };
+  if (revision) headers["if-match"] = `"${revision}"`;
+  const response = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`${method} ${url}: ${response.status} ${text}`);
+  return text ? JSON.parse(text) : null;
+}
+
+/** The mdc CLI commands used by these tests, over HTTP. Output mirrors `{stdout}`. */
+function cliFor(base, database) {
+  const project = `${base}/p/${database}/main/api`;
+  const view = async ref => (await api(`${project}/node/${encodeURIComponent(ref)}/view`)).node;
+  const out = value => ({ stdout: JSON.stringify(value) });
+  return async (...args) => {
+    const [command, ...rest] = args;
+    if (command === "init") return out(await api(`${base}/api/projects`, "POST", { action: "init", name: database }));
+    if (command === "export") return out(await api(`${project}/export`));
+    if (command === "import") return out(await api(`${project}/import`, "POST", JSON.parse(await readFile(rest[0], "utf8"))));
+    if (command === "graph" && rest[0] === "check") return out(await api(`${project}/graph/check`));
+    if (command === "show") return out(await view(rest[0]));
+    if (command === "rename") { const n = await view(rest[0]); return out(await api(`${project}/node/${n.fnode}/title`, "PUT", { title: rest[1] }, n.revision)); }
+    if (command === "del") { const n = await view(rest[0]); return out(await api(`${project}/node/${n.fnode}`, "DELETE", undefined, n.revision)); }
+    if (command === "new" && rest[0] === "-t") return out(await api(`${project}/node/new`, "POST", { title: rest[1] }));
+    if (command === "dep" && rest[0] === "add" && rest[2] === "--target") {
+      const n = await view(rest[1]);
+      return out(await api(`${project}/node/${n.fnode}/dep/add`, "POST", { dep_fnode: rest[3] }, n.revision));
+    }
+    if (command === "branch" && rest[0] === "new") return out(await api(`${project}/branches`, "POST", { name: rest[1] }));
+    if (command === "project" && rest[0] === "latex" && rest[1] === "show") return out(await api(`${project}/project/latex`));
+    if (command === "project" && rest[0] === "latex" && rest[1] === "set" && rest[2] === "--preamble" && rest[4] === "--bib") {
+      // Like `mdc project latex set`: file names become the project file names.
+      const current = await api(`${project}/project/latex`);
+      return out(await api(`${project}/project/latex`, "PUT", {
+        preamble_name: basename(rest[3]), preamble: await readFile(rest[3], "utf8"),
+        bibliography_name: basename(rest[5]), bibliography: await readFile(rest[5], "utf8"),
+      }, current.revision));
+    }
+    throw new Error(`cli shim does not implement: ${args.join(" ")}`);
+  };
 }
 
 async function fixture(browser, body, extraNodes = [], expectedPageErrors = []) {
   const root = await mkdtemp(resolve(tmpdir(), "mdc-e2e-"));
-  let server;
   let context;
+  const server = await startBackend();
   const database = `mdce2e${randomUUID().replaceAll("-", "")}`;
-  const cli = (...args) => run(binary, (args[0] === "init" ? ["init", database] : [args[0], "--proj", `${database}/main`, ...args.slice(1)]), { cwd: root, env: { ...env, MDC_CACHE_DIR: resolve(root, "cache") }, timeout: 30000, maxBuffer: 16 * 1024 * 1024 });
+  const cli = cliFor(server.base, database);
+  const url = `${server.base}/p/${database}/main`;
   try {
     await cli("init");
-    server = await startServer(root, database);
     const bundle = JSON.parse((await cli("export")).stdout);
     bundle.nodes = ["Alpha", "Beta", "Gamma"].map(title => {
       const fnode = randomUUID();
@@ -49,6 +140,7 @@ async function fixture(browser, body, extraNodes = [], expectedPageErrors = []) 
     await cli("dep", "add", "Alpha", "--target", "Beta");
     await cli("graph", "check");
     context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    await context.addInitScript(([key, token]) => localStorage.setItem(key, token), [TOKEN_KEY, E2E_TOKEN]);
     await context.tracing.start({ screenshots: true, snapshots: true });
     const page = await context.newPage();
     page.setDefaultTimeout(30000);
@@ -66,9 +158,9 @@ async function fixture(browser, body, extraNodes = [], expectedPageErrors = []) 
     page.on("pageerror", (error) => errors.push((error.stack || error.message).replace(/^Unhandled Promise Rejection: /, "")));
     page.on("dialog", (dialog) => void dialog.accept());
     try {
-      await page.goto(`${server.url}/#ref=${bundle.nodes[0].fnode}`);
+      await page.goto(`${url}/#ref=${bundle.nodes[0].fnode}`);
       await title(page, "Alpha");
-      await body({ root, cli, page, url: server.url, serverOutput: server.output });
+      await body({ root, cli, page, url, serverOutput: server.output });
       await cli("graph", "check");
       assert.deepEqual(errors.filter(error => !expectedPageErrors.some(pattern => pattern.test(error))), []);
     } catch (e) {
@@ -95,24 +187,14 @@ async function fixture(browser, body, extraNodes = [], expectedPageErrors = []) 
     }
   } finally {
     await context?.close();
-    if (server) {
-      await run(binary, ["stop", `${database}/main`], {
-        cwd: root, env: { ...env, MDC_CACHE_DIR: resolve(root, "cache") }, timeout: 35000,
-      });
-      await run(binary, ["stop"], {
-        cwd: root, env: { ...env, MDC_CACHE_DIR: resolve(root, "cache") }, timeout: 35000,
-      });
-    }
-    const serverOutput = server?.output() ?? "";
     if (env.MDC_TERMINUS_PASSWORD) {
-      const response = await fetch(`${env.MDC_TERMINUS_URL ?? "http://127.0.0.1:6363"}/api/db/admin/${database}`, {
+      const response = await nativeFetch(`${env.MDC_TERMINUS_URL ?? "http://127.0.0.1:6363"}/api/db/admin/${database}`, {
         method: "DELETE",
         headers: { Authorization: `Basic ${Buffer.from(`${env.MDC_TERMINUS_USER ?? "admin"}:${env.MDC_TERMINUS_PASSWORD}`).toString("base64")}` },
       });
       assert.ok(response.ok || response.status === 404, `test database cleanup failed: ${response.status}`);
     }
     await rm(root, { recursive: true, force: true });
-    assert.doesNotMatch(serverOutput, /broken pipe|recursion limit exceeded/, "service shutdown must finish native cleanup before closing the runtime");
   }
 }
 
@@ -127,7 +209,7 @@ async function rename(page, value) {
 const beta = (page) => page.getByRole("complementary", { name: "Dependencies" })
   .getByRole("button", { name: /^Beta \(/ });
 
-await test('project directory creates, forks, starts, stops and deletes branches', {timeout: 90000}, async () => {
+await test('project directory creates, forks and deletes branches and projects', {timeout: 90000}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   try {
     await fixture(browser, async ({page, url}) => {
@@ -137,9 +219,9 @@ await test('project directory creates, forks, starts, stops and deletes branches
       const row = name => page.locator(`[data-project="${name}"]`);
       await page.goto(base);
       await page.getByRole('textbox', {name: 'Search projects and branches'}).fill(database);
-      await row(main).getByText('Running', {exact: true}).waitFor();
+      // Branches load on demand: every readable branch is listed with the caller's role.
+      await row(main).getByText('admin', {exact: true}).waitFor();
       assert.equal(await page.getByText('MAIN', {exact: true}).count(), 0);
-      assert.equal(await page.getByText('MATHEMATICAL WORKSPACE', {exact: true}).count(), 0);
       assert.match(await row(main).locator('.counts').innerText(), /3.*nodes/);
       assert.match(await row(main).locator('.counts').innerText(), /1.*edge/);
       assert.equal(await row(main).getByRole('button', {name: `Delete ${main}`, exact: true}).count(), 0);
@@ -154,23 +236,19 @@ await test('project directory creates, forks, starts, stops and deletes branches
         await page.getByRole('textbox', {name: 'Search projects and branches'}).fill(database);
       };
       await branch(main, 'draft');
-      await row(fork).getByText('Stopped', {exact: true}).waitFor();
-      assert.equal((await row(fork).locator('.counts').innerText()).trim(), '');
-      const positions = await Promise.all([main, fork].map(name => row(name).locator('.counts').boundingBox()));
-      assert.equal(positions[0].x, positions[1].x); assert.equal(positions[0].width, positions[1].width);
+      await row(fork).waitFor();
       await branch(fork, 'copy');
-      await row(fork).getByRole('button', {name: `Start ${fork}`, exact: true}).click();
-      await row(fork).getByText('Running', {exact: true}).waitFor();
-      assert.match(await row(fork).locator('.counts').innerText(), /3.*nodes/);
-      await row(fork).getByRole('button', {name: `Stop ${fork}`, exact: true}).click();
-      await row(fork).getByText('Stopped', {exact: true}).waitFor();
-      assert.equal((await row(fork).locator('.counts').innerText()).trim(), '');
+      await row(`${database}/copy`).waitFor();
+      // Opening a fork loads it; the directory then shows its counts.
+      assert.equal((await fetch(`${base}/p/${fork}/api/graph/check`)).ok, true);
+      await page.getByRole('button', {name: 'Refresh projects'}).click();
+      await page.waitForFunction(name => /3.*nodes/.test(document.querySelector(`[data-project="${name}"] .counts`)?.textContent ?? ''), fork);
       for (const theme of ['dark', 'light']) {
         if (await page.evaluate(() => document.documentElement.dataset.theme) !== theme) await page.getByRole('button', {name: 'Toggle theme'}).click();
         for (const width of [1440, 750, 420]) {
           await page.setViewportSize({width, height: 900});
           assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth || document.querySelector('.directory').scrollWidth > innerWidth), false);
-          for (const selector of ['.toggle', '.branch-actions', '.branch-actions button', '.open, .open-space']) {
+          for (const selector of ['.counts', '.branch-actions', '.branch-actions button', '.open, .open-space']) {
             const bounds = await Promise.all([main, fork].map(name => row(name).locator(selector).first().boundingBox()));
             assert.equal(bounds[0].x, bounds[1].x, `${selector} aligns at ${width}px`);
             assert.equal(bounds[0].width + (selector === '.branch-actions' ? 30 : 0), bounds[1].width);
@@ -187,24 +265,18 @@ await test('project directory creates, forks, starts, stops and deletes branches
         await page.getByLabel('Project name', {exact: true}).fill(initialized);
         await page.getByRole('dialog').getByRole('button', {name: 'Init', exact: true}).click();
         await page.getByRole('dialog').waitFor({state: 'hidden'});
-        await row(`${initialized}/main`).getByText('Stopped', {exact: true}).waitFor();
-        const deleteMain = row(`${initialized}/main`).getByRole('button', {name: `Delete ${initialized}/main`, exact: true});
-        assert.equal(await deleteMain.count(), 0);
-        await row(`${initialized}/main`).getByRole('button', {name: `Start ${initialized}/main`, exact: true}).click();
-        await row(`${initialized}/main`).getByText('Running', {exact: true}).waitFor();
-        assert.match(await row(`${initialized}/main`).locator('.counts').innerText(), /0.*nodes/);
+        await row(`${initialized}/main`).waitFor();
+        assert.equal(await row(`${initialized}/main`).getByRole('button', {name: `Delete ${initialized}/main`, exact: true}).count(), 0);
+        // Identity replaces the legacy same-origin-only guard: a token is required, a foreign
+        // Origin is refused, and removal requires the database_delete role.
         const body = JSON.stringify({action: 'remove', database: initialized});
-        for (const origin of [undefined, 'https://attacker.invalid']) {
-          const headers = {'content-type': 'application/json'};
-          if (origin) headers.origin = origin;
-          assert.equal((await fetch(`${base}/api/projects`, {method: 'POST', headers, body})).status, 403);
-        }
+        assert.equal((await nativeFetch(`${base}/api/projects`, {method: 'POST', headers: {'content-type': 'application/json'}, body})).status, 401);
+        assert.equal((await fetch(`${base}/api/projects`, {method: 'POST', headers: {'content-type': 'application/json', origin: 'https://attacker.invalid'}, body})).status, 403);
         assert.ok((await fetch(`${base}/api/projects`, {method: 'POST', headers: {'content-type': 'application/json', origin: base},
           body: JSON.stringify({action: 'new_branch', project: `${initialized}/main`, name: 'hidden'})})).ok);
         await page.getByRole('textbox', {name: 'Search projects and branches'}).fill(initialized);
-        await page.getByRole('button', {name: 'Running', exact: true}).click();
         const removeProject = page.getByRole('button', {name: `Delete project ${initialized}`, exact: true});
-        // Cancel must preserve the project; accepting covers even filtered-out branches.
+        // Cancel must preserve the project; accepting removes every branch.
         page.removeAllListeners('dialog');
         page.once('dialog', dialog => void dialog.dismiss());
         await removeProject.click();
@@ -224,13 +296,12 @@ await test('project directory creates, forks, starts, stops and deletes branches
         const inventory = await (await fetch(`${base}/api/projects`)).json();
         assert.equal(Object.keys(inventory.projects).some(name => name.startsWith(`${initialized}/`)), false);
         assert.equal(await page.getByRole('alert').filter({hasText: 'test removal failed'}).count(), 0);
-        const db = await fetch(`${env.MDC_TERMINUS_URL ?? 'http://127.0.0.1:6363'}/api/db/admin/${initialized}`, {
+        const db = await nativeFetch(`${env.MDC_TERMINUS_URL ?? 'http://127.0.0.1:6363'}/api/db/admin/${initialized}`, {
           headers: {Authorization: `Basic ${Buffer.from(`${env.MDC_TERMINUS_USER ?? 'admin'}:${env.MDC_TERMINUS_PASSWORD}`).toString('base64')}`},
         });
         assert.equal(db.status, 404);
       } finally {
-        await fetch(`${base}/api/projects`, {method: 'POST', headers: {'content-type': 'application/json', origin: base}, body: JSON.stringify({action: 'stop', project: `${initialized}/main`})});
-        const removed = await fetch(`${env.MDC_TERMINUS_URL ?? 'http://127.0.0.1:6363'}/api/db/admin/${initialized}`, {
+        const removed = await nativeFetch(`${env.MDC_TERMINUS_URL ?? 'http://127.0.0.1:6363'}/api/db/admin/${initialized}`, {
           method: 'DELETE', headers: {Authorization: `Basic ${Buffer.from(`${env.MDC_TERMINUS_USER ?? 'admin'}:${env.MDC_TERMINUS_PASSWORD}`).toString('base64')}`},
         });
         assert.ok(removed.ok || removed.status === 404);
@@ -238,7 +309,6 @@ await test('project directory creates, forks, starts, stops and deletes branches
       await page.route('**/api/projects', route => route.fulfill({json: {server: {running: true}, projects: {}}}));
       await page.goto(base);
       await page.getByRole('heading', {name: 'No projects yet'}).waitFor();
-      assert.equal(await page.getByText(/Create a project with|Open a running branch/).count(), 0);
       assert.equal(await page.getByRole('button', {name: 'Init project', exact: true}).isEnabled(), true);
     });
   } finally { await browser.close(); }
@@ -482,6 +552,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.equal(state.entries[state.index], state.fnode);
       }));
 
+    // The CLI side is the HTTP shim: two clients race opposite edges on the same revision.
     await suite.test("CLI and browser cannot concurrently introduce opposite edges", () =>
       fixture(browser, async ({ cli, page, url }) => {
         const resolveNode = async (ref) => (await (await fetch(`${url}/api/resolve?ref=${ref}`)).json()).fnode;
@@ -491,7 +562,8 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         const results = await Promise.all([
           cli("dep", "add", "Beta", "--target", "Gamma").then(() => true, () => false),
           page.evaluate(async ({ b, c, revision }) => (await fetch(`${location.pathname.replace(/\/$/, "")}/api/node/${c}/dep/add`, {
-            method: "POST", headers: { "content-type": "application/json", "if-match": `"${revision}"` },
+            method: "POST", headers: { "content-type": "application/json", "if-match": `"${revision}"`,
+              authorization: `Bearer ${localStorage.getItem("mdc-access-token")}` },
             body: JSON.stringify({ dep_fnode: b }),
           })).ok, { b, c, revision: view.node.revision }),
         ]);
@@ -502,7 +574,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.deepEqual(report.cycles, []);
         assert.equal(report.edges, 2);
       }));
-    await suite.test("project directory tracks branch services without disconnecting other Lean editors", () => {
+    await suite.test("project directory tracks branch services without disconnecting other Lean editors", { skip: LOCAL_LEAN_REMOVED }, () => {
       const node = { fnode: randomUUID(), title: "Directory proof", module: "Lib.Directory", depens: [], blocks: [{ srctype: "lean", content: "theorem directoryProof : True := by trivial\n" }] };
       return fixture(browser, async ({ root, cli, page, url }) => {
         const base = new URL(url).origin;
@@ -573,7 +645,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         } finally { if (agentRunning) await manage("stop", agent); }
       }, [node]);
     });
-    await suite.test("graph colors follow saved Lean evidence independently of node degree and Rocq", () => {
+    await suite.test("graph colors follow saved Lean evidence independently of node degree and Rocq", { skip: LOCAL_LEAN_REMOVED }, () => {
       const nodes = [
         ["Rocq only", "rocq", "Check nat."],
         ["Empty Lean", "lean", "  \n"],
@@ -620,7 +692,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         }
       }, nodes);
     });
-    await suite.test("native Lean bridge drains bidirectional backpressure and cancels a busy session", () => {
+    await suite.test("native Lean bridge drains bidirectional backpressure and cancels a busy session", { skip: LOCAL_LEAN_REMOVED }, () => {
       const node = { fnode: randomUUID(), title: "Transport", module: "Lib.Transport", depens: [], blocks: [{ srctype: "lean", content: "#check Nat\n" }] };
       return fixture(browser, async ({ cli, url }) => {
         const current = JSON.parse((await cli("show", node.fnode)).stdout);
@@ -669,7 +741,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         }
       }, [node]);
     });
-    await suite.test("native Lean editor renders goals, diagnostics and saves to the database", () => {
+    await suite.test("native Lean editor renders goals, diagnostics and saves to the database", { skip: LOCAL_LEAN_REMOVED }, () => {
       const source = "theorem demo : True ∧ True := by\n  constructor\n  · trivial\n  · trivial\n";
       // Imported modules can be nested and quoted; later nodes use the flat Lib directory.
       const a = { fnode: randomUUID(), title: "Lean Example", module: "Lib.EGA.«1-1.7.1»", depens: [], blocks: [{ srctype: "lean", content: source }, { srctype: "text", content: "A shared block header." }, { srctype: "rocq", content: "Check nat." }, { srctype: "latex", content: "A formula: $x^2$." }] };
@@ -868,7 +940,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         }
       }, [a]);
     });
-    await suite.test("Lean startup failure is reported immediately and preserves editable source", () =>
+    await suite.test("Lean startup failure is reported immediately and preserves editable source", { skip: LOCAL_LEAN_REMOVED }, () =>
       fixture(browser, async ({ cli, page, url }) => {
         const node = JSON.parse((await cli("show", "Alpha")).stdout);
         const response = await fetch(`${url}/api/node/${node.fnode}/block/lean`, {
@@ -909,7 +981,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         /^Error: Client is not running and can't be stopped\. It's current state is: starting\n/,
         /^(?:\w+: )?Pending response rejected since connection got disposed(?:\n|$)/,
       ]));
-    await suite.test("Lean cancels stale selections and recovers from preparation timeouts without losing drafts", () =>
+    await suite.test("Lean cancels stale selections and recovers from preparation timeouts without losing drafts", { skip: LOCAL_LEAN_REMOVED }, () =>
       fixture(browser, async ({ root, cli, page, url, serverOutput }) => {
         const ids = {};
         await cli("new", "-t", "Delta");
@@ -1021,7 +1093,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.ok(sent.filter(m => m.method === "textDocument/didOpen").every(m => m.params.textDocument.uri.startsWith("file:///project/")), "temporary display models must not create Lean workers");
         assert.doesNotMatch(JSON.parse((await cli("show", ids.Gamma)).stdout).blocks[0].content, /draft must survive/, "reconnection must not save drafts implicitly");
       }));
-    await suite.test("changed dependencies refresh the native worker without restarting its connection", () =>
+    await suite.test("changed dependencies refresh the native worker without restarting its connection", { skip: LOCAL_LEAN_REMOVED }, () =>
       fixture(browser, async ({ cli, page, url }) => {
         const dep = JSON.parse((await cli("new", "-t", "Lean Dependency")).stdout);
         const target = JSON.parse((await cli("new", "-t", "Lean Dependent")).stdout);
@@ -1579,7 +1651,7 @@ await test('Lean first paint waits for syntax highlighting without a server', {t
   } finally { await browser.close(); }
 });
 
-await test('Lean hover stays above the active Infoview', {timeout: 45000}, async () => {
+await test('Lean hover stays above the active Infoview', {timeout: 45000, skip: LOCAL_LEAN_REMOVED}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   const node = {fnode: randomUUID(), title: 'Hover', module: 'Lib.Hover', depens: [], blocks: [
     {srctype: 'lean', content: '/-- Documentation with enough text to extend across the narrow source pane into the active Infoview. -/\ndef hoverTargetWithALongName : Nat := 42\n#check hoverTargetWithALongName\n'},
@@ -1606,7 +1678,7 @@ await test('Lean hover stays above the active Infoview', {timeout: 45000}, async
   } finally { await browser.close(); }
 });
 
-await test('wrapped Lean sources reach the last line before and after server startup', {timeout: 60000}, async () => {
+await test('wrapped Lean sources reach the last line before and after server startup', {timeout: 60000, skip: LOCAL_LEAN_REMOVED}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   const node = {fnode: randomUUID(), title: 'Wrapped Lean', module: 'Lib.Wrapped', depens: [], blocks: [
     {srctype: 'lean', content: Array.from({length: 60}, (_, i) => `-- ${i} ${'Long wrapped Lean source. '.repeat(9)}`).join('\n') + '\n-- DOCUMENT END'},
@@ -1645,7 +1717,7 @@ await test('wrapped Lean sources reach the last line before and after server sta
   } finally { await browser.close(); }
 });
 
-await test('stopping an unfinished Lean check clears progress and Infoview connections', {timeout: 90000}, async () => {
+await test('stopping an unfinished Lean check clears progress and Infoview connections', {timeout: 90000, skip: LOCAL_LEAN_REMOVED}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   const node = {fnode: randomUUID(), title: 'Interruptible', module: 'Lib.Interruptible', depens: [], blocks: [
     {srctype: 'lean', content: '#eval IO.sleep 60000\nexample : True := by trivial\n'},
@@ -1686,7 +1758,7 @@ await test('stopping an unfinished Lean check clears progress and Infoview conne
   } finally { await browser.close(); }
 });
 
-await test('Lean session state survives navigation through nodes without Lean', {timeout: 60000}, async () => {
+await test('Lean session state survives navigation through nodes without Lean', {timeout: 60000, skip: LOCAL_LEAN_REMOVED}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   const nodes = ['First', 'Second'].map(title => ({fnode: randomUUID(), title, module: `Lib.${title}`, depens: [], blocks: [
     {srctype: 'lean', content: 'example : True := by trivial\n'},
@@ -1734,7 +1806,7 @@ await test('Lean session state survives navigation through nodes without Lean', 
   } finally { await browser.close(); }
 });
 
-await test('Lean browsing stays offline until explicitly started and preserves static drafts', {timeout: 90000}, async () => {
+await test('Lean browsing stays offline until explicitly started and preserves static drafts', {timeout: 90000, skip: LOCAL_LEAN_REMOVED}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   const nodes = ['First', 'Second'].map((title, i) => ({fnode: randomUUID(), title, module: `Lib.Offline${i}`, depens: [], blocks: [
     {srctype: 'lean', content: `-- A highlighted comment\ntheorem offline${i} : True := by trivial\n`},
@@ -1903,7 +1975,7 @@ await test('Lean browsing stays offline until explicitly started and preserves s
   } finally { await browser.close(); }
 });
 
-await test('collapsed Lean editors recheck without recreating the browser viewport', {timeout: 60000}, async () => {
+await test('collapsed Lean editors recheck without recreating the browser viewport', {timeout: 60000, skip: LOCAL_LEAN_REMOVED}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   const node = {fnode: randomUUID(), title: 'Collapsed reload', module: 'Lib.Collapsed', depens: [], blocks: [
     {srctype: 'lean', content: 'example : True := by trivial\n'},
@@ -1928,7 +2000,7 @@ await test('collapsed Lean editors recheck without recreating the browser viewpo
   } finally { await browser.close(); }
 });
 
-await test('editors and previews pass scrolling to the node pane at both boundaries', {timeout: 180000}, async () => {
+await test('editors and previews pass scrolling to the node pane at both boundaries', {timeout: 180000, skip: LOCAL_LEAN_REMOVED}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   const lines = Array.from({length: 100}, (_, i) => `Line ${i + 1}.`);
   const node = {fnode: randomUUID(), title: 'Scrolling', module: 'Lib.Scrolling', depens: [], blocks: [
