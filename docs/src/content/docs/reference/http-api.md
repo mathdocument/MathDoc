@@ -21,11 +21,11 @@ UUIDs; CLI references are resolved by exact name or UUID first.
 | `GET /graph/roots` | `graph roots` | Root summaries with depth and component size. |
 | `GET /graph/full` | `graph full` | Node summaries with `lean` status (`unverified`, `sorry`, `conditional`, `verified`) and index-pair edges. |
 | `GET /search?q=TEXT&n=N` | `search TEXT -n N` | Title/UUID matches; default/cap 200. |
-| `GET /resolve?ref=NAME_OR_UUID` | Used by node commands | `{fnode, title}`. |
+| `GET /resolve?ref=NAME_OR_UUID` | Used by node commands | `{fnode, name}`. |
 | `GET /node/ID/view` | `show` and `dep` reads | `{node, referrers, children}`; all include `formalization: {lean, rocq}` status. CLI `show` returns `node`. |
-| `POST /node/new` | `new -t TITLE [--parent REF]` | Body `{title, parent_fnode?}`; optionally creates an edge atomically. |
+| `POST /node/new` | `new NAME [--parent REF]` | Body `{name, parent_fnode?}`; optionally creates an edge atomically. |
 | `DELETE /node/ID` | `del SOURCE` | Atomically delete the node and detach all referrers; `{fnode, deleted: true, removed_edges}`. |
-| `PUT /node/ID/title` | `rename` | Body `{title}`; updated node. |
+| `PUT /node/ID/name` | `rename` | Body `{name}`; updated node. |
 | `PUT /node/ID/block/TYPE` | `edit --type TYPE` | Body `{content}`; updated node. |
 | `PUT /node/ID/blocks` | `edit --json` | Nonempty `{TYPE: source_string, ...}`; atomically update specified blocks and return the updated node. Omitted blocks and existing metadata are preserved. |
 | `DELETE /node/ID/block/TYPE` | `edit --type TYPE --delete` | Delete text/lean/rocq/latex block; updated node. |

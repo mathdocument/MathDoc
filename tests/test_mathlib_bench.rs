@@ -49,7 +49,7 @@ async fn mathlib_snapshot_and_editor_preparation() {
         let id = snapshot
             .nodes
             .values()
-            .find(|n| n.module == module)
+            .find(|n| n.name == module)
             .unwrap()
             .fnode
             .clone();
@@ -81,7 +81,7 @@ async fn mathlib_snapshot_and_editor_preparation() {
     let mut node = snapshot
         .nodes
         .values()
-        .find(|n| n.module == "Mathlib.Init")
+        .find(|n| n.name == "Mathlib.Init")
         .unwrap()
         .as_ref()
         .clone();
@@ -137,7 +137,7 @@ async fn mathlib_lake_and_mdc_incremental_builds() {
     let mut node = snapshot
         .nodes
         .values()
-        .find(|n| n.module == module)
+        .find(|n| n.name == module)
         .unwrap()
         .as_ref()
         .clone();
@@ -149,7 +149,7 @@ async fn mathlib_lake_and_mdc_incremental_builds() {
         prepare_project(directory, &snapshot.project).await.unwrap();
         // Keep the original complete source tree on both sides.
         for node in snapshot.nodes.values() {
-            let path = module_path(directory, &node.module).unwrap();
+            let path = module_path(directory, &node.name).unwrap();
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, node.source("lean").unwrap()).unwrap();
         }
@@ -166,7 +166,7 @@ async fn mathlib_lake_and_mdc_incremental_builds() {
                 &mut snapshot
                     .nodes
                     .values()
-                    .find(|n| n.module == "Mathlib.Init")
+                    .find(|n| n.name == "Mathlib.Init")
                     .unwrap()
                     .as_ref()
                     .clone()
@@ -179,7 +179,7 @@ async fn mathlib_lake_and_mdc_incremental_builds() {
                 .content
                 .push_str("\n-- incremental benchmark edit\n");
             std::fs::write(
-                module_path(&native, &changed.module).unwrap(),
+                module_path(&native, &changed.name).unwrap(),
                 changed.source("lean").unwrap(),
             )
             .unwrap();
@@ -216,7 +216,7 @@ async fn mathlib_certificate_recovery() {
     let root = snapshot
         .nodes
         .values()
-        .find(|n| n.module == "Mathlib")
+        .find(|n| n.name == "Mathlib")
         .unwrap();
     let input = Input::capture(&snapshot, &root.fnode).unwrap();
     let cache = tempfile::tempdir().unwrap();
@@ -249,7 +249,7 @@ async fn mathlib_certificate_recovery() {
     let imports = root
         .depens
         .iter()
-        .map(|id| json!({"module":{"name":snapshot.nodes[id].module}}))
+        .map(|id| json!({"module":{"name":snapshot.nodes[id].name}}))
         .collect::<Vec<_>>();
     for phase in ["cold", "warm"] {
         let started = Instant::now();

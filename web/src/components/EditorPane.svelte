@@ -8,6 +8,7 @@
   import FormalStatus from "./FormalStatus.svelte";
   import AddBlockControl from "./AddBlockControl.svelte";
   import LeanBlock from "./LeanBlock.svelte";
+  import { nodeNameError } from "../lib/node-name";
   import { api } from "../lib/api";
   import {
     removeDraft,
@@ -102,7 +103,7 @@
 
   $effect(() => {
     const isDirty = editingTitle && load.kind === "ready" &&
-      titleDraft !== load.node.title;
+      titleDraft !== load.node.name;
     setDraftDirty(titleDraftId, isDirty);
   });
 
@@ -119,18 +120,19 @@
 
   function startEditTitle() {
     if (load.kind !== "ready") return;
-    titleDraft = load.node.title;
+    titleDraft = load.node.name;
     editingTitle = true;
   }
 
   async function saveTitle() {
     if (load.kind !== "ready" || titleSaving) return;
-    const newTitle = titleDraft.trim();
-    if (!newTitle) {
-      titleError = "title must be non-empty";
+    const newTitle = titleDraft;
+    const invalid = nodeNameError(newTitle);
+    if (invalid) {
+      titleError = invalid;
       return;
     }
-    if (newTitle === load.node.title) {
+    if (newTitle === load.node.name) {
       editingTitle = false;
       titleError = null;
       return;
@@ -143,7 +145,7 @@
     const clearMutation = trackMutation();
     titleError = null;
     try {
-      const updated = await api.putTitle(targetFnode, newTitle, load.node.revision);
+      const updated = await api.putName(targetFnode, newTitle, load.node.revision);
       if (!isCurrent() || load.kind !== "ready") return;
       onRefresh?.(updated, true);
       editingTitle = false;
@@ -176,7 +178,8 @@
         {#if editingTitle}
           <input
             class="title-input"
-            aria-label="Node title"
+            aria-label="Node name"
+            aria-invalid={!!nodeNameError(titleDraft)}
             bind:this={titleInputEl}
             bind:value={titleDraft}
             onkeydown={(e) => {
@@ -186,16 +189,16 @@
             }}
             disabled={titleSaving}
           />
-          <button class="title-save" onclick={saveTitle} disabled={titleSaving} title="Save title" aria-label="Save title">
+          <button class="title-save" onclick={saveTitle} disabled={titleSaving || !!nodeNameError(titleDraft)} title="Save name" aria-label="Save name">
             <Check size={15} strokeWidth={2} />
           </button>
           <button class="title-cancel" onclick={cancelEditTitle} disabled={titleSaving} title="Cancel rename" aria-label="Cancel rename">
             <X size={15} strokeWidth={2} />
           </button>
-          {#if titleError}<span class="title-error">{titleError}</span>{/if}
+          {#if titleError || nodeNameError(titleDraft)}<span class="title-error">{titleError || nodeNameError(titleDraft)}</span>{/if}
         {:else}
           <h1 class="title">
-            <button onclick={startEditTitle} title="Click to rename">{node.title}</button>
+            <button onclick={startEditTitle} title="Click to rename">{node.name}</button>
           </h1>
         {/if}
       </div>
@@ -231,7 +234,7 @@
         {@const block = node?.blocks.find(block => block.srctype === srctype)}
         {#if srctype === "lean"}
           <!-- Keep Lean mounted across node changes to preserve its editor runtime. -->
-          <LeanBlock fnode={node?.fnode ?? ""} revision={node?.revision ?? ""} module={node?.module} {block} {theme} {active} {selection}
+          <LeanBlock fnode={node?.fnode ?? ""} revision={node?.revision ?? ""} module={node?.name} {block} {theme} {active} {selection}
             onDeleted={(updated) => applyBlockUpdate(updated, true)} onSaved={(updated) => applyBlockUpdate(updated, true)} onReady={() => reportBlockReady("lean")} />
         {:else if node && block && BlockEditorComponent && !editorLoadError}
           {#key `${node.fnode}:${srctype}`}

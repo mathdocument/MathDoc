@@ -39,7 +39,7 @@ def main():
     for path in paths:
         raw = (root / path).read_bytes()
         nodes.append({
-            "fnode": identities[modules[path]], "title": modules[path], "module": modules[path],
+            "fnode": identities[modules[path]], "name": modules[path],
             "depens": sorted({identities[m] for m in imports[path] if m in identities}),
             "blocks": [{"srctype": "lean", "content": raw.decode(), "metadata": {
                 "repository": origin, "commit": revision, "path": path,
@@ -60,7 +60,7 @@ def main():
             excluded.append(path)
     project = {
         "toolchain": toolchain, "lakefile": (root / "lakefile.lean").read_bytes().decode(),
-        "lakefile_name": "lakefile.lean", "module_root": "Mathlib",
+        "lakefile_name": "lakefile.lean",
         "manifest": (root / "lake-manifest.json").read_bytes().decode(), "files": support,
     }
     bundle = {"nodes": nodes, "project": project}

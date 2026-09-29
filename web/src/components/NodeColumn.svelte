@@ -26,7 +26,7 @@
   }: Props = $props();
 
   function ariaLabel(n: NodePreview): string {
-    return `${n.title} (${shortFnode(n.fnode)})`;
+    return `${n.name} (${shortFnode(n.fnode)})`;
   }
 
   let direction = $derived(accent === "up" ? "Upstream" : "Downstream");
@@ -34,7 +34,7 @@
   let query = $state("");
   let needle = $derived(query.trim().toLowerCase());
   let matches = $derived(needle ? items.filter(item =>
-    item.title.toLowerCase().includes(needle) || item.fnode.toLowerCase().includes(needle)) : items);
+    item.name.toLowerCase().includes(needle) || item.fnode.toLowerCase().includes(needle)) : items);
   // Only visible cards are measured. Unvisited rows use an estimate, never a
   // fixed CSS height, so both small and large lists keep natural title wrapping.
   const ESTIMATED_HEIGHT = 58;
@@ -165,7 +165,7 @@
   <label class="filter">
     <Search size={13} strokeWidth={1.8} aria-hidden="true" />
     <input type="search" bind:value={query} aria-label={`Filter ${title.toLowerCase()}`}
-      placeholder="Filter by title or fnode..." spellcheck="false" />
+      placeholder="Filter by name or UUID..." spellcheck="false" />
   </label>
   <ul class="cards" class:virtual bind:this={list} bind:clientHeight={height} bind:clientWidth={width}
     onscroll={() => scrollTop = list.scrollTop}>
@@ -183,7 +183,7 @@
           onclick={() => onSelect(item.fnode)}
           onkeydown={(event) => moveFocus(event, start + i)}
         >
-          <span class="title">{item.title}</span>
+          <span class="title">{item.name}</span>
           <span class="card-meta">
             <span class="fnode">{shortFnode(item.fnode)}</span>
             <span class="depth" title={`depth ${item.depth}`}>d{item.depth}</span>

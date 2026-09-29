@@ -176,7 +176,7 @@ impl Observer {
                     .filter(|_| {
                         self.prepared.get(uri).is_some_and(|i| {
                             p["module"]["name"].as_str()
-                                == Some(i.chain.last().unwrap().0.module.as_str())
+                                == Some(i.chain.last().unwrap().0.name.as_str())
                         })
                     })
                     .map(|doc| Pending::Imports(uri.into(), doc.version))
@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn evidence_requires_native_completion_for_the_exact_saved_document() {
-        let mut node = Node::new("Observed proof".into()).unwrap();
+        let mut node = Node::new("Observed.proof".into()).unwrap();
         node.blocks.push(Block {
             srctype: "lean".into(),
             content: "-- α😀\ntheorem a : True := by trivial".into(),
@@ -289,7 +289,7 @@ mod tests {
             project: LeanProject::default().into(),
             project_key: LeanProject::default().key(),
             modules: [(
-                crate::store::module_file(&node.module, "lean").unwrap(),
+                crate::store::module_file(&node.name, "lean").unwrap(),
                 node.fnode.clone(),
             )]
             .into_iter()
@@ -329,7 +329,7 @@ mod tests {
         observer.server(r#"{"id":1,"result":{}}"#).unwrap();
         client(
             &mut observer,
-            json!({"id":2,"method":"$/lean/moduleHierarchy/imports","params":{"module":{"uri":uri,"name":node.module}}}),
+            json!({"id":2,"method":"$/lean/moduleHierarchy/imports","params":{"module":{"uri":uri,"name":node.name}}}),
         );
         observer.server(r#"{"id":2,"result":[]}"#).unwrap();
         assert!(observer.evidence(uri, &input, 1).is_ok());
@@ -367,7 +367,7 @@ mod tests {
         observer.server(r#"{"id":4,"result":{}}"#).unwrap();
         client(
             &mut observer,
-            json!({"id":5,"method":"$/lean/moduleHierarchy/imports","params":{"module":{"uri":uri,"name":node.module}}}),
+            json!({"id":5,"method":"$/lean/moduleHierarchy/imports","params":{"module":{"uri":uri,"name":node.name}}}),
         );
         observer.server(r#"{"id":5,"result":[]}"#).unwrap();
         assert!(observer.evidence(uri, &input, 2).is_err());

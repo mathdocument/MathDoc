@@ -6,8 +6,8 @@ All commands require `-p/--proj DATABASE/BRANCH`. References are exact node name
 or full UUIDs; use UUIDs when names are ambiguous.
 
 ```sh
-mdc dep add 'Theorem' -t 'Lemma' -p myproject/main --revision NODE_REV
-mdc dep rm 'Theorem' -t 'Lemma' 'Another lemma' -p myproject/main --revision NODE_REV
+mdc dep add 'Theorem' 'Lemma' -p myproject/main --revision NODE_REV
+mdc dep rm 'Theorem' 'Lemma' 'Another lemma' -p myproject/main --revision NODE_REV
 mdc dep show 'Theorem' -d 1 -p myproject/main
 mdc dep refs 'Lemma' -d -1 -p myproject/main
 mdc dep leaf 'Theorem' -p myproject/main
@@ -25,13 +25,13 @@ Results exclude the source node, deduplicate reachable nodes and report BFS
 distance in `depth`. `leaf` follows all dependencies and returns reachable nodes
 with no outgoing edges, also excluding the source itself.
 
-`candidates SOURCE [QUERY]` searches titles and UUIDs case-insensitively. It excludes
+`candidates SOURCE [QUERY]` searches names and UUIDs case-insensitively. It excludes
 the source and its existing direct dependencies, and returns `{nodes, empty}`.
 `-n/--max-results` is 0–200, default 200; the query defaults to empty. Candidates
 are suggestions, not proof that adding the edge is acyclic. The write validates
 cycles and other graph constraints before committing.
 
-`mdc new -t TITLE --parent SOURCE` creates a node and its parent edge atomically.
+`mdc new NAME --parent SOURCE` creates a node and its parent edge atomically.
 For `new --parent`, `dep add` and `dep rm`, `--revision` refers to the parent/source
 revision from `show`. Without it the CLI reads a current revision before writing.
 Lean imports remain author-written and must match declared dependencies for

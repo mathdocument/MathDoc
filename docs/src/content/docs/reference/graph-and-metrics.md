@@ -10,7 +10,7 @@ mdc graph full -p myproject/main
 mdc metric ior 'Theorem' -p myproject/main
 ```
 
-`search QUERY` matches titles and UUIDs case-insensitively. It returns node
+`search QUERY` matches names and UUIDs case-insensitively. It returns node
 summaries, with `-n/--max-results` in 0–200 (default 200). It does not search block
 contents or fuzzy-match names, and it does not paginate beyond that limit.
 

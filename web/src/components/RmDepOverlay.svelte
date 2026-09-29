@@ -24,7 +24,7 @@
   let page = $state(0);
   const PAGE_SIZE = 50;
   let matches = $derived(needle ? children.filter(child =>
-    `${child.title} ${child.fnode}`.toLowerCase().includes(needle)) : children);
+    `${child.name} ${child.fnode}`.toLowerCase().includes(needle)) : children);
   let pages = $derived(Math.max(1, Math.ceil(matches.length / PAGE_SIZE)));
   let visible = $derived(matches.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE));
   let list = $state<HTMLUListElement>();
@@ -127,7 +127,7 @@
       <div class="modal-search-field">
         <Search size={18} strokeWidth={1.8} />
         <input type="search" bind:value={query} oninput={() => changePage(0)}
-          aria-label="Filter dependencies" placeholder="Filter by title or fnode..." disabled={saving} />
+          aria-label="Filter dependencies" placeholder="Filter by name or UUID..." disabled={saving} />
       </div>
       <ul class="list modal-list modal-results" bind:this={list}>
         {#each visible as c, i (c.fnode)}
@@ -143,7 +143,7 @@
               <span class="check">{selection.has(c.fnode) ? "✓" : " "}</span>
               <span class="depth">[{c.depth}]</span>
               <span class="fnode">{shortFnode(c.fnode)}</span>
-              <span class="title">{c.title}</span>
+              <span class="title">{c.name}</span>
             </button>
           </li>
         {:else}

@@ -45,7 +45,7 @@ enum Commands {
         #[command(subcommand)]
         command: Cache,
     },
-    /// Search branch nodes by title or UUID.
+    /// Search branch nodes by name or UUID.
     Search {
         query: String,
         /// Maximum number of results (0–200).
@@ -75,8 +75,7 @@ enum Commands {
     },
     /// Create a node in the database.
     New {
-        #[arg(short, long)]
-        title: String,
+        name: String,
         /// Atomically add the new node as a dependency of this parent.
         #[arg(long)]
         parent: Option<String>,
@@ -117,7 +116,7 @@ enum Commands {
     /// Rename a node using an optimistic revision guard.
     Rename {
         source: String,
-        title: String,
+        name: String,
         /// Require the node revision returned by show.
         #[arg(long)]
         revision: Option<String>,
@@ -564,7 +563,7 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
             command: Branch::Del,
         } => unreachable!(),
         Commands::New {
-            title,
+            name,
             parent,
             revision,
         } => {
@@ -572,7 +571,7 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
                 Some(reference) => Some(api.node(&reference).await?),
                 None => None,
             };
-            let mut body = json!({"title":title});
+            let mut body = json!({"name":name});
             if let Some(parent) = &parent {
                 body["parent_fnode"] = parent["fnode"].clone();
             }
@@ -650,15 +649,15 @@ async fn dispatch(cli: Cli, project: Option<String>) -> Result<i32> {
         }
         Commands::Rename {
             source,
-            title,
+            name,
             revision,
         } => {
             let n = api.node(&source).await?;
             api.request(
                 Method::PUT,
-                &format!("/node/{}/title", n["fnode"].as_str().unwrap()),
+                &format!("/node/{}/name", n["fnode"].as_str().unwrap()),
                 &[],
-                Some(json!({"title":title})),
+                Some(json!({"name":name})),
                 revision.as_deref().or(n["revision"].as_str()),
             )
             .await?

@@ -81,7 +81,16 @@ operations; ordinary commands never scan workspace files.
 
 ## Node references
 
-A node reference is its exact display name or complete UUID. A duplicate display
-name is ambiguous and requires a UUID. Paths, filenames and UUID prefixes are
-not references. Each node also has a stable Lean module identity such as
-`Lib.N_<uuid_without_hyphens>`; renaming the display title preserves that module.
+A node reference is its exact unique `name` or complete `fnode` UUID. The name is
+also its Lean module: `MX.Dot32.Exact` maps to `MX/Dot32/Exact.lean`, without an
+added prefix. Names consist of dot-separated identifiers: each starts with a
+letter or `_`, followed by letters, digits, `_` or `'`. Empty segments, a segment
+equal to `_`, spaces, quoted identifiers and the reserved `lakefile` root are
+rejected. Names that collide ignoring case are also rejected to protect source
+files on case-insensitive systems. Paths and UUID prefixes are not references.
+
+`mdc new MX.Dot32.Exact` allocates the stable UUID. `mdc rename MX.Dot32.Exact
+MX.Dot32.Proof` changes the name and module path together, atomically updates
+managed Lean imports, and invalidates affected Lean evidence. UUIDs and edges
+stay unchanged. There is no separate display title or stored module field.
+Existing-project migration is not included in this naming change.

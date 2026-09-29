@@ -699,7 +699,7 @@ def handle(request):
         return {'citations': bibliography(project['bibliography']), 'commands': sorted(set(parsed.commands + ['frac', 'sqrt', 'sum', 'prod', 'int', 'left', 'right', 'mathbb', 'mathcal', 'mathrm', 'mathbf', 'operatorname', 'begin', 'end', 'section', 'subsection', 'label', 'ref', 'cref', 'nameref', 'cite', 'textbf', 'emph', 'item'])), 'environments': sorted(set(parsed.environments + ['itemize', 'enumerate', 'description', 'equation', 'align', 'gather', 'proof'])), 'diagnostics': parsed.diagnostics}
     target = request['target']
     dependencies = request['dependencies']
-    imports = [{'fnode': n['fnode'], 'title': n['title'], 'prefix': n['fnode'] + '::'} for n in dependencies]
+    imports = [{'fnode': n['fnode'], 'title': n['name'], 'prefix': n['fnode'] + '::'} for n in dependencies]
     refs = []
     diagnostics = []
     for node in [target] + dependencies:
@@ -708,13 +708,13 @@ def handle(request):
             parsed = parse(preamble, node['source'])
         except Exception as error:
             if node['fnode'] == target['fnode'] and request['kind'] != 'context': raise
-            diagnostics.append(f'Node {node["title"]}: {error}')
+            diagnostics.append(f'Node {node["name"]}: {error}')
             continue
         if node['fnode'] != target['fnode'] or request['kind'] == 'context':
-            diagnostics.extend(f'Node {node["title"]}: {message}' for message in parsed.diagnostics)
+            diagnostics.extend(f'Node {node["name"]}: {message}' for message in parsed.diagnostics)
         for label in parsed.labels:
             key = label['label'] if node['fnode'] == target['fnode'] else node['fnode'] + '::' + label['label']
-            refs.append({**label, 'key': key, 'fnode': node['fnode'], 'title': node['title']})
+            refs.append({**label, 'key': key, 'fnode': node['fnode'], 'title': node['name']})
     if request['kind'] == 'context':
         return {'imports': imports, 'references': refs, 'diagnostics': diagnostics}
     current = parse(preamble, target['source'])

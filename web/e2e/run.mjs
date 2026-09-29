@@ -48,7 +48,7 @@ async function fixture(browser, body, extraNodes = [], expectedPageErrors = [], 
     const bundle = JSON.parse((await cli("export")).stdout);
     bundle.nodes = ["Alpha", "Beta", "Gamma"].map(title => {
       const fnode = randomUUID();
-      return { fnode, title, module: `Lib.N_${fnode.replaceAll("-", "")}`, depens: [], blocks: [] };
+      return { fnode, name: title, depens: [], blocks: [] };
     }).concat(extraNodes);
     const input = resolve(root, "graph.json");
     await writeFile(input, JSON.stringify(bundle));
@@ -137,10 +137,40 @@ async function leanReply(socket, method) {
 }
 async function rename(page, value) {
   await center(page).getByTitle("Click to rename").click();
-  await page.getByRole("textbox", { name: "Node title" }).fill(value);
+  await page.getByRole("textbox", { name: "Node name" }).fill(value);
 }
 const beta = (page) => page.getByRole("complementary", { name: "Dependencies" })
   .getByRole("button", { name: /^Beta \(/ });
+
+await test('node names validate creation, collisions and renames in the browser', {timeout: 60000}, async () => {
+  const browser = await launchBrowser();
+  try {
+    await fixture(browser, async ({page, cli}) => {
+      const original = JSON.parse((await cli('show', 'Alpha')).stdout);
+      await rename(page, 'A..X');
+      assert.ok(await page.getByRole('button', {name: 'Save name', exact: true}).isDisabled());
+      await page.getByRole('textbox', {name: 'Node name'}).fill('beta');
+      await page.getByRole('button', {name: 'Save name', exact: true}).click();
+      await page.getByText(/node name already exists/).waitFor();
+      await page.getByRole('textbox', {name: 'Node name'}).fill('A.X');
+      await page.getByRole('button', {name: 'Save name', exact: true}).click();
+      await title(page, 'A.X');
+      assert.equal(JSON.parse((await cli('show', 'A.X')).stdout).fnode, original.fnode);
+      await page.locator('.bar-end').getByRole('button', {name: 'Create node', exact: true}).click();
+      const dialog = page.getByRole('dialog', {name: 'new node', exact: true});
+      const input = dialog.getByPlaceholder('MX.Dot32.Exact');
+      const create = dialog.getByRole('button', {name: 'Create node', exact: true});
+      await input.fill('Invalid name');
+      assert.ok(await create.isDisabled());
+      await input.fill('A.X');
+      await create.click();
+      await dialog.getByText(/node name already exists/).waitFor();
+      await input.fill('C.X');
+      await create.click();
+      await title(page, 'C.X');
+    });
+  } finally { await browser.close(); }
+});
 
 await test('project directory creates, forks, starts, stops and deletes branches', {timeout: 90000}, async () => {
   const browser = await launchBrowser();
@@ -261,7 +291,7 @@ await test('project directory creates, forks, starts, stops and deletes branches
 
 await test("large relation lists filter and retain natural card heights", { timeout: 90000 }, async () => {
   const browser = await launchBrowser();
-  const node = (title, fnode = randomUUID(), depens = []) => ({ fnode, title, module: `Lib.N_${fnode.replaceAll("-", "")}`, depens, blocks: [] });
+  const node = (title, fnode = randomUUID(), depens = []) => ({ fnode, name: title.replaceAll(" ", ".").replace(/\.(?=\d)/g, ".N"), depens, blocks: [] });
   const hub = node("Shared foundation");
   const leaves = Array.from({length: 8500}, (_, i) => node(
     `Entry ${String(i).padStart(5, "0")}${i % 3 === 0 ? " with a deliberately long mathematical title that wraps across two lines" : ""}`,
@@ -271,7 +301,7 @@ await test("large relation lists filter and retain natural card heights", { time
     await fixture(browser, async ({page, url}) => {
       const started = performance.now();
       await page.goto(`${url}/?relations#ref=${root.fnode}`);
-      await title(page, root.title);
+      await title(page, root.name);
       const column = page.getByRole("complementary", {name: "Dependencies", exact: true});
       const cards = column.locator("button.card");
       const card = (id) => column.locator(`button.card[data-fnode="${id}"]`);
@@ -282,7 +312,7 @@ await test("large relation lists filter and retain natural card heights", { time
       const longHeight = await measure(card(leaves[0].fnode));
       assert.ok(longHeight > shortHeight + 10, `${longHeight} vs ${shortHeight}: short titles do not reserve an empty second line`);
       const filter = column.getByRole("searchbox", {name: "Filter dependencies"});
-      await filter.fill("ENTRY 00001");
+      await filter.fill("ENTRY.N00001");
       await page.waitForFunction(() => document.querySelector('[aria-label="Dependencies"] .count')?.textContent === "1/8500");
       assert.equal(await cards.count(), 1);
       assert.ok(Math.abs(await measure(card(leaves[1].fnode)) - shortHeight) < 0.5, "small and virtual lists share the same card height");
@@ -317,13 +347,13 @@ await test("large relation lists filter and retain natural card heights", { time
       await page.screenshot({path: resolve(tmpdir(), "mdc-large-node-lists.png")});
       console.log("Large-list rendering, filtering, scrolling and view-switch checks (ms):", Math.round(performance.now() - started));
       await card(leaves[1].fnode).click();
-      await title(page, leaves[1].title);
+      await title(page, leaves[1].name);
       assert.equal(await filter.inputValue(), "", "filters reset on node navigation");
-      await column.getByRole("button", {name: /^Shared foundation /}).click();
-      await title(page, hub.title);
+      await column.getByRole("button", {name: /^Shared.foundation /}).click();
+      await title(page, hub.name);
       const refs = page.getByRole("complementary", {name: "Referrers", exact: true});
       assert.ok(await refs.locator("button.card").count() < 80);
-      await refs.getByRole("searchbox", {name: "Filter referrers"}).fill("ENTRY 08499");
+      await refs.getByRole("searchbox", {name: "Filter referrers"}).fill("ENTRY.N08499");
       await refs.locator(`button.card[data-fnode="${leaves.at(-1).fnode}"]`).waitFor();
       assert.equal(await refs.locator("button.card").count(), 1);
     }, [hub, root, ...leaves]);
@@ -383,8 +413,8 @@ await test('node operation dialogs share layout, focus and Escape handling', {ti
       await create.locator('input').press('Escape');
       await create.waitFor({state: 'hidden'});
       const add = await open('Add dependency', 'add dependency');
-      await add.locator('input').fill('New dependency draft');
-      await add.getByRole('button', {name: 'Create new: New dependency draft'}).click();
+      await add.locator('input').fill('New.Dependency.Draft');
+      await add.getByRole('button', {name: 'Create new: New.Dependency.Draft'}).click();
       page.once('dialog', dialog => void dialog.dismiss());
       await add.locator('input').press('Escape');
       assert.equal(await add.getByRole('button', {name: 'create & add'}).isVisible(), true);
@@ -424,12 +454,12 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await cli("dep", "add", "Gamma", "--target", "Beta");
         await beta(page).click();
         await title(page, "Beta");
-        await cli("rename", "Beta", "Renamed Beta");
+        await cli("rename", "Beta", "Renamed.Beta");
         await toolbar.getByRole("button", { name: "Delete node", exact: true }).click();
         await page.getByText("node changed; reload and retry", { exact: true }).waitFor();
         assert.equal(JSON.parse((await cli("show", "Alpha")).stdout).depens.length, 1);
         await toolbar.getByRole("button", { name: "Refresh database view", exact: true }).click();
-        await title(page, "Renamed Beta");
+        await title(page, "Renamed.Beta");
         await toolbar.getByRole("button", { name: "Delete node", exact: true }).click();
         await page.waitForFunction(() => document.querySelector(".graph-stats")?.textContent.includes("2 nodes · 0 edges"));
         assert.deepEqual(JSON.parse((await cli("show", "Alpha")).stdout).depens, []);
@@ -443,21 +473,21 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.equal(await toolbar.getByRole("button", { name: "Delete node", exact: true }).isDisabled(), true);
         await toolbar.getByRole("button", { name: "Create node", exact: true }).click();
         const create = page.getByRole("dialog", { name: "new node", exact: true });
-        await create.getByPlaceholder("New Lemma").fill("Recreated");
+        await create.getByPlaceholder("MX.Dot32.Exact").fill("Recreated");
         await create.getByRole("button", { name: "Create node", exact: true }).click();
         await title(page, "Recreated");
       }));
 
     await suite.test("external edits reject a stale save and preserve the browser draft", () =>
       fixture(browser, async ({ cli, page }) => {
-        await rename(page, "Browser Alpha");
-        await cli("rename", "Alpha", "External Alpha");
-        const response = page.waitForResponse((response) => response.url().endsWith("/title") && response.request().method() === "PUT");
-        await page.getByRole("button", { name: "Save title", exact: true }).click();
+        await rename(page, "Browser.Alpha");
+        await cli("rename", "Alpha", "External.Alpha");
+        const response = page.waitForResponse((response) => response.url().endsWith("/name") && response.request().method() === "PUT");
+        await page.getByRole("button", { name: "Save name", exact: true }).click();
         assert.equal((await response).status(), 412);
         await page.getByText("node changed; reload and retry", { exact: true }).waitFor();
-        assert.equal(await page.getByRole("textbox", { name: "Node title" }).inputValue(), "Browser Alpha");
-        assert.equal(JSON.parse((await cli("show", "External Alpha")).stdout).title, "External Alpha");
+        assert.equal(await page.getByRole("textbox", { name: "Node name" }).inputValue(), "Browser.Alpha");
+        assert.equal(JSON.parse((await cli("show", "External.Alpha")).stdout).name, "External.Alpha");
       }));
 
     await suite.test("navigation waits for an in-flight save before switching nodes", () =>
@@ -466,21 +496,21 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         let entered;
         const gate = new Promise((resolveGate) => { release = resolveGate; });
         const started = new Promise((resolveStarted) => { entered = resolveStarted; });
-        await page.route("**/api/node/*/title", async (route) => {
+        await page.route("**/api/node/*/name", async (route) => {
           entered();
           await gate;
           await route.continue(); // Delay delivery; the real server still performs the mutation.
         });
-        await rename(page, "Saved Alpha");
-        await page.getByRole("button", { name: "Save title", exact: true }).click();
+        await rename(page, "Saved.Alpha");
+        await page.getByRole("button", { name: "Save name", exact: true }).click();
         await started;
         try {
           await beta(page).click();
-          assert.equal(await page.getByRole("textbox", { name: "Node title" }).inputValue(), "Saved Alpha");
+          assert.equal(await page.getByRole("textbox", { name: "Node name" }).inputValue(), "Saved.Alpha");
         } finally { release(); }
         await title(page, "Beta");
-        assert.equal(JSON.parse((await cli("show", "Saved Alpha")).stdout).title, "Saved Alpha");
-        assert.equal(JSON.parse((await cli("show", "Beta")).stdout).title, "Beta");
+        assert.equal(JSON.parse((await cli("show", "Saved.Alpha")).stdout).name, "Saved.Alpha");
+        assert.equal(JSON.parse((await cli("show", "Beta")).stdout).name, "Beta");
       }));
 
     await suite.test("browser back and forward restore the focused node", () =>
@@ -515,7 +545,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.deepEqual(report, { nodes: 3, edges: 2 });
       }));
     await suite.test("project directory tracks branch services without disconnecting other Lean editors", () => {
-      const node = { fnode: randomUUID(), title: "Directory proof", module: "Lib.Directory", depens: [], blocks: [{ srctype: "lean", content: "theorem directoryProof : True := by trivial\n" }] };
+      const node = { fnode: randomUUID(), name: "Directory.proof", depens: [], blocks: [{ srctype: "lean", content: "theorem directoryProof : True := by trivial\n" }] };
       return fixture(browser, async ({ root, cli, page, url }) => {
         const base = new URL(url).origin;
         const project = new URL(url).pathname.slice(3);
@@ -542,8 +572,8 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           let opened = 0, closed = 0, currentSocket;
           page.on("websocket", socket => { currentSocket = socket; opened++; socket.on("close", () => closed++); });
           await page.getByRole("button", { name: /Search nodes/ }).click();
-          await page.getByPlaceholder("Search by title or fnode...").fill(node.title);
-          await page.getByRole("dialog").getByRole("button", { name: new RegExp(node.title) }).click();
+          await page.getByPlaceholder("Search by name or fnode...").fill(node.name);
+          await page.getByRole("dialog").getByRole("button", { name: new RegExp(node.name) }).click();
           await page.getByRole("button", { name: "Start Lean server", exact: true }).click();
           await page.getByText("Lean editor ready", { exact: true }).waitFor();
           const otherPage = await page.context().newPage();
@@ -587,16 +617,16 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
     });
     await suite.test("graph colors follow saved Lean evidence independently of node degree and Rocq", () => {
       const nodes = [
-        ["Rocq only", "rocq", "Check nat."],
-        ["Empty Lean", "lean", "  \n"],
+        ["Rocq.only", "rocq", "Check nat."],
+        ["Empty.Lean", "lean", "  \n"],
         ["Unchecked", "lean", "#check Nat\n"],
         ["Admitted", "lean", "theorem admitted : True := by sorry\n"],
         ["Proven", "lean", '-- sorry in a comment\ndef text := "sorry"\ntheorem proven : True := by trivial\n'],
       ].map(([title, srctype, content], i) => ({
-        fnode: randomUUID(), title, module: `Lib.Color${i}`, depens: [], blocks: [{ srctype, content }],
+        fnode: randomUUID(), name: title, depens: [], blocks: [{ srctype, content }],
       }));
-      const conditional = { fnode: randomUUID(), title: "Conditional", module: "Lib.Conditional", depens: [nodes[3].fnode], blocks: [{ srctype: "lean", content: "import Lib.Color3\ntheorem conditional : True := admitted\n" }] };
-      const transitive = { fnode: randomUUID(), title: "Transitive", module: "Lib.Transitive", depens: [conditional.fnode], blocks: [{ srctype: "lean", content: "import Lib.Conditional\ntheorem transitive : True := conditional\n" }] };
+      const conditional = { fnode: randomUUID(), name: "Conditional", depens: [nodes[3].fnode], blocks: [{ srctype: "lean", content: "import Admitted\ntheorem conditional : True := admitted\n" }] };
+      const transitive = { fnode: randomUUID(), name: "Transitive", depens: [conditional.fnode], blocks: [{ srctype: "lean", content: "import Conditional\ntheorem transitive : True := conditional\n" }] };
       nodes.push(conditional, transitive);
       return fixture(browser, async ({ cli, page, url }) => {
         for (const title of ["Admitted", "Proven", "Transitive"]) {
@@ -607,10 +637,10 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         const response = page.waitForResponse(r => r.url().endsWith("/graph/full"));
         await page.getByRole("button", { name: "Graph", exact: true }).click();
         const graph = await (await response).json();
-        const expected = { "Rocq only": "unverified", "Empty Lean": "unverified", Unchecked: "unverified", Admitted: "sorry", Proven: "verified", Conditional: "conditional", Transitive: "conditional" };
+        const expected = { "Rocq.only": "unverified", "Empty.Lean": "unverified", Unchecked: "unverified", Admitted: "sorry", Proven: "verified", Conditional: "conditional", Transitive: "conditional" };
         for (const node of nodes) {
           const status = graph.nodes.find(n => n.fnode === node.fnode).lean;
-          assert.equal(status, expected[node.title]);
+          assert.equal(status, expected[node.name]);
           const view = await (await fetch(`${url}/api/node/${node.fnode}/view`)).json();
           assert.equal(view.node.formalization.lean, status);
         }
@@ -637,9 +667,9 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           await page.screenshot({ path: resolve(process.env.MDC_E2E_ARTIFACTS, "graph-colors.png"), fullPage: true });
         }
         await page.getByRole("button", { name: "Knowledge", exact: true }).click();
-        for (const [name, label, token] of [["Empty Lean", "Unverified", "--mdc-muted"], ["Unchecked", "Unverified", "--mdc-muted"], ["Admitted", "Sorry", "--mdc-error"], ["Conditional", "Conditional", "--mdc-warning"], ["Proven", "Verified", "--mdc-accent-down"]]) {
+        for (const [name, label, token] of [["Empty.Lean", "Unverified", "--mdc-muted"], ["Unchecked", "Unverified", "--mdc-muted"], ["Admitted", "Sorry", "--mdc-error"], ["Conditional", "Conditional", "--mdc-warning"], ["Proven", "Verified", "--mdc-accent-down"]]) {
           await page.getByRole("button", { name: /Search nodes/ }).click();
-          await page.getByPlaceholder("Search by title or fnode...").fill(name);
+          await page.getByPlaceholder("Search by name or fnode...").fill(name);
           await page.getByRole("dialog", { name: "search", exact: true }).getByRole("button", { name: new RegExp(name) }).click();
           await title(page, name);
           const light = center(page).getByLabel(`Lean: ${label}`, { exact: true }).locator('.status-light');
@@ -665,7 +695,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
       }, nodes);
     });
     await suite.test("native Lean bridge drains bidirectional backpressure and cancels a busy session", () => {
-      const node = { fnode: randomUUID(), title: "Transport", module: "Lib.Transport", depens: [], blocks: [{ srctype: "lean", content: "#check Nat\n" }] };
+      const node = { fnode: randomUUID(), name: "Transport", depens: [], blocks: [{ srctype: "lean", content: "#check Nat\n" }] };
       return fixture(browser, async ({ cli, url }) => {
         const current = JSON.parse((await cli("show", node.fnode)).stdout);
         const response = await fetch(`${url}/api/node/${node.fnode}/lean/session`, {
@@ -714,7 +744,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
       }, [node]);
     });
     await suite.test("slow certification leaves LSP and graph responsive and timeout is recoverable", () => {
-      const node = { fnode: randomUUID(), title: "Certification", module: "Lib.Certification", depens: [], blocks: [{ srctype: "lean", content: "theorem truth : True := by trivial\n" }] };
+      const node = { fnode: randomUUID(), name: "Certification", depens: [], blocks: [{ srctype: "lean", content: "theorem truth : True := by trivial\n" }] };
       return fixture(browser, async ({ root, cli, url }) => {
         const current = JSON.parse((await cli("show", node.fnode)).stdout);
         const checked = await (await fetch(`${url}/api/node/${node.fnode}/lean/check`, {
@@ -758,7 +788,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           const uri = `file://${session.filename}`;
           send({ method: "textDocument/didOpen", params: { textDocument: { uri, languageId: "lean4", version: 1, text: session.source } } });
           await rpc("textDocument/waitForDiagnostics", { uri, version: 1 });
-          await rpc("$/lean/moduleHierarchy/imports", { module: { name: node.module, uri } });
+          await rpc("$/lean/moduleHierarchy/imports", { module: { name: node.name, uri } });
           const params = { fnode: node.fnode, revision: current.revision, version: 1 };
           let settled = false;
           const certification = rpc("mdc/certify", params).catch(error => { settled = true; return error; });
@@ -781,7 +811,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
     await suite.test("native Lean editor renders goals, diagnostics and saves to the database", () => {
       const source = "theorem demo : True ∧ True := by\n  constructor\n  · trivial\n  · trivial\n";
       // Imported modules can be nested and quoted; later nodes use the flat Lib directory.
-      const a = { fnode: randomUUID(), title: "Lean Example", module: "Lib.EGA.«1-1.7.1»", depens: [], blocks: [{ srctype: "lean", content: source }, { srctype: "text", content: "A shared block header." }, { srctype: "rocq", content: "Check nat." }, { srctype: "latex", content: "A formula: $x^2$." }] };
+      const a = { fnode: randomUUID(), name: "Lean.Example", depens: [], blocks: [{ srctype: "lean", content: source }, { srctype: "text", content: "A shared block header." }, { srctype: "rocq", content: "Check nat." }, { srctype: "latex", content: "A formula: $x^2$." }] };
       return fixture(browser, async ({ root, page, cli, url }) => {
         let sessions = 0;
         const messages = [];
@@ -814,8 +844,8 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await page.goto(`${url}/?node=${a.fnode}`);
         // Select by exact name through the same browser search used by authors.
         await page.getByRole("button", { name: /Search nodes/ }).click();
-        await page.getByPlaceholder("Search by title or fnode...").fill("Lean Example");
-        await page.getByRole("button", { name: /Lean Example/ }).click();
+        await page.getByPlaceholder("Search by name or fnode...").fill("Lean.Example");
+        await page.getByRole("button", { name: /Lean.Example/ }).click();
         await page.getByRole("button", { name: "Start Lean server", exact: true }).click();
         await page.frameLocator('iframe[title="Lean source and Infoview"]').locator('#infoview-pending').waitFor();
         await page.locator('.native-editor:not(.pending)').waitFor();
@@ -842,7 +872,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         const leanBlock = page.locator('article[data-srctype="lean"]');
         assert.equal(await center(page).locator('.head .module-import').count(), 0);
         await leanBlock.getByText("Lean import", { exact: true }).click();
-        assert.equal(await leanBlock.locator('.module-import code').textContent(), `import ${a.module}`);
+        assert.equal(await leanBlock.locator('.module-import code').textContent(), `import ${a.name}`);
         let browserChecks = 0;
         page.on("request", request => { if (request.url().endsWith("/lean/check")) browserChecks++; });
         const initializedBeforeCollapse = messages.filter(m => m.method === "initialize").length;
@@ -920,12 +950,12 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.equal(await leanBlock.getByRole("button", { name: /Save & (check|build)/ }).count(), 0);
         const select = async name => {
           await page.getByRole("button", { name: /Search nodes/ }).click();
-          await page.getByPlaceholder("Search by title or fnode...").fill(name);
+          await page.getByPlaceholder("Search by name or fnode...").fill(name);
           await page.getByRole("button", { name: new RegExp(name) }).last().click();
           await title(page, name);
         };
         for (const name of ["Second Lean", "Third Lean"]) {
-          const node = JSON.parse((await cli("new", "-t", name)).stdout);
+          const node = JSON.parse((await cli("new", name)).stdout);
           const response = await fetch(`${url}/api/node/${node.fnode}/block/lean`, {
             method: "PUT", headers: { "content-type": "application/json", "if-match": `"${node.revision}"` },
             body: JSON.stringify({ content: `theorem ${name === "Second Lean" ? "second" : "third"} : True := by trivial\n` }),
@@ -939,7 +969,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.equal(initialized, 1);
         assert.equal(opened, 2);
         const warmed = performance.now();
-        await select("Lean Example");
+        await select("Lean.Example");
         await frame.locator(".view-line").getByText("constructor", { exact: true }).waitFor();
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
         assert.equal(messages.filter(m => m.method === "initialize").length, initialized);
@@ -948,7 +978,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await select("Alpha"); // A node without Lean must not tear down the runtime.
         // Let ResizeObserver see the fully hidden iframe before restoring it.
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-        await select("Lean Example");
+        await select("Lean.Example");
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
         assert.equal(sessions, 1);
         assert.equal(messages.filter(m => m.method === "textDocument/didOpen").length, opened);
@@ -963,7 +993,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await select("Third Lean"); // Confirmed navigation discards that unsaved edit.
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
         assert.ok(messages.some(m => m.method === "textDocument/didClose"), "eviction must release a native Lean worker");
-        await select("Lean Example");
+        await select("Lean.Example");
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
         await frame.locator(".view-line").getByText("constructor", { exact: true }).waitFor();
         assert.equal(await page.getByText("Unsaved", { exact: true }).count(), 0);
@@ -1023,7 +1053,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
     await suite.test("Lean cancels stale selections and recovers from preparation timeouts without losing drafts", () =>
       fixture(browser, async ({ root, cli, page, url, serverOutput }) => {
         const ids = {};
-        await cli("new", "-t", "Delta");
+        await cli("new", "Delta");
         for (const name of ["Alpha", "Gamma", "Delta"]) {
           const node = JSON.parse((await cli("show", name)).stdout);
           ids[name] = node.fnode;
@@ -1063,7 +1093,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await frame.getByText("-- typed before Lean initialized", { exact: true }).waitFor();
         const select = async name => {
           await page.getByRole("button", { name: /Search nodes/ }).click();
-          await page.getByPlaceholder("Search by title or fnode...").fill(name);
+          await page.getByPlaceholder("Search by name or fnode...").fill(name);
           await page.getByRole("button", { name: new RegExp(name) }).last().click();
           await title(page, name);
         };
@@ -1134,8 +1164,8 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
       }));
     await suite.test("changed dependencies refresh the native worker without restarting its connection", () =>
       fixture(browser, async ({ cli, page, url }) => {
-        const dep = JSON.parse((await cli("new", "-t", "Lean Dependency")).stdout);
-        const target = JSON.parse((await cli("new", "-t", "Lean Dependent")).stdout);
+        const dep = JSON.parse((await cli("new", "Lean.Dependency")).stdout);
+        const target = JSON.parse((await cli("new", "Lean.Dependent")).stdout);
         const put = async (id, content) => {
           const { node } = await (await fetch(`${url}/api/node/${id}/view`)).json();
           const response = await fetch(`${url}/api/node/${id}/block/lean`, {
@@ -1144,7 +1174,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           assert.equal(response.status, 200);
         };
         await put(dep.fnode, "def anchor : Nat := 1\n");
-        await put(target.fnode, `import ${dep.module}\ntheorem usesAnchor : anchor = 1 := rfl\n`);
+        await put(target.fnode, `import ${dep.name}\ntheorem usesAnchor : anchor = 1 := rfl\n`);
         await cli("dep", "add", target.fnode, "--target", dep.fnode);
         const sent = [];
         page.on("websocket", ws => ws.on("framesent", ({ payload }) => {
@@ -1152,11 +1182,11 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         }));
         const select = async name => {
           await page.getByRole("button", { name: /Search nodes/ }).click();
-          await page.getByPlaceholder("Search by title or fnode...").fill(name);
+          await page.getByPlaceholder("Search by name or fnode...").fill(name);
           await page.getByRole("button", { name: new RegExp(name) }).last().click();
           await title(page, name);
         };
-        await select("Lean Dependent");
+        await select("Lean.Dependent");
         await page.getByRole("button", { name: "Start Lean server", exact: true }).click();
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
         await center(page).getByLabel("Lean: Verified", { exact: true }).waitFor();
@@ -1170,7 +1200,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await put(dep.fnode, "def anchor : Nat := 2\n");
         assert.equal(await leanStatus(target.fnode), "unverified", "changing an import must invalidate the dependent certificate");
         await select("Alpha");
-        await select("Lean Dependent");
+        await select("Lean.Dependent");
         await frame.locator(".squiggly-error").first().waitFor();
         await page.getByText("Lean errors", { exact: false }).waitFor();
         assert.equal(await center(page).getByLabel("Lean: Verified", { exact: true }).count(), 0);
@@ -1183,7 +1213,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
 
 await test('Monaco source blocks retain highlighting, edits and undo across layout changes', {timeout: 60000}, async () => {
   const browser = await launchBrowser();
-  const node = {fnode: randomUUID(), title: 'Shared editors', module: 'Lib.Shared', depens: [], blocks: [
+  const node = {fnode: randomUUID(), name: 'Shared.editors', depens: [], blocks: [
     {srctype: 'text', content: '# Heading\nA **bold** statement.\n'},
     {srctype: 'latex', content: '% comment\n\\section{Heading}\nA statement.\n'},
     {srctype: 'rocq', content: '(* comment *)\nTheorem demo : True. Proof. exact I. Qed.\n'},
@@ -1539,7 +1569,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
 
 await test('LaTeX tables, colors and TikZ diagrams render shared macros locally', {timeout: 90000}, async () => {
   const browser = await launchBrowser();
-  const node = {fnode: randomUUID(), title: 'Rich LaTeX', module: 'Lib.RichLatex', depens: [], blocks: [{srctype: 'latex', content: String.raw`
+  const node = {fnode: randomUUID(), name: 'Rich.LaTeX', depens: [], blocks: [{srctype: 'latex', content: String.raw`
     {\color{brand}Colored text} and $\textcolor{brand}{x+y}$.
     \begin{tabular}{|l|c|}\hline Left & Right\\\hline \multicolumn{2}{c}{Together}\\\hline\end{tabular}
     \begin{tikzcd}\cA \arrow[r,"f",color=brand] \arrow[d,"g"'] & B \arrow[d,"h"] \\ C \arrow[r,"k"'] & D\end{tikzcd}
@@ -1651,7 +1681,7 @@ await test('LaTeX tables, colors and TikZ diagrams render shared macros locally'
 
 await test('Lean first paint waits for syntax without waiting for hidden iframe frames', {timeout: 60000}, async () => {
   const browser = await launchBrowser();
-  const node = {fnode: randomUUID(), title: 'Highlighted first paint', module: 'Lib.FirstPaint', depens: [], blocks: [
+  const node = {fnode: randomUUID(), name: 'Highlighted.first.paint', depens: [], blocks: [
     {srctype: 'lean', content: '-- highlighted comment\ntheorem firstPaint : True := by trivial\n'},
     {srctype: 'latex', content: 'A formula: $x^2$.'},
   ]};
@@ -1725,8 +1755,8 @@ await test('Lean first paint waits for syntax without waiting for hidden iframe 
         requestAnimationFrame(window.observeLeanPaint);
       });
       await page.getByRole('button', {name: /Search nodes/}).click();
-      await page.getByPlaceholder('Search by title or fnode...').fill(node.title);
-      await page.getByRole('button', {name: new RegExp(node.title)}).click();
+      await page.getByPlaceholder('Search by name or fnode...').fill(node.name);
+      await page.getByRole('button', {name: new RegExp(node.name)}).click();
       await painted();
       assert.equal(await page.evaluate(() => window.retainedLeanFrame === document.querySelector('iframe[title="Lean source and Infoview"]')), true);
       assert.equal(sessions, 0);
@@ -1736,7 +1766,7 @@ await test('Lean first paint waits for syntax without waiting for hidden iframe 
 
 await test('Lean hover stays above the active Infoview', {timeout: 45000}, async () => {
   const browser = await launchBrowser();
-  const node = {fnode: randomUUID(), title: 'Hover', module: 'Lib.Hover', depens: [], blocks: [
+  const node = {fnode: randomUUID(), name: 'Hover', depens: [], blocks: [
     {srctype: 'lean', content: '/-- Documentation with enough text to extend across the narrow source pane into the active Infoview. -/\ndef hoverTargetWithALongName : Nat := 42\n#check hoverTargetWithALongName\n'},
   ]};
   try {
@@ -1763,7 +1793,7 @@ await test('Lean hover stays above the active Infoview', {timeout: 45000}, async
 
 await test('wrapped Lean sources reach the last line before and after server startup', {timeout: 60000}, async () => {
   const browser = await launchBrowser();
-  const node = {fnode: randomUUID(), title: 'Wrapped Lean', module: 'Lib.Wrapped', depens: [], blocks: [
+  const node = {fnode: randomUUID(), name: 'Wrapped.Lean', depens: [], blocks: [
     {srctype: 'lean', content: Array.from({length: 60}, (_, i) => `-- ${i} ${'Long wrapped Lean source. '.repeat(9)}`).join('\n') + '\n-- DOCUMENT END'},
   ]};
   try {
@@ -1803,7 +1833,7 @@ await test('wrapped Lean sources reach the last line before and after server sta
 
 await test('stopping an unfinished Lean check clears progress and Infoview connections', {timeout: 90000}, async () => {
   const browser = await launchBrowser();
-  const node = {fnode: randomUUID(), title: 'Interruptible', module: 'Lib.Interruptible', depens: [], blocks: [
+  const node = {fnode: randomUUID(), name: 'Interruptible', depens: [], blocks: [
     {srctype: 'lean', content: '#eval IO.sleep 60000\nexample : True := by trivial\n'},
   ]};
   try {
@@ -1852,7 +1882,7 @@ await test('stopping an unfinished Lean check clears progress and Infoview conne
 
 await test('Lean session state survives navigation through nodes without Lean', {timeout: 60000}, async () => {
   const browser = await launchBrowser();
-  const nodes = ['First', 'Second'].map(title => ({fnode: randomUUID(), title, module: `Lib.${title}`, depens: [], blocks: [
+  const nodes = ['First', 'Second'].map(title => ({fnode: randomUUID(), name: title, depens: [], blocks: [
     {srctype: 'lean', content: 'example : True := by trivial\n'},
   ]}));
   try {
@@ -1862,7 +1892,7 @@ await test('Lean session state survives navigation through nodes without Lean', 
       page.on('websocket', () => sockets++);
       const select = async name => {
         await page.getByRole('button', {name: /Search nodes/}).click();
-        await page.getByPlaceholder('Search by title or fnode...').fill(name);
+        await page.getByPlaceholder('Search by name or fnode...').fill(name);
         await page.getByRole('dialog').getByRole('button', {name: new RegExp(name)}).click();
         await title(page, name);
       };
@@ -1900,7 +1930,7 @@ await test('Lean session state survives navigation through nodes without Lean', 
 
 await test('Lean browsing stays offline until explicitly started and preserves static drafts', {timeout: 90000}, async () => {
   const browser = await launchBrowser();
-  const nodes = ['First', 'Second'].map((title, i) => ({fnode: randomUUID(), title, module: `Lib.Offline${i}`, depens: [], blocks: [
+  const nodes = ['First', 'Second'].map((title, i) => ({fnode: randomUUID(), name: title, depens: [], blocks: [
     {srctype: 'lean', content: `-- A highlighted comment\ntheorem offline${i} : True := by trivial\n`},
   ]}));
   try {
@@ -1945,7 +1975,7 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       assert.equal(JSON.parse((await cli('show', nodes[0].fnode)).stdout).blocks[0].content.trimEnd(), (nodes[0].blocks[0].content + '-- saved without a server\n').trimEnd());
       const select = async name => {
         await page.getByRole('button', {name: /Search nodes/}).click();
-        await page.getByPlaceholder('Search by title or fnode...').fill(name);
+        await page.getByPlaceholder('Search by name or fnode...').fill(name);
         await page.getByRole('dialog').getByRole('button', {name: new RegExp(name)}).click();
         await title(page, name);
         await page.locator('.native-editor:not(.pending)').waitFor();
@@ -2075,7 +2105,7 @@ await test('Lean browsing stays offline until explicitly started and preserves s
 
 await test('collapsed Lean editors recheck without recreating the browser viewport', {timeout: 60000}, async () => {
   const browser = await launchBrowser();
-  const node = {fnode: randomUUID(), title: 'Collapsed reload', module: 'Lib.Collapsed', depens: [], blocks: [
+  const node = {fnode: randomUUID(), name: 'Collapsed.reload', depens: [], blocks: [
     {srctype: 'lean', content: 'example : True := by trivial\n'},
   ]};
   try {
@@ -2109,13 +2139,13 @@ await test('collapsed Lean editors recheck without recreating the browser viewpo
 await test('editors and previews pass scrolling to the node pane at both boundaries', {timeout: 180000}, async () => {
   const browser = await launchBrowser();
   const lines = Array.from({length: 100}, (_, i) => `Line ${i + 1}.`);
-  const node = {fnode: randomUUID(), title: 'Scrolling', module: 'Lib.Scrolling', depens: [], blocks: [
+  const node = {fnode: randomUUID(), name: 'Scrolling', depens: [], blocks: [
     {srctype: 'text', content: lines.join('\n')},
     {srctype: 'latex', content: lines.join('\n\n')},
     {srctype: 'lean', content: lines.map(line => `-- ${line}`).join('\n') + '\nexample : True := by trivial\n'},
     {srctype: 'rocq', content: lines.join('\n')},
   ]};
-  const singles = ['latex', 'lean'].map(srctype => ({fnode: randomUUID(), title: `Single ${srctype}`, module: `Lib.Single${srctype}`, depens: [],
+  const singles = ['latex', 'lean'].map(srctype => ({fnode: randomUUID(), name: `Single.${srctype}`, depens: [],
     blocks: [{srctype, content: srctype === 'lean' ? 'example : True := by trivial\n' : 'A short LaTeX block.'}]}));
   try {
     await fixture(browser, async ({page, url, cli}) => {
@@ -2205,7 +2235,7 @@ await test('editors and previews pass scrolling to the node pane at both boundar
         for (const single of singles) {
           const kind = single.blocks[0].srctype;
           await page.goto(`${url}/?scroll=${kind}#ref=${single.fnode}`);
-          await title(page, single.title);
+          await title(page, single.name);
           const surfaces = [];
           if (kind === 'latex') surfaces.push(page.locator('.editor-scroll'));
           else {

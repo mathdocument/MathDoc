@@ -71,14 +71,13 @@ async fn native_project_keeps_module_names_configuration_and_dependency_guards()
     let temp = tempfile::tempdir().unwrap();
     let project = LeanProject {
         lakefile_name: Some("lakefile.lean".into()),
-        module_root: Some("Mathlib".into()),
         lakefile: "import Lake\nopen Lake DSL\npackage fixture where\n  restoreAllArtifacts := true\nlean_lib Mathlib\nlean_lib Support\n".into(),
         manifest: Some("{\"version\":\"1.1.0\",\"name\":\"fixture\",\"lakeDir\":\".lake\",\"packagesDir\":\".lake/packages\",\"packages\":[]}".into()),
         files: [("Support.lean".into(), "def supportValue : Nat := 7\n".into())].into(),
         ..Default::default()
     };
     let mut a = Node::new("A".into()).unwrap();
-    a.module = "Mathlib.A".into();
+    a.name = "Mathlib.A".into();
     let executions = temp.path().join("dependency-executions");
     a.blocks.push(Block {
         srctype: "lean".into(),
@@ -86,7 +85,7 @@ async fn native_project_keeps_module_names_configuration_and_dependency_guards()
         ..Default::default()
     });
     let mut b = Node::new("B".into()).unwrap();
-    b.module = "Mathlib.B".into();
+    b.name = "Mathlib.B".into();
     b.depens.push(a.fnode.clone());
     b.blocks.push(Block {
         srctype: "lean".into(),
@@ -123,10 +122,9 @@ async fn native_project_keeps_module_names_configuration_and_dependency_guards()
         "CLI must use the dependency compiled by Lake without elaborating it in another LSP worker"
     );
     let root = temp.path().join("projects").join(snapshot.project.key());
-    assert_eq!(
-        std::fs::read_to_string(root.join("lakefile.lean")).unwrap(),
-        snapshot.project.lakefile
-    );
+    assert!(std::fs::read_to_string(root.join("lakefile.lean"))
+        .unwrap()
+        .starts_with(&snapshot.project.lakefile));
     assert!(!root.join("lakefile.toml").exists());
     b.depens.clear();
     snapshot.apply(vec![b.clone()], "missing edge".into());
@@ -208,7 +206,7 @@ async fn pinned_external_library_builds_and_reuses_artifacts() {
     ));
     project.manifest=Some(serde_json::json!({"version":"1.1.0","name":"MathDoc","lakeDir":".lake","packagesDir":".lake/packages","packages":[{"name":"fixture","type":"git","url":url,"rev":revision,"inputRev":revision,"scope":"","subDir":null,"manifestFile":"lake-manifest.json","configFile":"lakefile.toml","inherited":false}]}).to_string());
     project.validate().unwrap();
-    let mut node = Node::new("External library user".into()).unwrap();
+    let mut node = Node::new("External.library.user".into()).unwrap();
     node.blocks.push(Block {
         srctype: "lean".into(),
         content: "import ExternalFixture\ntheorem usesLibrary : True := externalTruth\n".into(),
@@ -264,7 +262,7 @@ async fn pinned_external_library_builds_and_reuses_artifacts() {
         &[
             "env",
             "lean",
-            &mathdoc::store::module_file(&node.module, "lean")
+            &mathdoc::store::module_file(&node.name, "lean")
                 .unwrap()
                 .to_string_lossy(),
         ],
@@ -285,7 +283,7 @@ async fn native_lean_incremental_diagnostics_goals_and_imports() {
     let temp = tempfile::tempdir().unwrap();
     let service = LeanService::new(temp.path().to_path_buf()).unwrap();
     let mut a = Node::new("A".into()).unwrap();
-    a.module = "Lib.EGA.«1-1.7.1»".into();
+    a.name = "EGA.Section1_1_7_1".into();
     a.blocks.push(Block {
         srctype: "lean".into(),
         content: "theorem exampleA : True := by\n  trivial\n".into(),
@@ -341,7 +339,7 @@ async fn native_lean_incremental_diagnostics_goals_and_imports() {
         .join("projects")
         .join(snapshot.project.key())
         .join(".lake/build/lib/lean")
-        .join(mathdoc::store::module_file(&a.module, "olean").unwrap());
+        .join(mathdoc::store::module_file(&a.name, "olean").unwrap());
     std::fs::remove_file(&artifact).unwrap();
     assert!(
         service
@@ -381,7 +379,7 @@ async fn native_lean_incremental_diagnostics_goals_and_imports() {
     b.depens.push(a.fnode.clone());
     b.blocks.push(Block {
         srctype: "lean".into(),
-        content: format!("import {}\ntheorem exampleB : True := exampleA\n", a.module),
+        content: format!("import {}\ntheorem exampleB : True := exampleA\n", a.name),
         ..Default::default()
     });
     snapshot.apply(vec![b.clone()], "dependency".into());
@@ -394,11 +392,10 @@ async fn native_lean_incremental_diagnostics_goals_and_imports() {
         checked
             .imports
             .iter()
-            .any(|i| i["module"]["name"] == a.module),
+            .any(|i| i["module"]["name"] == a.name),
         "Lean Server must report the managed import"
     );
     let stable_key = snapshot.lean_keys[&b.fnode].clone();
-    a.title = "Renamed A".into();
     a.blocks.push(Block {
         srctype: "text".into(),
         content: "An explanation".into(),
@@ -462,7 +459,7 @@ async fn native_lean_incremental_diagnostics_goals_and_imports() {
         .iter()
         .any(|e| e.contains("exactly match"))); // Opening many unrelated nodes must retire idle workers without losing valid certificates.
     for i in 0..6 {
-        let mut n = Node::new(format!("Extra {i}")).unwrap();
+        let mut n = Node::new(format!("Extra.N{i}")).unwrap();
         n.blocks.push(Block {
             srctype: "lean".into(),
             content: format!("theorem extra{i} : True := by trivial\n"),
@@ -482,7 +479,7 @@ async fn native_lean_incremental_diagnostics_goals_and_imports() {
         .await
         .unwrap()
         .is_null());
-    a.module = "Lib.EGA.«1-1.7.1_Moved»".into();
+    a.name = "EGA.Section1_1_7_1_Moved".into();
     snapshot.apply(vec![a.clone()], "module moved".into());
     assert!(
         service
@@ -514,17 +511,17 @@ async fn branches_reuse_native_objects_after_the_producer_is_deleted() {
     let a = LeanService::with_shared_cache(tmp.path().join("a"), shared.clone()).unwrap();
     let b = LeanService::with_shared_cache(tmp.path().join("b"), shared.clone()).unwrap();
     let marker = tmp.path().join("compiled");
-    let mut dep = Node::new("Shared dependency".into()).unwrap();
+    let mut dep = Node::new("Shared.dependency".into()).unwrap();
     dep.blocks.push(Block { srctype: "lean".into(), content: format!(
         "module\npublic import Lean\nrun_cmd Lean.Elab.Command.liftIO <| IO.FS.writeFile {} \"compiled\"\npublic theorem commonTruth : True := by trivial\n",
         serde_json::to_string(&marker.to_string_lossy()).unwrap()), ..Default::default() });
-    let mut node = Node::new("Shared target".into()).unwrap();
+    let mut node = Node::new("Shared.target".into()).unwrap();
     node.depens.push(dep.fnode.clone());
     node.blocks.push(Block {
         srctype: "lean".into(),
         content: format!(
             "import {}\ntheorem targetTruth : True := commonTruth\n",
-            dep.module
+            dep.name
         ),
         ..Default::default()
     });
@@ -559,8 +556,8 @@ async fn branches_reuse_native_objects_after_the_producer_is_deleted() {
         b.formal_status(&node, &snapshot.lean_keys[&node.fnode]),
         "verified"
     );
-    let mut reclassified = Node::new("Reclassified import".into()).unwrap();
-    reclassified.module = "Lean".into();
+    let mut reclassified = Node::new("Reclassified.import".into()).unwrap();
+    reclassified.name = "Lean".into();
     snapshot.apply(
         vec![reclassified.clone()],
         "module ownership changed".into(),
@@ -593,7 +590,7 @@ async fn branches_reuse_native_objects_after_the_producer_is_deleted() {
         .join(&snapshot.project_key);
     assert!(!workspace
         .join(".lake/build/lib/lean")
-        .join(mathdoc::store::module_file(&dep.module, "olean").unwrap())
+        .join(mathdoc::store::module_file(&dep.name, "olean").unwrap())
         .exists());
     assert_eq!(
         b.formal_status(&dep, &snapshot.lean_keys[&dep.fnode]),

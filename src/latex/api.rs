@@ -75,10 +75,10 @@ fn capture(
     kind: &str,
 ) -> anyhow::Result<Value> {
     let node = snapshot.resolve(id)?;
-    let target = json!({"fnode":node.fnode, "title":node.title, "source":source.unwrap_or_else(|| node.source("latex").unwrap_or(""))});
+    let target = json!({"fnode":node.fnode, "name":node.name, "source":source.unwrap_or_else(|| node.source("latex").unwrap_or(""))});
     let dependencies: Vec<_> = node.depens.iter().map(|id| {
         let node = &snapshot.nodes[id];
-        json!({"fnode":node.fnode, "title":node.title, "source":node.source("latex").unwrap_or("")})
+        json!({"fnode":node.fnode, "name":node.name, "source":node.source("latex").unwrap_or("")})
     }).collect();
     let key = crate::store::digest(&serde_json::to_vec(&(
         &snapshot.latex_project_key,

@@ -30,7 +30,7 @@ including the first graph fetch. There is no fade for these switches, including
 with reduced motion enabled. Ordinary links, browser history and unsaved-draft
 guards are preserved; browsers without View Transitions use normal navigation.
 
-Relation columns filter locally by title or UUID and render only a viewport
+Relation columns filter locally by name or UUID and render only a viewport
 window for more than 100 matches. Cards use natural one- or two-line titles at
 every list size. ResizeObserver measures mounted rows; cached heights and
 estimated offscreen heights position the window without rendering the full
@@ -42,7 +42,7 @@ the desktop layout uses fixed 5:3 grid columns for the graph and editor.
 The canvas bitmap fits its own viewport, with an eight-million-pixel budget on
 Retina displays. Window-size and pixel-density changes resize and paint in one
 frame.
-The dependency removal dialog filters by title or UUID and displays 50 results
+The dependency removal dialog filters by name or UUID and displays 50 results
 per page; selections remain active across pages and filters until submitted.
 
 Lean uses a lazy-loaded page embedding `lean4monaco` and upstream Infoview. By

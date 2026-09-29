@@ -133,7 +133,7 @@ fn check_revision(headers: &HeaderMap, node: &Node) -> ApiResult<()> {
     Ok(())
 }
 fn summary(snapshot: &Snapshot, node: &Node) -> Value {
-    json!({"fnode":node.fnode,"title":node.title,"depth":snapshot.depths.get(&node.fnode).copied().unwrap_or(0)})
+    json!({"fnode":node.fnode,"name":node.name,"depth":snapshot.depths.get(&node.fnode).copied().unwrap_or(0)})
 }
 fn preview(snapshot: &Snapshot, node: &Node, lean: &crate::lean::LeanService) -> Value {
     let mut value = summary(snapshot, node);
@@ -146,7 +146,6 @@ pub fn detail(snapshot: &Snapshot, node: &Node, lean: &crate::lean::LeanService)
     value["revision"] = json!(node.revision());
     value["depens"] = json!(node.depens);
     value["blocks"] = json!(node.blocks);
-    value["module"] = json!(node.module);
     value
 }
 fn revision_response(
@@ -181,7 +180,7 @@ pub fn router(service: Arc<Service>) -> Router {
         .route("/node/:id/lean/session", post(lean_session))
         .route("/lean/session/:id", get(editor_info).delete(close_editor))
         .route("/lean/session/:id/ws", get(editor_socket))
-        .route("/node/:id/title", put(title))
+        .route("/node/:id/name", put(name))
         .route("/node/:id/block/:language", put(block).delete(delete_block))
         .route("/node/:id/blocks", put(blocks))
         .route("/node/:id/dep/candidates", get(candidates))
@@ -754,7 +753,7 @@ async fn search(
     Ok(Json(json!(snapshot
         .nodes
         .values()
-        .filter(|n| n.title.to_lowercase().contains(&q) || n.fnode.contains(&q))
+        .filter(|n| n.name.to_lowercase().contains(&q) || n.fnode.contains(&q))
         .take(query.n.unwrap_or(200).min(200))
         .map(|n| summary(&snapshot, n))
         .collect::<Vec<_>>())))
@@ -769,7 +768,7 @@ async fn resolve(
 ) -> ApiResult<Json<Value>> {
     let snapshot = s.read().await?;
     let n = snapshot.resolve(&query.r#ref)?;
-    Ok(Json(json!({"fnode":n.fnode,"title":n.title})))
+    Ok(Json(json!({"fnode":n.fnode,"name":n.name})))
 }
 async fn view(State(s): State<Arc<Service>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     let snapshot = s.read().await?;
@@ -781,7 +780,7 @@ async fn view(State(s): State<Arc<Service>>, Path(id): Path<String>) -> ApiResul
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NewNode {
-    title: String,
+    name: String,
     parent_fnode: Option<String>,
 }
 async fn new_node(
@@ -790,12 +789,7 @@ async fn new_node(
     Json(body): Json<NewNode>,
 ) -> ApiResult<Response> {
     let mut snapshot = s.read().await?;
-    let mut node = Node::new(body.title)?;
-    node.module = format!(
-        "{}.N_{}",
-        snapshot.project.module_root(),
-        node.fnode.replace('-', "")
-    );
+    let node = Node::new(body.name)?;
     let mut changes = vec![node.clone()];
     if let Some(parent) = body.parent_fnode {
         let mut parent = snapshot.resolve(&parent)?.clone();
@@ -809,8 +803,8 @@ async fn new_node(
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Title {
-    title: String,
+struct NodeName {
+    name: String,
 }
 async fn delete_node(
     State(s): State<Arc<Service>>,
@@ -829,18 +823,35 @@ async fn delete_node(
         json!({"fnode": id, "deleted": true, "removed_edges": removed_edges}),
     ))
 }
-async fn title(
+async fn name(
     State(s): State<Arc<Service>>,
     Path(id): Path<String>,
     headers: HeaderMap,
-    Json(body): Json<Title>,
+    Json(body): Json<NodeName>,
 ) -> ApiResult<Response> {
     let mut snapshot = s.read().await?;
     let mut node = snapshot.resolve(&id)?.clone();
     check_revision(&headers, &node)?;
-    node.title = body.title;
-    s.save(&mut snapshot, vec![node.clone()], "Rename node")
-        .await?;
+    crate::store::validate_name(&body.name)?;
+    let old_name = node.name.clone();
+    node.name = body.name;
+    let mut changes = vec![node.clone()];
+    for other in snapshot
+        .nodes
+        .values()
+        .filter(|other| other.fnode != node.fnode)
+    {
+        let mut updated = other.as_ref().clone();
+        for block in &mut updated.blocks {
+            if block.srctype == "lean" {
+                block.content = crate::names::rename_imports(&block.content, &old_name, &node.name);
+            }
+        }
+        if &updated != other.as_ref() {
+            changes.push(updated);
+        }
+    }
+    s.save(&mut snapshot, changes, "Rename node").await?;
     Ok(revision_response(&snapshot, &node, &s.lean))
 }
 #[derive(Deserialize)]
@@ -973,7 +984,7 @@ async fn candidates(
     let matches: Vec<_> = snapshot
         .nodes
         .values()
-        .filter(|n| n.title.to_lowercase().contains(&q) || n.fnode.contains(&q))
+        .filter(|n| n.name.to_lowercase().contains(&q) || n.fnode.contains(&q))
         .collect();
     let source = matches.iter().filter(|n| n.fnode == node.fnode).count();
     let dependencies: HashSet<_> = node.depens.iter().collect();
@@ -1213,7 +1224,7 @@ fn editor_document(input: &crate::lean::Input) -> Result<Value> {
     let node = &input.chain.last().context("no Lean target")?.0;
     Ok(json!({
         "fnode": node.fnode,
-        "filename": format!("/project/{}", crate::store::module_file(&node.module, "lean")?.display()),
+        "filename": format!("/project/{}", crate::store::module_file(&node.name, "lean")?.display()),
         "source": node.source("lean").context("node has no Lean block")?,
         "revision": node.revision(),
         // Source edits reuse the worker; changed imports/dependencies must reload its environment.
@@ -1444,7 +1455,7 @@ async fn bridge_editor(
                         Ok(document)
                     } else if method == "mdc/validationState" {
                         let version = observer.lock().unwrap().document(&uri, &next)?.version;
-                        Ok(json!({"uri":uri,"version":version,"module":{"name":next.chain.last().unwrap().0.module,"uri":uri}}))
+                        Ok(json!({"uri":uri,"version":version,"module":{"name":next.chain.last().unwrap().0.name,"uri":uri}}))
                     } else {
                         let version = value["params"]["version"].as_u64().context("Lean version required")?;
                         let (diagnostics, imports) = observer.lock().unwrap().evidence(&uri, &next, version)?;

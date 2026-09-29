@@ -19,7 +19,7 @@ async fn terminus_atomic_revisions_and_persistence() {
     snapshot.apply(vec![a.clone(), b.clone()], version);
     assert_eq!(database.load().await.unwrap().nodes[&b.fnode].as_ref(), &b);
     let mut changed = a.clone();
-    changed.title = "Changed".into();
+    changed.name = "Changed".into();
     assert!(database
         .put(&[changed], &old_version, "Stale write")
         .await

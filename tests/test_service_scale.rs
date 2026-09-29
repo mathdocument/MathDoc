@@ -20,7 +20,7 @@ async fn graph_checks_on_47435_nodes_and_368017_edges() {
         let mut nodes: Vec<Node> = Vec::with_capacity(47435);
         let mut edges = 0;
         for i in 0..47435 {
-            let mut node = Node::new(format!("Node {i}")).unwrap();
+            let mut node = Node::new(format!("Node.N{i}")).unwrap();
             for previous in nodes.iter().rev().take(8) {
                 if edges == 368017 {
                     break;

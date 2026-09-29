@@ -133,7 +133,7 @@ make it available as `mdc` everywhere:
 
 ```sh
 mdc() { "$HOME/mathdoc/mdc" "$@"; }
-mdc new -p myproject/main -t 'Example'
+mdc new -p myproject/main 'Example'
 mdc show -p myproject/main 'Example'
 # Use the revision returned by show to protect concurrent edits.
 mdc edit -p myproject/main 'Example' --revision "$REV" < proof.lean

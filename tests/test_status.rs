@@ -221,8 +221,8 @@ async fn remove_database_stops_its_branches_and_preserves_other_projects() {
     let server = Started::start(root, &main, None).await;
     let _agent = Started::start(root, &agent, None).await;
     let _other = Started::start(root, &keep, None).await;
-    run(root, &["new", "-p", &main, "-t", "Remove me"]).await;
-    run(root, &["new", "-p", &keep, "-t", "Keep me"]).await;
+    run(root, &["new", "-p", &main, "RemoveMe"]).await;
+    run(root, &["new", "-p", &keep, "KeepMe"]).await;
     let http = reqwest::Client::new();
     let url = format!("http://127.0.0.1:{}", server.port());
     assert_eq!(
@@ -324,7 +324,7 @@ async fn foreground_server_restores_started_branches_after_shutdown_and_crash() 
             run(root, &["start", &main]).await;
             run(root, &["start", &paused]).await;
             run(root, &["stop", &paused]).await;
-            run(root, &["new", "-p", &main, "-t", "Survives restart"]).await;
+            run(root, &["new", "-p", &main, "SurvivesRestart"]).await;
         } else if round < 3 {
             assert_eq!(
                 run(root, &["graph", "check", "-p", &main]).await["nodes"],
@@ -588,7 +588,7 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
         "unexpected argument",
     )
     .await;
-    run(root, &["new", "--proj", &main, "-t", "Only in main"]).await;
+    run(root, &["new", "--proj", &main, "OnlyInMain"]).await;
     assert_eq!(
         run(root, &["graph", "check", "--proj", &main]).await["nodes"],
         1
@@ -637,7 +637,7 @@ async fn status_and_project_lifecycle_handle_conflicts_routing_and_crashes() {
     assert_eq!(
         http.post(format!("{url}/api/node/new"))
             .header("x-mdc-service", "old-service-token")
-            .json(&serde_json::json!({"title":"Must not be created"}))
+            .json(&serde_json::json!({"name":"Must not be created"}))
             .send()
             .await
             .unwrap()
@@ -775,8 +775,8 @@ async fn browser_project_management_preserves_service_guards_and_cleans_branches
     ] {
         assert_eq!(request.send().await.unwrap().status(), 403);
     }
-    run(root, &["new", "-p", &main, "-t", "A"]).await;
-    run(root, &["new", "-p", &main, "-t", "B"]).await;
+    run(root, &["new", "-p", &main, "A"]).await;
+    run(root, &["new", "-p", &main, "B"]).await;
     run(root, &["dep", "add", "-p", &main, "A", "-t", "B"]).await;
     assert!(change(fork_body.clone())
         .send()
@@ -892,7 +892,7 @@ async fn main_branch_deletion_preserves_data_and_cache_in_cli_and_browser() {
     let root = cache.path();
     let main = format!("{}/main", fixture.db.database);
     let server = Started::start(root, &main, None).await;
-    run(root, &["new", "-p", &main, "-t", "Keep me"]).await;
+    run(root, &["new", "-p", &main, "KeepMe"]).await;
     run(root, &["stop", &main]).await;
     let version = fixture.db.version().await.unwrap();
     let main_root = fixture
@@ -947,7 +947,7 @@ async fn branch_deletion_requires_stopped_service_and_cleans_only_its_cache() {
         0
     );
     let _source = Started::start(root, &main, None).await;
-    run(root, &["new", "--proj", &main, "-t", "Original"]).await;
+    run(root, &["new", "--proj", &main, "Original"]).await;
     let original = run(root, &["export", "--proj", &main]).await;
     run(root, &["branch", "new", "copy", "--proj", &main]).await;
     let copied = mathdoc::store::Database::from_env(fixture.db.database.clone(), "copy".into())
@@ -1052,7 +1052,7 @@ async fn cli_editing_matches_backend_transactions_and_revision_guards() {
     let root = cache.path();
     let project = format!("{}/main", fixture.db.database);
     let _service = Started::start(root, &project, None).await;
-    let parent = run(root, &["new", "-p", &project, "-t", "Parent"]).await;
+    let parent = run(root, &["new", "-p", &project, "Parent"]).await;
     let original_rev = parent["revision"].as_str().unwrap();
     let child = run(
         root,
@@ -1060,7 +1060,6 @@ async fn cli_editing_matches_backend_transactions_and_revision_guards() {
             "new",
             "-p",
             &project,
-            "-t",
             "Child",
             "--parent",
             "Parent",
@@ -1069,7 +1068,7 @@ async fn cli_editing_matches_backend_transactions_and_revision_guards() {
         ],
     )
     .await;
-    assert_eq!(child["title"], "Child");
+    assert_eq!(child["name"], "Child");
     let linked = run(root, &["show", "Parent", "-p", &project]).await;
     assert_eq!(linked["depens"], serde_json::json!([child["fnode"]]));
     reject(
@@ -1078,7 +1077,6 @@ async fn cli_editing_matches_backend_transactions_and_revision_guards() {
             "new",
             "-p",
             &project,
-            "-t",
             "Stale",
             "--parent",
             "Parent",
@@ -1115,7 +1113,7 @@ async fn cli_editing_matches_backend_transactions_and_revision_guards() {
         ],
     )
     .await;
-    run(root, &["new", "-p", &project, "-t", "Other"]).await;
+    run(root, &["new", "-p", &project, "Other"]).await;
     reject(
         root,
         &[

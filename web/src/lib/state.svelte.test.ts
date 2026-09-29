@@ -8,7 +8,7 @@ import { removeDraft, setDraftDirty } from "./unsaved";
 function node(revision: string): NodeDetail {
   return {
     fnode: "node",
-    title: `Node ${revision}`,
+    name: `Node ${revision}`,
     depth: 1,
     revision,
     depens: [revision],
@@ -88,7 +88,7 @@ describe("NodeSession", () => {
     session.snapshot = { node: original, referrers: [], children: [] };
     const relation: NodePreview = {
       fnode: "relation",
-      title: "Relation",
+      name: "Relation",
       depth: 2,
       formalization: { lean: "verified", rocq: "unverified" },
     };

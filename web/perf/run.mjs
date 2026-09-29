@@ -268,7 +268,7 @@ async function runGraphSample(context, url) {
       }
     });
     await page.goto(`${url}/p/benchmark/main/`, { waitUntil: "domcontentloaded" });
-    await page.locator("h1.title", { hasText: "Performance fixture" }).waitFor();
+    await page.locator("h1.title", { hasText: "Performance.Fixture" }).waitFor();
     const graphResponse = page.waitForResponse((response) =>
       new URL(response.url()).pathname === "/p/benchmark/main/api/graph/full",
     );
@@ -458,9 +458,9 @@ async function runRelationsSample(context, url) {
     await page.waitForFunction(() => document.activeElement?.getAttribute("data-index") === "30");
     await page.keyboard.press("End");
     await last.click();
-    await page.locator("h1.title", { hasText: `Deterministic graph node ${RELATION_COUNT}` }).waitFor();
+    await page.locator("h1.title", { hasText: `Deterministic.Graph.Node${RELATION_COUNT}` }).waitFor();
     await page.getByRole("complementary", { name: "Referrers" }).locator(".card").click();
-    await page.locator("h1.title", { hasText: "Performance fixture" }).waitFor();
+    await page.locator("h1.title", { hasText: "Performance.Fixture" }).waitFor();
     if (await list.evaluate(element => element.scrollTop) !== 0) throw new Error("new node retained the old list's scroll offset");
     await page.getByRole("button", { name: "Remove dependency", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "remove dependencies", exact: true });

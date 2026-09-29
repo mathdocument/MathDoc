@@ -17,3 +17,5 @@ pub mod service;
 pub mod store;
 #[cfg(unix)]
 pub mod web;
+
+pub mod names;

@@ -20,7 +20,7 @@ const latexSource = Array.from(
 function summary(index = 0) {
   return {
     fnode: index === 0 ? rootFnode : `perf-node-${String(index).padStart(5, "0")}`,
-    title: index === 0 ? "Performance fixture" : `Deterministic graph node ${index}`,
+    name: index === 0 ? "Performance.Fixture" : `Deterministic.Graph.Node${index}`,
     depth: Math.floor(Math.log2(index + 1)),
   };
 }

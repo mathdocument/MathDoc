@@ -18,7 +18,7 @@
 
   interface SimNode {
     id: string;
-    title: string;
+    name: string;
     labelLines: string[] | null;
     depth: number;
     inDegree: number;
@@ -143,7 +143,7 @@
   function installGraph(data: GraphFull) {
     nodes = data.nodes.map((node) => ({
       id: node.fnode,
-      title: node.title,
+      name: node.name,
       labelLines: null,
       depth: node.depth,
       inDegree: 0,
@@ -221,7 +221,7 @@
     nodesByX = [];
     for (const depth of depths) {
       const layer = layers.get(depth)!;
-      layer.sort((a, b) => lexicalCompare(a.title, b.title) || lexicalCompare(a.id, b.id));
+      layer.sort((a, b) => lexicalCompare(a.name, b.name) || lexicalCompare(a.id, b.id));
       const columns = Math.ceil(layer.length / rowsPerColumn);
       const rows = Math.min(rowsPerColumn, layer.length);
       for (let index = 0; index < layer.length; index++) {
@@ -477,7 +477,7 @@
         ? palette.outline
         : `rgba(${palette.label}, 0.82)`;
       const labelY = n.y + r + 5 / viewK;
-      const labelLines = n.labelLines ??= wrapLabel(n.title, 16);
+      const labelLines = n.labelLines ??= wrapLabel(n.name, 16);
       for (let line = 0; line < labelLines.length; line++) {
         ctx.fillText(labelLines[line]!, n.x, labelY + line * 13 / viewK);
       }

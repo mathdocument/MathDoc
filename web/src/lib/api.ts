@@ -16,7 +16,7 @@ import type {
   NodeView,
   ResolveResponse,
   RmDepBody,
-  TitleBody,
+  NameBody,
 } from "./types";
 import { projectPath } from "./project-path";
 
@@ -124,7 +124,6 @@ function newNode(params: NewNodeBody, expectedRevision?: string): Promise<NodeDe
 export interface LeanProject {
   toolchain: string; lakefile: string; manifest: string | null;
   lakefile_name?: "lakefile.toml" | "lakefile.lean";
-  module_root?: string;
   files?: Record<string, string>;
 }
 export const api = {
@@ -178,11 +177,11 @@ export const api = {
         headers: { "if-match": `"${revision}"` },
       },
     )),
-  putTitle: (fnode: string, title: string, expectedRevision: string) =>
-    mutateNode(fnode, expectedRevision, (revision) => req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}/title`, {
+  putName: (fnode: string, name: string, expectedRevision: string) =>
+    mutateNode(fnode, expectedRevision, (revision) => req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}/name`, {
       method: "PUT",
       headers: { "content-type": "application/json", "if-match": `"${revision}"` },
-      body: JSON.stringify({ title } satisfies TitleBody),
+      body: JSON.stringify({ name } satisfies NameBody),
     })),
   addDep: (fnode: string, depFnode: string, expectedRevision: string) =>
     mutateNode(fnode, expectedRevision, (revision) => req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}/dep/add`, {

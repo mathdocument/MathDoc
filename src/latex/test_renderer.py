@@ -51,7 +51,7 @@ class RendererTest(unittest.TestCase):
     def test_worker_retains_configuration_until_its_content_key_changes(self):
         project = {'preamble': r'\newcommand{\word}{First}', 'bibliography': ''}
         request = {'kind': 'preview', 'project_key': 'first',
-                   'target': {'fnode': A, 'title': 'A', 'source': r'\word'}, 'dependencies': []}
+                   'target': {'fnode': A, 'name': 'A', 'source': r'\word'}, 'dependencies': []}
         messages = [
             {**request, 'project': project},
             {**request, 'target': {**request['target'], 'source': r'\input{forbidden}'}},
@@ -172,7 +172,7 @@ class RendererTest(unittest.TestCase):
         self.assertNotEqual(citations['Fox1957']['label'], citations['FoxOther1957']['label'])
         self.assertEqual(citations['Empty']['text'], 'Empty')
         preview = renderer.handle({'kind': 'preview', 'project': project, 'dependencies': [],
-            'target': {'fnode': A, 'title': 'A', 'source': r'\cite{Fox1957,Empty,Custom,ref}'}})
+            'target': {'fnode': A, 'name': 'A', 'source': r'\cite{Fox1957,Empty,Custom,ref}'}})
         self.assertEqual(preview['diagnostics'], [])
         self.assertIn('A title', preview['html'])
         self.assertIn('1957', preview['html'])
@@ -242,8 +242,8 @@ class RendererTest(unittest.TestCase):
             \begin{thm}\label{next}Third.\end{thm}
             \begin{setup}[Notation]\label{notation}Unnumbered.\end{setup}
         '''
-        dependency = {'fnode': A, 'title': 'External node', 'source': source}
-        target = {'fnode': B, 'title': 'Current node', 'source': r'''
+        dependency = {'fnode': A, 'name': 'External node', 'source': source}
+        target = {'fnode': B, 'name': 'Current node', 'source': r'''
             \begin{thm}\label{local}Local.\end{thm}
             \cref{local,main,lemma,definition,next}, \ref{main}, \nameref{main}.
         '''}
@@ -298,7 +298,7 @@ class RendererTest(unittest.TestCase):
             @article{BadUnused, title={\input{must-not-be-read}}}
         '''}
         request = {'kind': 'preview', 'project': project, 'dependencies': [],
-                   'target': {'fnode': A, 'title': 'A', 'source': r'\cite{GT2008}'}}
+                   'target': {'fnode': A, 'name': 'A', 'source': r'\cite{GT2008}'}}
         preview = renderer.handle(request)
         output = preview['html']
         self.assertEqual(preview['diagnostics'], [])
@@ -366,7 +366,7 @@ class RendererTest(unittest.TestCase):
             \newcommand{\afterEnd}{WRONG}
         '''}
         request = {'kind': 'preview', 'project': project, 'dependencies': [],
-                   'target': {'fnode': A, 'title': 'A', 'source': r'\section{Intro}\begin{thm}[Named]\label{t}$\cA$\end{thm}\nameref{t}, \cite{ref}. \chosen\wrap{Text}\begin{items}\item Item\end{items}'}}
+                   'target': {'fnode': A, 'name': 'A', 'source': r'\section{Intro}\begin{thm}[Named]\label{t}$\cA$\end{thm}\nameref{t}, \cite{ref}. \chosen\wrap{Text}\begin{items}\item Item\end{items}'}}
         preview = renderer.handle(request)
         self.assertEqual(preview['diagnostics'], [])
         self.assertIn('Theorem 1 (Named)', preview['html'])
@@ -389,8 +389,8 @@ class RendererTest(unittest.TestCase):
             renderer.parse(r'\iftrue\newcommand{\x}{X}', '')
 
     def test_macros_references_citations_and_isolated_drafts(self):
-        dependency = {'fnode': A, 'title': 'A', 'source': r'\begin{thm}[Named result]\label{thm:a}$\cA$\end{thm}'}
-        target = {'fnode': B, 'title': 'B', 'source': r'\section{Intro}\label{intro}By \nameref{thm:a}, see \cite[2]{ref}. \begin{items}\item $\cA$\end{items}'}
+        dependency = {'fnode': A, 'name': 'A', 'source': r'\begin{thm}[Named result]\label{thm:a}$\cA$\end{thm}'}
+        target = {'fnode': B, 'name': 'B', 'source': r'\section{Intro}\label{intro}By \nameref{thm:a}, see \cite[2]{ref}. \begin{items}\item $\cA$\end{items}'}
         request = {'kind': 'preview', 'project': PROJECT, 'target': target, 'dependencies': [dependency]}
         preview = renderer.handle(request)
         self.assertEqual(preview['diagnostics'], [])

@@ -107,8 +107,7 @@ async fn block_batch_preserves_untouched_data_and_commits_all_or_nothing() {
         saved.source("latex").unwrap(),
         updates["latex"].as_str().unwrap()
     );
-    assert_eq!(saved.title, node.title);
-    assert_eq!(saved.module, node.module);
+    assert_eq!(saved.name, node.name);
     assert_eq!(saved.depens, node.depens);
     assert_eq!(result["revision"], saved.revision());
     assert_eq!(
@@ -245,7 +244,7 @@ async fn api_mutations_use_database_revisions_without_workspace_files() {
     let fixture = common::TestDatabase::new("mdcapi").await;
     let db = &fixture.db;
     let app = service::router(Service::open(db.clone()).await.unwrap());
-    let (status, a) = call(&app, "POST", "/api/node/new", json!({"title":"A"}), None).await;
+    let (status, a) = call(&app, "POST", "/api/node/new", json!({"name":"A"}), None).await;
     assert_eq!(status, 200, "{a}");
     for query in ["mode=unknown&depth=1", "mode=show&depth=-2"] {
         let (status, _) = call(
@@ -303,7 +302,7 @@ async fn api_mutations_use_database_revisions_without_workspace_files() {
             &app,
             "POST",
             "/api/node/new",
-            json!({"title":"B","file":"b.mdoc"}),
+            json!({"name":"B","file":"b.mdoc"}),
             None
         )
         .await
@@ -322,7 +321,7 @@ async fn api_mutations_use_database_revisions_without_workspace_files() {
         &app,
         "POST",
         "/api/node/new",
-        json!({"title":"linked","parent_fnode":id}),
+        json!({"name":"linked","parent_fnode":id}),
         view["node"]["revision"].as_str(),
     )
     .await;
@@ -521,5 +520,78 @@ async fn api_mutations_use_database_revisions_without_workspace_files() {
     assert_eq!(
         call(&restored, "POST", "/api/import", bundle, None).await.0,
         409
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires local TerminusDB and MDC_TERMINUS_PASSWORD"]
+async fn names_and_import_renames_are_atomic() {
+    use mathdoc::store::{Block, Node};
+    let fixture = common::TestDatabase::new("mdcnames").await;
+    let db = &fixture.db;
+    let original = db.load().await.unwrap();
+    let a = Node::new("A.X".into()).unwrap();
+    let mut b = Node::new("B.X".into()).unwrap();
+    b.depens.push(a.fnode.clone());
+    b.blocks.push(Block {
+        srctype: "lean".into(),
+        content: "import A.X\n-- import A.X\ntheorem useA : True := by trivial\n".into(),
+        ..Default::default()
+    });
+    db.put(&[a.clone(), b.clone()], &original.version, "Naming fixture")
+        .await
+        .unwrap();
+    let app = service::router(Service::open(db.clone()).await.unwrap());
+    let path = format!("/api/node/{}/name", a.fnode);
+    let before = db.load().await.unwrap();
+    for invalid in ["B.X", "b.x", "Invalid name", "A..X"] {
+        assert_eq!(
+            call(
+                &app,
+                "PUT",
+                &path,
+                json!({"name":invalid}),
+                Some(&a.revision())
+            )
+            .await
+            .0,
+            422
+        );
+        assert_eq!(db.version().await.unwrap(), before.version);
+    }
+    let (status, result) = call(
+        &app,
+        "PUT",
+        &path,
+        json!({"name":"D.Result"}),
+        Some(&a.revision()),
+    )
+    .await;
+    assert_eq!(status, 200, "{result}");
+    assert_eq!(result["fnode"], a.fnode);
+    assert_eq!(result["name"], "D.Result");
+    assert!(result.get("title").is_none() && result.get("module").is_none());
+    let after = db.load().await.unwrap();
+    assert_eq!(after.resolve("D.Result").unwrap().fnode, a.fnode);
+    assert!(after.resolve("A.X").is_err());
+    assert_eq!(after.nodes[&b.fnode].depens, b.depens);
+    assert_eq!(
+        after.nodes[&b.fnode].source("lean").unwrap(),
+        "import D.Result\n-- import A.X\ntheorem useA : True := by trivial\n"
+    );
+    for id in [&a.fnode, &b.fnode] {
+        assert_ne!(before.lean_keys[id], after.lean_keys[id]);
+    }
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/node/new",
+            json!({"name":"d.result"}),
+            None
+        )
+        .await
+        .0,
+        422
     );
 }

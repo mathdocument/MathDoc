@@ -367,7 +367,7 @@
   async function deleteActiveNode() {
     const node = activeNode;
     if (!node || refreshing) return;
-    if (!window.confirm(`Delete “${node.title}”? This removes the node and all dependencies pointing to it. Unsaved edits to this node will also be discarded.`)) return;
+    if (!window.confirm(`Delete “${node.name}”? This removes the node and all dependencies pointing to it. Unsaved edits to this node will also be discarded.`)) return;
     refreshing = true;
     refreshError = null;
     let clearMutation: (() => void) | undefined;
@@ -655,7 +655,7 @@
       <span class="status">
         <span class="status-fnode" title={statusLoad.node.fnode}>{statusLoad.node.fnode.slice(0, 8)}</span>
         <span class="status-dot" aria-hidden="true"></span>
-        <span class="status-title" title={statusLoad.node.title}>{statusLoad.node.title}</span>
+        <span class="status-title" title={statusLoad.node.name}>{statusLoad.node.name}</span>
       </span>
     {:else if statusLoad.kind === "error"}
       <span class="status"><span class="status-title" title={statusLoad.message}>error: {statusLoad.message}</span></span>

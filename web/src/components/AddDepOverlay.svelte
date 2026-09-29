@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import { Link2, Plus, Search, X } from "@lucide/svelte";
+  import { nodeNameError } from "../lib/node-name";
   import { api, isAbortError } from "../lib/api";
   import { errMsg, shortFnode } from "../lib/format";
   import type { DependencyCandidatesEmpty, NodeDetail, NodeInfo } from "../lib/types";
@@ -92,7 +93,7 @@
   });
 
   let canCreate = $derived(
-    query.trim().length > 0 &&
+    !nodeNameError(query) &&
       results.length === 0 &&
       !loading &&
       candidateEmpty?.kind === "no_match",
@@ -142,12 +143,14 @@
 
   async function createAndAdd() {
     if (saving || !canCreate) return;
+    const invalid = nodeNameError(query);
+    if (invalid) { error = invalid; return; }
     saving = true;
     const clearMutation = trackMutation();
     error = null;
     try {
-      const params: { title: string; parent_fnode: string } = {
-        title: query.trim(),
+      const params: { name: string; parent_fnode: string } = {
+        name: query.trim(),
         parent_fnode: targetFnode,
       };
       const updated = await api.newNode(params, targetRevision);
@@ -248,7 +251,7 @@
               <span class="choice"><Plus size={15} strokeWidth={1.8} /></span>
               <span class="depth">[{r.depth}]</span>
               <span class="fnode">{shortFnode(r.fnode)}</span>
-              <span class="title">{r.title}</span>
+              <span class="title">{r.name}</span>
             </button>
           </li>
         {:else}
@@ -265,7 +268,7 @@
           {:else if emptyMessage}
             <li class="empty modal-empty">{emptyMessage}</li>
           {:else}
-            <li class="empty modal-empty">{loading ? "Searching..." : "Search by title or fnode"}</li>
+            <li class="empty modal-empty">{loading ? "Searching..." : "Search by name or UUID"}</li>
           {/if}
         {/each}
       {/if}

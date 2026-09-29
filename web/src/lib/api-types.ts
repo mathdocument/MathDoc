@@ -1,6 +1,6 @@
 // Wire types for the versioned MathDoc web service.
 
-export type NodeSummary = { fnode: string, title: string, depth: number, };
+export type NodeSummary = { fnode: string, name: string, depth: number, };
 
 export type FormalCodeStatus = "unverified" | "sorry" | "conditional" | "verified";
 
@@ -14,13 +14,13 @@ export type DependencyCandidates = { nodes: Array<NodeSummary>,
  */
 empty: DependencyCandidatesEmpty | null, };
 
-export type GraphRootItem = { fnode: string, title: string, component_size: number, topo_depth: number, };
+export type GraphRootItem = { fnode: string, name: string, component_size: number, topo_depth: number, };
 
 export type GraphCheckReport = { nodes: number, edges: number, };
 
 export type SrcBlock = { srctype: string, content: string, metadata: { [key in string]: string }, };
 
-export type NodeDetail = { module?: string, fnode: string, title: string, depth: number,
+export type NodeDetail = { fnode: string, name: string, depth: number,
 /**
  * Revision of the database node represented by this response.
  */
@@ -34,7 +34,7 @@ export type NodePreview = NodeSummary & { formalization: FormalizationStatus };
 
 export type NodeView = { node: NodeDetail, referrers: Array<NodePreview>, children: Array<NodePreview>, };
 
-export type ResolveResponse = { fnode: string, title: string, };
+export type ResolveResponse = { fnode: string, name: string, };
 
 export type GraphFull = { nodes: Array<NodeSummary & { lean: FormalCodeStatus }>, edges: Array<[number, number]>, };
 
@@ -44,13 +44,13 @@ export type ResolveQuery = { ref: string, };
 
 export type BlockBody = { content: string, };
 
-export type TitleBody = { title: string, };
+export type NameBody = { name: string, };
 
 export type AddDepBody = { dep_fnode: string, };
 
 export type RmDepBody = { dep_fnodes: Array<string>, };
 
-export type NewNodeBody = { title: string,
+export type NewNodeBody = { name: string,
 /**
  * If set, the new node is added as a direct dependency of this node.
  */

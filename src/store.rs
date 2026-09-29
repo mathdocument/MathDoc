@@ -61,6 +61,21 @@ pub fn module_parts(mut module: &str) -> Result<Vec<&str>> {
     Ok(parts)
 }
 
+/// One portable, unquoted qualified identifier serves as both node and module name.
+pub fn validate_name(name: &str) -> Result<()> {
+    if name
+        .split('.')
+        .any(|part| !plain_module_part(part) || part == "_")
+        || name
+            .split('.')
+            .next()
+            .is_some_and(|part| part.eq_ignore_ascii_case("lakefile"))
+    {
+        bail!("invalid node name: use dot-separated identifiers (letters or _, then letters, digits, _ or '), such as MX.Dot32.Exact");
+    }
+    Ok(())
+}
+
 fn plain_module_part(part: &str) -> bool {
     part.starts_with(|c: char| c.is_alphabetic() || c == '_')
         && part
@@ -87,9 +102,7 @@ pub struct Block {
 #[serde(deny_unknown_fields)]
 pub struct Node {
     pub fnode: String,
-    pub title: String,
-    /// Stable Lean module identity, independent of display name.
-    pub module: String,
+    pub name: String,
     #[serde(default)]
     pub depens: Vec<String>,
     #[serde(default)]
@@ -97,12 +110,11 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn new(title: String) -> Result<Self> {
+    pub fn new(name: String) -> Result<Self> {
         let id = uuid::Uuid::new_v4();
         let node = Self {
             fnode: id.to_string(),
-            title,
-            module: format!("Lib.N_{}", id.simple()),
+            name,
             depens: vec![],
             blocks: vec![],
         };
@@ -126,13 +138,13 @@ impl Node {
         {
             bail!("node identity must be a canonical lowercase hyphenated UUID");
         }
-        if self.title.trim().is_empty()
-            || self.title != self.title.trim()
-            || self.title.chars().any(char::is_control)
+        if self.name.trim().is_empty()
+            || self.name != self.name.trim()
+            || self.name.chars().any(char::is_control)
         {
             bail!("name must be nonempty, trimmed and contain no control characters");
         }
-        module_parts(&self.module)?;
+        validate_name(&self.name)?;
         let mut types = BTreeSet::new();
         for block in &self.blocks {
             if !BLOCK_TYPES.contains(&block.srctype.as_str()) || !types.insert(&block.srctype) {
@@ -153,7 +165,7 @@ impl Node {
     }
     fn document(&self) -> Value {
         json!({"@id":format!("Node/{}", self.fnode), "@type":"Node", "fnode":self.fnode,
-            "title":self.title, "module":self.module,
+            "name":self.name,
             "depens":self.depens.iter().map(|id| format!("Node/{id}")).collect::<Vec<_>>(),
             "blocks":serde_json::to_string(&self.blocks).expect("serializable blocks")})
     }
@@ -166,8 +178,7 @@ impl Node {
         };
         let node = Self {
             fnode: string("fnode")?,
-            title: string("title")?,
-            module: string("module")?,
+            name: string("name")?,
             depens: value["depens"]
                 .as_array()
                 .into_iter()
@@ -196,9 +207,6 @@ pub struct LeanProject {
     /// Omitted for existing TOML projects; native Lean configuration stays byte-exact.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lakefile_name: Option<String>,
-    /// Namespace for newly created nodes. Existing module identities are unchanged.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub module_root: Option<String>,
     /// Versioned supporting text files, separate from graph-managed Lean modules.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub files: BTreeMap<String, String>,
@@ -207,11 +215,9 @@ impl Default for LeanProject {
     fn default() -> Self {
         Self {
             toolchain: "leanprover/lean4:v4.33.1".into(),
-            lakefile: "name = \"MathDoc\"\nversion = \"0.1.0\"\n\n[[lean_lib]]\nname = \"Lib\"\n"
-                .into(),
+            lakefile: "name = \"MathDoc\"\nversion = \"0.1.0\"\n".into(),
             manifest: None,
             lakefile_name: None,
-            module_root: None,
             files: BTreeMap::new(),
         }
     }
@@ -220,20 +226,14 @@ impl LeanProject {
     pub fn lakefile_name(&self) -> &str {
         self.lakefile_name.as_deref().unwrap_or("lakefile.toml")
     }
-    pub fn module_root(&self) -> &str {
-        self.module_root.as_deref().unwrap_or("Lib")
-    }
     pub fn validate_modules<'a>(&self, nodes: impl Iterator<Item = &'a Node>) -> Result<()> {
         for node in nodes {
-            let path = module_file(&node.module, "lean")?;
+            let path = module_file(&node.name, "lean")?;
             if self
                 .files
                 .contains_key(&path.to_string_lossy().into_owned())
             {
-                bail!(
-                    "managed module {} collides with a project file",
-                    node.module
-                );
+                bail!("managed module {} collides with a project file", node.name);
             }
         }
         Ok(())
@@ -247,7 +247,6 @@ impl LeanProject {
         {
             bail!("pin a Lean toolchain release, such as leanprover/lean4:v4.33.1");
         }
-        module_parts(self.module_root())?;
         let config: toml::Value = match self.lakefile_name() {
             "lakefile.toml" => toml::from_str(&self.lakefile)?,
             "lakefile.lean" => {
@@ -258,21 +257,6 @@ impl LeanProject {
             }
             _ => bail!("lakefile_name must be lakefile.toml or lakefile.lean"),
         };
-        if self.lakefile_name() == "lakefile.toml"
-            && !config
-                .get("lean_lib")
-                .and_then(toml::Value::as_array)
-                .is_some_and(|libs| {
-                    libs.iter().any(|l| {
-                        l.get("name").and_then(toml::Value::as_str) == Some(self.module_root())
-                    })
-                })
-        {
-            bail!(
-                "Lake project must declare the {} lean_lib",
-                self.module_root()
-            );
-        }
         for key in ["srcDir", "buildDir", "leanLibDir"] {
             if config.get(key).is_some() {
                 bail!("custom {key} is not supported in managed projects");
@@ -482,7 +466,7 @@ impl Database {
             .await?;
         let schema = json!([
             {"@type":"Class", "@id":"Node", "@key":{"@type":"Lexical","@fields":["fnode"]},
-             "fnode":"xsd:string", "title":"xsd:string", "module":"xsd:string", "blocks":"xsd:string",
+             "fnode":"xsd:string", "name":"xsd:string", "blocks":"xsd:string",
              "depens":{"@type":"Set","@class":"Node"}},
             {"@type":"Class", "@id":"Project", "@key":{"@type":"Lexical","@fields":["name"]},
              "name":"xsd:string", "config":"xsd:string"}
@@ -767,7 +751,7 @@ impl Snapshot {
                 .values()
                 .map(|n| {
                     (
-                        module_file(&n.module, "lean").expect("validated module"),
+                        module_file(&n.name, "lean").expect("validated module"),
                         n.fnode.clone(),
                     )
                 })
@@ -790,7 +774,7 @@ impl Snapshot {
         for id in &seeds {
             let node = &self.nodes[id];
             let mut prefix =
-                serde_json::to_vec(&(&self.project_key, &node.module, node.source("lean")))
+                serde_json::to_vec(&(&self.project_key, &node.name, node.source("lean")))
                     .expect("serializable inputs");
             *prefix.last_mut().unwrap() = b',';
             let mut hash = Sha256::new();
@@ -830,7 +814,7 @@ impl Snapshot {
                 .map(Arc::as_ref)
                 .context("node not found");
         }
-        let mut matches = self.nodes.values().filter(|n| n.title == reference);
+        let mut matches = self.nodes.values().filter(|n| n.name == reference);
         let node = matches
             .next()
             .context("node not found; use an exact name or complete UUID")?;
@@ -852,7 +836,7 @@ impl Snapshot {
         if changes.iter().all(|n| {
             self.nodes
                 .get(&n.fnode)
-                .is_some_and(|old| old.depens == n.depens && old.module == n.module)
+                .is_some_and(|old| old.depens == n.depens && old.name == n.name)
         }) {
             return Ok(());
         }
@@ -863,17 +847,23 @@ impl Snapshot {
             .filter(|n| !ids.contains(&n.fnode))
             .map(|n| {
                 (
-                    module_file(&n.module, "lean").expect("validated module"),
+                    module_file(&n.name, "lean")
+                        .expect("validated module")
+                        .to_string_lossy()
+                        .to_lowercase(),
                     n.fnode.clone(),
                 )
             })
             .collect();
         for node in &changes {
-            if let Some(owner) =
-                modules.insert(module_file(&node.module, "lean")?, node.fnode.clone())
-            {
+            if let Some(owner) = modules.insert(
+                module_file(&node.name, "lean")?
+                    .to_string_lossy()
+                    .to_lowercase(),
+                node.fnode.clone(),
+            ) {
                 if owner != node.fnode {
-                    bail!("Lean module file is already assigned to another node");
+                    bail!("node name already exists (including case-insensitive file collisions)");
                 }
             }
             graph.insert(node.fnode.clone(), node.depens.clone());
@@ -899,7 +889,7 @@ impl Snapshot {
             .filter(|n| {
                 self.nodes.get(&n.fnode).is_none_or(|old| {
                     old.source("lean") != n.source("lean")
-                        || old.module != n.module
+                        || old.name != n.name
                         || old.depens != n.depens
                 })
             })
@@ -908,7 +898,7 @@ impl Snapshot {
         let graph_changed = changes.iter().any(|n| {
             self.nodes
                 .get(&n.fnode)
-                .is_none_or(|old| old.depens != n.depens || old.module != n.module)
+                .is_none_or(|old| old.depens != n.depens || old.name != n.name)
         });
         for node in changes {
             self.nodes.insert(node.fnode.clone(), Arc::new(node));
@@ -1000,6 +990,30 @@ mod tests {
     }
 
     #[test]
+    fn node_names_are_unique_qualified_identifiers() {
+        for name in ["A", "MX.Dot32.Exact", "数学.引理", "A._private", "A.x'"] {
+            assert!(Node::new(name.into()).is_ok(), "{name}");
+        }
+        for name in [
+            "",
+            " ",
+            "A B",
+            "A..B",
+            ".A",
+            "A.",
+            "A/B",
+            "A::B",
+            "A.1",
+            "A.«B»",
+            "_",
+            "A._",
+            "lakefile",
+            "LakeFile.X",
+        ] {
+            assert!(Node::new(name.into()).is_err(), "{name}");
+        }
+    }
+    #[test]
     fn module_names_preserve_filename_boundaries() {
         let name = "Lib.EGA.«1-1.7.1»";
         assert_eq!(
@@ -1051,7 +1065,6 @@ mod tests {
     fn native_project_preserves_configuration_and_rejects_file_collisions() {
         let mut project = LeanProject {
             lakefile_name: Some("lakefile.lean".into()),
-            module_root: Some("Mathlib".into()),
             lakefile: "import Lake\nopen Lake DSL\npackage mathlib\nlean_lib Mathlib\n".into(),
             manifest: Some("{\"packages\":[]}".into()),
             files: [(
@@ -1068,7 +1081,7 @@ mod tests {
             project
         );
         let mut node = Node::new("Cache".into()).unwrap();
-        node.module = "Cache.Main".into();
+        node.name = "Cache.Main".into();
         assert!(project.validate_modules([&node].into_iter()).is_err());
         for path in [
             "../outside",
@@ -1120,16 +1133,16 @@ mod tests {
         assert!(s.validate_changes(&[changed]).is_err());
         assert_eq!(Node::from_document(a.document()).unwrap(), a);
         let mut alias = Node::new("Alias".into()).unwrap();
-        alias.module = format!("Lib.«{}»", a.module.split_once('.').unwrap().1);
+        alias.name = a.name.clone();
         assert_eq!(
-            module_file(&alias.module, "lean").unwrap(),
-            module_file(&a.module, "lean").unwrap()
+            module_file(&alias.name, "lean").unwrap(),
+            module_file(&a.name, "lean").unwrap()
         );
         assert!(s.validate_changes([&alias]).is_err());
         let mut original = a.clone();
         original.fnode = uuid::Uuid::new_v4().to_string();
-        original.module = "Lib.Other".into();
-        alias.module = "Lib.«Other»".into();
+        original.name = "Lib.Other".into();
+        alias.name = "lib.other".into();
         assert!(s.validate_changes([&original, &alias]).is_err());
     }
     #[test]
@@ -1170,7 +1183,7 @@ mod tests {
                 let original = digest(
                     &serde_json::to_vec(&(
                         &snapshot.project.key(),
-                        &node.module,
+                        &node.name,
                         node.source("lean"),
                         deps,
                     ))
@@ -1194,7 +1207,7 @@ mod tests {
         assert!(snapshot.referrers[&a.fnode].is_empty());
         assert_eq!(snapshot.referrers[&c.fnode], vec![b.fnode.clone()]);
         assert_eq!(
-            snapshot.modules[&module_file(&c.module, "lean").unwrap()],
+            snapshot.modules[&module_file(&c.name, "lean").unwrap()],
             c.fnode
         );
         let keys = snapshot.lean_keys.clone();

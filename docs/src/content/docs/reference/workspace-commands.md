@@ -175,27 +175,25 @@ TerminusDB directly. Branch deletion does not delete its database; use
 
 ## Nodes
 
-References are exact names or complete UUIDs. Ambiguous names require a UUID;
-paths and UUID prefixes are not accepted.
+References are exact, unique names or complete UUIDs; paths and UUID prefixes are not accepted.
 
 ```sh
-mdc new -p myproject/main -t 'Lemma'
-mdc new -p myproject/main -t 'Another lemma' --parent 'Theorem' --revision PARENT_REV
+mdc new -p myproject/main 'Lemma'
+mdc new -p myproject/main 'Another.Lemma' --parent 'Theorem' --revision PARENT_REV
 mdc show -p myproject/main 'Lemma'
-mdc rename -p myproject/main 'Lemma' 'Renamed lemma' --revision NODE_REV
-printf 'Explanation.\n' | mdc edit -p myproject/main 'Renamed lemma' --type text --revision NODE_REV
-mdc edit -p myproject/main 'Renamed lemma' --json --revision NODE_REV < blocks.json
-mdc edit -p myproject/main 'Renamed lemma' --type text --delete --revision NODE_REV
-mdc del -p myproject/main 'Renamed lemma' --revision NODE_REV
+mdc rename -p myproject/main 'Lemma' 'Renamed.Lemma' --revision NODE_REV
+printf 'Explanation.\n' | mdc edit -p myproject/main 'Renamed.Lemma' --type text --revision NODE_REV
+mdc edit -p myproject/main 'Renamed.Lemma' --json --revision NODE_REV < blocks.json
+mdc edit -p myproject/main 'Renamed.Lemma' --type text --delete --revision NODE_REV
+mdc del -p myproject/main 'Renamed.Lemma' --revision NODE_REV
 ```
 
 `new` returns the created node. With `--parent`, node creation and adding the edge
 from parent to new node are one transaction; `--revision` applies to that parent
-and requires `--parent`. Names may be duplicated, but generated UUIDs and module
-identities are distinct.
+and requires `--parent`. Names are unique within the branch, including case-insensitive file collisions.
 
 `show` returns the node's fields, revision and formalization status. `rename`
-changes only its display title, preserving its UUID and Lean module identity.
+changes the node name and its Lean module path, preserving its UUID and dependency edges. Managed Lean header imports are rewritten in the same transaction. Declaration names and namespaces inside proof bodies are not renamed.
 `edit` replaces or creates a complete source block from stdin. Types are `text`,
 `lean` (default), `rocq` and `latex`. `--delete` removes that block and reads no
 stdin; an empty source without `--delete` remains an existing block.

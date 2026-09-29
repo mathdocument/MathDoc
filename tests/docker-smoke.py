@@ -121,7 +121,7 @@ def main():
             cli("branch", "new", "paused", "-p", "smoke/main")
             cli("start", "smoke/paused")
             cli("stop", "smoke/paused")
-            node = cli("new", "-p", "smoke/main", "-t", "Container proof")
+            node = cli("new", "-p", "smoke/main", "ContainerProof")
             wrapped = subprocess.run([str(deployment / "mdc"), "edit", "-p", "smoke/main",
                                       node["fnode"]], cwd=temporary, env=env,
                                      input="theorem container_proof : 1 + 1 = 2 := rfl\n",

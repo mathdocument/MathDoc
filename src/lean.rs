@@ -357,7 +357,8 @@ impl Input {
         let node = &self.chain.last().context("no Lean target")?.0;
         Ok(digest(&serde_json::to_vec(&(
             &self.project_key,
-            &node.module,
+            &self.modules,
+            &node.name,
             self.chain[..self.chain.len() - 1]
                 .iter()
                 .map(|(_, key)| key)
@@ -553,11 +554,11 @@ impl LeanService {
             let Some(source) = node.source("lean") else {
                 continue;
             };
-            if tokio::fs::read_to_string(module_path(root, &node.module)?).await? != source {
+            if tokio::fs::read_to_string(module_path(root, &node.name)?).await? != source {
                 bail!("editor dependency source changed during checking");
             }
             let base = root.join(".lake/build/lib/lean");
-            if artifact_parts(root, &node.module).is_none() {
+            if artifact_parts(root, &node.name).is_none() {
                 continue; // No compiler evidence: leave the dependency unverified.
             }
             #[derive(Deserialize)]
@@ -567,11 +568,10 @@ impl LeanService {
                 direct_imports: Vec<Vec<Value>>,
             }
             let data =
-                tokio::fs::read(base.join(crate::store::module_file(&node.module, "ilean")?))
-                    .await?;
+                tokio::fs::read(base.join(crate::store::module_file(&node.name, "ilean")?)).await?;
             let metadata: Ilean = serde_json::from_slice(&data)?;
             if crate::store::module_file(&metadata.module, "lean")?
-                != crate::store::module_file(&node.module, "lean")?
+                != crate::store::module_file(&node.name, "lean")?
             {
                 bail!("Lean artifact module mismatch");
             }
@@ -579,11 +579,7 @@ impl LeanService {
             pending.extend(imports.clone());
             observed.insert(
                 id.clone(),
-                (
-                    artifact_has_sorry(&base, &node.module).await,
-                    vec![],
-                    imports,
-                ),
+                (artifact_has_sorry(&base, &node.name).await, vec![], imports),
             );
         }
         let missing: Vec<_> = observed
@@ -596,7 +592,7 @@ impl LeanService {
         let paths = missing
             .iter()
             .map(|id| {
-                artifact_parts(root, &nodes[id].module).context("Lean import artifacts disappeared")
+                artifact_parts(root, &nodes[id].name).context("Lean import artifacts disappeared")
             })
             .collect::<Result<Vec<_>>>()?;
         for (id, has_sorry) in missing
@@ -632,7 +628,7 @@ impl LeanService {
                 &input.project,
             )?;
             let artifacts = (node.fnode != target.fnode)
-                .then(|| cache::Artifacts::from_trace(root, &node.module))
+                .then(|| cache::Artifacts::from_trace(root, &node.name))
                 .flatten()
                 .filter(|a| a.complete(&root.join(".lake/cache")));
             let result = CheckResult {
@@ -930,7 +926,7 @@ impl LeanService {
             .cloned()
             .context("no Lean target result")?;
         if build && result.certified {
-            build_module(&manager.root, &target.module).await?;
+            build_module(&manager.root, &target.name).await?;
             for (node, key) in &input.chain {
                 let mut checked = if node.fnode == target_id {
                     result.clone()
@@ -940,7 +936,7 @@ impl LeanService {
                         .filter(|r| &r.input_key == key)
                         .context("dependency evidence changed during build")?
                 };
-                let artifacts = cache::Artifacts::from_trace(&manager.root, &node.module)
+                let artifacts = cache::Artifacts::from_trace(&manager.root, &node.name)
                     .filter(|a| a.complete(&manager.root.join(".lake/cache")))
                     .context("Lake succeeded without complete native module artifacts")?;
                 checked.artifacts = Some(artifacts);
@@ -1037,7 +1033,7 @@ impl LeanService {
             Some(lsp) => lsp,
             None => Lsp::start(&manager.root).await?,
         };
-        let uri = file_uri(&module_path(&manager.root, &target.module)?)?;
+        let uri = file_uri(&module_path(&manager.root, &target.name)?)?;
         // Lake prepares the import closure once. Reuse its native artifact
         // metadata, as browser certification does, instead of opening every
         // dependency in a second interactive worker.
@@ -1052,7 +1048,7 @@ impl LeanService {
         let mut worker = self.worker().await?;
         let manager = &mut *worker.0;
         self.prepare_input(manager, &input).await?;
-        let uri = file_uri(&module_path(&manager.root, &node.module)?)?;
+        let uri = file_uri(&module_path(&manager.root, &node.name)?)?;
         let dependency_key = input.environment_key()?;
         let mut lsp = match manager.lsp.take() {
             Some(lsp) => lsp,
@@ -1116,10 +1112,11 @@ pub async fn refresh_editor_sources(
     input: &Input,
     sources: &mut SourceState,
 ) -> Result<()> {
+    write_project_modules(root, &input.project, input.modules.keys()).await?;
     for (node, _) in &input.chain {
         if sources.get(&node.fnode).is_some_and(|old| {
             Arc::ptr_eq(old, node)
-                || old.module == node.module && old.source("lean") == node.source("lean")
+                || old.name == node.name && old.source("lean") == node.source("lean")
         }) {
             continue;
         }
@@ -1127,9 +1124,9 @@ pub async fn refresh_editor_sources(
             write_source(root, node, source).await?;
         } else {
             for file in [
-                module_path(root, &node.module)?,
+                module_path(root, &node.name)?,
                 root.join(".lake/build/lib/lean")
-                    .join(crate::store::module_file(&node.module, "olean")?),
+                    .join(crate::store::module_file(&node.name, "olean")?),
             ] {
                 match tokio::fs::remove_file(file).await {
                     Ok(()) => (),
@@ -1148,11 +1145,49 @@ pub fn file_uri(path: &Path) -> Result<String> {
         .map_err(|_| anyhow::anyhow!("invalid Lean file path"))
 }
 async fn write_source(root: &Path, node: &Node, source: &str) -> Result<()> {
-    let path = module_path(root, &node.module)?;
+    let path = module_path(root, &node.name)?;
     tokio::fs::create_dir_all(path.parent().unwrap()).await?;
     tokio::fs::write(path, source).await?;
     Ok(())
 }
+/// Exact node modules belong to one generated target; it never claims external
+/// modules merely because they share a top-level prefix with a node.
+pub async fn write_project_modules<'a>(
+    root: &Path,
+    project: &LeanProject,
+    modules: impl IntoIterator<Item = &'a PathBuf>,
+) -> Result<()> {
+    let names: Vec<_> = modules
+        .into_iter()
+        .map(|path| {
+            path.with_extension("")
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(".")
+        })
+        .collect();
+    let extra = if project.lakefile_name() == "lakefile.toml" {
+        format!(
+            "\n[[lean_lib]]\nname = \"MdcNodes\"\nroots = []\nglobs = {}\n",
+            toml::Value::try_from(&names)?
+        )
+    } else {
+        let globs = names
+            .iter()
+            .map(|name| format!(".one `{name}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("\nlean_lib MdcNodes where\n  roots := #[]\n  globs := #[{globs}]\n")
+    };
+    let content = format!("{}\n{extra}", project.lakefile);
+    let path = root.join(project.lakefile_name());
+    if tokio::fs::read_to_string(&path).await.ok().as_deref() != Some(&content) {
+        tokio::fs::write(path, content).await?;
+    }
+    Ok(())
+}
+
 pub async fn prepare_project(root: &Path, project: &LeanProject) -> Result<()> {
     project.validate()?;
     tokio::fs::create_dir_all(root).await?;
@@ -1276,8 +1311,8 @@ mod tests {
         )
         .unwrap();
         let service = Arc::new(service);
-        let dependency = Node::new("Concurrent dependency".into()).unwrap();
-        let target = Node::new("Concurrent target".into()).unwrap();
+        let dependency = Node::new("Concurrent.dependency".into()).unwrap();
+        let target = Node::new("Concurrent.target".into()).unwrap();
         let gate = cache.path().join("release");
         let input = |value| {
             let mut dependency = dependency.clone();
@@ -1290,7 +1325,7 @@ mod tests {
             target.depens.push(dependency.fnode.clone());
             target.blocks.push(crate::store::Block {
                 srctype: "lean".into(),
-                content: format!("import Lean\nimport {}\nrun_cmd Lean.Elab.Command.liftIO <| do\n  IO.FS.writeFile {} \"started\"\n  while !(← System.FilePath.pathExists {}) do\n    IO.sleep 10\ntheorem concurrentProof : concurrentValue = {value} := rfl\n", dependency.module,
+                content: format!("import Lean\nimport {}\nrun_cmd Lean.Elab.Command.liftIO <| do\n  IO.FS.writeFile {} \"started\"\n  while !(← System.FilePath.pathExists {}) do\n    IO.sleep 10\ntheorem concurrentProof : concurrentValue = {value} := rfl\n", dependency.name,
                     serde_json::to_string(&cache.path().join(format!("started-{value}")).to_string_lossy()).unwrap(),
                     serde_json::to_string(&gate.to_string_lossy()).unwrap()),
                 ..Default::default()
@@ -1302,7 +1337,7 @@ mod tests {
                     .into_iter()
                     .map(|n| {
                         (
-                            crate::store::module_file(&n.module, "lean").unwrap(),
+                            crate::store::module_file(&n.name, "lean").unwrap(),
                             n.fnode.clone(),
                         )
                     })
@@ -1360,8 +1395,8 @@ mod tests {
             std::fs::canonicalize(second_worker.root.join(".lake/cache")).unwrap()
         );
         assert_ne!(
-            std::fs::read(module_path(&first_worker.root, &dependency.module).unwrap()).unwrap(),
-            std::fs::read(module_path(&second_worker.root, &dependency.module).unwrap()).unwrap()
+            std::fs::read(module_path(&first_worker.root, &dependency.name).unwrap()).unwrap(),
+            std::fs::read(module_path(&second_worker.root, &dependency.name).unwrap()).unwrap()
         );
         let sequence = first_worker.lsp.as_ref().unwrap().sequence;
         drop((first_worker, second_worker));
@@ -1398,19 +1433,19 @@ mod tests {
     async fn editor_evidence_certifies_imports_without_a_second_checker() {
         let cache = tempfile::tempdir().unwrap();
         let service = LeanService::new(cache.path().to_path_buf()).unwrap();
-        let mut dependency = Node::new("Editor dependency".into()).unwrap();
+        let mut dependency = Node::new("Editor.dependency".into()).unwrap();
         dependency.blocks.push(crate::store::Block {
             srctype: "lean".into(),
             content: "import Lean\ntheorem depTruth : True := by sorry\n".into(),
             ..Default::default()
         });
-        let mut target = Node::new("Editor target".into()).unwrap();
+        let mut target = Node::new("Editor.target".into()).unwrap();
         target.depens.push(dependency.fnode.clone());
         target.blocks.push(crate::store::Block {
             srctype: "lean".into(),
             content: format!(
                 "import Std\nimport {}\n-- sorry in prose is not a proof gap\ndef message := \"sorry\"\ntheorem targetTruth : True := depTruth\n",
-                dependency.module
+                dependency.name
             ),
             ..Default::default()
         });
@@ -1421,7 +1456,7 @@ mod tests {
                 .into_iter()
                 .map(|n| {
                     (
-                        crate::store::module_file(&n.module, "lean").unwrap(),
+                        crate::store::module_file(&n.name, "lean").unwrap(),
                         n.fnode.clone(),
                     )
                 })
@@ -1434,7 +1469,7 @@ mod tests {
         };
         let draft = service.editor_project(&input).await.unwrap();
         let mut editor = Lsp::start(draft.path()).await.unwrap();
-        let uri = file_uri(&module_path(draft.path(), &target.module).unwrap()).unwrap();
+        let uri = file_uri(&module_path(draft.path(), &target.name).unwrap()).unwrap();
         let (diagnostics, imports) = editor
             .check(&uri, target.source("lean").unwrap(), "deps")
             .await
@@ -1455,7 +1490,7 @@ mod tests {
                 .has_sorry,
             Some(true)
         );
-        let empty = Node::new("No Lean".into()).unwrap();
+        let empty = Node::new("No.Lean".into()).unwrap();
         assert_eq!(service.formal_status(&empty, "unused"), "unverified");
         assert!(
             service
@@ -1507,9 +1542,9 @@ mod tests {
         let cache = tempfile::tempdir().unwrap();
         let service = LeanService::new(cache.path().to_path_buf()).unwrap();
         let marker = cache.path().join("compiled");
-        let mut leaf = Node::new("Complete leaf".into()).unwrap();
-        let mut gap = Node::new("Pending leaf".into()).unwrap();
-        let mut middle = Node::new("Complete dependent proof".into()).unwrap();
+        let mut leaf = Node::new("Complete.leaf".into()).unwrap();
+        let mut gap = Node::new("Pending.leaf".into()).unwrap();
+        let mut middle = Node::new("Complete.dependent.proof".into()).unwrap();
         let mut target = Node::new("Root".into()).unwrap();
         middle.depens = vec![leaf.fnode.clone(), gap.fnode.clone()];
         target.depens = vec![middle.fnode.clone()];
@@ -1523,7 +1558,7 @@ mod tests {
             srctype: "lean".into(),
             content: format!(
                 "import {}\nimport {}\ntheorem middleTruth : True := gapTruth\n",
-                leaf.module, gap.module
+                leaf.name, gap.name
             ),
             ..Default::default()
         });
@@ -1531,7 +1566,7 @@ mod tests {
             srctype: "lean".into(),
             content: format!(
                 "import {}\ntheorem rootTruth : True := middleTruth\n",
-                middle.module
+                middle.name
             ),
             ..Default::default()
         });
@@ -1542,7 +1577,7 @@ mod tests {
                 .into_iter()
                 .map(|node| {
                     (
-                        crate::store::module_file(&node.module, "lean").unwrap(),
+                        crate::store::module_file(&node.name, "lean").unwrap(),
                         node.fnode.clone(),
                     )
                 })
@@ -1555,7 +1590,7 @@ mod tests {
         };
         let draft = service.editor_project(&input).await.unwrap();
         let mut editor = Lsp::start(draft.path()).await.unwrap();
-        let uri = file_uri(&module_path(draft.path(), &target.module).unwrap()).unwrap();
+        let uri = file_uri(&module_path(draft.path(), &target.name).unwrap()).unwrap();
         let (diagnostics, imports) = editor
             .check(&uri, target.source("lean").unwrap(), "deps")
             .await
@@ -1612,7 +1647,7 @@ mod tests {
                     "conditional"
                 },
                 "{}",
-                node.title
+                node.name
             );
         }
         assert_eq!(
@@ -1626,7 +1661,7 @@ mod tests {
         assert!(service.check(input.clone(), false).await.unwrap().cache_hit);
         let root = service.workers[0].lock().await.root.clone();
         assert_eq!(
-            artifact_has_sorry(&root.join(".lake/build/lib/lean"), &leaf.module).await,
+            artifact_has_sorry(&root.join(".lake/build/lib/lean"), &leaf.name).await,
             None
         );
         service.shutdown().await;
@@ -1647,7 +1682,7 @@ mod tests {
         let cache = tempfile::tempdir().unwrap();
         let service = LeanService::new(cache.path().to_path_buf()).unwrap();
         let marker = cache.path().join("compiled");
-        let mut node = Node::new("Cached editor artifact".into()).unwrap();
+        let mut node = Node::new("Cached.editor.artifact".into()).unwrap();
         node.blocks.push(crate::store::Block {
             srctype: "lean".into(),
             content: format!("import Lean\nrun_cmd Lean.Elab.Command.liftIO <| IO.FS.writeFile {} \"compiled\"\ntheorem cachedEditor : True := by trivial\n", serde_json::to_string(&marker.to_string_lossy()).unwrap()),
@@ -1657,7 +1692,7 @@ mod tests {
             project: LeanProject::default().into(),
             project_key: LeanProject::default().key(),
             modules: [(
-                crate::store::module_file(&node.module, "lean").unwrap(),
+                crate::store::module_file(&node.name, "lean").unwrap(),
                 node.fnode.clone(),
             )]
             .into_iter()
@@ -1666,28 +1701,28 @@ mod tests {
             chain: vec![(Arc::new(node.clone()), "input".into())],
         };
         let first = service.editor_project(&input).await.unwrap();
-        build_module(first.path(), &node.module).await.unwrap();
+        build_module(first.path(), &node.name).await.unwrap();
         assert!(marker.is_file());
         drop(first);
         std::fs::remove_file(&marker).unwrap();
         let second = service.editor_project(&input).await.unwrap();
         assert!(!second.path().join(".lake/build").exists());
-        build_module(second.path(), &node.module).await.unwrap();
+        build_module(second.path(), &node.name).await.unwrap();
         assert!(
             !marker.exists(),
             "restoring Lake artifacts must not execute the compiler again"
         );
-        assert!(artifact_parts(second.path(), &node.module).is_some());
+        assert!(artifact_parts(second.path(), &node.name).is_some());
         assert!(!second
             .path()
             .join(".lake/build/lib/lean")
-            .join(crate::store::module_file(&node.module, "olean").unwrap())
+            .join(crate::store::module_file(&node.name, "olean").unwrap())
             .exists());
         node.blocks[0].content.push_str("\n-- new input\n");
         write_source(second.path(), &node, node.source("lean").unwrap())
             .await
             .unwrap();
-        build_module(second.path(), &node.module).await.unwrap();
+        build_module(second.path(), &node.name).await.unwrap();
         assert!(
             marker.exists(),
             "changed source must miss the old artifact cache"
@@ -1706,9 +1741,9 @@ mod tests {
     async fn editor_shares_libraries_without_waiting_for_the_compiler() {
         let cache = tempfile::tempdir().unwrap();
         let service = LeanService::new(cache.path().to_path_buf()).unwrap();
-        let deleted = Node::new("Deleted Lean block".into()).unwrap();
+        let deleted = Node::new("Deleted.Lean.block".into()).unwrap();
         let deleted_artifact = PathBuf::from(".lake/build/lib/lean")
-            .join(crate::store::module_file(&deleted.module, "olean").unwrap());
+            .join(crate::store::module_file(&deleted.name, "olean").unwrap());
         let input = Input {
             project: LeanProject::default().into(),
             project_key: LeanProject::default().key(),
@@ -1781,7 +1816,7 @@ mod tests {
         refresh_editor_sources(root.path(), &input, &mut sources)
             .await
             .unwrap();
-        let file = module_path(root.path(), &input.chain[0].0.module).unwrap();
+        let file = module_path(root.path(), &input.chain[0].0.name).unwrap();
         let modified = std::fs::metadata(&file).unwrap().modified().unwrap();
         refresh_editor_sources(root.path(), &input, &mut sources)
             .await
@@ -1804,7 +1839,7 @@ mod tests {
         let artifact = root
             .path()
             .join(".lake/build/lib/lean")
-            .join(crate::store::module_file(&input.chain[0].0.module, "olean").unwrap());
+            .join(crate::store::module_file(&input.chain[0].0.name, "olean").unwrap());
         std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
         std::fs::write(&artifact, "old compiled module").unwrap();
         Arc::make_mut(&mut input.chain[0].0).blocks.clear();

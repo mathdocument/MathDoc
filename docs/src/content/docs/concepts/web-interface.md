@@ -11,7 +11,7 @@ with the CLI; `mdc status` returns the same inventory and access URLs.
 The editor toolbar identifies the current branch. Click the MathDoc logo to
 return to **All projects**; unsaved drafts require confirmation before leaving.
 Within a branch, navigate by search, referrers, dependencies or the graph view.
-Nodes are created with a title; no filename is requested. In Graph view, the
+Nodes are created with a unique qualified name, such as `MX.Dot32.Exact`; it is also the Lean module name. Creation and rename reject invalid identifiers and duplicate names. In Graph view, the
 editor sidebar uses a fixed 3/8 of the available width and the graph uses 5/8.
 Narrow screens retain the stacked layout. Switching views preserves the active
 Lean session and unsaved edits.
@@ -23,7 +23,7 @@ yellow for Conditional (a direct or transitive managed dependency uses sorry), a
 green for Verified (complete sorry-free evidence across the managed dependency
 closure). Rocq does not affect graph colors. Knowledge view cards show Lean and Rocq
 status lights after the node ID and depth, refreshed after saved edits and Lean
-certification. The bottom bar shows the node ID, status dot and title; long titles
+certification. The bottom bar shows the node ID, status dot and name; long names
 use an ellipsis and show their full text on hover.
 
 Lean blocks initially show a local Monaco editor with syntax highlighting, editing and **Save**, without starting a Lean server or reserving a server slot. Click **Start Lean server** (the play icon) to enable checking and native Infoview on the right, including goals, diagnostics and interactive widgets. This button then becomes **Recheck Lean**, which refreshes dependencies and retries validation using the existing file worker and incremental diagnostics. Unchanged imports stay loaded; an in-flight check continues without restarting. **Stop Lean server**, immediately to its right, closes only this page's session and returns to local editing. Other pages and CLI checks are unaffected. Both modes use the same Lean grammar, font and light/dark themes; the same editor, cursor and undo history survive starting, checking and stopping. Infoview expands or disappears in place; the source is never replaced by a startup screen.

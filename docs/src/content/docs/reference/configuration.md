@@ -115,15 +115,19 @@ A minimal complete input object is:
 ```json
 {
   "toolchain": "leanprover/lean4:v4.33.1",
-  "lakefile": "name = \"MathDoc\"\nversion = \"0.1.0\"\n\n[[lean_lib]]\nname = \"Lib\"\n",
+  "lakefile": "name = \"MathDoc\"\nversion = \"0.1.0\"\n",
   "manifest": null
 }
 ```
 
 `lakefile` contains the original configuration text. `lakefile_name` defaults to
 `lakefile.toml`; set it to `lakefile.lean` for a native Lean configuration. Both
-formats are materialized unchanged. `module_root` defaults to `Lib` and selects
-the namespace for newly created nodes, for example `Mathlib.N_<uuid>`.
+formats are preserved in the database. In each generated compiler workspace,
+mdc appends a `MdcNodes` Lake library with exact module globs for the current
+nodes. No `Lib` prefix or `module_root` is used: `A.X`, `B.X` and `C.X` can coexist,
+and adding a new root needs no manual Lake configuration. Generated module
+lists are not part of the saved environment key; external library caches remain
+reusable. Reserve `MdcNodes` for this generated target.
 Optional `files` maps relative paths to supporting UTF-8 source/configuration
 text. These files are versioned and exported but are not graph nodes. Hidden,
 absolute, traversal and reserved configuration paths are rejected, as are
@@ -133,7 +137,7 @@ collisions with graph modules. Compiler artifacts do not belong in `files`.
 `{revision, project}`; pass only `project` back to `set`. To reject concurrent
 branch changes, supply `--revision` from that response.
 
-Pin a Lean release and declare the library selected by `module_root`. External libraries are not
+Pin a Lean release. External libraries are not
 limited to mathlib: declare them in Lake and supply a complete manifest with all
 Git dependencies locked to full 40-character commits. Mutable path dependencies,
 custom top-level `srcDir`, `buildDir`, `leanLibDir`, and a nonstandard

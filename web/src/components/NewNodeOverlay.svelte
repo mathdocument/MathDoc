@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import { FilePlus2, X } from "@lucide/svelte";
+  import { nodeNameError } from "../lib/node-name";
   import { api } from "../lib/api";
   import { errMsg } from "../lib/format";
   import { modal } from "../lib/modal";
@@ -19,7 +20,7 @@
   }
   let { disabled, onCreated, onClose }: Props = $props();
 
-  let title = $state("");
+  let name = $state("");
   let saving = $state(false);
   let error: string | null = $state(null);
   let alive = true;
@@ -31,7 +32,7 @@
   });
 
   $effect(() => {
-    setDraftDirty(draftId, title.trim().length > 0);
+    setDraftDirty(draftId, name.trim().length > 0);
   });
 
   function close() {
@@ -56,8 +57,9 @@
 
   async function submit() {
     if (saving) return;
-    if (title.trim().length === 0) {
-      error = "title must be non-empty";
+    const invalid = nodeNameError(name);
+    if (invalid) {
+      error = invalid;
       return;
     }
     if (!confirmDiscardDrafts(draftId)) return;
@@ -65,7 +67,7 @@
     const clearMutation = trackMutation();
     error = null;
     try {
-      const node = await api.newNode({ title: title.trim() });
+      const node = await api.newNode({ name });
       clearMutation();
       if (!alive) return;
       removeDraft(draftId);
@@ -96,14 +98,17 @@
     </header>
     <div class="form-body">
       <label class="field">
-        <span class="lbl">Title</span>
+        <span class="lbl">Name</span>
         <input
-          bind:value={title}
-          placeholder="New Lemma"
+          bind:value={name}
+          placeholder="MX.Dot32.Exact"
+          aria-invalid={!!name && !!nodeNameError(name)}
+          aria-describedby="node-name-hint"
           autocomplete="off"
           disabled={saving}
         />
       </label>
+      <small id="node-name-hint">{name && nodeNameError(name) || "Unique module name, e.g. MX.Dot32.Exact. No spaces."}</small>
       {#if error}
         <div class="error-bar modal-error">{error}</div>
       {/if}
@@ -112,7 +117,7 @@
       <div class="hint"><span><kbd>Enter</kbd> Create</span><span><kbd>Esc</kbd> Cancel</span></div>
       <div class="actions">
         <button class="secondary" onclick={close} disabled={saving}>Cancel</button>
-        <button class="primary" onclick={() => void submit()} disabled={saving}>Create node</button>
+        <button class="primary" onclick={() => void submit()} disabled={saving || !!nodeNameError(name)}>Create node</button>
       </div>
     </footer>
   </dialog>

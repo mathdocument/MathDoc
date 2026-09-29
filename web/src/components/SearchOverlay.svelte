@@ -109,7 +109,7 @@
       <input
         bind:this={inputEl}
         bind:value={query}
-        placeholder="Search by title or fnode..."
+        placeholder="Search by name or UUID..."
         autocomplete="off"
         spellcheck="false"
       />
@@ -126,7 +126,7 @@
           >
             <span class="depth">[{r.depth}]</span>
             <span class="fnode">{shortFnode(r.fnode)}</span>
-            <span class="title">{r.title}</span>
+            <span class="title">{r.name}</span>
           </button>
         </li>
       {:else}

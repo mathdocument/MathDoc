@@ -18,7 +18,7 @@ project dialog configures the pinned toolchain and external libraries.
 CLI agents use the same branch service from any directory:
 
 ```sh
-mdc new -p myproject/main -t 'Example'
+mdc new -p myproject/main 'Example'
 printf 'theorem exampleA : True := by trivial\n' | mdc edit Example -p myproject/main --type lean
 mdc lean check Example -p myproject/main
 mdc graph check -p myproject/main -m

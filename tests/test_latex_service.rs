@@ -85,20 +85,20 @@ async fn latex_project_previews_follow_dependencies_and_preserve_configuration()
         .0,
         412
     );
-    let mut a = Node::new("First result".into()).unwrap();
+    let mut a = Node::new("First.result".into()).unwrap();
     a.blocks.push(Block {
         srctype: "latex".into(),
         content: "\\begin{thm}[Named result]\\label{thm:main}$\\cA$\\end{thm}".into(),
         ..Default::default()
     });
-    let mut b = Node::new("Second result".into()).unwrap();
+    let mut b = Node::new("Second.result".into()).unwrap();
     b.depens.push(a.fnode.clone());
     b.blocks.push(Block {
         srctype: "latex".into(),
         content: "By \\nameref{thm:main}, see \\cite{paper}.".into(),
         ..Default::default()
     });
-    let mut outsider = Node::new("Unrelated result".into()).unwrap();
+    let mut outsider = Node::new("Unrelated.result".into()).unwrap();
     outsider.blocks.push(Block {
         srctype: "latex".into(),
         content: "\\section{Hidden}\\label{hidden}".into(),

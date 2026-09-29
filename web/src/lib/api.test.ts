@@ -40,7 +40,7 @@ describe("node mutations", () => {
       .mockResolvedValueOnce(jsonResponse("revision-3"));
     vi.stubGlobal("fetch", fetchMock);
 
-    const first = api.putTitle("queue-node", "First", "revision-1");
+    const first = api.putName("queue-node", "First", "revision-1");
     const second = api.putBlock("queue-node", "text", "Second", "revision-1");
     await Promise.resolve();
     await Promise.resolve();
@@ -66,8 +66,8 @@ describe("node mutations", () => {
       .mockResolvedValueOnce(jsonResponse("revision-3"));
     vi.stubGlobal("fetch", fetchMock);
 
-    const first = api.putTitle("failure-queue-node", "First", "revision-1");
-    const second = api.putTitle("failure-queue-node", "Rejected", "revision-1");
+    const first = api.putName("failure-queue-node", "First", "revision-1");
+    const second = api.putName("failure-queue-node", "Rejected", "revision-1");
     const third = api.putBlock("failure-queue-node", "text", "Third", "revision-1");
     const results = await Promise.allSettled([first, second, third]);
 
@@ -81,7 +81,7 @@ describe("node mutations", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await api.addDep("parent", "child", "revision-1");
-    await api.newNode({ title: "Child", parent_fnode: "parent" }, "revision-1");
+    await api.newNode({ name: "Child", parent_fnode: "parent" }, "revision-1");
 
     for (const call of fetchMock.mock.calls) {
       const headers = call[1]!.headers as Record<string, string>;
@@ -93,6 +93,6 @@ describe("node mutations", () => {
 it("preserves the status and structured body of a revision conflict", async () => {
   const body = { error: "resource changed; refresh and retry" };
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(body, { status: 412 })));
-  await expect(api.putTitle("conflicted-node", "Title", "old"))
+  await expect(api.putName("conflicted-node", "Title", "old"))
     .rejects.toMatchObject({ name: "ApiError", status: 412, body, isConflict: true });
 });
