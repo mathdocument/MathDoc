@@ -59,15 +59,57 @@ export const documentPermissionContractSchema = z
   })
   .strict();
 
+export const contextSchema = z
+  .object({
+    raw: z.array(z.string()).optional(),
+    local_options: z.array(z.string()).optional(),
+    universes: z.array(z.string()).optional(),
+    opens: z.array(z.string()).optional(),
+    namespaces: z.array(z.string()).max(0).optional(),
+    local_notation: z.array(z.string()).optional(),
+    local_attrs: z.array(z.string()).optional(),
+    variables: z.array(z.string()).optional(),
+  })
+  .strict();
+
+export const baseRefSchema = z
+  .object({
+    base_id: z.string(),
+    base_key: z.number().int(),
+    root_module: z.string(),
+    lean_version: z.string(),
+    lean_githash: z.string(),
+    package_revision: z.string(),
+    package_manifest_hash: z.string(),
+    module_list_hash: z.string(),
+    build_flags_hash: z.string(),
+    platform: z.string(),
+    promotion_generation: z.number().int().nonnegative(),
+    schema_version: z.literal(1),
+  })
+  .strict();
+const nodeSnapshot = z
+  .object({ node_id: z.string().uuid(), revision: sha256 })
+  .strict();
+export const proofRequestBindingSchema = z
+  .object({
+    database: z.string().regex(/^[A-Za-z0-9_-]+$/),
+    branch: z.string().regex(/^[A-Za-z0-9_-]+$/),
+    root: nodeSnapshot,
+    dependencies: z.array(nodeSnapshot),
+    data_version: id,
+  })
+  .strict();
+
 export const proofEnvironmentContractSchema = z
   .object({
     schema_version: z.literal("mathdoc.proof-environment.v1-draft"),
     environment_id: id,
-    base: z.record(z.unknown()),
-    context: z.record(z.unknown()),
+    base: baseRefSchema,
+    context: contextSchema,
     options: z.record(z.unknown()),
     minimum_trust: z.enum(["claimed", "audited", "trusted"]),
-    document: documentBinding,
+    proof_request: proofRequestBindingSchema,
     project_lean_compatibility: z.literal("preserved_unmodified"),
     replaces_environment_id: id.optional(),
   })
@@ -78,6 +120,7 @@ const bindingBase = {
   node_id: z.string().uuid(),
   block_revision: sha256,
   source_sha256: sha256,
+  required_context: contextSchema,
 };
 export const declarationBindingContractSchema = z
   .discriminatedUnion("classification", [
@@ -142,12 +185,29 @@ export const declarationBindingContractSchema = z
           "unregistered_statement_definition",
           "missing_environment_instance",
           "ambiguous_binding",
+          "local_context_mismatch",
+          "premise_name_collision",
         ]),
         details: z.string().min(1),
       })
       .strict(),
   ])
   .superRefine((value, context) => {
+    if (value.classification === "theorem") {
+      const fail = (message: string) =>
+        context.addIssue({ code: z.ZodIssueCode.custom, message });
+      if (value.mode === "sketch" && !value.premise_placeholders.length)
+        fail("no_premises");
+      if (value.mode === "leaf" && value.premise_placeholders.length)
+        fail("leaf_has_premises");
+      if (!value.conclusion.goal && !value.new_definitions.length)
+        fail("goal_required");
+      const names = [
+        value.conclusion.name,
+        ...value.premise_placeholders.map((p) => p.declaration_name),
+      ];
+      if (new Set(names).size !== names.length) fail("premise_name_collision");
+    }
     if (
       value.classification === "theorem" &&
       ((value.component === "lean-worker-sketch" && value.mode !== "sketch") ||
@@ -162,7 +222,11 @@ export const declarationBindingContractSchema = z
 const writeOperation = z
   .object({
     operation_id: id,
-    kind: z.enum(["update_lean_block", "create_definition_node", "create_goal_node"]),
+    kind: z.enum([
+      "update_lean_block",
+      "create_definition_node",
+      "create_goal_node",
+    ]),
     node_id: z.string().uuid(),
     expected_node_revision: sha256.optional(),
     source_sha256: sha256,
@@ -181,7 +245,6 @@ export const writebackContractSchema = z
     operations: z.array(writeOperation).min(1),
     conflict_resolution: z.enum([
       "abort_entire_batch",
-      "certified_batch_wins",
       "reviewer_merge_required",
     ]),
     certification_visibility: z.literal("after_full_batch_commit"),
@@ -226,6 +289,60 @@ export function contractDigest(value: unknown): string {
   return createHash("sha256").update(stableJson(value)).digest("hex");
 }
 
+type Environment = z.infer<typeof proofEnvironmentContractSchema>;
+export function environmentIdentity(environment: Environment): string {
+  const { base, context, options, minimum_trust } = environment;
+  return contractDigest({ base, context, options, minimum_trust });
+}
+export function proofRequestIdentity(environment: Environment): string {
+  const { data_version: _snapshot, ...binding } = environment.proof_request;
+  return contractDigest({
+    environment: environmentIdentity(environment),
+    ...binding,
+    dependencies: [...binding.dependencies].sort((a, b) =>
+      a.node_id.localeCompare(b.node_id),
+    ),
+  });
+}
+export function proofRequestIsStale(
+  environment: Environment,
+  revisions: Record<string, string>,
+): boolean {
+  return [
+    environment.proof_request.root,
+    ...environment.proof_request.dependencies,
+  ].some((node) => revisions[node.node_id] !== node.revision);
+}
+// Conservative exact comparison: no semantic rewriting or reordering of commands.
+export function bindingContextMatches(
+  required: z.infer<typeof contextSchema>,
+  fixed: z.infer<typeof contextSchema>,
+): boolean {
+  return Object.entries(required).every(
+    ([key, lines]) =>
+      stableJson(lines) === stableJson(fixed[key as keyof typeof fixed] ?? []),
+  );
+}
+
+export function bindingRejection(
+  input: unknown,
+  fixed: z.infer<typeof contextSchema>,
+): string | null {
+  const parsed = declarationBindingContractSchema.safeParse(input);
+  if (!parsed.success) {
+    return parsed.error.issues.some(
+      (issue) => issue.message === "premise_name_collision",
+    )
+      ? "premise_name_collision"
+      : "ambiguous_binding";
+  }
+  const binding = parsed.data;
+  if (binding.classification === "unsupported") return binding.reason;
+  return bindingContextMatches(binding.required_context, fixed)
+    ? null
+    : "local_context_mismatch";
+}
+
 // Mirrors Node::revision at baseline a4d61e3: field order is the Rust struct
 // order, dependencies are sorted, and metadata is a sorted BTreeMap.
 export function legacyNodeRevision(node: {
@@ -250,7 +367,5 @@ export function legacyNodeRevision(node: {
       metadata: Object.fromEntries(Object.entries(block.metadata).sort()),
     })),
   };
-  return createHash("sha256")
-    .update(JSON.stringify(canonical))
-    .digest("hex");
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }

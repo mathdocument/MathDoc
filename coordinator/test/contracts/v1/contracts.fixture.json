@@ -8,47 +8,201 @@
         "branch": "main",
         "inherit_workspace_role": true,
         "grants": [
-          { "actor": "alice", "role": "owner" },
-          { "actor": "bob", "role": "editor" },
-          { "actor": "carol", "role": "viewer" }
+          {
+            "actor": "alice",
+            "role": "owner"
+          },
+          {
+            "actor": "bob",
+            "role": "editor"
+          },
+          {
+            "actor": "carol",
+            "role": "viewer"
+          }
         ]
       }
     ],
     "authorization_matrix": [
-      { "action": "read", "roles": ["admin", "owner", "editor", "viewer"] },
-      { "action": "write", "roles": ["admin", "owner", "editor"] },
-      { "action": "history", "roles": ["admin", "owner", "editor", "viewer"] },
-      { "action": "branch_create", "roles": ["admin", "owner", "editor"] },
-      { "action": "branch_delete", "roles": ["admin", "owner"] },
-      { "action": "export", "roles": ["admin", "owner", "editor", "viewer"] },
-      { "action": "import", "roles": ["admin", "owner"] },
-      { "action": "database_create", "roles": ["admin"] },
-      { "action": "database_delete", "roles": ["admin"] },
-      { "action": "member_manage", "roles": ["admin", "owner"] },
-      { "action": "proof_request_create", "roles": ["admin", "owner", "editor"] }
+      {
+        "action": "read",
+        "roles": [
+          "admin",
+          "owner",
+          "editor",
+          "viewer"
+        ]
+      },
+      {
+        "action": "write",
+        "roles": [
+          "admin",
+          "owner",
+          "editor"
+        ]
+      },
+      {
+        "action": "history",
+        "roles": [
+          "admin",
+          "owner",
+          "editor",
+          "viewer"
+        ]
+      },
+      {
+        "action": "branch_create",
+        "roles": [
+          "admin",
+          "owner",
+          "editor"
+        ]
+      },
+      {
+        "action": "branch_delete",
+        "roles": [
+          "admin",
+          "owner"
+        ]
+      },
+      {
+        "action": "export",
+        "roles": [
+          "admin",
+          "owner",
+          "editor",
+          "viewer"
+        ]
+      },
+      {
+        "action": "import",
+        "roles": [
+          "admin",
+          "owner"
+        ]
+      },
+      {
+        "action": "database_create",
+        "roles": [
+          "admin"
+        ]
+      },
+      {
+        "action": "database_delete",
+        "roles": [
+          "admin"
+        ]
+      },
+      {
+        "action": "member_manage",
+        "roles": [
+          "admin",
+          "owner"
+        ]
+      },
+      {
+        "action": "proof_request_create",
+        "roles": [
+          "admin",
+          "owner",
+          "editor"
+        ]
+      }
     ]
   },
   "proof_environments": [
     {
       "schema_version": "mathdoc.proof-environment.v1-draft",
       "environment_id": "env-v1",
-      "base": { "base_key": 17, "project": "Mathlib" },
-      "context": { "project_file": "set_option autoImplicit false" },
-      "options": { "maxHeartbeats": 200000 },
+      "base": {
+        "base_id": "fixture-base",
+        "base_key": 17,
+        "root_module": "Mathlib",
+        "lean_version": "4.33.1",
+        "lean_githash": "fixture-lean-revision",
+        "package_revision": "fixture-package-revision",
+        "package_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "module_list_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "build_flags_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "platform": "aarch64-linux",
+        "promotion_generation": 0,
+        "schema_version": 1
+      },
+      "context": {
+        "local_options": [
+          "set_option autoImplicit false"
+        ],
+        "opens": [
+          "open Nat"
+        ]
+      },
+      "options": {
+        "maxHeartbeats": 200000
+      },
       "minimum_trust": "audited",
-      "document": { "database": "docs", "branch": "main", "data_version": "branch:v1" },
-      "project_lean_compatibility": "preserved_unmodified"
+      "project_lean_compatibility": "preserved_unmodified",
+      "proof_request": {
+        "database": "docs",
+        "branch": "main",
+        "data_version": "branch:v1",
+        "root": {
+          "node_id": "15555555-5555-4555-8555-555555555555",
+          "revision": "179a0f174df39a5f08e530a04c5238f0828778061b3563fd39ae1c2b7d8b49e0"
+        },
+        "dependencies": [
+          {
+            "node_id": "25555555-5555-4555-8555-555555555555",
+            "revision": "612f9ff9dad97e97b97d57156b641f647ef5cde9f53e2407db15019bc4575e51"
+          }
+        ]
+      }
     },
     {
       "schema_version": "mathdoc.proof-environment.v1-draft",
       "environment_id": "env-v2",
-      "base": { "base_key": 18, "project": "Mathlib" },
-      "context": { "project_file": "set_option autoImplicit false" },
-      "options": { "maxHeartbeats": 200000 },
+      "base": {
+        "base_id": "fixture-base",
+        "base_key": 17,
+        "root_module": "Mathlib",
+        "lean_version": "4.33.1",
+        "lean_githash": "fixture-lean-revision",
+        "package_revision": "fixture-package-revision",
+        "package_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "module_list_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "build_flags_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "platform": "aarch64-linux",
+        "promotion_generation": 0,
+        "schema_version": 1
+      },
+      "context": {
+        "local_options": [
+          "set_option autoImplicit false"
+        ],
+        "opens": [
+          "open Nat"
+        ]
+      },
+      "options": {
+        "maxHeartbeats": 400000
+      },
       "minimum_trust": "audited",
-      "document": { "database": "docs", "branch": "main", "data_version": "branch:v2" },
       "project_lean_compatibility": "preserved_unmodified",
-      "replaces_environment_id": "env-v1"
+      "replaces_environment_id": "env-v1",
+      "proof_request": {
+        "database": "docs",
+        "branch": "main",
+        "data_version": "branch:v1",
+        "root": {
+          "node_id": "15555555-5555-4555-8555-555555555555",
+          "revision": "179a0f174df39a5f08e530a04c5238f0828778061b3563fd39ae1c2b7d8b49e0"
+        },
+        "dependencies": [
+          {
+            "node_id": "25555555-5555-4555-8555-555555555555",
+            "revision": "612f9ff9dad97e97b97d57156b641f647ef5cde9f53e2407db15019bc4575e51"
+          }
+        ]
+      }
     }
   ],
   "declaration_bindings": [
@@ -61,8 +215,13 @@
         "source_sha256": "6a1a47f71438b99f8615ad16060e72131aefb21f9c071dc6e0dd7656fbe160e1",
         "classification": "definition_only",
         "definitions": [
-          { "name": "twice", "declaration_kind": "def", "dependency_definition_ids": [] }
-        ]
+          {
+            "name": "twice",
+            "declaration_kind": "def",
+            "dependency_definition_ids": []
+          }
+        ],
+        "required_context": {}
       }
     },
     {
@@ -73,12 +232,19 @@
         "block_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "source_sha256": "f6bf173c215dd95b2747d29517cbef3fc6e1f7fd3ce65596b6500bfa1df1909e",
         "classification": "theorem",
-        "conclusion": { "name": "target", "declaration_kind": "theorem" },
+        "conclusion": {
+          "name": "target",
+          "declaration_kind": "theorem",
+          "goal": {
+            "key": "fixture-goal"
+          }
+        },
         "premise_placeholders": [],
         "definitions": [],
         "new_definitions": [],
         "component": "lean-worker",
-        "mode": "leaf"
+        "mode": "leaf",
+        "required_context": {}
       }
     },
     {
@@ -90,7 +256,8 @@
         "source_sha256": "72fbf1fd7146f76c1dee4e40e3d35c21190cd2b49a9822a4f505b369864927c8",
         "classification": "unsupported",
         "reason": "unsupported_declaration",
-        "details": "docs/12 only permits instances in the fixed proof environment context"
+        "details": "docs/12 only permits instances in the fixed proof environment context",
+        "required_context": {}
       }
     }
   ],
@@ -98,7 +265,11 @@
     "schema_version": "mathdoc.writeback-batch.v1-draft",
     "batch_id": "batch-demo-1",
     "replay_key": "proof-request-7:assembly-3:batch-1",
-    "review_branch": { "database": "docs", "branch": "review-proof-7", "data_version": "branch:review-v1" },
+    "review_branch": {
+      "database": "docs",
+      "branch": "review-proof-7",
+      "data_version": "branch:review-v1"
+    },
     "source_proof_request_id": "proof-request-7",
     "operations": [
       {
@@ -122,23 +293,357 @@
     "conflict_resolution": "abort_entire_batch",
     "certification_visibility": "after_full_batch_commit"
   },
-  "legacy_revision": {
-    "node": {
-      "fnode": "55555555-5555-4555-8555-555555555555",
-      "title": "Fixture node",
-      "module": "Lib.N_55555555555545558555555555555555",
-      "depens": [
-        "77777777-7777-4777-8777-777777777777",
-        "66666666-6666-4666-8666-666666666666"
-      ],
-      "blocks": [
-        {
-          "srctype": "lean",
-          "content": "theorem fixture : True := by trivial\n",
-          "metadata": { "z": "last", "a": "first" }
-        }
-      ]
+  "legacy_revision": [
+    {
+      "node": {
+        "fnode": "55555555-5555-4555-8555-555555555555",
+        "title": "Fixture node",
+        "module": "Lib.N_55555555555545558555555555555555",
+        "depens": [
+          "77777777-7777-4777-8777-777777777777",
+          "66666666-6666-4666-8666-666666666666"
+        ],
+        "blocks": [
+          {
+            "srctype": "lean",
+            "content": "theorem fixture : True := by trivial\n",
+            "metadata": {
+              "z": "last",
+              "a": "first"
+            }
+          }
+        ]
+      },
+      "expected": "2003daf127ac9364284afda6b4665aaba8225ba8747be65c166e9ac9c2db99c5"
     },
-    "expected": "2003daf127ac9364284afda6b4665aaba8225ba8747be65c166e9ac9c2db99c5"
-  }
+    {
+      "node": {
+        "fnode": "15555555-5555-4555-8555-555555555555",
+        "title": "∀ n : ℕ，n = n",
+        "module": "Lib.N_55555555555545558555555555555555",
+        "depens": [
+          "77777777-7777-4777-8777-777777777777",
+          "66666666-6666-4666-8666-666666666666"
+        ],
+        "blocks": [
+          {
+            "srctype": "lean",
+            "content": "theorem 示例 (n : Nat) : n = n := rfl\n",
+            "metadata": {
+              "z": "last",
+              "a": "first"
+            }
+          }
+        ]
+      },
+      "expected": "179a0f174df39a5f08e530a04c5238f0828778061b3563fd39ae1c2b7d8b49e0"
+    },
+    {
+      "node": {
+        "fnode": "25555555-5555-4555-8555-555555555555",
+        "title": "latex",
+        "module": "Lib.N_55555555555545558555555555555555",
+        "depens": [
+          "77777777-7777-4777-8777-777777777777",
+          "66666666-6666-4666-8666-666666666666"
+        ],
+        "blocks": [
+          {
+            "srctype": "lean",
+            "content": "\\section{A \"quote\"} $\\forall n \\in \\mathbb{N}$",
+            "metadata": {
+              "z": "last",
+              "a": "first"
+            }
+          }
+        ]
+      },
+      "expected": "612f9ff9dad97e97b97d57156b641f647ef5cde9f53e2407db15019bc4575e51"
+    },
+    {
+      "node": {
+        "fnode": "35555555-5555-4555-8555-555555555555",
+        "title": "controls",
+        "module": "Lib.N_55555555555545558555555555555555",
+        "depens": [
+          "77777777-7777-4777-8777-777777777777",
+          "66666666-6666-4666-8666-666666666666"
+        ],
+        "blocks": [
+          {
+            "srctype": "lean",
+            "content": "a\u0000b\b\f\n\r\t\u001f",
+            "metadata": {
+              "z": "last",
+              "a": "first"
+            }
+          },
+          {
+            "srctype": "latex",
+            "content": "second block\n",
+            "metadata": {
+              "note": "line\tbreak"
+            }
+          }
+        ]
+      },
+      "expected": "857e260d44d3d110da0247345e3cd182b0b00b476df2ccd15b0d962fbfefab54"
+    }
+  ],
+  "staleness_cases": [
+    {
+      "change": "unrelated",
+      "data_version": "branch:v2",
+      "nodes": [
+        {
+          "fnode": "15555555-5555-4555-8555-555555555555",
+          "title": "∀ n : ℕ，n = n",
+          "module": "Lib.N_55555555555545558555555555555555",
+          "depens": [
+            "77777777-7777-4777-8777-777777777777",
+            "66666666-6666-4666-8666-666666666666"
+          ],
+          "blocks": [
+            {
+              "srctype": "lean",
+              "content": "theorem 示例 (n : Nat) : n = n := rfl\n",
+              "metadata": {
+                "z": "last",
+                "a": "first"
+              }
+            }
+          ]
+        },
+        {
+          "fnode": "25555555-5555-4555-8555-555555555555",
+          "title": "latex",
+          "module": "Lib.N_55555555555545558555555555555555",
+          "depens": [
+            "77777777-7777-4777-8777-777777777777",
+            "66666666-6666-4666-8666-666666666666"
+          ],
+          "blocks": [
+            {
+              "srctype": "lean",
+              "content": "\\section{A \"quote\"} $\\forall n \\in \\mathbb{N}$",
+              "metadata": {
+                "z": "last",
+                "a": "first"
+              }
+            }
+          ]
+        },
+        {
+          "fnode": "35555555-5555-4555-8555-555555555555",
+          "title": "controls edited",
+          "module": "Lib.N_55555555555545558555555555555555",
+          "depens": [
+            "77777777-7777-4777-8777-777777777777",
+            "66666666-6666-4666-8666-666666666666"
+          ],
+          "blocks": [
+            {
+              "srctype": "lean",
+              "content": "a\u0000b\b\f\n\r\t\u001f",
+              "metadata": {
+                "z": "last",
+                "a": "first"
+              }
+            },
+            {
+              "srctype": "latex",
+              "content": "second block\n",
+              "metadata": {
+                "note": "line\tbreak"
+              }
+            }
+          ]
+        }
+      ],
+      "expected_stale": false
+    },
+    {
+      "change": "root",
+      "data_version": "branch:v3",
+      "nodes": [
+        {
+          "fnode": "15555555-5555-4555-8555-555555555555",
+          "title": "∀ n : ℕ，n = n edited",
+          "module": "Lib.N_55555555555545558555555555555555",
+          "depens": [
+            "77777777-7777-4777-8777-777777777777",
+            "66666666-6666-4666-8666-666666666666"
+          ],
+          "blocks": [
+            {
+              "srctype": "lean",
+              "content": "theorem 示例 (n : Nat) : n = n := rfl\n",
+              "metadata": {
+                "z": "last",
+                "a": "first"
+              }
+            }
+          ]
+        },
+        {
+          "fnode": "25555555-5555-4555-8555-555555555555",
+          "title": "latex",
+          "module": "Lib.N_55555555555545558555555555555555",
+          "depens": [
+            "77777777-7777-4777-8777-777777777777",
+            "66666666-6666-4666-8666-666666666666"
+          ],
+          "blocks": [
+            {
+              "srctype": "lean",
+              "content": "\\section{A \"quote\"} $\\forall n \\in \\mathbb{N}$",
+              "metadata": {
+                "z": "last",
+                "a": "first"
+              }
+            }
+          ]
+        },
+        {
+          "fnode": "35555555-5555-4555-8555-555555555555",
+          "title": "controls",
+          "module": "Lib.N_55555555555545558555555555555555",
+          "depens": [
+            "77777777-7777-4777-8777-777777777777",
+            "66666666-6666-4666-8666-666666666666"
+          ],
+          "blocks": [
+            {
+              "srctype": "lean",
+              "content": "a\u0000b\b\f\n\r\t\u001f",
+              "metadata": {
+                "z": "last",
+                "a": "first"
+              }
+            },
+            {
+              "srctype": "latex",
+              "content": "second block\n",
+              "metadata": {
+                "note": "line\tbreak"
+              }
+            }
+          ]
+        }
+      ],
+      "expected_stale": true
+    },
+    {
+      "change": "definition",
+      "data_version": "branch:v4",
+      "nodes": [
+        {
+          "fnode": "15555555-5555-4555-8555-555555555555",
+          "title": "∀ n : ℕ，n = n",
+          "module": "Lib.N_55555555555545558555555555555555",
+          "depens": [
+            "77777777-7777-4777-8777-777777777777",
+            "66666666-6666-4666-8666-666666666666"
+          ],
+          "blocks": [
+            {
+              "srctype": "lean",
+              "content": "theorem 示例 (n : Nat) : n = n := rfl\n",
+              "metadata": {
+                "z": "last",
+                "a": "first"
+              }
+            }
+          ]
+        },
+        {
+          "fnode": "25555555-5555-4555-8555-555555555555",
+          "title": "latex edited",
+          "module": "Lib.N_55555555555545558555555555555555",
+          "depens": [
+            "77777777-7777-4777-8777-777777777777",
+            "66666666-6666-4666-8666-666666666666"
+          ],
+          "blocks": [
+            {
+              "srctype": "lean",
+              "content": "\\section{A \"quote\"} $\\forall n \\in \\mathbb{N}$",
+              "metadata": {
+                "z": "last",
+                "a": "first"
+              }
+            }
+          ]
+        },
+        {
+          "fnode": "35555555-5555-4555-8555-555555555555",
+          "title": "controls",
+          "module": "Lib.N_55555555555545558555555555555555",
+          "depens": [
+            "77777777-7777-4777-8777-777777777777",
+            "66666666-6666-4666-8666-666666666666"
+          ],
+          "blocks": [
+            {
+              "srctype": "lean",
+              "content": "a\u0000b\b\f\n\r\t\u001f",
+              "metadata": {
+                "z": "last",
+                "a": "first"
+              }
+            },
+            {
+              "srctype": "latex",
+              "content": "second block\n",
+              "metadata": {
+                "note": "line\tbreak"
+              }
+            }
+          ]
+        }
+      ],
+      "expected_stale": true
+    }
+  ],
+  "context_cases": [
+    {
+      "required": {
+        "opens": [
+          "open Nat"
+        ]
+      },
+      "expected": null
+    },
+    {
+      "required": {
+        "opens": [
+          "open Int"
+        ]
+      },
+      "expected": "local_context_mismatch"
+    },
+    {
+      "required": {
+        "local_options": [
+          "set_option autoImplicit true"
+        ]
+      },
+      "expected": "local_context_mismatch"
+    }
+  ],
+  "premise_collision_cases": [
+    {
+      "names": [
+        "shared",
+        "shared"
+      ],
+      "conclusion": "target"
+    },
+    {
+      "names": [
+        "target"
+      ],
+      "conclusion": "target"
+    }
+  ]
 }

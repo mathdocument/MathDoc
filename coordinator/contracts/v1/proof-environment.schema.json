@@ -1,28 +1,226 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://mathdoc.local/contracts/v1/proof-environment.schema.json",
-  "title": "MathDoc proof environment contract v1 draft",
   "type": "object",
-  "additionalProperties": false,
-  "required": ["schema_version", "environment_id", "base", "context", "options", "minimum_trust", "document", "project_lean_compatibility"],
   "properties": {
-    "schema_version": { "const": "mathdoc.proof-environment.v1-draft" },
-    "environment_id": { "type": "string", "minLength": 1 },
-    "base": { "type": "object" },
-    "context": { "type": "object" },
-    "options": { "type": "object" },
-    "minimum_trust": { "enum": ["claimed", "audited", "trusted"] },
-    "document": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["database", "branch", "data_version"],
-      "properties": {
-        "database": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
-        "branch": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
-        "data_version": { "type": "string", "minLength": 1 }
-      }
+    "schema_version": {
+      "type": "string",
+      "const": "mathdoc.proof-environment.v1-draft"
     },
-    "project_lean_compatibility": { "const": "preserved_unmodified" },
-    "replaces_environment_id": { "type": "string", "minLength": 1 }
-  }
+    "environment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    },
+    "base": {
+      "type": "object",
+      "properties": {
+        "base_id": {
+          "type": "string"
+        },
+        "base_key": {
+          "type": "integer"
+        },
+        "root_module": {
+          "type": "string"
+        },
+        "lean_version": {
+          "type": "string"
+        },
+        "lean_githash": {
+          "type": "string"
+        },
+        "package_revision": {
+          "type": "string"
+        },
+        "package_manifest_hash": {
+          "type": "string"
+        },
+        "module_list_hash": {
+          "type": "string"
+        },
+        "build_flags_hash": {
+          "type": "string"
+        },
+        "platform": {
+          "type": "string"
+        },
+        "promotion_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "schema_version": {
+          "type": "number",
+          "const": 1
+        }
+      },
+      "required": [
+        "base_id",
+        "base_key",
+        "root_module",
+        "lean_version",
+        "lean_githash",
+        "package_revision",
+        "package_manifest_hash",
+        "module_list_hash",
+        "build_flags_hash",
+        "platform",
+        "promotion_generation",
+        "schema_version"
+      ],
+      "additionalProperties": false
+    },
+    "context": {
+      "type": "object",
+      "properties": {
+        "raw": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "local_options": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "universes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "opens": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "namespaces": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 0
+        },
+        "local_notation": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "local_attrs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "variables": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": {}
+    },
+    "minimum_trust": {
+      "type": "string",
+      "enum": [
+        "claimed",
+        "audited",
+        "trusted"
+      ]
+    },
+    "proof_request": {
+      "type": "object",
+      "properties": {
+        "database": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "branch": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "root": {
+          "type": "object",
+          "properties": {
+            "node_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "revision": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "node_id",
+            "revision"
+          ],
+          "additionalProperties": false
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "node_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "revision": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            },
+            "required": [
+              "node_id",
+              "revision"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "data_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        }
+      },
+      "required": [
+        "database",
+        "branch",
+        "root",
+        "dependencies",
+        "data_version"
+      ],
+      "additionalProperties": false
+    },
+    "project_lean_compatibility": {
+      "type": "string",
+      "const": "preserved_unmodified"
+    },
+    "replaces_environment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    }
+  },
+  "required": [
+    "schema_version",
+    "environment_id",
+    "base",
+    "context",
+    "options",
+    "minimum_trust",
+    "proof_request",
+    "project_lean_compatibility"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mathdoc.local/contracts/v1/proof-environment.schema.json"
 }
