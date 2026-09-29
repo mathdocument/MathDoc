@@ -7,7 +7,7 @@ import {
   useCallback,
   type KeyboardEvent,
 } from "react";
-import { useVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDownRight, ArrowUpRight, Search } from "lucide-react";
 import type { NodePreview } from "../../lib/types";
 import { shortFnode } from "../../lib/format";
@@ -32,8 +32,22 @@ export function NodeColumn({
 }) {
   const [query, setQuery] = useState("");
   const [focusIndex, setFocusIndex] = useState<number | null>(null);
+  const pendingFocus = useRef<number | null>(null);
   const list = useRef<HTMLUListElement>(null);
-  const scrollPosition = useRef(0);
+  const column = useRef<HTMLElement>(null);
+  const bounds = useRef({ width: 300, height: 600 });
+  useLayoutEffect(() => {
+    if (!active || !column.current) return;
+    const element = column.current;
+    const measure = () => {
+      const { width, height } = element.getBoundingClientRect();
+      if (width && height) bounds.current = { width, height };
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    measure();
+    return () => observer.disconnect();
+  }, [active]);
   const needle = query.trim().toLowerCase();
   const matches = useMemo(
     () =>
@@ -44,7 +58,6 @@ export function NodeColumn({
         : items,
     [items, needle],
   );
-  const measurements = useRef<VirtualItem[]>([]);
   const getItemKey = useCallback(
     (index: number) => matches[index]!.fnode,
     [matches],
@@ -56,12 +69,7 @@ export function NodeColumn({
     estimateSize: () => 72,
     overscan: 5,
     getItemKey,
-    initialMeasurementsCache: measurements.current,
-    onChange: (instance) => {
-      if (active) measurements.current = instance.takeSnapshot();
-    },
-    enabled: virtual && active,
-    initialOffset: () => scrollPosition.current,
+    enabled: virtual,
     measureElement: (element) => element.getBoundingClientRect().height,
   });
   const rows = virtual
@@ -71,22 +79,8 @@ export function NodeColumn({
     setQuery("");
   }, [context]);
   useEffect(() => {
-    scrollPosition.current = 0;
     if (list.current) list.current.scrollTop = 0;
   }, [context, needle]);
-  useLayoutEffect(() => {
-    if (!active) return;
-    const offset = scrollPosition.current;
-    let frame = requestAnimationFrame(() => {
-      // Panel constraints settle first; restoring before their resize would let
-      // measured rows adjust the scroll offset a second time.
-      frame = requestAnimationFrame(() => {
-        if (virtual) virtualizer.scrollToOffset(offset);
-        if (list.current) list.current.scrollTop = offset;
-      });
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [active]);
   useLayoutEffect(() => {
     if (focusIndex === null) return;
     const button = list.current?.querySelector<HTMLButtonElement>(
@@ -94,15 +88,17 @@ export function NodeColumn({
     );
     if (button) {
       button.focus();
+      pendingFocus.current = null;
       setFocusIndex(null);
     }
   }, [rows, focusIndex]);
   async function moveFocus(event: KeyboardEvent, index: number) {
     if (event.altKey || event.ctrlKey || event.metaKey) return;
+    const current = pendingFocus.current ?? index;
     const target = (
       {
-        ArrowDown: index + 1,
-        ArrowUp: index - 1,
+        ArrowDown: current + 1,
+        ArrowUp: current - 1,
         Home: 0,
         End: matches.length - 1,
       } as Record<string, number>
@@ -111,11 +107,35 @@ export function NodeColumn({
     event.preventDefault();
     if (target < 0 || target >= matches.length) return;
     if (virtual) virtualizer.scrollToIndex(target, { align: "auto" });
-    setFocusIndex(target);
+    const button = list.current?.querySelector<HTMLButtonElement>(
+      `button[data-index="${target}"]`,
+    );
+    if (button) {
+      pendingFocus.current = null;
+      button.focus();
+      setFocusIndex(null);
+    } else {
+      pendingFocus.current = target;
+      setFocusIndex(target);
+    }
   }
   return (
     <aside
-      className={`column ${!active ? "hidden" : ""}`}
+      ref={column}
+      className="column"
+      aria-hidden={!active}
+      // Retain the actual viewport while offscreen: a zero-size virtualizer
+      // loses measured rows and shifts the user's scroll anchor on return.
+      style={
+        !active
+          ? {
+              position: "fixed",
+              left: -10000,
+              visibility: "hidden",
+              ...bounds.current,
+            }
+          : undefined
+      }
       data-accent={accent}
       aria-label={title}
     >
@@ -151,10 +171,6 @@ export function NodeColumn({
       <ul
         className={`cards ${virtual ? "virtual" : ""} ${matches.length ? "populated" : ""}`}
         ref={list}
-        onScroll={() => {
-          if (active && list.current?.clientHeight)
-            scrollPosition.current = list.current.scrollTop;
-        }}
       >
         {virtual && (
           <li

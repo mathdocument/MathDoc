@@ -145,6 +145,7 @@ input:focus-visible,
 }
 
 @media (prefers-reduced-motion: reduce) {
+  @view-transition { navigation: none; }
   *,
   *::before,
   *::after {

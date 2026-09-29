@@ -1,5 +1,6 @@
 import Workspace from "./features/workspace/Workspace";
 import { createRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
 import { Tooltip } from "@base-ui/react/tooltip";
 import Projects from "./features/projects/Projects";
 import "./ui.css";
@@ -31,12 +32,16 @@ window.addEventListener("pagereveal", (event) => {
       delete document.documentElement.dataset.vtScope;
     });
 });
-createRoot(target).render(
-  <Tooltip.Provider>
-    {projectName() ? (
-      <Workspace onReady={pageReady} />
-    ) : (
-      <Projects onReady={pageReady} />
-    )}
-  </Tooltip.Provider>,
+// index.html blocks the first paint on this module. Commit the shell before
+// returning control so native page transitions never capture an empty header.
+flushSync(() =>
+  createRoot(target).render(
+    <Tooltip.Provider>
+      {projectName() ? (
+        <Workspace onReady={pageReady} />
+      ) : (
+        <Projects onReady={pageReady} />
+      )}
+    </Tooltip.Provider>,
+  ),
 );
