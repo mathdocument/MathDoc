@@ -1112,6 +1112,13 @@ pub async fn refresh_editor_sources(
     sources: &mut SourceState,
 ) -> Result<()> {
     write_project_modules(root, &input.project, input.modules.keys()).await?;
+    // Module cleanup may remove files outside the selected dependency chain.
+    sources.retain(|id, node| {
+        input
+            .modules
+            .get(&crate::store::module_file(&node.name, "lean").expect("validated module"))
+            == Some(id)
+    });
     for (node, _) in &input.chain {
         if sources.get(&node.fnode).is_some_and(|old| {
             Arc::ptr_eq(old, node)
@@ -1838,8 +1845,14 @@ mod tests {
         let mut input = Input {
             project: LeanProject::default().into(),
             project_key: LeanProject::default().key(),
+            modules: Arc::new(
+                [(
+                    crate::store::module_file(&node.name, "lean").unwrap(),
+                    node.fnode.clone(),
+                )]
+                .into(),
+            ),
             chain: vec![(Arc::new(node), "a".into())],
-            modules: Default::default(),
         };
         let mut sources = SourceState::new();
         refresh_editor_sources(root.path(), &input, &mut sources)
@@ -1881,6 +1894,58 @@ mod tests {
         refresh_editor_sources(root.path(), &input, &mut SourceState::new())
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn materialization_restores_names_reused_after_visiting_another_node() {
+        let root = tempfile::tempdir().unwrap();
+        let mut node = Node::new("Original.Name".into()).unwrap();
+        node.blocks.push(crate::store::Block {
+            srctype: "lean".into(),
+            content: "def value := 1\n".into(),
+            ..Default::default()
+        });
+        let other = Node::new("Other".into()).unwrap();
+        let mut input = Input {
+            project: LeanProject::default().into(),
+            project_key: LeanProject::default().key(),
+            chain: vec![(Arc::new(node.clone()), "original".into())],
+            modules: [&node, &other]
+                .into_iter()
+                .map(|n| {
+                    (
+                        crate::store::module_file(&n.name, "lean").unwrap(),
+                        n.fnode.clone(),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+                .into(),
+        };
+        let mut sources = SourceState::new();
+        refresh_editor_sources(root.path(), &input, &mut sources)
+            .await
+            .unwrap();
+        let path = module_path(root.path(), &node.name).unwrap();
+        assert!(path.exists());
+        let original = input.clone();
+        let modules = Arc::make_mut(&mut input.modules);
+        modules.remove(&crate::store::module_file(&node.name, "lean").unwrap());
+        modules.insert(
+            crate::store::module_file("Renamed.Name", "lean").unwrap(),
+            node.fnode.clone(),
+        );
+        input.chain = vec![(Arc::new(other), "other".into())];
+        refresh_editor_sources(root.path(), &input, &mut sources)
+            .await
+            .unwrap();
+        assert!(!path.exists());
+        refresh_editor_sources(root.path(), &original, &mut sources)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            node.source("lean").unwrap()
+        );
     }
 
     #[tokio::test]

@@ -64,7 +64,7 @@ pub fn rename_imports(source: &str, old: &str, new: &str) -> String {
                     name = next;
                 }
                 if crate::store::module_parts(&source[name.clone()])
-                    .is_ok_and(|parts| parts.join(".") == old)
+                    .is_ok_and(|parts| parts.into_iter().eq(old.split('.')))
                 {
                     replacements.push(name);
                 }
@@ -184,6 +184,13 @@ mod tests {
         assert_eq!(
             rename_imports("import «def»\n", "def", "Result.X"),
             "import Result.X\n"
+        );
+    }
+    #[test]
+    fn rename_imports_preserves_quoted_filename_boundaries() {
+        assert_eq!(
+            rename_imports("import «A.B»\nimport «A».B\nimport A.«B»\n", "A.B", "C.D"),
+            "import «A.B»\nimport C.D\nimport C.D\n"
         );
     }
     #[test]
