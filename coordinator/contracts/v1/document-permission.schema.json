@@ -1,0 +1,119 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "mathdoc.document-permission.v1"
+    },
+    "workspace_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    },
+    "owner": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    },
+    "branch_rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "branch": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "inherit_workspace_role": {
+            "type": "boolean"
+          },
+          "grants": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "actor": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "owner",
+                    "editor",
+                    "viewer"
+                  ]
+                }
+              },
+              "required": [
+                "actor",
+                "role"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "branch",
+          "inherit_workspace_role",
+          "grants"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1
+    },
+    "authorization_matrix": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "read",
+              "write",
+              "history",
+              "branch_create",
+              "branch_delete",
+              "export",
+              "import",
+              "database_create",
+              "database_delete",
+              "member_manage",
+              "proof_request_create"
+            ]
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "admin",
+                "owner",
+                "editor",
+                "viewer"
+              ]
+            }
+          }
+        },
+        "required": [
+          "action",
+          "roles"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1
+    }
+  },
+  "required": [
+    "schema_version",
+    "workspace_id",
+    "owner",
+    "branch_rules",
+    "authorization_matrix"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mathdoc.local/contracts/v1/document-permission.schema.json"
+}

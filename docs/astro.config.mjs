@@ -7,7 +7,7 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'MathDoc',
-      description: 'Versioned mathematical graphs with native Lean editing.',
+      description: 'Collaborative mathematical graphs whose Lean proofs are checked by LeanGround.',
       logo: {
         src: './src/assets/mdc-logo.svg',
         alt: 'MathDoc',
@@ -81,11 +81,12 @@ export default defineConfig({
         {
           label: 'Core Concepts',
           items: [
-            { label: 'Export & Restore', slug: 'concepts/import-export' },
-            { label: 'Databases & References', slug: 'concepts/workspaces' },
+            { label: 'Databases & Workspaces', slug: 'concepts/workspaces' },
+            { label: 'Collaboration', slug: 'concepts/collaboration' },
             { label: 'Dependency Graph', slug: 'concepts/dependency-graph' },
             { label: 'Source Workflow', slug: 'concepts/source-workflow' },
             { label: 'Web Interface', slug: 'concepts/web-interface' },
+            { label: 'Export & Restore', slug: 'concepts/import-export' },
             { label: 'LaTeX & References', slug: 'concepts/latex' },
           ],
         },
@@ -95,8 +96,9 @@ export default defineConfig({
             { label: 'CLI Commands', slug: 'reference/workspace-commands' },
             { label: 'Dependency Commands', slug: 'reference/dependency-commands' },
             { label: 'Graph & Metrics', slug: 'reference/graph-and-metrics' },
-            { label: 'Lean Checks & Builds', slug: 'reference/work-and-compilers' },
-            { label: 'Configuration & Measurements', slug: 'reference/configuration' },
+            { label: 'Proofs with LeanGround', slug: 'reference/proofs' },
+            { label: 'Agent Interface', slug: 'reference/agents' },
+            { label: 'Configuration', slug: 'reference/configuration' },
             { label: 'HTTP API', slug: 'reference/http-api' },
           ],
         },
@@ -105,13 +107,11 @@ export default defineConfig({
           collapsed: true,
           items: [
             { label: 'Development Setup', slug: 'development/setup' },
-            { label: 'Performance Measurements', slug: 'development/performance' },
             { label: 'Architecture', slug: 'development/architecture' },
-            { label: 'Graph & Compilation Caches', slug: 'development/index-cache' },
-            { label: 'Safe Mutations', slug: 'development/safe-mutations' },
+            { label: 'Versioned Mutations', slug: 'development/safe-mutations' },
             { label: 'Web Frontend', slug: 'development/web-frontend' },
-            { label: 'Compiler Internals', slug: 'development/compiler-internals' },
-            { label: 'Editor & Release', slug: 'development/editor-release' },
+            { label: 'Performance Measurements', slug: 'development/performance' },
+            { label: 'Release Checks', slug: 'development/editor-release' },
           ],
         },
       ],

@@ -5,6 +5,7 @@ import collections
 import concurrent.futures
 import json
 import math
+import os
 import platform
 import statistics
 import subprocess
@@ -21,6 +22,9 @@ HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 def request(url, path, method="GET", body=None, revision=None, status=200):
     headers = {"Content-Type": "application/json"}
+    # The TypeScript backend authenticates every request (MDC_TOKEN, as for `mdc`).
+    if os.environ.get("MDC_TOKEN"):
+        headers["Authorization"] = "Bearer " + os.environ["MDC_TOKEN"]
     if revision is not None:
         headers["If-Match"] = json.dumps(revision)
     req = urllib.request.Request(
@@ -122,7 +126,7 @@ def main():
             samples = []
             for _ in range(args.samples):
                 started = time.perf_counter()
-                result = subprocess.run([args.cli, *command, "--proj", args.proj], capture_output=True, check=True, timeout=180)
+                result = subprocess.run([args.cli, "-p", args.proj, *command], capture_output=True, check=True, timeout=180)
                 json.loads(result.stdout)
                 samples.append((time.perf_counter() - started) * 1000)
             report["cli"][label] = statistics_ms(samples)

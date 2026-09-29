@@ -188,7 +188,7 @@
             <span class="fnode">{shortFnode(item.fnode)}</span>
             <span class="depth" title={`depth ${item.depth}`}>d{item.depth}</span>
             <span class="meta-divider" aria-hidden="true"></span>
-            <FormalStatus language="Lean" status={item.formalization.lean} compact />
+            <FormalStatus language="Lean" status={item.formalization.lean} certification={item.formalization.lean_certification} compact />
             <FormalStatus language="Rocq" status={item.formalization.rocq} compact />
           </span>
         </button>

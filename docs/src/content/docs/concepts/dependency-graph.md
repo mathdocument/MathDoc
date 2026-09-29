@@ -2,11 +2,20 @@
 title: Dependency graph
 ---
 
-Each node declares direct dependencies by UUID. TerminusDB stores these as typed
-links. Graph validation rejects missing targets, duplicate edges, self links and
-cycles before committing. Adding an already-present dependency through the API
-is an idempotent operation and does not create another edge.
+Each node declares its direct dependencies by UUID; TerminusDB stores them as
+typed links. Every write is validated before it commits: missing targets and
+cycles (including self links) are rejected. Adding an edge that already exists
+changes nothing.
 
-The service maintains an in-memory graph projection with topological depths, reverse edges and Lean input keys. It refreshes after its own writes, or reloads on detecting a commit made outside the service. The graph check reports the validated projection; it does not reparse source files.
+The API keeps an in-memory projection of each loaded branch with topological
+depths and reverse edges. Each request looks up the branch's current commit; the
+projection is updated in place after the service's own writes and reloaded
+completely after a commit made elsewhere (another process, or a writeback by the
+worker). Graph queries never read or compile source.
 
-For Lean certification, imports reported by Lean Server are matched against the actual module identities in the graph, including original names such as `Mathlib.Data.Nat.Basic`. These direct managed imports must equal the node's `dep` set. Every dependency must also have a Lean block certified for its current inputs. External library and supporting project-file imports do not need node dependencies.
+Edges carry meaning for proofs: when a Lean node is submitted, its Lean
+dependencies decide what is registered and what becomes a premise. Direct theorem
+dependencies are premises; definition dependencies (and theirs) form the
+definition closure; nodes without a Lean block are informal and are not followed.
+Lean `import` lines are ignored. See
+[Proofs with LeanGround](../../reference/proofs/#node-conversion).

@@ -30,14 +30,13 @@ jobs:
           python3 - <<'PY'
           import json
           import os
-          import tomllib
           from pathlib import Path
 
-          version = tomllib.loads(Path("Cargo.toml").read_text())["package"]["version"]
+          version = json.loads(Path("package.json").read_text())["version"]
           event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
           if os.environ["GITHUB_EVENT_NAME"] == "release":
               if event["release"]["tag_name"] != f"v{version}":
-                  raise SystemExit("Release tag must match the version in Cargo.toml")
+                  raise SystemExit("Release tag must match the version in package.json")
               tag = version
           else:
               tag = "sha-" + os.environ["GITHUB_SHA"][:12]

@@ -1,145 +1,140 @@
 ---
-title: HTTP API and CLI mapping
+title: HTTP API
 ---
 
-The shared entry serves inventory at `GET /api/status`, with the same
-`{server, projects}` result as [`mdc status`](../workspace-commands/).
-The directory uses `GET /api/projects`: the same inventory plus `nodes` and
-`edges` on running branches, read from their loaded graph snapshots. Stopped
-branches have no counts and are never loaded just to display the directory.
-Branch endpoints use `/p/DATABASE/BRANCH/api`, for example
-`http://127.0.0.1:17843/p/myproject/main/api/graph/check`.
-Tables below give paths relative to that prefix. The browser and CLI use the
-same handlers. Node path IDs should be complete
-UUIDs; CLI references are resolved by exact name or UUID first.
+One API process serves the editor, the document API and the collaboration API.
+The CLI and the browser use the same endpoints.
 
-## Graph and authoring
+## Authentication
 
-| Method and path (after `/api`) | CLI | Result or behavior |
+Every `/api/…` and `/p/DB/BRANCH/api/…` request needs
+`Authorization: Bearer TOKEN` with a token from `MDC_ACTORS`; otherwise `401`.
+Document requests also pass the same-origin check
+([Configuration](../configuration/#reverse-proxy)); a rejected Host or Origin
+gets `403`. `GET /api/me` returns `{actor, admin}`.
+
+Access to a branch follows the [workspace roles](../../concepts/workspaces/#workspaces-and-roles).
+Without read access a branch answers `404 project not found`; with too low a
+role, `403`.
+
+## Directory
+
+| Method and path | Result |
+| --- | --- |
+| `GET /api/status` | `{server: {running, port, url, on_demand: true}, projects}` where `projects` maps each readable `DB/BRANCH` to `{running: true, url, role}`. |
+| `GET /api/projects` | The same, plus `nodes` and `edges` for branches already loaded. |
+| `POST /api/projects` | A directory action, below. |
+
+| Body | Permission | Effect |
 | --- | --- | --- |
-| `GET /graph/check` | `graph check` | Node/edge counts from the validated graph. |
-| `GET /graph/roots` | `graph roots` | Root summaries with depth and component size. |
-| `GET /graph/full` | `graph full` | Node summaries with `lean` status (`unverified`, `sorry`, `conditional`, `verified`) and index-pair edges. |
-| `GET /search?q=TEXT&n=N` | `search TEXT -n N` | Title/UUID matches; default/cap 200. |
-| `GET /resolve?ref=NAME_OR_UUID` | Used by node commands | `{fnode, title}`. |
-| `GET /node/ID/view` | `show` and `dep` reads | `{node, referrers, children}`; all include `formalization: {lean, rocq}` status. CLI `show` returns `node`. |
-| `POST /node/new` | `new -t TITLE [--parent REF]` | Body `{title, parent_fnode?}`; optionally creates an edge atomically. |
-| `DELETE /node/ID` | `del SOURCE` | Atomically delete the node and detach all referrers; `{fnode, deleted: true, removed_edges}`. |
-| `PUT /node/ID/title` | `rename` | Body `{title}`; updated node. |
-| `PUT /node/ID/block/TYPE` | `edit --type TYPE` | Body `{content}`; updated node. |
-| `DELETE /node/ID/block/TYPE` | `edit --type TYPE --delete` | Delete text/lean/rocq/latex block; updated node. |
-| `POST /node/ID/dep/add` | `dep add -t TARGET` | Body `{dep_fnode}`; updated source node. |
-| `POST /node/ID/dep/rm` | `dep rm -t TARGET...` | Body `{dep_fnodes:[...]}`; one atomic removal. |
-| `GET /node/ID/dep?mode=MODE&depth=D` | `dep show`, `refs`, `leaf` | MODE is show/refs/leaf; depth -1 or nonnegative. |
-| `GET /node/ID/dep/candidates?q=TEXT&n=N` | `dep candidates` | `{nodes, empty}`; HTTP default 50, cap 200; CLI explicitly defaults to 200. |
-| `GET /node/ID/metric/ior` | `metric ior` | Degrees and IOR value. |
-| `POST /node/ID/lean/check` | `lean check [--build]` | Body `{build:bool}`; certification and cache result. |
-| `POST /node/ID/lean/goals` | `lean goals` | Body `{line, character}` in zero-based LSP coordinates. |
-| `GET /project/lean` | `project show` | `{revision, project}`. |
-| `PUT /project/lean` | `project set` | Complete project object; updated revision and configuration. |
-| `GET /project/latex` | `project latex show` | `{revision, project}` with the shared macro file and bibliography. |
-| `PUT /project/latex` | `project latex set` | Replace `{preamble_name, preamble, bibliography_name, bibliography}` using the branch revision. |
-| `GET /project/latex/catalog` | — | Shared citations and macro completions; `?known=PROJECT_KEY` returns `unchanged` when current. |
-| `GET /node/:id/latex/context` | — | Direct imports and permitted labels; `?known=CONTEXT_KEY` avoids repeating unchanged context. |
-| `POST /node/:id/latex/preview` | — | Render `{source}` as HTML and return labels, diagnostics and a `context_key` covering source, dependencies and project settings, without saving the draft. |
-| `GET /export` | `export` | `{nodes, project}` for the entire branch snapshot. |
-| `POST /import` | `import FILE` | Complete bundle into an empty branch; graph report. |
-| `GET /history` | `history` | Latest 50 TerminusDB commits. |
-| `POST /branches` | `branch new NAME` | Body `{name}`; forks the current head. |
+| `{"action": "init", "name": DB}` | admin | Create database `DB` with `main`; the caller owns it. |
+| `{"action": "remove", "database": DB}` | admin | Delete the database, its history and its workspace record. |
+| `{"action": "new_branch", "project": "DB/BRANCH", "name": NEW}` | editor+ on the source | Fork `DB/BRANCH` as `DB/NEW`, copying its role rules. |
+| `{"action": "delete_branch", "project": "DB/BRANCH"}` | owner+ | Delete a non-`main` branch. |
+| `{"action": "grant", "project": "DB/BRANCH", "actor": A, "role": R}` | owner+ | `R` is `owner`, `editor`, `viewer` or `none`. |
+| `{"action": "set_owner", "database": DB, "owner": A}` | admin | Set the workspace owner; creates the workspace record for databases that lack one. |
 
-For linked creation, the HTTP response is the updated parent, as used by the
-browser. The CLI identifies its newly added dependency and returns the created
-node, keeping `new` output consistent. A normal unlinked creation returns the
-new node directly. Deleting a node retains all other nodes and their source
-blocks; only dependency edges incident to the deleted node are removed.
+Unknown fields are rejected. `start` and `stop` are answered with an error:
+branches load on demand.
 
-## Local management and editor sessions
+## Branch API
 
-`init`, `status`, and `branch del` contact TerminusDB directly. `start` owns its
-background process launch. Loading a branch calls
-`POST /p/DATABASE/BRANCH/api/service/start` with the server's local token.
-`stop DATABASE/BRANCH` calls `POST /p/DATABASE/BRANCH/api/service/stop` with that
-branch's token; bare `stop` calls `POST /api/service/stop` with the server token.
-Stop waits for the relevant cache lease to be released. All calls use the same
-listening port; no branch HTTP process or forwarding hop exists. None of these
-operations require a hidden CLI command.
+Paths are relative to `/p/DB/BRANCH/api`, for example
+`/p/myproject/main/api/graph/check`. Node IDs in paths should be full UUIDs.
+Permissions: `GET` needs read (history/export likewise), writes need `editor`,
+import needs `owner`.
 
-`remove DATABASE` calls `POST /api/service/remove/DATABASE` with the server token
-when the entry server is running. Removal excludes concurrent lifecycle changes,
-stops all of this project's branches, then deletes the database and clears its
-local caches. With no server, the CLI holds the entry server lease and performs
-the same deletion directly. It also removes this project's foreground restore
-entries. The result is `{database, deleted: true}`.
+| Method and path | CLI | Result or behavior |
+| --- | --- | --- |
+| `GET /graph/check` | `graph check` | Counts and graph issues. |
+| `GET /graph/roots` | `graph roots` | Roots with depth and component size. |
+| `GET /graph/full` | `graph full` | Node summaries with `lean` (`no_code`/`unverified`) and index-pair edges. |
+| `GET /search?q=TEXT&n=N` | `search` | Title/UUID matches; default and cap 200. |
+| `GET /resolve?ref=TITLE_OR_UUID` | node commands | `{fnode, title}`. |
+| `GET /node/ID/view` | `show` | `{node, referrers, children}`; see below. |
+| `POST /node/new` | `new` | Body `{title, parent_fnode?}`; with a parent (guarded by its revision) the edge is added in the same commit and the parent is returned. |
+| `DELETE /node/ID` | `del` | `{fnode, deleted: true, removed_edges}`. |
+| `PUT /node/ID/title` | `rename` | Body `{title}`. |
+| `PUT /node/ID/block/TYPE` | `edit` | Body `{content}`; TYPE is `text`, `lean`, `rocq` or `latex`. Block metadata is kept. |
+| `DELETE /node/ID/block/TYPE` | `edit --delete` | Remove the block. |
+| `POST /node/ID/dep/add` | `dep add` | Body `{dep_fnode}`. |
+| `POST /node/ID/dep/rm` | `dep rm` | Body `{dep_fnodes: [...]}`; one commit. |
+| `GET /node/ID/dep?mode=show\|refs\|leaf&depth=D` | `dep show/refs/leaf` | Reachable nodes with `depth`; D is -1 or nonnegative. |
+| `GET /node/ID/dep/candidates?q=TEXT&n=N` | `dep candidates` | `{nodes, empty}`; default 50, cap 200. |
+| `GET /node/ID/metric/ior` | `metric ior` | Degrees and IOR. |
+| `GET /project/latex` | `project latex show` | `{revision, project}`. |
+| `PUT /project/latex` | `project latex set` | `{preamble_name, preamble, bibliography_name, bibliography}`, guarded by the branch revision. |
+| `GET /project/latex/catalog` | — | Citation and macro completions; `?known=KEY` returns `unchanged`. |
+| `GET /node/ID/latex/context` | — | Imports and permitted labels; `?known=KEY` returns `unchanged`. |
+| `POST /node/ID/latex/preview` | — | Body `{source}` (max 2 MiB); HTML, labels, diagnostics; nothing is saved. Needs read only. |
+| `GET /project/lean`, `PUT /project/lean` | — | Legacy Lean project settings, preserved but unused. `PUT` is guarded by the branch revision. |
+| `GET /export` | `export` | `{nodes, project, latex_project}`. |
+| `POST /import` | `import` | A bundle into an empty branch; returns the graph report. |
+| `GET /history` | `history` | The latest 50 commits. |
+| `POST /branches` | — | Body `{name}`; fork this branch (as `new_branch`). |
 
-The project directory sends JSON to `POST /api/projects`. This endpoint requires
-a same-origin browser `Origin` header and supports these bodies:
+A node in `view`, `show` and write responses has `fnode`, `title`, `depth`,
+`revision`, `depens`, `blocks`, `module` and `formalization`:
 
-| Body | Behavior |
+```json
+{"lean": "unverified", "rocq": "no_code",
+ "lean_certification": {"status": "certified", "project": "mdc-…", "goal": "…",
+   "minimum_trust": "audited", "checked_at": "2026-09-29T10:00:00.000Z", "truncated": false}}
+```
+
+`lean_certification` is `null` without a Lean block, `{"status": "not_submitted"}`
+outside proof requests, and otherwise one of the
+[statuses](../proofs/#statuses), with `reason`/`details` when rejected or stale.
+
+### Revisions, errors and limits
+
+Node writes (title, blocks, dependencies, deletion, linked creation) need a
+quoted `If-Match: "REVISION"` with the node revision; `PUT /project/latex` and
+`PUT /project/lean` use the branch revision from their `GET`. Missing: `428`;
+stale: `412`. Unlinked creation, import and branch creation take no revision; all
+writes still commit against the TerminusDB data version they read.
+
+| Status | Meaning |
 | --- | --- |
-| `{action: "init", name}` | Create a database and its stopped `main` branch. |
-| `{action: "remove", database}` | Stop every branch of this project and delete its database, history and local branch caches, as with `mdc remove DATABASE`. |
-| `{action: "start", project: "DATABASE/BRANCH"}` | Load a branch into the existing entry server. |
-| `{action: "stop", project}` | Stop that branch, including its editor sessions. |
-| `{action: "new_branch", project, name}` | Fork the specified branch's current head, including a stopped source. The new branch is stopped. |
-| `{action: "delete_branch", project}` | Delete an already stopped non-`main` branch and its compiler caches, using the same exclusive cache lease as CLI deletion. |
+| 400 | Malformed query. |
+| 401 | Missing or unknown token. |
+| 403 | Rejected Host/Origin, or role too low. |
+| 404 | Unknown node or path, or no read access to the branch. |
+| 409 | Nonempty import destination, changed LaTeX context during preview, or a concurrent commit. |
+| 412 | Stale revision. |
+| 413 | LaTeX source too large. |
+| 422 | Invalid body, graph, block type or project settings. |
+| 428 | Missing `If-Match`. |
+| 502 | TerminusDB unreachable or failed. |
 
-Browser management does not disclose or replace the private CLI service tokens.
-TerminusDB protects `main`: neither the browser nor CLI can delete it, regardless
-of how many branches exist. Rejected `main` deletions leave its caches intact.
-Deleting another branch preserves the database and immutable history.
+Errors are `{"error": "message"}`. Request bodies are limited to 2,200,000 bytes
+(this includes imports); larger or malformed JSON bodies are currently answered
+with `500 internal error` rather than a specific status.
 
-The following endpoints maintain browser draft sessions rather than saved graph
-objects. CLI agents use `lean check` and `lean goals` instead of managing sessions.
+## Collaboration
 
-| Method and path (after `/api`) | Purpose |
-| --- | --- |
-| `POST /node/ID/lean/session` | Create a native editor session for the guarded node revision. |
-| `GET /lean/session/SESSION` | Read editor session metadata and source. |
-| `GET /lean/session/SESSION/ws` | WebSocket carrying native Lean JSON-RPC and mdc editor messages. |
-| `DELETE /lean/session/SESSION` | Close the session and release its slot. |
+Paths are under `/api/coordination`. Errors are `{"reason": CODE}`, plus
+`issues` for invalid bodies and `retryable` for LeanGround failures.
 
-Each browser session keeps one connection, isolated drafts and two warm document
-workers. The branch currently allows eight browser sessions. See
-[Compiler internals](../../development/compiler-internals/) for native evidence,
-certification and cleanup.
+| Method and path | Permission | Behavior |
+| --- | --- | --- |
+| `GET /environments/DB/BRANCH` | read | The proof environment, or `404 environment_not_configured`. |
+| `PUT /environments/DB/BRANCH` | owner+ | Body `{base_key, context?, options?, minimum_trust?}`. |
+| `GET /projects` | — | Proof requests you are a member of. |
+| `GET /projects?database=DB&branch=BRANCH[&node=UUID]` | read | Those bound to the branch, or containing the node. |
+| `POST /projects` | editor+ | Body `{document: {database, branch, node}, members?, budget, title?}`; header `Idempotency-Key`. `201` with the board; the same key and body again returns it with `200`. |
+| `GET /projects/ID` | member, read | The board. |
+| `POST /projects/ID/commands` | member, read | Headers `If-Match: "REVISION"`, `Idempotency-Key`. Returns `{revision, result, job}`. |
+| `GET /projects/ID/jobs` | member, read | The latest 100 jobs. |
+| `GET /projects/ID/history` | member, read | The latest 100 events. |
+| `GET /projects/ID/facts/CERT_ID` | member, read | A certificate of this project, with source, from LeanGround. |
+| `GET /projects/ID/nodes/UUID/draft` | member, read | Submission draft for a theorem node ([Agent interface](../agents/#3-get-the-draft)). |
 
-## Revisions, errors and limits
+Non-members and actors without read access on the bound branch get
+`404 not_found`. Command bodies and their permissions are listed in
+[Proofs with LeanGround](../proofs/#commands).
 
-Node mutations, linked creation, Lean checks/goals and editor creation require a
-quoted `If-Match` node revision. `PUT /project/lean` instead uses the branch data
-revision returned by `GET /project/lean`. Unlinked creation, import and branch
-creation have no caller-supplied `If-Match`. Node, project and import transactions
-still use current TerminusDB data-version guards. Branch creation asks TerminusDB
-to fork the origin branch head when it processes the request. Import validates
-the whole bundle before one commit and rejects nonempty destinations.
-
-| HTTP status | Meaning |
-| --- | --- |
-| 400 | Malformed query or request syntax. |
-| 403 | Rejected Host/origin or missing stop token. |
-| 404 | Unknown node, session or API path. |
-| 409 | Transaction conflict, changed service token, changed Lean inputs, or nonempty import destination. |
-| 412 | Caller supplied a stale revision. |
-| 413 | Request body exceeds the configured limit. |
-| 415 | JSON request has an unsupported content type. |
-| 422 | Invalid graph, source type, project configuration or request body. |
-| 428 | Missing quoted If-Match where required. |
-| 502 | TerminusDB request failure. |
-| 503 | Requested branch is stopped, starting or stopping. |
-
-Application errors use `{error: string}`; framework rejections, such as malformed
-JSON or oversized bodies, may be plain text. Check the status before decoding.
-The HTTP body limit is 256 MiB, including graph imports. A larger exported bundle
-cannot currently be restored through this API.
-There is no streaming import/export or pagination over the full graph. The
-service holds the complete source snapshot in memory, so startup and external
-commit reload costs grow with source size.
-
-Host and browser-origin checks restrict requests to loopback or the configured
-`public_origin`. See [reverse proxy configuration](../configuration/). CLI
-requests carry `x-mdc-service` from the private local service record, preventing
-a reloaded branch or reused port from silently accepting a stale CLI command.
-The server selects the current branch router directly, including native
-WebSocket upgrades, without reconstructing HTTP requests.
-This is a trusted-author deployment; remote user authentication, per-project
-permissions and compiler sandboxing are not provided by MathDoc.
+Some routes serve the archived prototype's projects created from a raw
+proposition (admin-only `POST /projects` bodies without `document`, and
+`GET /documents`, `/projects/ID/documents`, `/document-history`, `/branches`).
+The editor does not use them.

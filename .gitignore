@@ -12,5 +12,5 @@ __pycache__/
 *.log
 
 # Local server deployment state (never commit credentials).
-/config.toml
+/mathdoc.env
 /secrets/

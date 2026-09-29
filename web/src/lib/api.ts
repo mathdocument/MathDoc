@@ -19,6 +19,7 @@ import type {
   TitleBody,
 } from "./types";
 import { projectPath } from "./project-path";
+import { authorized, signOut } from "./auth";
 
 export function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
@@ -36,7 +37,8 @@ export class ApiError extends Error {
 }
 
 export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(path, init);
+  const resp = await fetch(path, authorized(init));
+  if (resp.status === 401) signOut();
   const text = await resp.text();
   let body: unknown = null;
   if (text) {
@@ -48,10 +50,13 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
     }
   }
   if (!resp.ok) {
+    // Document routes answer {error}; collaboration routes answer a machine-readable {reason}.
     const msg =
       typeof body === "object" && body !== null && "error" in body
         ? String((body as ErrorResponse).error)
-        : `HTTP ${resp.status}`;
+        : typeof body === "object" && body !== null && "reason" in body
+          ? String((body as { reason: unknown }).reason)
+          : `HTTP ${resp.status}`;
     throw new ApiError(msg, resp.status, body);
   }
   return body as T;
@@ -62,14 +67,15 @@ function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export interface ServiceStatus {
-  server: { running: boolean; port: number | null; url: string | null };
-  projects: Record<string, { running: boolean; url: string | null; nodes?: number; edges?: number }>;
+  /** on_demand: branches load when used; there is no start/stop. */
+  server: { running: boolean; port: number | null; url: string | null; on_demand?: boolean };
+  projects: Record<string, { running: boolean; url: string | null; role?: "admin" | "owner" | "editor" | "viewer"; nodes?: number; edges?: number }>;
 }
 
 export type ProjectAction = {action: "init"; name: string}
   | {action: "remove"; database: string}
   | {action: "new_branch"; project: string; name: string}
-  | {action: "start" | "stop" | "delete_branch"; project: string};
+  | {action: "delete_branch"; project: string};
 export const projectsApi = {
   list: (signal?: AbortSignal) => fetchJson<ServiceStatus>("/api/projects", {signal}),
   change: (body: ProjectAction) => fetchJson<{project?: string; database?: string; deleted?: boolean}>("/api/projects", {
@@ -121,26 +127,7 @@ function newNode(params: NewNodeBody, expectedRevision?: string): Promise<NodeDe
   return create();
 }
 
-export interface LeanProject {
-  toolchain: string; lakefile: string; manifest: string | null;
-  lakefile_name?: "lakefile.toml" | "lakefile.lean";
-  module_root?: string;
-  files?: Record<string, string>;
-}
 export const api = {
-  project: () => req<{ revision: string; project: LeanProject }>("/api/project/lean"),
-  putProject: (project: LeanProject, revision: string) => req<{ revision: string; project: LeanProject }>("/api/project/lean", {
-    method: "PUT", headers: { "content-type": "application/json", "if-match": `"${revision}"` }, body: JSON.stringify(project),
-  }),
-  leanSession: (fnode: string, revision: string) => req<{ id: string; filename: string; source: string }>(`/api/node/${encodeURIComponent(fnode)}/lean/session`, {
-    method: "POST", headers: { "if-match": `"${revision}"` },
-  }),
-  closeLeanSession: (id: string) => req<void>(`/api/lean/session/${encodeURIComponent(id)}`, {
-    method: "DELETE", keepalive: true,
-  }),
-  checkLean: (fnode: string, revision: string, build = false) => req<{ fnode: string; revision: string; passed: boolean; certified: boolean; has_sorry: boolean | null; built: boolean; cache_hit: boolean; elapsed_ms: number; diagnostics: unknown[]; dependency_errors: string[] }>(`/api/node/${encodeURIComponent(fnode)}/lean/check`, {
-    method: "POST", headers: { "content-type": "application/json", "if-match": `"${revision}"` }, body: JSON.stringify({ build }),
-  }),
   roots: () => req<GraphRootItem[]>("/api/graph/roots"),
   graphCheck: () => req<GraphCheckReport>("/api/graph/check"),
   full: (signal?: AbortSignal) => req<GraphFull>("/api/graph/full", { signal }),

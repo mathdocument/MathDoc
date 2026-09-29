@@ -2,59 +2,61 @@
 title: Source workflow
 ---
 
-Each node has at most one block of each supported type. The browser always
-displays them in `text`, `latex`, `lean`, `rocq` order, regardless of when they
-were added. Edit in the browser or send a complete block on stdin:
+## Blocks
+
+Each node has at most one block of each type: `text`, `latex`, `lean`, `rocq`.
+The browser always shows them in that order. Edit in the browser, or send a
+complete block on stdin:
 
 ```sh
 printf 'Explanation.\n' | mdc edit Example -p myproject/main --type text
 mdc edit Example -p myproject/main --type text --delete
 ```
 
-`edit` creates or replaces the block; an empty string is still an existing block.
-`--delete` removes it and does not read stdin. Source edits and compilation are
-separate operations. Only Lean has integrated compilation and language services.
+`edit` creates or replaces the block (`--type` defaults to `lean`); an empty
+string is still an existing block. `--delete` removes the block and reads no
+stdin. Saving stores source only; MathDoc never compiles Lean or Rocq.
 
-Read `mdc show Example -p myproject/main` before editing. Pass its `revision` using
-`--revision` to `edit`, `rename`, or dependency mutations to guard work based on
-that read. Without it, the CLI fetches a revision immediately before writing.
-Browser saves carry the revision they loaded. A stale write fails and leaves the
-newer database state intact; browser drafts remain available for reconciliation.
-See [Versioned mutations](../../development/safe-mutations/).
+## Revisions
 
-Lean Server elaborates changed documents incrementally. After **Save**, the
-browser reuses that editor's native diagnostics and import information to certify
-the exact saved source and compiled dependencies. Unsaved drafts cannot update
-certification of different database contents. Native Lake builds imported
-artifacts and, on `mdc lean check Example -p myproject/main --build`, the target
-`.olean`. Matching artifacts are reused rather than rebuilt unconditionally.
+Read `mdc show Example -p myproject/main` before editing and pass its `revision`
+with `--revision` to `edit`, `rename`, `del` or dependency commands. The write
+fails with `412` if the node changed since that read, leaving the newer state
+intact. Without `--revision` the CLI reads the current revision just before
+writing, which protects only against changes in between. Browser saves carry the
+revision they loaded; on conflict the draft stays in the editor for
+reconciliation. See [Versioned mutations](../../development/safe-mutations/).
 
-The Lean block's **Lean import** disclosure shows the module name to use from
-other nodes. The graph and the node's Lean status use the same colors:
+## Lean blocks
 
-| Label | Color | Meaning |
-| --- | --- | --- |
-| Unverified | Gray | No Lean source (including an empty block), or unchecked, failed, stale or incomplete compiler evidence. |
-| Sorry | Red | A current certified module has native `sorry` evidence. |
-| Conditional | Yellow | A current certified module has no own `sorry`, but a direct or transitive managed dependency does. |
-| Verified | Green | Current complete evidence reports no `sorry` in the module or its managed dependency closure. |
+Lean blocks are ordinary Monaco source editors with Lean syntax highlighting.
+There is no Lean server, Infoview or local check. A Lean node has two status
+dimensions:
 
-Rocq does not affect graph colors. Comments and strings containing `sorry` do not
-count. Changing a dependency invalidates downstream statuses until checked again.
-This tracks managed graph dependencies, not arbitrary axioms in external libraries.
+- **Local check**: always absent in this version (reported as `unverified` when
+  a Lean block exists, `no_code` otherwise).
+- **LeanGround certification**: `not_submitted`, `insufficient`, `derivable`,
+  `certified`, `stale` or `rejected`. See
+  [Proofs with LeanGround](../../reference/proofs/#statuses).
 
-Older certificates without sorry evidence remain Unverified until checked again.
-When Lake restores artifacts without diagnostic logs, MathDoc inspects their
-compiled proof bodies once with the pinned Lean compiler. Large closures use up
-to four inspector processes, capped across the service; small closures use one.
-The resulting certificates are persisted and shared across matching branches.
-Graph queries use in-memory certificates and never launch Lean. Certificates
-are restored once at service startup; saving or certifying Lean refreshes graph
-colors while preserving the graph viewport.
-Certification runs separately from LSP message forwarding and does not lock graph
-operations. It uses the configured Lean timeout; a timeout reports a check error
-without closing the editor connection, so checking can be retried in place.
+To check a proof, submit the node to LeanGround ([Proofs](../../reference/proofs/)).
+For that, write each Lean block in the form the converter accepts:
 
-Managed Lean imports must agree with declared graph dependencies. Maintain edges
-with `mdc dep`, and edit the corresponding imports in Lean source. Generated
-compiler files are service-owned; they are not a second editing interface.
+- One node, one role: either definitions only (`def`, `abbrev`,
+  `noncomputable def`, `structure`, `inductive`) or exactly one `theorem`/`lemma`
+  as the node's conclusion. Blocks with several theorems need the block metadata
+  `lean_conclusion`; mixed blocks also need `lean_role`. Block metadata can
+  currently be set only through an [import bundle](../import-export/); editing a
+  block keeps its metadata. Splitting such a node is usually simpler.
+- Leave a proof as `sorry` to make it an open goal for others.
+- Depend on other nodes through graph edges, not `import` lines: imports are
+  dropped on submission. A theorem node's direct theorem dependencies become its
+  premises; its definition dependencies are registered in LeanGround.
+- `open`, `set_option`, `universe` and `variable` lines must equal the branch's
+  proof environment context line for line.
+- `instance`, `class`, `namespace`, attributes and `open … in` are rejected with a
+  reason on the node.
+
+Graph edges are the only dependency information MathDoc uses: nodes without a
+Lean block are informal and are not followed when collecting a proof's Lean
+dependencies.

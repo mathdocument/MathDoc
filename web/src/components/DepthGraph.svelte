@@ -35,13 +35,13 @@
   let nodes: SimNode[] = [];
   let nodeCount = $state(0);
   const statusLabels = [
-    ["unverified", "Unverified"],
-    ["sorry", "Sorry"],
-    ["conditional", "Conditional"],
+    // Colors follow the local-check dimension; LeanGround certification shows per node.
+    ["no_code", "No Lean code"],
+    ["unverified", "Lean code"],
     ["verified", "Verified"],
   ] as const;
   let statusCounts = $state<Record<FormalCodeStatus, number>>({
-    unverified: 0, sorry: 0, conditional: 0, verified: 0,
+    no_code: 0, unverified: 0, verified: 0,
   });
   let rafId = 0;
   let running = true;
@@ -59,9 +59,8 @@
   // Canvas cannot read CSS custom properties, so these mirror the accent tokens
   // in app.css. Keep them in step when the palette changes.
   const DARK_PALETTE = {
-    unverified: "#79828f",
-    sorry: "#ff6f85",
-    conditional: "#f0b661",
+    no_code: "#79828f",
+    unverified: "#f0b661",
     verified: "#4fd6ae",
     outgoing: "79, 214, 174",
     incoming: "180, 140, 255",
@@ -70,9 +69,8 @@
     label: "198, 205, 218",
   };
   const LIGHT_PALETTE = {
-    unverified: "#69727f",
-    sorry: "#c8384d",
-    conditional: "#96601a",
+    no_code: "#69727f",
+    unverified: "#96601a",
     verified: "#0a7d64",
     outgoing: "10, 125, 100",
     incoming: "116, 64, 208",
@@ -148,14 +146,14 @@
       depth: node.depth,
       inDegree: 0,
       outDegree: 0,
-      lean: node.lean ?? "unverified",
+      lean: node.lean ?? "no_code",
       baseRadius: 6,
       order: 0,
       x: 0,
       y: 0,
     }));
     nodeCount = nodes.length;
-    const counts = { unverified: 0, sorry: 0, conditional: 0, verified: 0 };
+    const counts = { no_code: 0, unverified: 0, verified: 0 };
     for (const node of nodes) counts[node.lean]++;
     statusCounts = counts;
     nodesById = new Map(nodes.map((node) => [node.id, node]));
@@ -411,14 +409,14 @@
     }
 
     const labelStride = Math.max(1, Math.ceil(visibleNodes.length / 500));
-    const paths = { unverified: new Path2D(), sorry: new Path2D(), conditional: new Path2D(), verified: new Path2D() };
+    const paths = { no_code: new Path2D(), unverified: new Path2D(), verified: new Path2D() };
     for (const n of visibleNodes) {
       const r = nodeRadius(n, graphSelection);
       const path = paths[n.lean];
       path.moveTo(n.x + r, n.y);
       path.arc(n.x, n.y, r, 0, 2 * Math.PI);
     }
-    for (const status of ["unverified", "sorry", "conditional", "verified"] as const) {
+    for (const status of ["no_code", "unverified", "verified"] as const) {
       ctx.fillStyle = palette[status];
       ctx.fill(paths[status]);
     }
@@ -921,8 +919,7 @@
   .graph-legend .count-divider { padding-inline: .15rem; color: var(--mdc-muted); }
   .graph-legend span { display: inline-flex; align-items: center; gap: .35rem; }
   .graph-legend span::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--mdc-muted); }
-  .graph-legend .sorry::before { background: var(--mdc-error); }
-  .graph-legend .conditional::before { background: var(--mdc-warning); }
+  .graph-legend .unverified::before { background: var(--mdc-warning); }
   .graph-legend .verified::before { background: var(--mdc-accent-down); }
   .graph-container {
     position: relative;

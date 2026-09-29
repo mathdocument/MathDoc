@@ -2,242 +2,108 @@
 title: CLI commands
 ---
 
-## Help, selection and output
+`mdc` is a thin client of the [HTTP API](../http-api/): each command is one or two
+requests made with your token, and the output is the JSON response. It keeps no
+local state and can run on any machine that reaches the server.
 
-`mdc --help` lists three command groups in this order:
+## Setup
 
-| Scope | Commands |
+| Environment | Meaning |
 | --- | --- |
-| Project and service management | `status`, `init`, `remove`, `start`, `stop`, `cache` |
-| Entire branch | `search`, `graph`, `export`, `import`, `history`, `branch`, `project` |
-| Single node | `new`, `del`, `dep`, `show`, `edit`, `rename`, `metric`, `lean` |
+| `MDC_URL` | Server origin; default `http://127.0.0.1:17843`. |
+| `MDC_TOKEN` | Your access token (required). |
+| `MDC_PROJECT` | Default `DATABASE/BRANCH` for branch, node and proof commands. |
 
-Use `mdc COMMAND -h` or `mdc COMMAND SUBCOMMAND --help`. There is no `help`
-subcommand. The root accepts only `-h/--help`; command help places `-h/--help` and
-`-m/--meas` first, followed by a blank line and the other applicable options.
+`-p DATABASE/BRANCH` selects the branch explicitly and overrides `MDC_PROJECT`.
+Flags may appear anywhere after `mdc`. From a checkout, run
+`node coordinator/dist/cli.js`; in the Docker image `mdc` is on the `PATH`, and
+a deployment's `mdc` wrapper (`scripts/mdc-docker` in a checkout) runs it in the
+`runtime` container from the host.
 
-Branch and node commands require `-p/--proj DATABASE/BRANCH` after the command
-name. The selector is inherited by nested subcommands. Except for `branch del`,
-these commands require both the entry server and the selected branch's service.
+Output is pretty-printed JSON on stdout. Exit code 2 means a usage error (the
+usage text is printed); 1 means the request failed, with `HTTP STATUS: message`
+on stderr. `mdc -h` prints the command list.
 
-```sh
-mdc graph check -p myproject/main -m
-mdc graph -p myproject/main check
-mdc status --meas
-```
-
-There is no default project, `--url` option or `MDC_URL` setting. The entry server
-defaults to port 17843; clients discover it through its local lease. The root and
-`status/init/remove/start/stop/cache` do not accept `-p/--proj`.
-`mdc -m`, `mdc -m graph check` and `mdc -p myproject/main graph check` are invalid.
-
-Successful operations print JSON to stdout; lists such as search and history can
-be JSON arrays. `-m/--meas` prints inclusive timing measurements to stderr.
-Operational failures return exit code 1; invalid CLI arguments return 2.
-Help returns 0. An uncertified Lean check also returns 1 while preserving its
-JSON result. No command performs a source-workspace refresh.
-
-## Projects and services
+## Server and workspaces
 
 | Command | Behavior |
 | --- | --- |
-| `mdc status` | Return entry server status and all database branches, including stopped branches. |
-| `mdc init DATABASE` | Create a database with default `main` branch and Lean settings. |
-| `mdc remove DATABASE` | Stop all branches of this project and delete its database, all branch history and local branch caches. |
-| `mdc start [DATABASE/BRANCH] [--port PORT]` | Start/reuse the entry server; optionally start one branch. Return URL, entry port, process PID and log path. |
-| `mdc start --foreground [--port PORT]` | Run a supervised server in the current process and restore its previously started branches. |
-| `mdc stop [DATABASE/BRANCH]` | Unload one branch and stop its Lean workers, or stop the entire server and all branches when no branch is given. Retain graph data and caches. |
-| `mdc cache stats DATABASE` | Report local shared artifact, mapping and certificate counts and readable sizes (KiB/MiB/GiB), whether branches are running or stopped. Requires neither a service nor a database connection; does not compile. |
-| `mdc cache gc DATABASE [--dry-run] [--older-than-days DAYS] [--max-bytes BYTES] [--certificates]` | Reclaim shared entries after all this database's branches are stopped. Defaults to a seven-day publication grace period. |
+| `mdc status` | `{server, projects}`: every branch you can read, with URL and your role. |
+| `mdc init DATABASE` | Create a database with a `main` branch; you become its owner. Admin only. |
+| `mdc remove DATABASE` | Delete the database, all branches and history, and its workspace record. Admin only; no prompt. |
+| `mdc grant ACTOR owner\|editor\|viewer\|none -p DB/BRANCH` | Set ACTOR's role on that branch (`none` removes it). Owner or admin. |
 
-Cache GC evicts the oldest eligible Lake mappings, then unreferenced objects.
-With `--max-bytes`, eviction stops when shared artifact logical bytes fit the
-budget; newer entries can keep `budget_met` false. Without a budget it removes
-all age-eligible mappings and unreferenced objects. `--older-than-days 0` permits
-immediate cleanup. Certificates are retained unless `--certificates` is supplied;
-that option removes age-eligible proof records independently of the artifact
-budget. Unknown or malformed native mappings abort the plan before deletion.
-GC is explicit, never part of a check or branch deletion. All reported sizes use
-readable binary units (B/KiB/MiB/GiB), including `max_size`, `artifact_size_before`,
-`artifact_size_after` and `reclaimable_file_size`; `max_size` is null when no budget
-is supplied. The `--max-bytes` input remains an exact byte count.
+Roles and their rights are listed in [Workspaces](../../concepts/workspaces/#workspaces-and-roles).
 
-`stats` reports logical bytes and allocated file blocks, counting each inode
-once for allocated bytes within the reported set. Private workspaces and
-directory metadata are excluded. In particular, older branch-local Lake caches
-are not counted until a Lean operation attaches them to the shared pool; a zero
-shared total does not mean that all branch-local caches are empty. `stop` retains
-caches and never resets these statistics. GC's `reclaimable_file_size` excludes objects
-with additional hardlinks: a private producer output may still retain those
-bytes after the pool entry is removed. Stopped branch workspaces are removed by
-`branch del`; this also releases their links. Empty lock files remain.
+## Branches
 
-An optional branch must already exist and be stopped; missing branches and
-duplicate branch starts fail. `mdc start` without a branch is safe to repeat.
-The entry server defaults to port **17843**, configurable with TOML `port` or
-`--port`. Explicit ports are 1–65535 and must be free. If the entry server is
-already running, it is reused; requesting a different port fails until you stop
-it with `mdc stop`. There is one process and one HTTP listener, bound to
-`127.0.0.1` by default; branches have no separate HTTP ports or backend processes. Stopping an inactive service is an error.
-Commands work from any directory; ordinary `start` encapsulates background launch.
+| Command | Behavior |
+| --- | --- |
+| `mdc branch new NAME -p DB/BRANCH` | Fork the selected branch's current head as `DB/NAME`; the new branch copies its role rules. Editor or better. |
+| `mdc branch del -p DB/BRANCH` | Delete a branch other than `main`. Owner or admin. |
+| `mdc history -p DB/BRANCH` | The latest 50 TerminusDB commits. |
+| `mdc export -p DB/BRANCH` | Whole-branch bundle ([Export and restore](../../concepts/import-export/)). |
+| `mdc import FILE -p DB/BRANCH` | Load a bundle into an empty branch. Owner or admin. |
+| `mdc project latex show -p DB/BRANCH` | `{revision, project}` with the shared macro file and bibliography. |
+| `mdc project latex set --preamble FILE --bib FILE -p DB/BRANCH` | Upload both files (`.tex`/`.cls` and `.bib`). |
 
-`remove DATABASE` executes without an interactive prompt. It accepts a database
-name, not `DATABASE/BRANCH`, and works with or without a running entry server.
-With a server, it stops only this project's branches and their editor sessions;
-other projects remain running. Save any drafts you intend to keep first.
-Removal deletes every branch, including `main`, and the database history. It
-clears the project's local caches (retaining empty branch lock files), removes
-its foreground restore entries, and leaves shared Elan toolchains installed.
-If a branch cache is owned by another process, removal fails before deleting the
-database. A database deletion failure leaves compiler caches intact; a later
-cleanup failure explicitly reports that the database was already deleted.
+There is no merge, rebase or checkout command; use TerminusDB directly for those.
 
-`--foreground` is for Docker or another process supervisor and cannot take a
-branch argument. It emits readiness JSON without private tokens, logs to the
-process streams, and exits cleanly on SIGTERM, Ctrl-C or `mdc stop`. Start and stop
-individual branches using other CLI invocations. Their desired running state is
-saved atomically in `CACHE_ROOT/ENDPOINT_HASH/.server/active-projects.json` and
-restored after a foreground restart, including after a crash. Stopping an
-individual branch removes it from that set; stopping the whole server preserves
-the set. Failed restores are reported on stderr without preventing other branches
-from starting. Ordinary background starts retain their existing empty-server behavior.
+## Graph
 
-Open `http://127.0.0.1:17843/` for the project list and
-`http://127.0.0.1:17843/p/DATABASE/BRANCH/` for a running branch. Starting or
-stopping another branch leaves existing branches and their Lean sessions alone.
+| Command | Behavior |
+| --- | --- |
+| `mdc graph check` | Node and edge counts and graph issues. |
+| `mdc graph roots` | Unreferenced nodes with depth and component size. |
+| `mdc graph full` | All node summaries and index-pair edges. |
+| `mdc search QUERY [-n N]` | Case-insensitive title/UUID matches, at most N (default and cap 200). |
 
-Status separates the entry server from the branches:
-
-```json
-{
-  "server": {
-    "running": true,
-    "port": 17843,
-    "url": "http://127.0.0.1:17843"
-  },
-  "projects": {
-    "etp/main": { "running": false, "url": null },
-    "mdocs/main": {
-      "running": true,
-      "url": "http://127.0.0.1:17843/p/mdocs/main/"
-    }
-  }
-}
-```
-
-`running` reflects the held service lease in the configured cache root. When the
-server is stopped, its `port` and `url` are null and all branches are stopped.
-A stopped branch has a null URL. Restart the server with `mdc start` and explicitly
-load desired branches with `mdc start DATABASE/BRANCH`. Crashed services do not remain marked running.
-An empty inventory has `projects: {}`. Status reads TerminusDB metadata without
-requiring a running mdc service, loading graphs or starting Lean.
-
-## Branches and history
-
-```sh
-mdc branch new agent -p myproject/main
-mdc start myproject/agent
-mdc history -p myproject/agent
-mdc stop myproject/agent
-mdc branch del -p myproject/agent
-```
-
-`branch new NAME` forks the selected running branch's current head in the same
-database. It neither starts the new branch nor switches the source service.
-CLI and browser both check the database's existing branch names and reject a
-duplicate before sending a branch-creation request to TerminusDB.
-The browser project list also offers Init, Start/Stop, New branch and Delete
-controls. Init creates a database with a stopped `main` branch. Browser forking
-also works from stopped branches; deletion still requires stopping first.
-The `main` name has an outlined badge and no branch-delete button; its empty
-delete slot sits outside the New branch button's border and keeps the remaining
-buttons aligned with other branches. It can still
-be started, stopped, edited and forked. Each project header has a separate Delete
-project button. Its confirmation covers **all** branches, including branches
-hidden by the current search or status filter, plus data, history, caches and
-unsaved editor sessions. Project deletion stops its running branches automatically.
-Each loaded branch keeps its own graph, Lean environment and cache; `status` identifies it explicitly.
-`history` returns the latest 50 TerminusDB commits.
-
-`branch del` deletes the branch selected by `-p` directly in TerminusDB. It must
-already be stopped; a running or starting service blocks deletion. TerminusDB
-protects `main`, so both CLI and browser reject its deletion before touching
-its caches, regardless of how many other branches exist. The command
-cleans that branch's private build outputs, editor workspaces, libraries and
-logs in the configured cache root. Only an empty service lock remains for
-coordination. The database's shared objects and certificates survive; reclaim
-them explicitly with `cache gc`. Other branches are unaffected. Immutable database
-commits remain after their branch reference is removed.
-
-There is no CLI merge, rebase, or checkout command. These operations use
-TerminusDB directly. Branch deletion does not delete its database; use
-`mdc remove DATABASE` to remove the entire project. See [Storage](../../concepts/workspaces/).
+See [Graph and metrics](../graph-and-metrics/).
 
 ## Nodes
 
-References are exact names or complete UUIDs. Ambiguous names require a UUID;
-paths and UUID prefixes are not accepted.
+References are exact titles or complete UUIDs.
+
+| Command | Behavior |
+| --- | --- |
+| `mdc show REF` | The node with `revision`, blocks, dependencies and status. |
+| `mdc new -t TITLE [--parent REF]` | Create and return a node; with `--parent`, also add the edge parent → new node in the same commit and return the updated parent (the new UUID is the last entry of its `depens`). |
+| `mdc del REF` | Delete the node and every edge to it. |
+| `mdc rename REF TITLE` | Change the title; the UUID stays. |
+| `mdc edit REF [--type text\|lean\|rocq\|latex]` | Replace or create that block with stdin (default type `lean`). |
+| `mdc edit REF --type TYPE --delete` | Delete the block; reads no stdin. |
+| `mdc dep …`, `mdc metric ior REF` | See [Dependency commands](../dependency-commands/) and [Graph and metrics](../graph-and-metrics/). |
+
+Every write command accepts `--revision REV`, the revision printed by `show` (for
+`new --parent` and `dep` the parent's or source's revision; for
+`project latex set` the branch revision from `project latex show`). A stale
+revision fails with `412` without writing. Without `--revision` the CLI reads the
+current revision immediately before writing.
 
 ```sh
-mdc new -p myproject/main -t 'Lemma'
-mdc new -p myproject/main -t 'Another lemma' --parent 'Theorem' --revision PARENT_REV
-mdc show -p myproject/main 'Lemma'
-mdc rename -p myproject/main 'Lemma' 'Renamed lemma' --revision NODE_REV
-printf 'Explanation.\n' | mdc edit -p myproject/main 'Renamed lemma' --type text --revision NODE_REV
-mdc edit -p myproject/main 'Renamed lemma' --type text --delete --revision NODE_REV
-mdc del -p myproject/main 'Renamed lemma' --revision NODE_REV
+mdc show -p myproject/main Lemma            # note "revision"
+printf 'Explanation.\n' | mdc edit -p myproject/main Lemma --type text --revision REV
 ```
 
-`new` returns the created node. With `--parent`, node creation and adding the edge
-from parent to new node are one transaction; `--revision` applies to that parent
-and requires `--parent`. Names may be duplicated, but generated UUIDs and module
-identities are distinct.
+## Proofs
 
-`show` returns the node's fields, revision and formalization status. `rename`
-changes only its display title, preserving its UUID and Lean module identity.
-`edit` replaces or creates a complete source block from stdin. Types are `text`,
-`lean` (default), `rocq` and `latex`. `--delete` removes that block and reads no
-stdin; an empty source without `--delete` remains an existing block.
-
-`del SOURCE` deletes the node and removes all incoming dependency edges in one
-commit. Referrer nodes and the deleted node’s dependencies remain; their source
-blocks are not rewritten. Affected Lean certifications become stale. The JSON
-result is `{fnode, deleted: true, removed_edges}`, counting incoming and outgoing
-edges. The web toolbar offers the same deletion with confirmation.
-
-Use the revision returned by `show` on edits, renames, deletions and dependency mutations.
-If omitted, the CLI fetches the latest revision immediately before its write.
-Explicit revisions protect work based on an earlier read; stale writes fail
-without overwriting newer data. This is separate from compilation.
-See [Dependency commands](../dependency-commands/), [Lean checks](../work-and-compilers/)
-and [Concurrent edits](../../development/safe-mutations/).
-
-## Lean project settings
-
-`project show` returns `{revision, project}` for the selected branch. `project set`
-reads a complete project object from stdin, with `toolchain`, `lakefile` and
-optional `manifest` string (or null). An explicit `--revision` uses the branch
-revision from `project show`; otherwise the CLI fetches the current branch revision.
+| Command | Behavior |
+| --- | --- |
+| `mdc proof env` | The branch's proof environment (`404 environment_not_configured` if unset). |
+| `mdc proof env set` | Set it from JSON on stdin; owner or admin. |
+| `mdc proof submit REF [--budget N] [--members a,b]` | Create a proof request rooted at REF (budget default 1000). |
+| `mdc proof list [REF]` | Your proof requests on the branch, or those containing REF. |
+| `mdc proof status ID` | The whole project board. |
+| `mdc proof command ID` | Send one command (JSON on stdin) at the board's current revision. |
 
 ```sh
-mdc project show -p myproject/main
-mdc project set -p myproject/main --revision BRANCH_REV < lean-project.json
+echo '{"base_key": 1, "context": {"opens": ["Nat"]}}' | mdc proof env set -p myproject/main
+mdc proof submit 'Main theorem' -p myproject/main --members bob,agent-1
+echo '{"type": "sync"}' | mdc proof command PROJECT_ID
 ```
 
-This configures Lean and external libraries. It does not create or select a
-database. See [Configuration](../configuration/) for the input shape and library
-pinning rules. Whole-graph [export and import](../../concepts/import-export/)
-include these project settings, without compilation caches or other branches.
-
-## LaTeX project files
-
-```sh
-mdc project latex show -p myproject/main
-mdc project latex set -p myproject/main --preamble macros.tex --bib references.bib
-```
-
-`--preamble` accepts a `.tex` preamble or `.cls` file; `--bib` accepts a `.bib`
-file. Both files are stored as text in the selected branch. Local paths are used
-only to read the upload, never as ongoing workspace dependencies. `--revision`
-accepts the branch revision returned by `project latex show`. The settings are
-included in full-graph export and inherited by new branches.
+`proof command` reads the board first and sends its revision as `If-Match`, with
+a fresh `Idempotency-Key`; rerunning the command is therefore a new request, not
+a replay. Agents that need replay safety should call the
+[HTTP API](../agents/) directly. Command types are listed in
+[Proofs with LeanGround](../proofs/#commands).

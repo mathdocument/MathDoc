@@ -1,0 +1,24 @@
+{
+  "name": "@mathdoc/app",
+  "version": "0.6.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite --host 127.0.0.1",
+    "check": "svelte-check --tsconfig tsconfig.json",
+    "test:browser": "tsx browser-test.ts"
+  },
+  "dependencies": {
+    "katex": "^0.16.22",
+    "svelte": "^5.19.0"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5.0.3",
+    "@types/katex": "^0.16.7",
+    "playwright": "^1.63.0",
+    "svelte-check": "^4.1.4",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7"
+  }
+}

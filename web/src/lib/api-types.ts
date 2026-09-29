@@ -2,9 +2,27 @@
 
 export type NodeSummary = { fnode: string, title: string, depth: number, };
 
-export type FormalCodeStatus = "unverified" | "sorry" | "conditional" | "verified";
+/** The local check. No local Lean runs any more, so Lean code is "unverified" here and its
+ * standing comes from `lean_certification`; "verified" remains in the type for old data. */
+export type FormalCodeStatus = "no_code" | "unverified" | "verified";
 
-export type FormalizationStatus = { lean: FormalCodeStatus, rocq: FormalCodeStatus, };
+/**
+ * Formal certification from LeanGround (migration plan §7.1), separate from any local check.
+ * `not_submitted`: the node is not bound to a proof request yet. `insufficient` with
+ * `truncated` means the search stopped early, not that no route exists. `stale`: the Lean
+ * text or a definition it uses changed after submission. `rejected`: the node could not be
+ * converted or LeanGround refused it (`reason`).
+ */
+export type LeanCertification =
+  | { status: "not_submitted" }
+  | {
+      status: "insufficient" | "derivable" | "certified" | "stale" | "rejected",
+      project: string, goal?: string, minimum_trust: string, checked_at: string | null,
+      truncated: boolean, reason?: string, details?: string,
+    };
+
+/** `lean`/`rocq`: the local check. `lean_certification`: the LeanGround dimension. */
+export type FormalizationStatus = { lean: FormalCodeStatus, rocq: FormalCodeStatus, lean_certification?: LeanCertification | null, };
 
 export type DependencyCandidatesEmpty = { "kind": "no_match" } | { "kind": "excluded", source: number, existing_dependencies: number, } | { "kind": "result_limit", available: number, };
 

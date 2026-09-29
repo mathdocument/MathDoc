@@ -2,15 +2,30 @@
 title: Release checks
 ---
 
-Authoring is through the local browser and service API. Install the executable independently of its source checkout.
+The release check (`.github/workflows/release-check.yml`) runs on every push and
+pull request:
 
-Release validation builds the frontend assets embedded into the Rust binary, checks Svelte and Rust, and runs database/browser/Lean integration tests. Keep the TerminusDB image and Lean toolchain pinned in the deployment/test configuration.
+1. Install the workspace; type-check the backend and prototype; check and unit-test
+   the frontend; build backend and frontend; verify no generated files are
+   committed.
+2. Check and build this documentation site.
+3. Test the LaTeX renderer with its pinned Python packages.
+4. Start TerminusDB and PostgreSQL from `compose.yaml` and run the backend tests
+   and the browser suite against them. Tests that need LeanGround are skipped.
+5. Build the Docker image and run `tests/docker-smoke.py` against an exported deployment.
 
-Database revisions are independent of source-code Git commits. Every graph mutation creates a TerminusDB commit; `mdc history -p myproject/main` and `mdc branch new NAME -p myproject/main` expose basic history and branching. Merge/rebase administration uses TerminusDB directly; mdc has no merge UI or command.
+All five run through `scripts/check` (`fast`, `native`, `docker`). Publishing a GitHub
+release `vX.Y.Z` matching the root `package.json` version runs **Publish runtime**:
+it repeats the container checks, pushes the image to GHCR and attaches the deployment
+bundle pinned to the image digest.
 
-Use the checks in [Development setup](../setup/), including the CLI lifecycle and
-real-browser tests. A binary upgrade does not replace already running services:
-save browser drafts, run `mdc stop`, then run `mdc start DATABASE/BRANCH` for each
-branch you want loaded. One server restart updates all backend code and embedded
-assets. Reload the browser. Project URLs remain stable while the shared port
-stays unchanged; branches have no internal HTTP ports.
+Keep the TerminusDB and PostgreSQL images pinned in the Compose files. The
+commands to run the same checks locally are in [Development setup](../setup/).
+
+Database history is independent of Git: every document write is a TerminusDB
+commit. `mdc history` and `mdc branch new` expose basic history and branching;
+merges and rebases are done in TerminusDB directly.
+
+Upgrading a deployment means rebuilding and restarting the API and worker
+([Server deployment](../../getting-started/server-deployment/#restarts-and-upgrades));
+`migrate` runs first and is idempotent. Reload open browser tabs after saving drafts.

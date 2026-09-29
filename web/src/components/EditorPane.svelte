@@ -6,8 +6,8 @@
   import type { Theme } from "../lib/theme";
   import { errMsg, shortFnode } from "../lib/format";
   import FormalStatus from "./FormalStatus.svelte";
+  import LeanGroundSubmit from "./LeanGroundSubmit.svelte";
   import AddBlockControl from "./AddBlockControl.svelte";
-  import LeanBlock from "./LeanBlock.svelte";
   import { api } from "../lib/api";
   import {
     removeDraft,
@@ -19,14 +19,13 @@
     load: LoadState;
     theme: Theme;
     active?: boolean;
-    selection?: number;
     latexPreview?: boolean;
     onRefresh?: (node: NodeDetail, graphChanged?: boolean) => void;
     onReady?: () => void;
     latexTarget?: {fnode: string; label: string} | null;
     onLatexNavigate?: (fnode: string, label: string) => void;
   }
-  let { load, theme, active = true, selection = 0, latexPreview = $bindable(false), onRefresh, onReady, latexTarget, onLatexNavigate }: Props = $props();
+  let { load, theme, active = true, latexPreview = $bindable(false), onRefresh, onReady, latexTarget, onLatexNavigate }: Props = $props();
   let node = $derived(load.kind === "ready" ? load.node : null);
 
   // Inline title editing.
@@ -62,6 +61,7 @@
     if (readyBlocks.size === load.node.blocks.length) reportReady();
   }
 
+
   function ensureBlockEditorLoaded() {
     if (BlockEditorComponent || blockEditorPromise) return;
     editorLoadError = null;
@@ -84,7 +84,7 @@
   });
 
   $effect(() => {
-    if (load.kind === "ready" && load.node.blocks.some(block => block.srctype !== "lean")) ensureBlockEditorLoaded();
+    if (load.kind === "ready" && load.node.blocks.length > 0) ensureBlockEditorLoaded();
   });
 
   // Reset title editing state when the displayed node changes.
@@ -205,8 +205,15 @@
         <code class="meta-item fnode" title={node.fnode}><Hash size={12} strokeWidth={2} />{shortFnode(node.fnode)}</code>
         <span class="meta-item depth"><Layers3 size={12} strokeWidth={1.8} />Depth {node.depth}</span>
         <span class="meta-sep" aria-hidden="true"></span>
-        <FormalStatus language="Lean" status={node.formalization.lean} />
+        <FormalStatus language="Lean" status={node.formalization.lean} certification={node.formalization.lean_certification} />
         <FormalStatus language="Rocq" status={node.formalization.rocq} />
+        {#if node.formalization.lean_certification}
+          <LeanGroundSubmit
+            fnode={node.fnode}
+            submitted={node.formalization.lean_certification.status !== "not_submitted"}
+            onOpen={(project) => window.dispatchEvent(new CustomEvent("mdc:open-collaboration", { detail: project }))}
+          />
+        {/if}
       </div>
     </header>
   {/if}
@@ -223,17 +230,13 @@
           <span>editor failed to load: {editorLoadError}</span>
           <button onclick={ensureBlockEditorLoaded}>retry</button>
         </div>
-      {:else if !BlockEditorComponent && node.blocks.some(block => block.srctype !== "lean")}
+      {:else if !BlockEditorComponent && node.blocks.length > 0}
         <div class="editor-loading" aria-busy="true">Loading editor...</div>
       {/if}
       {/if}
       {#each SOURCE_TYPES as srctype (srctype)}
         {@const block = node?.blocks.find(block => block.srctype === srctype)}
-        {#if srctype === "lean"}
-          <!-- Keep Lean mounted across node changes to preserve its editor runtime. -->
-          <LeanBlock fnode={node?.fnode ?? ""} revision={node?.revision ?? ""} module={node?.module} {block} {theme} {active} {selection}
-            onDeleted={(updated) => applyBlockUpdate(updated, true)} onSaved={(updated) => applyBlockUpdate(updated, true)} onReady={() => reportBlockReady("lean")} />
-        {:else if node && block && BlockEditorComponent && !editorLoadError}
+        {#if node && block && BlockEditorComponent && !editorLoadError}
           {#key `${node.fnode}:${srctype}`}
           <BlockEditorComponent
             fnode={node.fnode}

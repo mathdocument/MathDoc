@@ -2,92 +2,75 @@
 title: Architecture
 ---
 
-`store.rs` maps typed node links and Lean/LaTeX project documents to TerminusDB HTTP
-transactions. Data-version guards protect graph and configuration writes.
-`server.rs` owns the single HTTP listener, branch registry and project directory.
-`service.rs` owns each branch's graph, JSON API and native Lean sessions.
-`cli.rs` is the public parser/client; `config.rs` reads host settings.
+## Processes
 
-The CLI uses the shared server for branch and node operations. `init`, `status`
-and stopped-branch deletion access TerminusDB directly. See the
-[CLI/API mapping](../../reference/http-api/).
-`remove` uses the running entry server to stop the project's branches and delete
-their database and caches. Without a server it takes the entry server lease and
-removes the database directly. Both paths retain branch lock inodes and remove
-the project's foreground restore entries.
+`coordinator/src/main.ts` has three modes:
 
-## Server and branch lifecycle
+| Mode | Does |
+| --- | --- |
+| `migrate` | Creates or updates the PostgreSQL tables under an advisory lock. Needs only `MDC_DATABASE_URL`. |
+| `serve` | One HTTP server: the editor, the document API, the collaboration API and the LaTeX renderers. |
+| `worker` | A loop that schedules periodic syncs and runs queued jobs against LeanGround and TerminusDB. |
 
-`mdc start` launches or reuses one background process on loopback port 17843 by
-default. The process owns `ENDPOINT_HASH/.server/service.lock` and writes its
-runtime log beside that record. `mdc start DATABASE/BRANCH` loads the branch into
-this process through an authenticated local control request. The branch owns its
-existing cache lease and records the same server PID/port with its own random
-token. Native Lean workers remain child processes; there are no per-branch HTTP
-listeners, backend processes or proxy connections.
+Several workers may run; jobs are claimed under a PostgreSQL lock, at most one
+job per project runs at a time, and a running job renews its claim so a crashed
+worker's job is picked up again. The worker keeps no state of its own.
 
-Background launch re-executes `mdc start` with an inherited Unix socket carrying
-a private bootstrap marker and the listening port. Ordinary stdin sockets do
-not activate this path. The child detaches from the terminal and runs from the
-server cache, independent of the caller's directory. No hidden CLI command or
-shell wrapper is involved. Startup allows up to 180 seconds for readiness.
+## Source layout
 
-The registry holds a short lock only to reserve, publish or look up a branch;
-graph loading and Lean cleanup happen outside it. Management tasks finish even
-if the requesting client disconnects. The server strips the project path prefix
-and calls the existing Axum router directly, preserving encoded paths, queries
-and the native WebSocket upgrade. Host/Origin checks run before dispatch; branch
-tokens reject CLI requests from a previous load. No request body is copied into
-a second HTTP request.
+| File | Responsibility |
+| --- | --- |
+| `config.ts` | Environment configuration ([reference](../../reference/configuration/)). |
+| `http.ts` | Authentication, `/api/me`, the collaboration routes, proof environments, document-bound project creation, drafts, and the rule that every project route rechecks document read access. |
+| `docs/routes.ts` | Document front: same-origin check, workspace authorization, directory actions, per-branch services loaded on demand, static files of `web/dist`. |
+| `docs/service.ts` | Per-branch document API: graph queries, node writes with revision checks, import/export, LaTeX routes. |
+| `docs/graph.ts`, `docs/model.ts`, `docs/terminus.ts` | In-memory snapshot and validation, the node/project data model, TerminusDB HTTP client (schema, commits with data-version guards, branches, history). |
+| `docs/workspace.ts` | Workspace records and the permission matrix. |
+| `docs/latex.ts` | One lazy Python renderer process per branch (JSON lines, bounded concurrency, 10 s timeout); installs the pinned runtime when `MDC_LATEX_PYTHON` is unset. |
+| `domain.ts` | The project board and all commands as pure state transitions: goals, facts, tasks, attempts, budgets, route selection. |
+| `store.ts` | PostgreSQL: boards, idempotent command log, events, job queue. |
+| `worker.ts` | Jobs: `provision` (LeanGround project and binding), `submit_node`, `resolve`, `submit`, `import`, `sync`, `assemble`, `writeback`. |
+| `lean-source.ts` | Conservative Lean scanner: top-level commands, context lines, declarations, node classification. |
+| `proof.ts` | Proof environments, node conversion and submission drafts, proof-request contracts. |
+| `writeback.ts` | Writeback batches. |
+| `certification.ts` | The per-node certification status shown in document views. |
+| `contracts.ts` | Versioned contracts (`coordinator/contracts/v1/`) and their schemas. |
+| `remote.ts` | LeanGround HTTP client. |
+| `cli.ts` | The `mdc` client. |
 
-`mdc stop DATABASE/BRANCH` makes that branch unavailable, cancels its pending API
-requests, closes its browser sessions and shuts down its CLI Lean worker. Request
-lifetimes are drained before editor cleanup, preventing late session creation.
-Other branches continue operating. Bare `mdc stop` also waits for management
-operations and closes every branch before the server exits. Save drafts and wait
-for writes before stopping; a request interrupted during a database transaction
-may require reading back its result. Restarting a background server starts no
-branches implicitly: load them with `mdc start DATABASE/BRANCH`. Foreground mode,
-used by Docker, persists the selected branches and restores them after restarts.
+## Requests
 
-`status` reads TerminusDB inventory and held cache leases without loading graphs
-or starting Lean. When the server exits or crashes, all branches are stopped.
-Data and compiled artifacts remain on disk. One consistent cache root is
-required for discovery and exclusive ownership. Branch deletion takes the same
-cache lock and retains its inode to prevent concurrent starts bypassing it.
+The document front handles `/`, static files, `/api/status`, `/api/projects` and
+`/p/DB/BRANCH/…`. For API paths it checks Host/Origin, authenticates the token,
+maps the route to a workspace action and authorizes it, then calls the branch's
+`BranchService`. Everything else under `/api/` goes to the collaboration handler.
 
-## Graph and Lean state
+A `BranchService` is created on the first request to a branch and kept. Each
+request takes the branch lock, looks up the current TerminusDB commit and
+reloads the snapshot only if another writer moved the branch; the service's own
+writes update the snapshot in place. The snapshot keeps nodes with full source
+blocks, reverse edges and depths, so memory and reload time grow with total
+source size. LaTeX rendering runs outside the lock and rechecks its inputs before
+answering. Document views attach each node's certification, computed from the
+proof requests bound to the branch.
 
-`Snapshot` holds a disposable graph projection, topological depths, reverse
-adjacency and transitive Lean input keys. Service writes update it; requests
-check the database commit and reload after external commits. The current
-projection also contains complete source blocks in memory. Immutable nodes and project configuration are shared with Lean requests, avoiding copies of source closures for each editor. Startup and external
-reload costs therefore scale with total source size, even though ordinary
-commands no longer pay filesystem synchronization costs.
+## Collaboration state
 
-`lean.rs` generates requested compiler inputs and manages native Lean Server and
-Lake. `lean/transport.rs` owns process groups, bounded LSP frames and shutdown;
-`lean/editor.rs` observes editor diagnostics and matches them to saved inputs.
-Browser drafts are isolated from each other and saved sources, while
-artifacts are shared within a branch. This is state separation, not an
-operating-system sandbox. See [Compiler internals](../compiler-internals/) and
-[Graph and compilation caches](../index-cache/).
+A project board is one JSON document per project in PostgreSQL. A command runs in
+one transaction: lock the board, replay the stored response if the
+(actor, idempotency key) pair was seen, check the revision, apply the pure
+transition from `domain.ts`, enqueue a job if needed, bump the revision and log an
+event. Goal statuses are recomputed from facts; route selection considers only
+active facts.
 
-## LaTeX rendering
+Jobs talk to LeanGround's fact API. Their results are written back into the board
+with a checkpoint that rechecks the job's claim. Periodic sync jobs are enqueued
+for ready projects whose last sync is older than 15 seconds.
 
-`latex/project.rs` defines the versioned macro/bibliography document;
-`latex/api.rs` captures the node and direct dependency context from a snapshot.
-`latex/runtime.rs` owns one lazy Python worker per branch, with bounded requests,
-timeouts and shutdown. `latex/renderer.py` uses plasTeX for standard macro
-expansion and document structure, and Pybtex for citations. It emits escaped HTML
-and math placeholders. `latex-math.ts` lazily loads the locally bundled MathJax 4
-renderer and Computer Modern/AMS math fonts. Preview teardown clears its math items;
-stale asynchronous renders cannot replace a newer preview. MathJax's safe
-extension blocks formula URLs, custom classes and IDs; HTML and runtime-option
-extensions are disabled. No TeX executable, `.aux` exchange or TexLab process is involved.
+## Data compatibility
 
-The browser's `latex-session.svelte.ts` owns draft requests and cancellation;
-`latex-completion.ts` supplies Monaco completion candidates. Common project catalogs
-are cached by configuration content, while reference context is node-specific.
-`LatexPreview.svelte` only renders math and handles node/label links. A new node
-gets a new draft session, so an older response cannot overwrite its preview.
+The TerminusDB schema is unchanged from the earlier Rust application, so existing
+databases open as they are. Legacy fields (node `module`, the Lean project
+document) are preserved. New data (workspaces, environments, projects) lives only
+in PostgreSQL. Databases without a workspace record are visible to administrators
+until adopted with `set_owner`.

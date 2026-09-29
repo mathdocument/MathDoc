@@ -18,14 +18,23 @@ fi
 mkdir -p -- "$destination"
 awk -v image="$image" '
     /^[[:space:]]*image: \$\{MATHDOC_IMAGE:/ && image != "" {
-        print "    image: " image
+        print "  image: " image
         next
     }
     { print }
 ' "$root/compose.server.yaml" > "$destination/compose.yaml"
-cp "$root/config.example.toml" "$destination/config.toml"
+cat > "$destination/mathdoc.env" <<'SETTINGS'
+# MathDoc settings (not secrets). Secrets live in secrets/:
+#   actors.json       {"alice":{"token":"<long random token>","admin":true}, ...}  (create this)
+#   leanground-token  the coordinator's LeanGround fact token                  (create this)
+#   database-password, postgres-password                           (generated on first start)
+LEANGROUND_SERVER_URL=http://leanground.example:8765
+LEANGROUND_ACTOR=mathdoc-coordinator
+# Set when users reach MathDoc through a reverse proxy or another host name.
+# MDC_PUBLIC_ORIGIN=https://mathdoc.example.org
+SETTINGS
 cp "$root/scripts/mdc-docker" "$destination/mdc"
 chmod 755 "$destination/mdc"
-# Preserve the deploying user's ownership when the database creates its secret.
+# Preserve the deploying user's ownership when the containers secure the secrets.
 mkdir -m 700 "$destination/secrets"
 echo "Deployment files written to $destination"

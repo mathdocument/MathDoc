@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { ArrowUpRight, FolderOpen, GitBranch, GitBranchPlus, Moon, Play, Plus, RefreshCw, Search, Square, Sun, Trash2 } from "@lucide/svelte";
+  import { ArrowUpRight, FolderOpen, GitBranch, GitBranchPlus, Moon, Plus, RefreshCw, Search, Sun, Trash2 } from "@lucide/svelte";
   import { projectsApi, isAbortError, type ServiceStatus } from "./lib/api";
   import ProjectCreate from "./components/ProjectCreate.svelte";
   import { applyTheme, currentTheme, observeTheme, type Theme } from "./lib/theme";
@@ -12,7 +12,6 @@
   let refreshing = $state(false);
   let updated = $state("");
   let query = $state("");
-  let filter = $state<"all" | "running" | "stopped">("all");
   let theme = $state<Theme>(currentTheme());
   let create = $state<{source?: string} | null>(null);
   let pending = $state<Record<string, string>>({});
@@ -23,11 +22,10 @@
     const [database, branch] = name.split("/");
     return { name, database: database!, branch: branch!, ...state };
   }));
-  const running = $derived(branches.filter(b => b.running).length);
+  // Branches load on demand: there is no start/stop, and each row shows the caller's role.
   const projectCount = $derived(new Set(branches.map(b => b.database)).size);
   const groups = $derived.by(() => {
-    const filtered = branches.filter(b => b.name.toLowerCase().includes(query.trim().toLowerCase()) &&
-      (filter === "all" || b.running === (filter === "running")));
+    const filtered = branches.filter(b => b.name.toLowerCase().includes(query.trim().toLowerCase()));
     const groups = new Map<string, typeof branches>();
     for (const branch of filtered) {
       const rows = groups.get(branch.database) ?? [];
@@ -54,9 +52,9 @@
     await refreshTask;
     await refresh();
   }
-  async function manage(project: string, action: "start" | "stop" | "delete_branch") {
+  async function manage(project: string, action: "delete_branch") {
     if (pending[project] || pending[project.split("/")[0]!]) return;
-    if (action === "delete_branch" && !confirm(`Delete ${project} and its Lean caches?`)) return;
+    if (action === "delete_branch" && !confirm(`Delete ${project}?`)) return;
     pending[project] = action; delete failures[project];
     try { await projectsApi.change({action, project}); }
     catch (e) { failures[project] = e instanceof Error ? e.message : String(e); }
@@ -67,7 +65,7 @@
   }
   async function removeProject(database: string) {
     if (projectPending(database)) return;
-    if (!confirm(`Delete entire project ${database}?\n\nAll its branches will be stopped. All project data, history, Lean caches and unsaved editor sessions will be deleted.`)) return;
+    if (!confirm(`Delete entire project ${database}?\n\nAll its branches, project data, history and unsaved editor sessions will be deleted.`)) return;
     pending[database] = "remove"; delete failures[database];
     try { await projectsApi.change({action: "remove", database}); }
     catch (e) { failures[database] = e instanceof Error ? e.message : String(e); }
@@ -108,18 +106,12 @@
         <h1>Projects</h1>
         <div class="overview" aria-label="Project summary">
           <span><strong>{projectCount}</strong> {projectCount === 1 ? "project" : "projects"}</span><span><strong>{branches.length}</strong> {branches.length === 1 ? "branch" : "branches"}</span>
-          <span class="running-total"><i></i><strong>{running}</strong> running</span>
         </div>
         <button class="init" onclick={() => create = {}} title="Initialize a project" aria-label="Init project"><Plus size={16} /></button>
       </div>
 
       <div class="controls">
         <label class="search"><Search size={17} strokeWidth={1.8} /><input aria-label="Search projects and branches" placeholder="Search projects or branches..." bind:value={query} /></label>
-        <div class="filters" aria-label="Filter branches">
-          <button aria-pressed={filter === "all"} onclick={() => filter = "all"}>All branches</button>
-          <button aria-pressed={filter === "running"} onclick={() => filter = "running"}>Running</button>
-          <button aria-pressed={filter === "stopped"} onclick={() => filter = "stopped"}>Stopped</button>
-        </div>
       </div>
     </div>
   </div>
@@ -135,7 +127,7 @@
       {:else if status && branches.length === 0}
         <div class="empty"><FolderOpen size={30} /><h2>No projects yet</h2></div>
       {:else if status && groups.length === 0}
-        <div class="empty"><Search size={28} /><h2>No matching branches</h2><p>Try a different name or change the status filter.</p></div>
+        <div class="empty"><Search size={28} /><h2>No matching branches</h2><p>Try a different name.</p></div>
       {:else}
         <div class="projects">
           {#each groups as [database, rows] (database)}
@@ -149,22 +141,19 @@
               {#each rows as row (row.name)}
                 <div class="branch-row" data-project={row.name}>
                   <span class="branch-name" title={row.name}><GitBranch size={16} strokeWidth={1.6} /><span class:main-branch={row.branch === "main"} title={row.branch === "main" ? "Main branch: can only be deleted with the entire project" : undefined}>{row.branch}</span></span>
-                  <span class="state" class:online={row.running}><i></i>{row.running ? "Running" : "Stopped"}</span>
+                  <span class="state" title="Your role on this branch">{row.role ?? ""}</span>
                   <span class="counts" aria-label={`Graph size of ${row.name}`}>
-                    <span>{#if row.running && row.nodes !== undefined}<strong>{row.nodes.toLocaleString()}</strong> {row.nodes === 1 ? "node" : "nodes"}{/if}</span>
-                    <span>{#if row.running && row.edges !== undefined}<strong>{row.edges.toLocaleString()}</strong> {row.edges === 1 ? "edge" : "edges"}{/if}</span>
+                    <span>{#if row.nodes !== undefined}<strong>{row.nodes.toLocaleString()}</strong> {row.nodes === 1 ? "node" : "nodes"}{/if}</span>
+                    <span>{#if row.edges !== undefined}<strong>{row.edges.toLocaleString()}</strong> {row.edges === 1 ? "edge" : "edges"}{/if}</span>
                   </span>
                   <div class="actions" aria-label={`Manage ${row.name}`}>
-                    <button class="toggle" class:stopped={!row.running} disabled={!!pending[row.name] || !!pending[database]} onclick={() => void manage(row.name, row.running ? "stop" : "start")} title={`${row.running ? "Stop" : "Start"} ${row.name}`} aria-label={`${row.running ? "Stop" : "Start"} ${row.name}`}>
-                      {#if pending[row.name]}<RefreshCw size={14} class="spinning" />{:else if row.running}<Square size={13} />{:else}<Play size={14} />{/if}
-                    </button>
                     <div class="branch-actions" class:main={row.branch === "main"}>
                       <button class="icon-button" disabled={!!pending[row.name] || !!pending[database]} onclick={() => create = {source: row.name}} title={`New branch from ${row.name}`} aria-label={`New branch from ${row.name}`}><GitBranchPlus size={16} /></button>
                       {#if row.branch !== "main"}
-                        <button class="icon-button delete" disabled={row.running || !!pending[row.name] || !!pending[database]} onclick={() => void manage(row.name, "delete_branch")} title={row.running ? "Stop this branch before deleting" : `Delete ${row.name}`} aria-label={`Delete ${row.name}`}><Trash2 size={15} /></button>
+                        <button class="icon-button delete" disabled={!!pending[row.name] || !!pending[database]} onclick={() => void manage(row.name, "delete_branch")} title={`Delete ${row.name}`} aria-label={`Delete ${row.name}`}><Trash2 size={15} /></button>
                       {/if}
                     </div>
-                    {#if row.running && row.url && !pending[row.name] && !pending[database]}
+                    {#if row.url && !pending[row.name] && !pending[database]}
                       <a class="open icon-button" href={`/p/${row.name}/`} title={`Open ${row.name}`} aria-label={`Open ${row.name}`}><ArrowUpRight size={17} /></a>
                     {:else}<span class="open-space" aria-hidden="true"></span>{/if}
                   </div>
@@ -179,7 +168,7 @@
     </div>
   </main>
 </div>
-{#if create}<ProjectCreate source={create.source} onClose={() => create = null} onCreated={async () => {query = ""; filter = "all"; await changed();}} />{/if}
+{#if create}<ProjectCreate source={create.source} onClose={() => create = null} onCreated={async () => {query = ""; await changed();}} />{/if}
 
 <style>
   .directory { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
@@ -197,20 +186,14 @@
   .init { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 0; flex-shrink: 0; border: 1px solid color-mix(in srgb, var(--mdc-accent) 45%, var(--mdc-border)); border-radius: var(--mdc-radius-sm); color: var(--mdc-accent); background: color-mix(in srgb, var(--mdc-accent) 8%, var(--mdc-panel)); }
   .init:hover { background: color-mix(in srgb, var(--mdc-accent) 12%, transparent); }
   .overview strong { font-size: 14px; font-weight: 550; color: var(--mdc-fg-soft); margin-right: 3px; }
-  .running-total { display: flex; align-items: center; }
-  i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--mdc-muted); margin-right: 8px; }
-  .running-total i, .online i { background: var(--mdc-accent-down); box-shadow: 0 0 0 3px color-mix(in srgb, var(--mdc-accent-down) 9%, transparent); }
   .controls { display: flex; align-items: center; gap: 12px; }
   .search { display: flex; align-items: center; gap: 10px; max-width: 430px; min-width: 170px; flex: 1; height: 40px; padding: 0 13px; border: 1px solid var(--mdc-border-strong); border-radius: var(--mdc-radius-sm); background: var(--mdc-panel); color: var(--mdc-dim); }
   .search:focus-within { border-color: var(--mdc-accent); }
   .search input { width: 100%; border: 0; outline: none; background: transparent; color: var(--mdc-fg); font-size: 12px; }
   .search input::placeholder { color: var(--mdc-muted); }
-  .filters { display: flex; gap: 3px; padding: 3px; border-radius: var(--mdc-radius-sm); background: var(--mdc-panel); border: 1px solid var(--mdc-border); margin-left: auto; }
   button { cursor: pointer; }
-  .filters button { color: var(--mdc-dim); background: transparent; border: 0; border-radius: 5px; padding: 6px 11px; font-size: 11px; white-space: nowrap; }
-  .filters button[aria-pressed="true"] { color: var(--mdc-fg); background: var(--mdc-card-selected); box-shadow: var(--mdc-shadow-sm); }
   .icon-button { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 34px; height: 34px; color: var(--mdc-dim); background: transparent; border: 1px solid transparent; border-radius: var(--mdc-radius-sm); }
-  .icon-button:hover, .filters button:hover { color: var(--mdc-fg); background: var(--mdc-card-hover); }
+  .icon-button:hover { color: var(--mdc-fg); background: var(--mdc-card-hover); }
   button:disabled { cursor: default; opacity: .5; }
   .projects { display: grid; gap: 18px; }
   .project { border: 1px solid var(--mdc-border); border-radius: var(--mdc-radius-md); background: var(--mdc-panel); overflow: hidden; }
@@ -224,13 +207,9 @@
   .branch-name .main-branch { padding: 2px 7px; border: 1px solid var(--mdc-border-strong); border-radius: var(--mdc-radius-sm); }
   .branch-name :global(svg) { flex-shrink: 0; }
   .state { display: flex; align-items: center; font-size: 11px; color: var(--mdc-muted); }
-  .online { color: var(--mdc-accent-down); }
   .counts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; min-height: 18px; font-size: 11px; color: var(--mdc-muted); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .counts strong { color: var(--mdc-fg-soft); font-weight: 500; }
   .actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 148px; }
-  .toggle { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 32px; padding: 0; color: var(--mdc-dim); background: var(--mdc-card); border: 1px solid var(--mdc-border-strong); border-radius: var(--mdc-radius-sm); }
-  .toggle:hover:not(:disabled) { color: var(--mdc-fg); background: var(--mdc-card-hover); }
-  .toggle.stopped { color: var(--mdc-accent-down); }
   .branch-actions { display: grid; grid-template-columns: repeat(2, 30px); padding: 1px; border: 1px solid var(--mdc-border); border-radius: var(--mdc-radius-sm); }
   .branch-actions.main { grid-template-columns: 30px; margin-right: 30px; }
   .branch-actions .icon-button { width: 30px; height: 28px; }
@@ -257,7 +236,6 @@
     h1 { font-size: 29px; }
     .controls { flex-wrap: wrap; gap: 10px; }
     .search { flex-basis: calc(100% - 46px); max-width: none; }
-    .filters { order: 2; margin-left: 0; }
     .branch-row { grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 14px; }
     .counts { grid-column: 1 / -1; grid-template-columns: repeat(2, 96px); text-align: left; }
     .actions { grid-column: 1 / -1; justify-content: flex-end; }

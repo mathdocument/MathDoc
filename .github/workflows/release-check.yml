@@ -19,27 +19,20 @@ jobs:
           node-version: 26
           cache: npm
           cache-dependency-path: |
-            web/package-lock.json
+            package-lock.json
             docs/package-lock.json
-
-      - name: Install stable Rust
-        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy --no-self-update
 
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
 
       - name: Install LaTeX dependencies
-        run: python -m pip install -r src/latex/requirements.txt
-
-      - name: Install Elan
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+        run: python -m pip install -r renderer/requirements.txt
 
       - name: Install Chromium system libraries
-        run: npx --yes "playwright@$(node -p 'require("./web/package-lock.json").packages["node_modules/playwright"].version')" install-deps chromium
+        run: npx --yes "playwright@$(node -p 'require("./package-lock.json").packages["web/node_modules/playwright"].version')" install-deps chromium
 
+      # Tests that need a LeanGround server (scenario, Mathlib, collaboration e2e) skip here.
       - name: Run shared native checks
         env:
           MDC_LATEX_PYTHON: python3
@@ -54,23 +47,6 @@ jobs:
           path: ${{ runner.temp }}/mdc-e2e-artifacts
           if-no-files-found: ignore
           retention-days: 7
-
-  macos-rust:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 26
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Build embedded frontend
-        run: npm ci && npm run build
-        working-directory: web
-      - name: Install stable Rust
-        run: rustup toolchain install stable --profile minimal --no-self-update
-      - name: Test macOS library and graph algorithms
-        run: cargo +stable test --locked
 
   container-smoke:
     runs-on: ubuntu-latest
