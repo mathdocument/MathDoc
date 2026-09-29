@@ -3,7 +3,8 @@
 > 状态：**计划，按阶段执行中**。阶段 0（保全与回退）已完成；阶段 1 的四份契约已冻结为 `v1`，产品决定 A–D
 > 见 `docs/coordination-phase-1-contracts.md` §3（2026-09-29）。阶段 1 自查中未满足的运行态规则留给后续阶段；
 > `coordinator/`、`app/` 仍是待接线的实现，不表示本计划已经交付。阶段 2（文档接口对齐）已实现，待评审，
-> 验收结果与未覆盖项见 `docs/coordination-phase-2.md`；默认入口仍是旧应用（阶段 5 才切换）。
+> 验收结果与未覆盖项见 `docs/coordination-phase-2.md`；阶段 3（移出本地 Lean）已实现，待评审，见
+> `docs/coordination-phase-3.md`。默认入口仍是旧应用（阶段 5 才切换）。
 >
 > 日期：2026-09-28（同日修订 §6.4 契约冻结与 §7.3 声明转换；同日再按 LeanGround `3965273` 修订草图组件与
 > 定义支持，见 §7.3、§11）。基线提交：`a4d61e3`（分支 `codex/mathdoc-coordination`），另有 Codex 未提交的

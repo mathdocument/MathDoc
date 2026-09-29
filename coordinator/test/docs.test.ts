@@ -458,6 +458,20 @@ test(
         view.revision,
       );
       assert.equal(renamed.status, 200);
+      // Plan §7.1: certification is its own dimension; this backend never runs a local check.
+      assert.equal(renamed.body.formalization.lean_certification, null);
+      const withLean = await call(
+        "eddy",
+        "PUT",
+        api(`/node/${a.fnode}/block/lean`),
+        { content: "theorem t : True := trivial\n" },
+        renamed.body.revision,
+      );
+      assert.deepEqual(withLean.body.formalization, {
+        lean: "unverified",
+        rocq: "no_code",
+        lean_certification: { status: "not_submitted" },
+      });
       assert.equal(
         (await call("eddy", "POST", api("/branches"), { name: "fork" })).status,
         200,

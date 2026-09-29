@@ -135,15 +135,6 @@ export const api = {
   putProject: (project: LeanProject, revision: string) => req<{ revision: string; project: LeanProject }>("/api/project/lean", {
     method: "PUT", headers: { "content-type": "application/json", "if-match": `"${revision}"` }, body: JSON.stringify(project),
   }),
-  leanSession: (fnode: string, revision: string) => req<{ id: string; filename: string; source: string }>(`/api/node/${encodeURIComponent(fnode)}/lean/session`, {
-    method: "POST", headers: { "if-match": `"${revision}"` },
-  }),
-  closeLeanSession: (id: string) => req<void>(`/api/lean/session/${encodeURIComponent(id)}`, {
-    method: "DELETE", keepalive: true,
-  }),
-  checkLean: (fnode: string, revision: string, build = false) => req<{ fnode: string; revision: string; passed: boolean; certified: boolean; has_sorry: boolean | null; built: boolean; cache_hit: boolean; elapsed_ms: number; diagnostics: unknown[]; dependency_errors: string[] }>(`/api/node/${encodeURIComponent(fnode)}/lean/check`, {
-    method: "POST", headers: { "content-type": "application/json", "if-match": `"${revision}"` }, body: JSON.stringify({ build }),
-  }),
   roots: () => req<GraphRootItem[]>("/api/graph/roots"),
   graphCheck: () => req<GraphCheckReport>("/api/graph/check"),
   full: (signal?: AbortSignal) => req<GraphFull>("/api/graph/full", { signal }),

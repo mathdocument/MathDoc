@@ -73,7 +73,7 @@
     if (!alive || editorView || initializing) return;
     initializing = true;
     try {
-      const language = await loadSourceLanguage(block.srctype as "text" | "latex" | "rocq");
+      const language = await loadSourceLanguage(block.srctype as "text" | "latex" | "rocq" | "lean");
       if (!alive) return;
       await setMonacoTheme(theme);
       if (!alive) return;

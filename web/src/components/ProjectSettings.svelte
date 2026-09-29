@@ -2,8 +2,11 @@
   import { modal } from "../lib/modal";
   import LeanProjectForm from "./LeanProjectForm.svelte";
   import LatexProjectForm from "./LatexProjectForm.svelte";
+  import { localLeanEditor } from "../lib/features";
   let { onClose }: { onClose: () => void } = $props();
-  let tab = $state<"lean" | "latex">("lean");
+  // The Lake project only configures local Lean; without it the stored configuration is
+  // preserved unchanged (plan §5) and LeanGround environments are set per proof request.
+  let tab = $state<"lean" | "latex">(localLeanEditor ? "lean" : "latex");
   let form = $state<{canClose: () => boolean}>();
   function close() { if (form?.canClose()) onClose(); }
   function select(next: typeof tab) { if (next !== tab && form?.canClose()) tab = next; }
@@ -11,7 +14,7 @@
 <dialog class="modal-dialog" aria-label="Project settings" use:modal oncancel={(event) => { event.preventDefault(); close(); }}>
   <header class="dialog-head"><h2>Project settings</h2></header>
   <div class="tabs" role="tablist" aria-label="Project language">
-    <button role="tab" aria-selected={tab === 'lean'} onclick={() => select('lean')}>Lean</button>
+    {#if localLeanEditor}<button role="tab" aria-selected={tab === 'lean'} onclick={() => select('lean')}>Lean</button>{/if}
     <button role="tab" aria-selected={tab === 'latex'} onclick={() => select('latex')}>LaTeX</button>
   </div>
   {#if tab === 'lean'}<LeanProjectForm bind:this={form} onClose={close} />

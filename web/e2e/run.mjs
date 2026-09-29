@@ -1837,7 +1837,7 @@ await test('LaTeX tables, colors and TikZ diagrams render shared macros locally'
   } finally { await browser.close(); }
 });
 
-await test('Lean first paint waits for syntax highlighting without a server', {timeout: 60000}, async () => {
+await test('Lean first paint waits for syntax highlighting without a server', {timeout: 60000, skip: LOCAL_LEAN_REMOVED}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   const node = {fnode: randomUUID(), title: 'Highlighted first paint', module: 'Lib.FirstPaint', depens: [], blocks: [
     {srctype: 'lean', content: '-- highlighted comment\ntheorem firstPaint : True := by trivial\n'},
@@ -1874,6 +1874,44 @@ await test('Lean first paint waits for syntax highlighting without a server', {t
       assert.ok((await page.evaluate(() => window.firstLeanPaint)).length >= 2, 'the first visible frame must already contain syntax colors');
       await page.frameLocator('iframe[title="Lean source and Infoview"]').getByText('firstPaint', {exact: true}).waitFor();
       assert.equal(sessions, 0);
+    }, [node]);
+  } finally { await browser.close(); }
+});
+
+await test('Lean blocks are source editors certified by LeanGround, without local Lean', {timeout: 60000, skip: BACKEND !== 'ts' && 'the legacy build keeps its native Lean editor'}, async () => {
+  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  const node = {fnode: randomUUID(), title: 'Lean without a server', module: 'Lib.NoServer', depens: [], blocks: [
+    {srctype: 'lean', content: '-- highlighted comment\ntheorem noServer : True := by trivial\n'},
+  ]};
+  try {
+    await fixture(browser, async ({page, url, cli}) => {
+      const localLean = [];
+      page.on('request', r => { if (/\/lean\.html|\/lean\/(session|check|goals)|\/infoview\//.test(r.url())) localLean.push(r.url()); });
+      await page.goto(`${url}/?no-local-lean#ref=${node.fnode}`);
+      const block = page.locator('[data-srctype="lean"]');
+      await block.locator('.editor-scroll:not(.pending)').waitFor();
+      // Same editor as the other source blocks, with Lean 4 syntax colors.
+      const colors = await block.locator('.view-line span').evaluateAll(spans => [...new Set(spans.map(el => getComputedStyle(el).color))]);
+      assert.ok(colors.length >= 2, 'Lean has syntax colors');
+      assert.equal(await page.locator('iframe').count(), 0, 'no native Lean editor frame');
+      assert.equal(await page.getByRole('button', {name: 'Start Lean server'}).count(), 0);
+      // Two dimensions (plan §7.1): no local check, and not yet submitted to LeanGround.
+      const status = page.getByRole('region', {name: 'current node'}).getByLabel(/^Lean: /);
+      assert.equal(await status.getAttribute('aria-label'), 'Lean: Not submitted to LeanGround');
+      // Editing and saving still work, and write only the block.
+      const input = block.getByRole('textbox', {name: /^lean source/});
+      await input.press(await page.evaluate(() => /Mac/.test(navigator.platform)) ? 'Meta+ArrowDown' : 'Control+End');
+      await page.keyboard.insertText('-- saved without Lean\n');
+      await block.getByText('Unsaved', {exact: true}).waitFor();
+      await page.keyboard.press('ControlOrMeta+s');
+      await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
+      assert.match(JSON.parse((await cli('show', node.fnode)).stdout).blocks.find(b => b.srctype === 'lean').content, /saved without Lean/);
+      // Project settings no longer offer the local Lake project; LaTeX settings remain.
+      await page.getByRole('button', {name: 'Project settings', exact: true}).click();
+      const settings = page.getByRole('dialog', {name: 'Project settings'});
+      await settings.getByRole('tab', {name: 'LaTeX', exact: true}).waitFor();
+      assert.equal(await settings.getByRole('tab', {name: 'Lean', exact: true}).count(), 0);
+      assert.equal(localLean.length, 0, `no local Lean requests: ${localLean.join(', ')}`);
     }, [node]);
   } finally { await browser.close(); }
 });

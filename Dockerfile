@@ -3,6 +3,8 @@ WORKDIR /build/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web ./
+# The Rust application serves the native Lean editor, an optional web build.
+ENV MDC_WEB_LEAN_EDITOR=1
 RUN npm run build
 
 FROM rust:1.95.0-slim-bookworm AS build

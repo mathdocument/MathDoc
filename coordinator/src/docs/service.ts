@@ -146,7 +146,16 @@ export class BranchService {
   private preview(s: Snapshot, n: Node) {
     return {
       ...this.summary(s, n),
-      formalization: { lean: formal(n, "lean"), rocq: formal(n, "rocq") },
+      formalization: {
+        lean: formal(n, "lean"),
+        rocq: formal(n, "rocq"),
+        // Plan §7.1: formal certification comes from LeanGround, separate from the local
+        // check (which this backend never performs). Proof-request bindings arrive in stage 4.
+        lean_certification:
+          nodeSource(n, "lean") !== undefined
+            ? { status: "not_submitted" }
+            : null,
+      },
     };
   }
   private detail(s: Snapshot, n: Node) {

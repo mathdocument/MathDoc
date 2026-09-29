@@ -7,7 +7,7 @@
   import { errMsg, shortFnode } from "../lib/format";
   import FormalStatus from "./FormalStatus.svelte";
   import AddBlockControl from "./AddBlockControl.svelte";
-  import LeanBlock from "./LeanBlock.svelte";
+  import { localLeanEditor } from "../lib/features";
   import { api } from "../lib/api";
   import {
     removeDraft,
@@ -62,6 +62,13 @@
     if (readyBlocks.size === load.node.blocks.length) reportReady();
   }
 
+  // The native Lean editor is only part of MDC_WEB_LEAN_EDITOR builds; elsewhere the import
+  // is dropped at build time and Lean uses the shared source editor.
+  let LeanBlockComponent = $state<typeof import("./LeanBlock.svelte").default | null>(null);
+  if (localLeanEditor) void import("./LeanBlock.svelte").then(module => { if (alive) LeanBlockComponent = module.default; });
+  /** Blocks rendered by the shared source editor. */
+  const shared = (srctype: string) => srctype !== "lean" || !localLeanEditor;
+
   function ensureBlockEditorLoaded() {
     if (BlockEditorComponent || blockEditorPromise) return;
     editorLoadError = null;
@@ -84,7 +91,7 @@
   });
 
   $effect(() => {
-    if (load.kind === "ready" && load.node.blocks.some(block => block.srctype !== "lean")) ensureBlockEditorLoaded();
+    if (load.kind === "ready" && load.node.blocks.some(block => shared(block.srctype))) ensureBlockEditorLoaded();
   });
 
   // Reset title editing state when the displayed node changes.
@@ -206,7 +213,7 @@
         <span class="meta-item depth"><Layers3 size={12} strokeWidth={1.8} />Depth {node.depth}</span>
         {#if node.broken}<span class="meta-item broken"><X size={12} strokeWidth={2.2} />Broken</span>{/if}
         <span class="meta-sep" aria-hidden="true"></span>
-        <FormalStatus language="Lean" status={node.formalization.lean} />
+        <FormalStatus language="Lean" status={node.formalization.lean} certification={node.formalization.lean_certification} />
         <FormalStatus language="Rocq" status={node.formalization.rocq} />
       </div>
     </header>
@@ -224,16 +231,16 @@
           <span>editor failed to load: {editorLoadError}</span>
           <button onclick={ensureBlockEditorLoaded}>retry</button>
         </div>
-      {:else if !BlockEditorComponent && node.blocks.some(block => block.srctype !== "lean")}
+      {:else if !BlockEditorComponent && node.blocks.some(block => shared(block.srctype))}
         <div class="editor-loading" aria-busy="true">Loading editor…</div>
       {/if}
       {/if}
       {#each SOURCE_TYPES as srctype (srctype)}
         {@const block = node?.blocks.find(block => block.srctype === srctype)}
-        {#if srctype === "lean"}
+        {#if srctype === "lean" && localLeanEditor}
           <!-- Keep Lean mounted across node changes to preserve its editor runtime. -->
-          <LeanBlock fnode={node?.fnode ?? ""} revision={node?.revision ?? ""} module={node?.module} {block} {theme} {active} {selection}
-            onDeleted={(updated) => applyBlockUpdate(updated, true)} onSaved={(updated) => applyBlockUpdate(updated, true)} onReady={() => reportBlockReady("lean")} />
+          {#if LeanBlockComponent}<LeanBlockComponent fnode={node?.fnode ?? ""} revision={node?.revision ?? ""} module={node?.module} {block} {theme} {active} {selection}
+            onDeleted={(updated) => applyBlockUpdate(updated, true)} onSaved={(updated) => applyBlockUpdate(updated, true)} onReady={() => reportBlockReady("lean")} />{/if}
         {:else if node && block && BlockEditorComponent && !editorLoadError}
           {#key `${node.fnode}:${srctype}`}
           <BlockEditorComponent

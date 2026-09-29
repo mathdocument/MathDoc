@@ -6,6 +6,11 @@ on:
 permissions:
   contents: read
 
+# The Rust application embeds web/dist and serves its native Lean editor, which is an
+# optional web build (docs/coordination-migration-plan.md stage 3).
+env:
+  MDC_WEB_LEAN_EDITOR: "1"
+
 jobs:
   release-check:
     runs-on: ubuntu-latest

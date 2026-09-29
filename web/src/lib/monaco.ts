@@ -49,6 +49,8 @@ const grammars = {
   text: () => import('@shikijs/langs/markdown'),
   latex: () => import('@shikijs/langs/latex'),
   rocq: () => import('@shikijs/langs/coq'),
+  // Without the native Lean editor, Lean is highlighted like the other source blocks.
+  lean: () => import('@shikijs/langs/lean4'),
 };
 const loaded = new Map<string, Promise<string>>();
 /** Use the same native TextMate engine as Lean; the package supplies only grammars. */
@@ -58,7 +60,7 @@ export function loadSourceLanguage(type: keyof typeof grammars) {
     pending = (async () => {
       await initializeMonaco();
       const definitions = (await grammars[type]()).default;
-      const language = type === 'text' ? 'markdown' : type === 'rocq' ? 'coq' : 'latex';
+      const language = {text: 'markdown', rocq: 'coq', latex: 'latex', lean: 'lean'}[type];
       const extension = registerExtension({
         name: `mdc-${type}`, publisher: 'mathdoc', version: '1.0.0', engines: {vscode: '*'},
         contributes: {
@@ -73,7 +75,8 @@ export function loadSourceLanguage(type: keyof typeof grammars) {
       languages.setLanguageConfiguration(language, {
         brackets: [['{', '}'], ['[', ']'], ['(', ')']],
         autoClosingPairs: [{open: '{', close: '}'}, {open: '[', close: ']'}, {open: '(', close: ')'}],
-        comments: type === 'latex' ? {lineComment: '%'} : type === 'rocq' ? {blockComment: ['(*', '*)']} : {blockComment: ['<!--', '-->']},
+        comments: type === 'latex' ? {lineComment: '%'} : type === 'rocq' ? {blockComment: ['(*', '*)']}
+          : type === 'lean' ? {lineComment: '--', blockComment: ['/-', '-/']} : {blockComment: ['<!--', '-->']},
       });
       await editor.colorize('', language, {});
       return language;

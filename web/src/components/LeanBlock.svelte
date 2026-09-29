@@ -4,6 +4,7 @@
   import type { NodeDetail, SrcBlock } from "../lib/types";
   import type { Theme } from "../lib/theme";
   import { api } from "../lib/api";
+  import { leanApi } from "../lib/lean-api";
   import { projectPath } from "../lib/project-path";
   import { errMsg } from "../lib/format";
   import { removeDraft, setDraftDirty, trackMutation } from "../lib/unsaved";
@@ -23,7 +24,7 @@
   let validating = $state(false);
   let busy = $derived(action !== null);
   let error = $state<string | null>(null);
-  let result = $state<Awaited<ReturnType<typeof api.checkLean>> | null>(null);
+  let result = $state<Awaited<ReturnType<typeof leanApi.checkLean>> | null>(null);
   let ready = $state(false);
   let runtimeReady = $state(false);
   let opening = $state(false);
@@ -85,9 +86,9 @@
       // session before connecting a model that the backend has not prepared.
       while (alive && connection === current) {
         const selected = block ? {fnode, revision, generation, module, source: content} : initial;
-        const response = await api.leanSession(selected.fnode, selected.revision);
-        if (!alive || connection !== current) { void api.closeLeanSession(response.id).catch(console.warn); return; }
-        if (block && fnode !== selected.fnode) { await api.closeLeanSession(response.id); continue; }
+        const response = await leanApi.leanSession(selected.fnode, selected.revision);
+        if (!alive || connection !== current) { void leanApi.closeLeanSession(response.id).catch(console.warn); return; }
+        if (block && fnode !== selected.fnode) { await leanApi.closeLeanSession(response.id); continue; }
         session = response.id;
         // A node without Lean hides the editor; it must not cancel its start.
         frame?.contentWindow?.postMessage({ type: "lean-start", id: session, ...(block ? {fnode, revision, generation, module, source: content} : selected) }, location.origin);
@@ -135,7 +136,7 @@
     }) : Promise.resolve();
     frame?.contentWindow?.postMessage({ type: "lean-stop", session: id }, location.origin);
     // Kill the native process immediately, even during initialization/checking.
-    return Promise.all([stopped, id ? api.closeLeanSession(id) : undefined]);
+    return Promise.all([stopped, id ? leanApi.closeLeanSession(id) : undefined]);
   }
   async function save() {
     if (busy) return;
@@ -153,7 +154,7 @@
     } catch (e) { if (alive && generation === current) error = errMsg(e); }
     finally { release(); if (alive && generation === current) action = null; }
   }
-  async function certified(checked: Awaited<ReturnType<typeof api.checkLean>>) {
+  async function certified(checked: Awaited<ReturnType<typeof leanApi.checkLean>>) {
     const current = generation, node = fnode;
     if (dirty || checked.revision !== revision) return;
     result = checked; error = null;
