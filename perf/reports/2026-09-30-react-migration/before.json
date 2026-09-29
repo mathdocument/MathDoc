@@ -1,0 +1,115 @@
+{
+  "schema": 1,
+  "shellArchitecture": "svelte",
+  "generatedAt": "2026-09-29T19:11:47.894Z",
+  "environment": {
+    "os": "linux x64 6.12.107+deb13-amd64",
+    "cpu": "AMD Ryzen 9 9950X 16-Core Processor",
+    "node": "v24.19.0",
+    "browser": "151.0.7922.34",
+    "viewport": "1440x900",
+    "samples": 2
+  },
+  "fixtures": {
+    "editorLines": 500,
+    "graphNodes": 10000,
+    "graphEdges": 19993
+  },
+  "metrics": {
+    "bundle.shellTransferBytes": {
+      "value": 65027,
+      "unit": "bytes"
+    },
+    "bundle.totalTransferBytes": {
+      "value": 19049863,
+      "unit": "bytes"
+    },
+    "runtime.editorReadyMs": {
+      "value": 991.05,
+      "unit": "ms"
+    },
+    "runtime.editorHighlightMs": {
+      "value": 993.25,
+      "unit": "ms"
+    },
+    "runtime.themeSwitchMs": {
+      "value": 170.55,
+      "unit": "ms"
+    },
+    "runtime.latexPreviewMs": {
+      "value": 5547.25,
+      "unit": "ms"
+    },
+    "runtime.graphReadyMs": {
+      "value": 129.25,
+      "unit": "ms"
+    },
+    "runtime.graphZoomFrameP95Ms": {
+      "value": 19.3,
+      "unit": "ms"
+    }
+  },
+  "rawSamples": {
+    "relations": null,
+    "editor": [
+      {
+        "editorReadyMs": 983.6,
+        "editorHighlightMs": 985.8,
+        "themeSwitchMs": 169.1,
+        "latexPreviewMs": 8213.2
+      },
+      {
+        "editorReadyMs": 998.5,
+        "editorHighlightMs": 1000.7,
+        "themeSwitchMs": 172,
+        "latexPreviewMs": 2881.3
+      }
+    ],
+    "graphReadyMs": [
+      136.6,
+      121.9
+    ],
+    "graphZoomFrameMs": [
+      20,
+      18.7,
+      18.8,
+      19.3,
+      18.6,
+      18.8,
+      18.6,
+      18.3,
+      18.7,
+      18.5,
+      18.6,
+      19,
+      18.6,
+      18.4,
+      18.2,
+      18.5,
+      18.4,
+      18.7,
+      18.5,
+      18.3,
+      20.1,
+      19,
+      18.4,
+      18.3,
+      18.5,
+      18.3,
+      18.5,
+      18.6,
+      18.4,
+      18.6,
+      18.4,
+      18.4,
+      18.6,
+      18.5,
+      18.4,
+      18.5,
+      18.6,
+      19.2,
+      18.5,
+      18.5
+    ]
+  }
+}

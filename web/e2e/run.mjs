@@ -180,7 +180,7 @@ await test('node names validate creation, collisions and renames in the browser'
       await page.getByRole('button', {name: 'Save name', exact: true}).click();
       await title(page, 'A.X');
       assert.equal(JSON.parse((await cli('show', 'A.X')).stdout).fnode, original.fnode);
-      await page.locator('.bar-end').getByRole('button', {name: 'Create node', exact: true}).click();
+      await page.locator('.workspace-tools').getByRole('button', {name: 'Create node', exact: true}).click();
       const dialog = page.getByRole('dialog', {name: 'new node', exact: true});
       const input = dialog.getByPlaceholder('Example.Dev.Node');
       const create = dialog.getByRole('button', {name: 'Create node', exact: true});
@@ -243,10 +243,10 @@ await test('project directory creates, forks, starts, stops and deletes branches
       await row(main).getByText('Running', {exact: true}).waitFor();
       assert.equal(await page.getByText('MAIN', {exact: true}).count(), 0);
       assert.equal(await page.getByText('MATHEMATICAL WORKSPACE', {exact: true}).count(), 0);
-      assert.match(await row(main).locator('.counts').innerText(), /3.*nodes/);
-      assert.match(await row(main).locator('.counts').innerText(), /1.*edge/);
+      assert.match(await row(main).locator('.branch-counts').innerText(), /3.*nodes/);
+      assert.match(await row(main).locator('.branch-counts').innerText(), /1.*edge/);
       assert.equal(await row(main).getByRole('button', {name: `Delete ${main}`, exact: true}).count(), 0);
-      assert.equal(await row(main).locator('.main-branch').evaluate(el => getComputedStyle(el).borderTopStyle), 'solid');
+      assert.equal(await row(main).locator('.branch-name').innerText(), 'main');
       const branch = async (source, name) => {
         await row(source).getByRole('button', {name: `New branch from ${source}`, exact: true}).click();
         await page.getByLabel('Branch name', {exact: true}).fill('invalid/name');
@@ -258,25 +258,25 @@ await test('project directory creates, forks, starts, stops and deletes branches
       };
       await branch(main, 'draft');
       await row(fork).getByText('Stopped', {exact: true}).waitFor();
-      assert.equal((await row(fork).locator('.counts').innerText()).trim(), '');
-      const positions = await Promise.all([main, fork].map(name => row(name).locator('.counts').boundingBox()));
+      assert.equal((await row(fork).locator('.branch-counts').innerText()).trim(), '');
+      const positions = await Promise.all([main, fork].map(name => row(name).locator('.branch-counts').boundingBox()));
       assert.equal(positions[0].x, positions[1].x); assert.equal(positions[0].width, positions[1].width);
       await branch(fork, 'copy');
       await row(fork).getByRole('button', {name: `Start ${fork}`, exact: true}).click();
       await row(fork).getByText('Running', {exact: true}).waitFor();
-      assert.match(await row(fork).locator('.counts').innerText(), /3.*nodes/);
+      assert.match(await row(fork).locator('.branch-counts').innerText(), /3.*nodes/);
       await row(fork).getByRole('button', {name: `Stop ${fork}`, exact: true}).click();
       await row(fork).getByText('Stopped', {exact: true}).waitFor();
-      assert.equal((await row(fork).locator('.counts').innerText()).trim(), '');
+      assert.equal((await row(fork).locator('.branch-counts').innerText()).trim(), '');
       for (const theme of ['dark', 'light']) {
         if (await page.evaluate(() => document.documentElement.dataset.theme) !== theme) await page.getByRole('button', {name: 'Toggle theme'}).click();
         for (const width of [1440, 750, 420]) {
           await page.setViewportSize({width, height: 900});
           assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth || document.querySelector('.directory').scrollWidth > innerWidth), false);
-          for (const selector of ['.toggle', '.branch-actions', '.branch-actions button', '.open, .open-space']) {
+          for (const selector of ['.branch-state', '.branch-actions', '.branch-actions button', '.branch-open, .branch-open-space']) {
             const bounds = await Promise.all([main, fork].map(name => row(name).locator(selector).first().boundingBox()));
             assert.equal(bounds[0].x, bounds[1].x, `${selector} aligns at ${width}px`);
-            assert.equal(bounds[0].width + (selector === '.branch-actions' ? 30 : 0), bounds[1].width);
+            assert.equal(bounds[0].width, bounds[1].width);
           }
           await page.screenshot({path: resolve(tmpdir(), `mdc-projects-${theme}-${width}-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`), fullPage: true});
         }
@@ -295,7 +295,7 @@ await test('project directory creates, forks, starts, stops and deletes branches
         assert.equal(await deleteMain.count(), 0);
         await row(`${initialized}/main`).getByRole('button', {name: `Start ${initialized}/main`, exact: true}).click();
         await row(`${initialized}/main`).getByText('Running', {exact: true}).waitFor();
-        assert.match(await row(`${initialized}/main`).locator('.counts').innerText(), /0.*nodes/);
+        assert.match(await row(`${initialized}/main`).locator('.branch-counts').innerText(), /0.*nodes/);
         const body = JSON.stringify({action: 'remove', database: initialized});
         for (const origin of [undefined, 'https://attacker.invalid']) {
           const headers = {'content-type': 'application/json'};
@@ -371,7 +371,7 @@ await test("large relation lists filter and retain natural card heights", { time
       assert.ok(longHeight > shortHeight + 10, `${longHeight} vs ${shortHeight}: short titles do not reserve an empty second line`);
       const filter = column.getByRole("searchbox", {name: "Filter dependencies"});
       await filter.fill("ENTRY.N00001");
-      await page.waitForFunction(() => document.querySelector('[aria-label="Dependencies"] .count')?.textContent === "1/8500");
+      await page.waitForFunction(() => document.querySelector('[aria-label="Dependencies"] .column-count')?.textContent === "1/8500");
       assert.equal(await cards.count(), 1);
       assert.ok(Math.abs(await measure(card(leaves[1].fnode)) - shortHeight) < 0.5, "small and virtual lists share the same card height");
       await filter.fill(leaves.at(-1).fnode);
@@ -422,7 +422,7 @@ await test('node operation dialogs share layout, focus and Escape handling', {ti
   const browser = await launchBrowser();
   try {
     await fixture(browser, async ({page}) => {
-      const toolbar = page.locator('.bar-end');
+      const toolbar = page.locator('.workspace-tools');
       const open = async (button, label) => {
         await toolbar.getByRole('button', {name: button, exact: true}).press('Enter');
         const dialog = page.getByRole('dialog', {name: label, exact: true});
@@ -440,17 +440,17 @@ await test('node operation dialogs share layout, focus and Escape handling', {ti
             ['Remove dependency', 'remove dependencies', 'Beta'],
           ]) {
             const dialog = await open(button, label);
-            assert.equal(await dialog.locator('input').evaluate(el => el === document.activeElement), true, `${label} focuses its input`);
+            await page.waitForFunction(() => document.querySelector('[role=dialog] [data-autofocus]') === document.activeElement);
             layouts.push(await dialog.evaluate(el => {
-              const box = el.getBoundingClientRect(), head = el.querySelector('.dialog-head').getBoundingClientRect();
+              const box = el.getBoundingClientRect(), head = el.querySelector('.dialog-header').getBoundingClientRect();
               const close = el.querySelector('.close-btn').getBoundingClientRect();
               return {width: box.width, top: box.top, headerHeight: head.height, closeRight: close.right, radius: getComputedStyle(el).borderRadius};
             }));
             assert.ok(layouts.at(-1).width <= width, 'dialog fits the viewport');
             assert.equal(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth), true, 'dialog contents fit narrow screens');
-            await dialog.locator('input').fill(query);
+            await dialog.locator('input').first().fill(query);
             await page.screenshot({path: resolve(tmpdir(), `mdc-${label.replaceAll(' ', '-')}-${theme}-${width}-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
-            await dialog.locator('input').press('Escape');
+            await dialog.locator('input').first().press('Escape');
             await dialog.waitFor({state: 'hidden'});
             assert.equal(await toolbar.getByRole('button', {name: button, exact: true}).evaluate(el => el === document.activeElement), true, 'closing returns focus to the trigger');
           }
@@ -471,13 +471,13 @@ await test('node operation dialogs share layout, focus and Escape handling', {ti
       await create.locator('input').press('Escape');
       await create.waitFor({state: 'hidden'});
       const add = await open('Add dependency', 'add dependency');
-      await add.locator('input').fill('New.Dependency.Draft');
-      await add.getByRole('button', {name: 'Create new: New.Dependency.Draft'}).click();
+      await add.locator('input').first().fill('New.Dependency.Draft');
+      await add.getByRole('button', {name: 'Create “New.Dependency.Draft”'}).click();
       page.once('dialog', dialog => void dialog.dismiss());
-      await add.locator('input').press('Escape');
-      assert.equal(await add.getByRole('button', {name: 'create & add'}).isVisible(), true);
+      await add.locator('input').first().press('Escape');
+      assert.equal(await add.getByRole('button', {name: 'Create and add'}).isVisible(), true);
       page.once('dialog', dialog => void dialog.accept());
-      await add.locator('input').press('Escape');
+      await add.locator('input').first().press('Escape');
       await add.waitFor({state: 'hidden'});
       await beta(page).click();
       await title(page, 'Beta');
@@ -492,22 +492,22 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
     await suite.test("node deletion detaches referrers and dependency dialogs share their layout", () =>
       fixture(browser, async ({ cli, page, url }) => {
         const alpha = JSON.parse((await cli("show", "Alpha")).stdout);
-        const toolbar = page.locator(".bar-end");
+        const toolbar = page.locator(".workspace-tools");
         const positions = await Promise.all(["Create node", "Add dependency", "Remove dependency", "Delete node"].map(async name =>
           (await toolbar.getByRole("button", { name, exact: true }).boundingBox()).x));
         assert.deepEqual(positions, [...positions].sort((a, b) => a - b));
         assert.equal(await toolbar.getByRole("button", { name: "Create node", exact: true }).innerText(), "");
         await toolbar.getByRole("button", { name: "Add dependency", exact: true }).click();
         const add = page.getByRole("dialog", { name: "add dependency", exact: true });
-        const addHeader = await add.locator(".dialog-head").evaluate(el => ({width: el.offsetWidth, height: el.offsetHeight}));
-        await add.getByRole("searchbox").fill("Gamma");
+        const addHeader = await add.locator(".dialog-header").evaluate(el => ({width: el.offsetWidth, height: el.offsetHeight}));
+        await add.getByRole("combobox").fill("Gamma");
         await add.getByRole("button", { name: /Gamma/ }).click();
         await toolbar.getByRole("button", { name: "Remove dependency", exact: true }).click();
         const remove = page.getByRole("dialog", { name: "remove dependencies", exact: true });
-        const removeHeader = await remove.locator(".dialog-head").evaluate(el => ({width: el.offsetWidth, height: el.offsetHeight}));
+        const removeHeader = await remove.locator(".dialog-header").evaluate(el => ({width: el.offsetWidth, height: el.offsetHeight}));
         assert.equal(addHeader.width, removeHeader.width);
         assert.equal(addHeader.height, removeHeader.height);
-        await remove.getByRole("button", { name: /Gamma/ }).click();
+        await remove.getByRole("checkbox", { name: /Gamma/ }).click();
         await remove.getByRole("button", { name: "Remove selected", exact: true }).click();
         await cli("dep", "add", "Gamma", "--target", "Beta");
         await beta(page).click();
@@ -614,7 +614,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         let agentRunning = false;
         try {
           await page.goto(base);
-          await page.getByRole("heading", { name: "Projects", exact: true }).waitFor();
+          await page.getByRole("heading", { name: "Ideas, connected.", exact: true }).waitFor();
           await page.getByRole("textbox", { name: "Search projects and branches" }).fill(database);
           const mainRow = page.locator(`[data-project="${project}"]`);
           const agentRow = page.locator(`[data-project="${agent}"]`);
@@ -1131,7 +1131,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           server.onMessage(async message => {
             const value = JSON.parse(String(message));
             if (value.result?.capabilities) { initSeen(); await initializeGate; }
-            if (value.result?.filename && blockSelect) { selectionHeld?.(); await selectionGate; }
+            if (value.result?.filename && blockSelect) { selectionHeld?.(value.id); await selectionGate; }
             ws.send(message);
           });
         });
@@ -1173,8 +1173,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         selectionGate = new Promise(resolve => { releaseSelect = resolve; });
         await select("Alpha");
         await frame.getByText("alpha", { exact: true }).waitFor({ timeout: 1000 });
-        await held;
-        const stale = sent.filter(m => m.method === "mdc/selectNode").at(-1).id;
+        const stale = await held;
         // Leave Alpha's response blocked while a cold node becomes fully ready.
         // A serial promise chain would leave Delta preparing forever here.
         blockSelect = false;
@@ -1314,7 +1313,7 @@ await test('node save atomically persists all blocks and retains drafts through 
       assert.equal((await read()).blocks.find(b => b.srctype === 'text').metadata.source, 'fixture');
       await block('text').getByText('Unsaved', {exact: true}).waitFor();
       await block('lean').getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
-      const savedButton = await save.boundingBox(), metadata = await center(page).locator('.meta').boundingBox();
+      const savedButton = await save.boundingBox(), metadata = await center(page).locator('.node-meta').boundingBox();
       assert.ok(Math.abs(savedButton.x + savedButton.width - metadata.x - metadata.width) < 2, 'save stays at the right of the metadata row');
       if (env.MDC_E2E_ARTIFACTS) {
         await mkdir(env.MDC_E2E_ARTIFACTS, {recursive: true});
@@ -1377,8 +1376,10 @@ await test('Monaco source blocks retain highlighting, edits and undo across layo
       for (const {srctype, content} of node.blocks) {
         const block = page.locator(`[data-srctype="${srctype}"]`);
         await block.locator('.editor-scroll:not(.pending)').waitFor();
-        const colors = await block.locator('.view-line span').evaluateAll(spans => [...new Set(spans.map(el => getComputedStyle(el).color))]);
-        assert.ok(colors.length >= 2, `${srctype} has native syntax colors`);
+        await page.waitForFunction(kind => {
+          const spans = document.querySelectorAll(`[data-srctype="${kind}"] .view-line span`);
+          return new Set([...spans].map(el => getComputedStyle(el).color)).size >= 2;
+        }, srctype);
         const input = block.getByRole('textbox', {name: new RegExp(`^${srctype} source`)});
         await input.press(await page.evaluate(() => /Mac/.test(navigator.platform)) ? 'Meta+ArrowDown' : 'Control+End');
         await page.keyboard.insertText('draft');
@@ -1618,7 +1619,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
         });
         assert.equal(geometry.overlap, true, 'exercise completion over the add source block button');
         assert.equal(geometry.onTop, true, 'the completion receives clicks above the add button');
-        assert.ok(geometry.radius >= 8, 'use the app popup shape');
+        assert.equal(geometry.radius, await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--mdc-radius-md'))), 'use the app popup shape');
         assert.equal(await page.locator('.suggest-details:visible').count(), 0, 'no duplicate details panel');
         const popupBox = await popup.boundingBox();
         assert.equal(await popup.evaluate(el => { el.scrollTop = 100; return el.scrollTop; }), 100, 'use native scrolling');
@@ -1899,7 +1900,7 @@ await test('Lean first paint waits for syntax without waiting for hidden iframe 
       await page.getByRole('button', {name: 'Graph', exact: true}).click();
       const canvas = page.locator('.graph-container canvas');
       await canvas.click({position: {x: 10, y: 10}});
-      await page.getByText('no node selected', {exact: true}).waitFor();
+      await page.getByText('No node selected', {exact: true}).waitFor();
       await page.evaluate(() => {
         window.retainedLeanFrame = document.querySelector('iframe[title="Lean source and Infoview"]');
         window.firstLeanPaint = null;
@@ -2498,7 +2499,7 @@ await test('view changes reveal measured editors and loaded pages without interm
         await page.unroute(pattern);
       };
       await held('**/api/projects', () => page.getByRole('link', {name: 'All projects', exact: true}).click());
-      await page.getByRole('heading', {name: 'Projects', exact: true}).waitFor();
+      await page.getByRole('heading', {name: 'Ideas, connected.', exact: true}).waitFor();
       const project = new URL(url).pathname.replace(/^\/p\//, '').replace(/\/$/, '');
       await held('**/api/node/*/view', () => page.getByRole('link', {name: `Open ${project}`, exact: true}).click());
       assert.equal(await page.locator('.editor-loading').count(), 0);

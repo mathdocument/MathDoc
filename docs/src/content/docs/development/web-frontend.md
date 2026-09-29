@@ -2,7 +2,7 @@
 title: Browser frontend
 ---
 
-The Svelte 5 interface mounts the project directory at `/` and the editor at
+The React interface mounts the project directory at `/` and the editor at
 `/p/DATABASE/BRANCH/`. The directory polls `/api/projects` while visible. It can
 initialize a project, start/stop branches, fork either running or stopped branches,
 and delete stopped branches. Running rows show node/edge counts from the loaded
@@ -31,14 +31,16 @@ with reduced motion enabled. Ordinary links, browser history and unsaved-draft
 guards are preserved; browsers without View Transitions use normal navigation.
 
 Relation columns filter locally by name or UUID and render only a viewport
-window for more than 100 matches. Cards use natural one- or two-line titles at
+window for more than 100 matches using TanStack Virtual. Cards use natural one- or two-line titles at
 every list size. ResizeObserver measures mounted rows; cached heights and
 estimated offscreen heights position the window without rendering the full
 list. Scrolling and Arrow/Home/End navigation reach all matches. Filters reset
 when selecting another node. Switching views keeps the columns' scroll positions and the
 same editor session. Node snapshots are replaced atomically instead of deeply
 proxied. The graph component loads on first use and keeps its layout in memory;
-the desktop layout uses fixed 5:3 grid columns for the graph and editor.
+desktop panels resize through keyboard-accessible separators and remember their widths
+per view. The graph defaults to a 60:40 graph/editor split. Narrow Knowledge
+layouts hide relationship columns so the editor remains usable.
 The canvas bitmap fits its own viewport, with an eight-million-pixel budget on
 Retina displays. Window-size and pixel-density changes resize and paint in one
 frame.
@@ -84,6 +86,29 @@ made passive by `web/build/monaco-wheel.ts`, in both Vite builds and dependency
 prebundling; the build fails if the upstream listener changes shape. This avoids
 Safari's synchronous wheel path, which otherwise suppresses boundary feedback.
 
+## Module boundaries
+
+- `features/projects` owns project and branch management.
+- `features/workspace` owns navigation, relationship lists, dialogs and panel layout.
+  Its controller coordinates the framework-independent node and graph-report sessions.
+- `features/editor` adapts Monaco and the isolated Lean iframe to React. Session
+  objects own drafts, requests and native editor lifetimes; React owns surrounding
+  controls and mounts each editor surface once. Changing views does not reparent
+  the editor or restart the Lean server.
+- `features/graph/graph-session.ts` owns request ordering and cached graph data.
+  `renderer.ts` owns Canvas drawing, hit testing and animation; pointer movement
+  does not trigger React renders. `Graph.tsx` connects them and renders the legend.
+- `lib` contains API clients, immutable snapshots, domain sessions and native editor
+  utilities. `ObservableModel` publishes top-level changes through `use-model` and
+  React's `useSyncExternalStore`; replace arrays and records instead of mutating them.
+- `components/ui` owns shared visual primitives. Base UI supplies accessible dialog,
+  tooltip, tab and menu behavior. Feature modules communicate through typed props
+  and API clients, not by querying another feature's component state.
+
+Lean's upstream Infoview keeps its own React version inside its existing iframe;
+it does not share the application's React root. Keep that dependency boundary
+when upgrading packages.
+
 ## Development server
 
 Create a disposable development database once, then start its branch. Keep the
@@ -95,6 +120,11 @@ mdc start dev/main
 npm --prefix web ci
 npm --prefix web run dev
 ```
+
+Vite with the React plugin provides Fast Refresh for component edits. Ordinary
+component/style changes update immediately; entry-point, dependency or session
+lifecycle changes can require a full reload. Save drafts before changing editor
+session internals. Backend changes still require rebuilding/restarting Rust.
 
 Open the Vite URL (normally `http://localhost:5173`). Vite serves frontend assets
 for the project list, or `/p/dev/main/` for the editor. Vite proxies `/api` and

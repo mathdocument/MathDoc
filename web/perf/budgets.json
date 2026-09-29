@@ -2,12 +2,12 @@
   "schema": 1,
   "metrics": {
     "bundle.shellTransferBytes": {
-      "max": 57344,
+      "max": 196608,
       "maxIncreaseRatio": 0.08,
       "noise": 1024
     },
     "bundle.totalTransferBytes": {
-      "max": 9000000,
+      "max": 20000000,
       "maxIncreaseRatio": 0.08,
       "noise": 2048
     },

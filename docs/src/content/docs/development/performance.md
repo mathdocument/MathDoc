@@ -125,12 +125,12 @@ end, keyboard navigation, node selection and scroll preservation across view
 switches. Its timings are recorded in `rawSamples.relations`. Canvas resize
 checks reject backing-size resets that leave a blank frame before painting.
 A 3840×2160, 2× Retina check reaches the canvas pixel cap, verifies that the
-bitmap fits its viewport, and checks the fixed 3/8 sidebar proportion at
+bitmap fits its viewport, and checks the default 40% editor proportion at
 multiple desktop window widths.
 The large-list check also verifies dependency removal pagination, filtering,
 selection retention and the exact submitted dependency IDs.
 Navigation checks delay the shell script and require a header on the first
-frame, stable header geometry, directory/project transitions, browser back and
+frame, stable header height, directory/project transitions, browser back and
 forward, theme persistence and reduced-motion behavior.
 
 ```sh
@@ -160,9 +160,23 @@ Changes to fixtures, budgets, or `web/perf/baseline.json` should be reviewed alo
 the optimization that requires them. Lower values are better for every metric.
 
 The lazy native Monaco/Infoview bundle is included in the recorded total of
-about 8.46 MB compressed, with a 9 MB absolute ceiling and an 8% regression
-budget. The initial shell has a separate 56 KiB ceiling. Runtime fixtures measure
+about 19.2 MB compressed, with a 20 MB absolute ceiling and an 8% regression
+budget. The initial shell has a separate 192 KiB ceiling. Runtime fixtures measure
 LaTeX and graph interaction; native Lean is checked by the real-server browser test.
 
 Run the real-server suite with `MDC_E2E_BROWSER=webkit` to check Safari's engine
 as well as the default Chromium (see [test setup](../setup/)).
+
+### React shell migration
+
+The React shell has a 192 KiB gzip cap, including its initial CSS and HTML.
+React DOM, Base UI accessibility behavior, resizable panels and virtual lists
+replace the previous Svelte runtime. For the first comparison from the Svelte shell to `react`, only the shell payload uses this absolute
+cap; later React changes also enforce the existing 8% relative budget. Total
+assets retain their 8% relative guard; the absolute total cap is corrected to
+20 MB because the existing main revision already bundles 19.05 MB (including
+TikZ and its fonts). Editor timings and graph frame budgets keep their existing limits.
+The current harness recognizes both shell structures for timing the same interactions.
+The CI base run uses `--baseline` to collect timings; virtual-list, Retina and
+navigation regression assertions run on the head revision. Fixtures and environment
+metadata must still match for a valid comparison.

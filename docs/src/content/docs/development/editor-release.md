@@ -4,7 +4,7 @@ title: Release checks
 
 Authoring is through the local browser and service API. Install the executable independently of its source checkout.
 
-Release validation builds the frontend assets embedded into the Rust binary, checks Svelte and Rust, and runs database/browser/Lean integration tests. Keep the TerminusDB image and Lean toolchain pinned in the deployment/test configuration.
+Release validation builds the frontend assets embedded into the Rust binary, checks React/TypeScript and Rust, and runs database/browser/Lean integration tests. Keep the TerminusDB image and Lean toolchain pinned in the deployment/test configuration.
 
 Database revisions are independent of source-code Git commits. Every graph mutation creates a TerminusDB commit; `mdc history -p myproject/main` and `mdc branch new NAME -p myproject/main` expose basic history and branching. Merge/rebase administration uses TerminusDB directly; mdc has no merge UI or command.
 

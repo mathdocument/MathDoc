@@ -88,8 +88,8 @@ stale asynchronous renders cannot replace a newer preview. MathJax's safe
 extension blocks formula URLs, custom classes and IDs; HTML and runtime-option
 extensions are disabled. No TeX executable, `.aux` exchange or TexLab process is involved.
 
-The browser's `latex-session.svelte.ts` owns draft requests and cancellation;
+The browser's `latex-session.ts` owns draft requests and cancellation;
 `latex-completion.ts` supplies Monaco completion candidates. Common project catalogs
 are cached by configuration content, while reference context is node-specific.
-`LatexPreview.svelte` only renders math and handles node/label links. A new node
+`features/editor/LatexPreview.tsx` only renders math and handles node/label links. A new node
 gets a new draft session, so an older response cannot overwrite its preview.
