@@ -54,7 +54,7 @@ def main():
     parser.add_argument("--samples", type=int, default=20)
     parser.add_argument("--cli", help="Installed mdc executable for fresh-process measurements")
     parser.add_argument("--proj", help="DATABASE/BRANCH served at --url; required with --cli")
-    parser.add_argument("--query", default="equation", help="Representative title search term")
+    parser.add_argument("--query", default="equation", help="Representative name search term")
     parser.add_argument("--writes", action="store_true", help="Adds nodes: use ONLY on a disposable database branch")
     args = parser.parse_args()
     if args.cli and not args.proj:
@@ -70,8 +70,7 @@ def main():
     highout = max(range(len(nodes)), key=lambda i: outdegree[i])
     highin = max(range(len(nodes)), key=lambda i: indegree[i])
     deep = max(range(len(nodes)), key=lambda i: nodes[i]["depth"])
-    titles = collections.Counter(n["title"] for n in nodes)
-    unique = next(n for n in nodes if titles[n["title"]] == 1)
+    unique = nodes[0]
     report["graph"] = {"nodes": len(nodes), "edges": len(edges)}
     report["representatives"] = {
         label: {**nodes[i], "out_degree": outdegree[i], "in_degree": indegree[i]}
@@ -81,9 +80,9 @@ def main():
     paths = {
         "graph_check": "/graph/check", "graph_roots": "/graph/roots", "graph_full": "/graph/full",
         "search_common": "/search?" + urllib.parse.urlencode({"q": args.query, "n": 20}),
-        "search_missing": "/search?q=__mdc_no_matching_title__&n=20",
+        "search_missing": "/search?q=__mdc_no_matching_name__&n=20",
         "resolve_uuid": "/resolve?" + urllib.parse.urlencode({"ref": source}),
-        "resolve_name": "/resolve?" + urllib.parse.urlencode({"ref": unique["title"]}),
+        "resolve_name": "/resolve?" + urllib.parse.urlencode({"ref": unique["name"]}),
         "view_high_out_degree": f"/node/{source}/view", "view_high_in_degree": f"/node/{target}/view",
         "deps_direct": f"/node/{source}/dep?mode=show&depth=1",
         "deps_transitive": f"/node/{deepest}/dep?mode=show&depth=-1",
@@ -128,17 +127,17 @@ def main():
             report["cli"][label] = statistics_ms(samples)
             print("cli", label, report["cli"][label]["median_ms"], "ms", file=sys.stderr, flush=True)
     if args.writes:
-        prefix = "Benchmark " + uuid.uuid4().hex
-        a, _, _ = request(args.url, "/node/new", "POST", {"title": prefix + " A"})
-        b, _, _ = request(args.url, "/node/new", "POST", {"title": prefix + " B"})
+        prefix = "Benchmark.N" + uuid.uuid4().hex
+        a, _, _ = request(args.url, "/node/new", "POST", {"name": prefix + ".A"})
+        b, _, _ = request(args.url, "/node/new", "POST", {"name": prefix + ".B"})
         timings = collections.defaultdict(list)
         for i in range(args.samples):
-            _, ms, _ = request(args.url, "/node/new", "POST", {"title": f"{prefix} {i}"})
+            _, ms, _ = request(args.url, "/node/new", "POST", {"name": f"{prefix}.N{i}"})
             timings["create_node"].append(ms)
             previous = a["revision"]
-            a, ms, _ = request(args.url, f"/node/{a['fnode']}/title", "PUT", {"title": f"{prefix} A {i}"}, previous)
+            a, ms, _ = request(args.url, f"/node/{a['fnode']}/name", "PUT", {"name": f"{prefix}.A{i}"}, previous)
             timings["rename"].append(ms)
-            _, ms, _ = request(args.url, f"/node/{a['fnode']}/title", "PUT", {"title": "Stale write"}, previous, status=412)
+            _, ms, _ = request(args.url, f"/node/{a['fnode']}/name", "PUT", {"name": "Stale.Write"}, previous, status=412)
             timings["reject_stale_write"].append(ms)
             a, ms, _ = request(args.url, f"/node/{a['fnode']}/block/text", "PUT", {"content": f"Benchmark {i}"}, a["revision"])
             timings["save_text"].append(ms)

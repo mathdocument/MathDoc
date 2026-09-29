@@ -144,7 +144,7 @@ def main():
                 states = cli("status")["projects"]
                 assert states["smoke/main"]["running"]
                 assert not states["smoke/paused"]["running"]
-                assert cli("show", "-p", "smoke/main", node["fnode"])["title"] == "Container proof"
+                assert cli("show", "-p", "smoke/main", node["fnode"])["name"] == "ContainerProof"
                 checked = cli("lean", "check", "-p", "smoke/main", node["fnode"])
                 assert checked["certified"] and checked["cache_hit"], checked
                 run("exec", "-T", "runtime", "test", "-f", "/var/lib/mdc/tools/persistence-marker")
@@ -177,7 +177,7 @@ def main():
             os.chown(password_file, -1, os.getgid())
             up()
             assert password_file.stat().st_mode & 0o777 == 0o440
-            assert cli("show", "-p", "smoke/main", node["fnode"])["title"] == "Container proof"
+            assert cli("show", "-p", "smoke/main", node["fnode"])["name"] == "ContainerProof"
             print("Docker smoke passed: source-free startup, credentials, HTTP origins, CLI, bundled Lean, "
                   "LaTeX, restart, recreation, down/up, cache reuse and lost-secret recovery.", flush=True)
         except BaseException:

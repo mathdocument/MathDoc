@@ -5,3 +5,6 @@ export function nodeNameError(name: string): string | null {
     ? "Use dot-separated identifiers, such as MX.Dot32.Exact (letters, digits, _ and ')."
     : null;
 }
+
+/** Lean keywords are only ambiguous for a bare module identifier. */
+export const leanImportName = (name: string) => name.includes('.') ? name : `«${name}»`;

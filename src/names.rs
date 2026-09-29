@@ -74,7 +74,7 @@ pub fn rename_imports(source: &str, old: &str, new: &str) -> String {
     }
     let mut result = source.to_owned();
     for range in replacements.into_iter().rev() {
-        result.replace_range(range, new);
+        result.replace_range(range, &crate::store::import_name(new));
     }
     result
 }
@@ -175,6 +175,17 @@ pub fn rename_latex_refs(source: &str, old: &str, new: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn bare_renames_escape_lean_keywords() {
+        assert_eq!(
+            rename_imports("import Old\n", "Old", "def"),
+            "import «def»\n"
+        );
+        assert_eq!(
+            rename_imports("import «def»\n", "def", "Result.X"),
+            "import Result.X\n"
+        );
+    }
     #[test]
     fn rename_qualified_latex_references_only() {
         let source = r"\cref{ A.X::first,local, A.XYZ::second,A.X::third,% comment

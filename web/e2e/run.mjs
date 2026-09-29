@@ -954,15 +954,15 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           await page.getByRole("button", { name: new RegExp(name) }).last().click();
           await title(page, name);
         };
-        for (const name of ["Second Lean", "Third Lean"]) {
+        for (const name of ["Second.Lean", "Third.Lean"]) {
           const node = JSON.parse((await cli("new", name)).stdout);
           const response = await fetch(`${url}/api/node/${node.fnode}/block/lean`, {
             method: "PUT", headers: { "content-type": "application/json", "if-match": `"${node.revision}"` },
-            body: JSON.stringify({ content: `theorem ${name === "Second Lean" ? "second" : "third"} : True := by trivial\n` }),
+            body: JSON.stringify({ content: `theorem ${name === "Second.Lean" ? "second" : "third"} : True := by trivial\n` }),
           });
           assert.equal(response.status, 200);
         }
-        await select("Second Lean");
+        await select("Second.Lean");
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
         const initialized = messages.filter(m => m.method === "initialize").length;
         const opened = messages.filter(m => m.method === "textDocument/didOpen").length;
@@ -990,7 +990,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await warmError; // Distinguish missing native diagnostics from a hidden marker.
         await frame.locator(".squiggly-error").first().waitFor();
         console.log("Warm Lean edit diagnostics (ms):", Math.round(performance.now() - edited));
-        await select("Third Lean"); // Confirmed navigation discards that unsaved edit.
+        await select("Third.Lean"); // Confirmed navigation discards that unsaved edit.
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
         assert.ok(messages.some(m => m.method === "textDocument/didClose"), "eviction must release a native Lean worker");
         await select("Lean.Example");

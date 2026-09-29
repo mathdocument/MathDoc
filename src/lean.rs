@@ -1123,22 +1123,37 @@ pub async fn refresh_editor_sources(
         if let Some(source) = node.source("lean") {
             write_source(root, node, source).await?;
         } else {
-            for file in [
-                module_path(root, &node.name)?,
-                root.join(".lake/build/lib/lean")
-                    .join(crate::store::module_file(&node.name, "olean")?),
-            ] {
-                match tokio::fs::remove_file(file).await {
-                    Ok(()) => (),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-                    Err(error) => return Err(error.into()),
-                }
-            }
+            remove_module(root, &node.name).await?;
         }
         sources.insert(node.fnode.clone(), node.clone());
     }
     Ok(())
 }
+async fn remove_module(root: &Path, name: &str) -> Result<()> {
+    let mut paths = vec![module_path(root, name)?];
+    for extension in [
+        "olean",
+        "olean.server",
+        "olean.private",
+        "ilean",
+        "ir",
+        "trace",
+    ] {
+        paths.push(
+            root.join(".lake/build/lib/lean")
+                .join(crate::store::module_file(name, extension)?),
+        );
+    }
+    for path in paths {
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
 pub fn file_uri(path: &Path) -> Result<String> {
     reqwest::Url::from_file_path(path)
         .map(|u| u.to_string())
@@ -1167,6 +1182,21 @@ pub async fn write_project_modules<'a>(
                 .join(".")
         })
         .collect();
+    let index = root.join(".mdc-module-names.json");
+    let saved = tokio::fs::read(&index).await;
+    let old: Vec<String> = match &saved {
+        Ok(bytes) => serde_json::from_slice(bytes)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => vec![],
+        Err(error) => return Err(anyhow::anyhow!(error.to_string())),
+    };
+    let current: std::collections::BTreeSet<_> = names.iter().collect();
+    for name in old.iter().filter(|name| !current.contains(name)) {
+        remove_module(root, name).await?;
+    }
+    let encoded = serde_json::to_vec(&names)?;
+    if saved.as_ref().ok() != Some(&encoded) {
+        tokio::fs::write(index, encoded).await?;
+    }
     let extra = if project.lakefile_name() == "lakefile.toml" {
         format!(
             "\n[[lean_lib]]\nname = \"MdcNodes\"\nroots = []\nglobs = {}\n",
@@ -1175,7 +1205,7 @@ pub async fn write_project_modules<'a>(
     } else {
         let globs = names
             .iter()
-            .map(|name| format!(".one `{name}"))
+            .map(|name| format!(".one `{0}", crate::store::import_name(name)))
             .collect::<Vec<_>>()
             .join(", ");
         format!("\nlean_lib MdcNodes where\n  roots := #[]\n  globs := #[{globs}]\n")
@@ -1852,6 +1882,32 @@ mod tests {
         refresh_editor_sources(root.path(), &input, &mut SourceState::new())
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn renamed_modules_remove_old_sources_even_after_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let project = LeanProject::default();
+        let old = crate::store::module_file("Old.X", "lean").unwrap();
+        let new = crate::store::module_file("New.X", "lean").unwrap();
+        write_project_modules(root.path(), &project, [&old])
+            .await
+            .unwrap();
+        let source = root.path().join(&old);
+        let artifact = root.path().join(".lake/build/lib/lean/Old/X.olean");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        std::fs::write(&source, "old").unwrap();
+        std::fs::write(&artifact, "old").unwrap();
+        // prepare_project models a fresh worker, with no in-memory SourceState.
+        prepare_project(root.path(), &project).await.unwrap();
+        write_project_modules(root.path(), &project, [&new])
+            .await
+            .unwrap();
+        assert!(!source.exists() && !artifact.exists());
+        assert!(std::fs::read_to_string(root.path().join("lakefile.toml"))
+            .unwrap()
+            .contains("New.X"));
     }
 
     #[tokio::test]

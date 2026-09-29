@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { leanImportName } from "../lib/node-name";
   import { onDestroy, untrack } from "svelte";
   import { ChevronDown, ChevronRight, Save, Trash2, RotateCcw, Play, Square } from "@lucide/svelte";
   import type { NodeDetail, SrcBlock } from "../lib/types";
@@ -205,7 +206,7 @@
     </div>
   </header>
   {#if module}
-    <details class="module-import"><summary>Lean import</summary><code>import {module}</code></details>
+    <details class="module-import"><summary>Lean import</summary><code>import {leanImportName(module)}</code></details>
   {/if}
   {#if action}<div class="status activity" role="status" aria-live="polite">{{ save: "Saving...", delete: "Deleting..." }[action]}</div>{/if}
   {#if validating && !dirty}<div class="status activity" role="status" aria-live="polite">Verifying saved version...</div>{/if}

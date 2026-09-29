@@ -94,3 +94,9 @@ MX.Dot32.Proof` changes the name and module path together, atomically updates
 managed Lean imports and literal LaTeX `name::label` references, and invalidates affected Lean evidence. UUIDs and edges
 stay unchanged. There is no separate display title or stored module field.
 Existing-project migration is not included in this naming change.
+
+Generated Lean imports quote bare names (`import «def»`) so even Lean keywords
+can be module names. This is Lean syntax escaping, not another node identifier.
+Qualified names such as `MX.Dot32.Exact` are emitted directly. Compiler workspaces
+record their generated module names and remove obsolete source/artifact paths
+after renames or deletions, including when a worker restarts.

@@ -77,7 +77,7 @@ async fn native_project_keeps_module_names_configuration_and_dependency_guards()
         ..Default::default()
     };
     let mut a = Node::new("A".into()).unwrap();
-    a.name = "Mathlib.A".into();
+    a.name = "def".into();
     let executions = temp.path().join("dependency-executions");
     a.blocks.push(Block {
         srctype: "lean".into(),
@@ -89,7 +89,7 @@ async fn native_project_keeps_module_names_configuration_and_dependency_guards()
     b.depens.push(a.fnode.clone());
     b.blocks.push(Block {
         srctype: "lean".into(),
-        content: "import Mathlib.A\ntheorem derived : supportValue = 7 := base\n".into(),
+        content: "import «def»\ntheorem derived : supportValue = 7 := base\n".into(),
         ..Default::default()
     });
     let deleted_id = a.fnode.clone();
@@ -145,12 +145,11 @@ async fn native_project_keeps_module_names_configuration_and_dependency_guards()
         .unwrap();
     assert!(!checked.certified, "{checked:?}");
     assert!(
-        checked
-            .dependency_errors
-            .iter()
-            .any(|e| e.contains("no longer a graph node")),
-        "{checked:?}"
+        !checked.passed,
+        "deleted module must fail native import resolution: {checked:?}"
     );
+    assert!(!root.join("def.lean").exists());
+    assert!(!root.join(".lake/build/lib/lean/def.olean").exists());
     service.shutdown().await;
 }
 

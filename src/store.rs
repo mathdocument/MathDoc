@@ -83,6 +83,16 @@ fn plain_module_part(part: &str) -> bool {
             .all(|c| c.is_alphanumeric() || matches!(c, '_' | '\''))
 }
 
+/// A bare name can be a Lean keyword (e.g. `def` or `Type`). Qualified
+/// identifiers are lexed as identifiers; quote bare names without a keyword list.
+pub fn import_name(name: &str) -> String {
+    if name.contains('.') {
+        name.to_owned()
+    } else {
+        format!("«{name}»")
+    }
+}
+
 pub fn module_file(module: &str, extension: &str) -> Result<PathBuf> {
     let mut parts = module_parts(module)?;
     let filename = format!("{}.{extension}", parts.pop().unwrap());
@@ -227,12 +237,10 @@ impl LeanProject {
         self.lakefile_name.as_deref().unwrap_or("lakefile.toml")
     }
     pub fn validate_modules<'a>(&self, nodes: impl Iterator<Item = &'a Node>) -> Result<()> {
+        let files: BTreeSet<_> = self.files.keys().map(|file| file.to_lowercase()).collect();
         for node in nodes {
             let path = module_file(&node.name, "lean")?;
-            if self
-                .files
-                .contains_key(&path.to_string_lossy().into_owned())
-            {
+            if files.contains(&path.to_string_lossy().to_lowercase()) {
                 bail!("managed module {} collides with a project file", node.name);
             }
         }
@@ -1082,6 +1090,8 @@ mod tests {
         );
         let mut node = Node::new("Cache".into()).unwrap();
         node.name = "Cache.Main".into();
+        assert!(project.validate_modules([&node].into_iter()).is_err());
+        node.name = "cache.main".into();
         assert!(project.validate_modules([&node].into_iter()).is_err());
         for path in [
             "../outside",
