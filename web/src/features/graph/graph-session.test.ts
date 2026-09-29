@@ -1,0 +1,22 @@
+import { afterEach, expect, test, vi } from 'vitest';
+import { api } from '../../lib/api';
+import type { GraphFull } from '../../lib/types';
+import { GraphSession } from './graph-session';
+afterEach(() => vi.restoreAllMocks());
+test('a superseded topology request cannot replace a newer graph and reactivation reuses it', async () => {
+  const requests: Array<(data: GraphFull) => void> = [];
+  const full = vi.spyOn(api, 'full').mockImplementation(() => new Promise(resolve => requests.push(resolve)));
+  const session = new GraphSession();
+  session.update(true, 1);
+  const first = session.prepare();
+  session.update(true, 2);
+  const second = session.prepare();
+  const current: GraphFull = { nodes: [], edges: [] };
+  requests[1]!(current); await second;
+  requests[0]!({ nodes: [], edges: [] }); await first;
+  expect(session.data).toBe(current);
+  session.update(false, 2); session.update(true, 2);
+  expect(full).toHaveBeenCalledTimes(2);
+  expect(session.loading).toBe(false);
+  session.cancel();
+});
