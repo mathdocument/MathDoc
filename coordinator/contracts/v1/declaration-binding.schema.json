@@ -5,7 +5,7 @@
       "properties": {
         "schema_version": {
           "type": "string",
-          "const": "mathdoc.declaration-binding.v1-draft"
+          "const": "mathdoc.declaration-binding.v1"
         },
         "node_id": {
           "type": "string",
@@ -78,6 +78,13 @@
           "type": "string",
           "const": "definition_only"
         },
+        "classification_source": {
+          "type": "string",
+          "enum": [
+            "syntax_scan",
+            "explicit_metadata"
+          ]
+        },
         "definitions": {
           "type": "array",
           "items": {
@@ -129,6 +136,7 @@
         "source_sha256",
         "required_context",
         "classification",
+        "classification_source",
         "definitions"
       ],
       "additionalProperties": false
@@ -138,7 +146,7 @@
       "properties": {
         "schema_version": {
           "type": "string",
-          "const": "mathdoc.declaration-binding.v1-draft"
+          "const": "mathdoc.declaration-binding.v1"
         },
         "node_id": {
           "type": "string",
@@ -210,6 +218,13 @@
         "classification": {
           "type": "string",
           "const": "theorem"
+        },
+        "classification_source": {
+          "type": "string",
+          "enum": [
+            "syntax_scan",
+            "explicit_metadata"
+          ]
         },
         "conclusion": {
           "type": "object",
@@ -302,6 +317,7 @@
         "source_sha256",
         "required_context",
         "classification",
+        "classification_source",
         "conclusion",
         "premise_placeholders",
         "definitions",
@@ -366,7 +382,7 @@
       "properties": {
         "schema_version": {
           "type": "string",
-          "const": "mathdoc.declaration-binding.v1-draft"
+          "const": "mathdoc.declaration-binding.v1"
         },
         "node_id": {
           "type": "string",
@@ -449,7 +465,8 @@
             "missing_environment_instance",
             "ambiguous_binding",
             "local_context_mismatch",
-            "premise_name_collision"
+            "premise_name_collision",
+            "definition_name_taken"
           ]
         },
         "details": {

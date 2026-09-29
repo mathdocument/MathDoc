@@ -3,7 +3,7 @@
   "properties": {
     "schema_version": {
       "type": "string",
-      "const": "mathdoc.document-permission.v1-draft"
+      "const": "mathdoc.document-permission.v1"
     },
     "workspace_id": {
       "type": "string",

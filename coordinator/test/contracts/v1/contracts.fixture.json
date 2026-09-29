@@ -1,6 +1,6 @@
 {
   "document_permission": {
-    "schema_version": "mathdoc.document-permission.v1-draft",
+    "schema_version": "mathdoc.document-permission.v1",
     "workspace_id": "workspace-demo",
     "owner": "alice",
     "branch_rules": [
@@ -112,7 +112,7 @@
   },
   "proof_environments": [
     {
-      "schema_version": "mathdoc.proof-environment.v1-draft",
+      "schema_version": "mathdoc.proof-environment.v1",
       "environment_id": "env-v1",
       "base": {
         "base_id": "fixture-base",
@@ -169,7 +169,7 @@
       }
     },
     {
-      "schema_version": "mathdoc.proof-environment.v1-draft",
+      "schema_version": "mathdoc.proof-environment.v1",
       "environment_id": "env-v2",
       "base": {
         "base_id": "fixture-base",
@@ -231,7 +231,7 @@
     {
       "source": "def twice (n : Nat) := n + n\n",
       "contract": {
-        "schema_version": "mathdoc.declaration-binding.v1-draft",
+        "schema_version": "mathdoc.declaration-binding.v1",
         "node_id": "11111111-1111-4111-8111-111111111111",
         "block_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "source_sha256": "6a1a47f71438b99f8615ad16060e72131aefb21f9c071dc6e0dd7656fbe160e1",
@@ -243,13 +243,14 @@
             "dependency_definition_ids": []
           }
         ],
-        "required_context": {}
+        "required_context": {},
+        "classification_source": "syntax_scan"
       }
     },
     {
       "source": "theorem target (n : Nat) : n = n := by rfl\n",
       "contract": {
-        "schema_version": "mathdoc.declaration-binding.v1-draft",
+        "schema_version": "mathdoc.declaration-binding.v1",
         "node_id": "22222222-2222-4222-8222-222222222222",
         "block_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "source_sha256": "f6bf173c215dd95b2747d29517cbef3fc6e1f7fd3ce65596b6500bfa1df1909e",
@@ -266,13 +267,14 @@
         "new_definitions": [],
         "component": "lean-worker",
         "mode": "leaf",
-        "required_context": {}
+        "required_context": {},
+        "classification_source": "syntax_scan"
       }
     },
     {
       "source": "instance : Inhabited Nat := ⟨0⟩\n",
       "contract": {
-        "schema_version": "mathdoc.declaration-binding.v1-draft",
+        "schema_version": "mathdoc.declaration-binding.v1",
         "node_id": "33333333-3333-4333-8333-333333333333",
         "block_revision": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         "source_sha256": "72fbf1fd7146f76c1dee4e40e3d35c21190cd2b49a9822a4f505b369864927c8",
@@ -284,7 +286,7 @@
     }
   ],
   "writeback": {
-    "schema_version": "mathdoc.writeback-batch.v1-draft",
+    "schema_version": "mathdoc.writeback-batch.v1",
     "batch_id": "batch-demo-1",
     "replay_key": "proof-request-7:assembly-3:batch-1",
     "review_branch": {

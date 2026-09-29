@@ -13,7 +13,7 @@ const documentBinding = z
 
 export const documentPermissionContractSchema = z
   .object({
-    schema_version: z.literal("mathdoc.document-permission.v1-draft"),
+    schema_version: z.literal("mathdoc.document-permission.v1"),
     workspace_id: id,
     owner: id,
     branch_rules: z
@@ -125,7 +125,7 @@ export const proofRequestBindingSchema = z
 
 export const proofEnvironmentContractSchema = z
   .object({
-    schema_version: z.literal("mathdoc.proof-environment.v1-draft"),
+    schema_version: z.literal("mathdoc.proof-environment.v1"),
     environment_id: id,
     base: baseRefSchema,
     context: contextSchema,
@@ -137,8 +137,14 @@ export const proofEnvironmentContractSchema = z
   })
   .strict();
 
+// Decision B (2026-09-29): a conservative syntax scan may classify only obviously single-kind
+// blocks; anything else needs explicit block metadata, and LeanGround's check stays final.
+export const LEAN_ROLE_METADATA_KEY = "lean_role"; // "definition" | "theorem"
+export const LEAN_CONCLUSION_METADATA_KEY = "lean_conclusion"; // conclusion declaration name
+const classificationSource = z.enum(["syntax_scan", "explicit_metadata"]);
+
 const bindingBase = {
-  schema_version: z.literal("mathdoc.declaration-binding.v1-draft"),
+  schema_version: z.literal("mathdoc.declaration-binding.v1"),
   node_id: z.string().uuid(),
   block_revision: sha256,
   source_sha256: sha256,
@@ -150,6 +156,7 @@ export const declarationBindingContractSchema = z
       .object({
         ...bindingBase,
         classification: z.literal("definition_only"),
+        classification_source: classificationSource,
         definitions: z
           .array(
             z
@@ -174,6 +181,7 @@ export const declarationBindingContractSchema = z
       .object({
         ...bindingBase,
         classification: z.literal("theorem"),
+        classification_source: classificationSource,
         conclusion: z
           .object({
             name: id,
@@ -209,6 +217,9 @@ export const declarationBindingContractSchema = z
           "ambiguous_binding",
           "local_context_mismatch",
           "premise_name_collision",
+          // Decision A: a name already bound to different content in the scope is rejected;
+          // the author renames on the review branch and retries. No automatic aliasing.
+          "definition_name_taken",
         ]),
         details: z.string().min(1),
       })
@@ -259,16 +270,15 @@ const writeOperation = z
   .strict();
 export const writebackContractSchema = z
   .object({
-    schema_version: z.literal("mathdoc.writeback-batch.v1-draft"),
+    schema_version: z.literal("mathdoc.writeback-batch.v1"),
     batch_id: id,
     replay_key: id,
     review_branch: documentBinding,
     source_proof_request_id: id,
     operations: z.array(writeOperation).min(1),
-    conflict_resolution: z.enum([
-      "abort_entire_batch",
-      "reviewer_merge_required",
-    ]),
+    // Decision C: the current document wins; any conflict aborts the whole batch. A reviewer
+    // merge is a new batch after re-certification, never a conflict policy.
+    conflict_resolution: z.literal("abort_entire_batch"),
     certification_visibility: z.literal("after_full_batch_commit"),
   })
   .strict()

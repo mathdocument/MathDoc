@@ -3,7 +3,7 @@
   "properties": {
     "schema_version": {
       "type": "string",
-      "const": "mathdoc.proof-environment.v1-draft"
+      "const": "mathdoc.proof-environment.v1"
     },
     "environment_id": {
       "type": "string",

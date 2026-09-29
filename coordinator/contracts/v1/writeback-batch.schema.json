@@ -3,7 +3,7 @@
   "properties": {
     "schema_version": {
       "type": "string",
-      "const": "mathdoc.writeback-batch.v1-draft"
+      "const": "mathdoc.writeback-batch.v1"
     },
     "batch_id": {
       "type": "string",
@@ -132,10 +132,7 @@
     },
     "conflict_resolution": {
       "type": "string",
-      "enum": [
-        "abort_entire_batch",
-        "reviewer_merge_required"
-      ]
+      "const": "abort_entire_batch"
     },
     "certification_visibility": {
       "type": "string",

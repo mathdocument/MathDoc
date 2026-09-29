@@ -28,7 +28,7 @@ const fixture = JSON.parse(
   ),
 );
 
-test("all four v1 draft schemas and fixtures are versioned and deterministic", () => {
+test("all four frozen v1 schemas and fixtures are versioned and deterministic", () => {
   const schemaNames = [
     "document-permission",
     "proof-environment",
@@ -303,6 +303,46 @@ test("JSON Schemas stay generated and accept/reject the same structural cases as
     { ...fixture.writeback, conflict_resolution: "certified_batch_wins" },
     false,
   );
+  // Decision C: a reviewer merge is not a conflict policy.
+  check(
+    "writeback-batch",
+    writebackContractSchema,
+    { ...fixture.writeback, conflict_resolution: "reviewer_merge_required" },
+    false,
+  );
+  // Decision B: every classified binding says how it was classified.
+  const theoremBinding = fixture.declaration_bindings[1].contract;
+  const { classification_source: _source, ...unsourced } = theoremBinding;
+  check(
+    "declaration-binding",
+    declarationBindingContractSchema,
+    unsourced,
+    false,
+  );
+  check(
+    "declaration-binding",
+    declarationBindingContractSchema,
+    { ...theoremBinding, classification_source: "explicit_metadata" },
+    true,
+  );
+  check(
+    "declaration-binding",
+    declarationBindingContractSchema,
+    { ...theoremBinding, classification_source: "guessed" },
+    false,
+  );
+  // Decision A: a taken definition name is an explicit, named rejection.
+  check(
+    "declaration-binding",
+    declarationBindingContractSchema,
+    {
+      ...fixture.declaration_bindings[2].contract,
+      reason: "definition_name_taken",
+      details:
+        "double is bound to different content in this project; rename on the review branch",
+    },
+    true,
+  );
   const env = fixture.proof_environments[0];
   check("proof-environment", proofEnvironmentContractSchema, env, true);
   for (const context of [
@@ -378,6 +418,35 @@ test("JSON Schemas stay generated and accept/reject the same structural cases as
     "declaration-binding",
     declarationBindingContractSchema,
     { ...noGoal, new_definitions: ["fixture-definition"] },
+    true,
+  );
+});
+
+test("decision D: the approved document permission matrix is exactly the fixture", () => {
+  const matrix = Object.fromEntries(
+    documentPermissionContractSchema
+      .parse(fixture.document_permission)
+      .authorization_matrix.map((row: { action: string; roles: string[] }) => [
+        row.action,
+        [...row.roles].sort(),
+      ]),
+  );
+  // Changing any row is a product decision: update docs/coordination-phase-1-contracts.md §3.4 too.
+  assert.deepEqual(matrix, {
+    read: ["admin", "editor", "owner", "viewer"],
+    write: ["admin", "editor", "owner"],
+    history: ["admin", "editor", "owner", "viewer"],
+    branch_create: ["admin", "editor", "owner"],
+    branch_delete: ["admin", "owner"],
+    export: ["admin", "editor", "owner", "viewer"],
+    import: ["admin", "owner"],
+    database_create: ["admin"],
+    database_delete: ["admin"],
+    member_manage: ["admin", "owner"],
+    proof_request_create: ["admin", "editor", "owner"],
+  });
+  assert.equal(
+    fixture.document_permission.branch_rules[0].inherit_workspace_role,
     true,
   );
 });
