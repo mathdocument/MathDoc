@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NodeDetail, NodePreview } from "./types";
 import { api } from "./api";
 import { latexApi, type LatexPreviewResult } from "./latex";
-import { NodeSession } from "./state.svelte";
+import { NodeSession } from "./node-session";
 import { removeDraft, setDraftDirty } from "./unsaved";
 
 function node(revision: string): NodeDetail {

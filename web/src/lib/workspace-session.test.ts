@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { api } from "./api";
-import { WorkspaceSession } from "./workspace.svelte";
+import { WorkspaceSession } from "./workspace-session";
 import type { GraphCheckReport } from "./types";
 
 const report = (nodes: number): GraphCheckReport => ({

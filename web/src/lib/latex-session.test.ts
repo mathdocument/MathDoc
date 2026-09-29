@@ -1,5 +1,5 @@
 import { expect, test, vi } from 'vitest';
-import { LatexSession } from './latex-session.svelte';
+import { LatexSession } from './latex-session';
 import { latexApi, type LatexContext, type LatexPreviewResult } from './latex';
 
 test('activation renders immediately or uses the prepared result; only typing is debounced', async () => {

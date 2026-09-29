@@ -1,7 +1,7 @@
 import type { editor } from 'monaco-editor';
 import {KeyCode, editor as monaco} from 'monaco-editor';
 import { latexCompletions } from './latex-completion';
-import type { LatexSession } from './latex-session.svelte';
+import type { LatexSession } from './latex-session';
 
 /** Small completion lists use native scrolling, without recycled rows or wheel handlers. */
 export function latexAutocomplete(session: LatexSession, target: editor.IStandaloneCodeEditor) {
