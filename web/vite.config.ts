@@ -1,4 +1,5 @@
 import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
 import { viteStaticCopy } from "vite-plugin-static-copy";
@@ -49,7 +50,7 @@ export default defineConfig({
       { src: "node_modules/mathjax/a11y/assistive-mml.js", dest: `mathjax/${mathjaxVersion}/a11y` },
       { src: "node_modules/@mathjax/mathjax-tex-font/{chtml.js,chtml}", dest: `mathjax/${mathjaxVersion}/fonts/mathjax-tex-font` },
     ] }),
-    ...sveltePlugins,
+    ...sveltePlugins, react(),
   ],
   server: {
     proxy: {

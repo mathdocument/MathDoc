@@ -1,6 +1,10 @@
 import { mount } from "svelte";
 import App from "./App.svelte";
-import Projects from "./Projects.svelte";
+import { createRoot } from "react-dom/client";
+import { Tooltip } from "@base-ui/react/tooltip";
+import Projects from "./features/projects/Projects";
+import "./ui.css";
+import "./features/projects/projects.css";
 import { projectName } from "./lib/project-path";
 import { settleEditorLayout } from "./lib/editor-layout";
 import "./app.css";
@@ -23,4 +27,5 @@ window.addEventListener("pagereveal", event => {
     delete document.documentElement.dataset.vtScope;
   });
 });
-mount(projectName() ? App : Projects, { target, props: { onReady: pageReady } });
+if (projectName()) mount(App, { target, props: { onReady: pageReady } });
+else createRoot(target).render(<Tooltip.Provider><Projects onReady={pageReady} /></Tooltip.Provider>);
