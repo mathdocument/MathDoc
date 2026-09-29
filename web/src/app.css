@@ -145,7 +145,8 @@ input:focus-visible,
 }
 
 @media (prefers-reduced-motion: reduce) {
-  @view-transition { navigation: none; }
+  /* Keep the outgoing snapshot until data/editor layout is ready, without motion. */
+  ::view-transition-new(root), ::view-transition-new(app-header) { animation: none; }
   *,
   *::before,
   *::after {
