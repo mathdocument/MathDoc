@@ -172,6 +172,40 @@ await test('node names validate creation, collisions and renames in the browser'
   } finally { await browser.close(); }
 });
 
+await test('renaming an open Lean node preserves its draft and rebinds the module', {timeout: 60000}, async () => {
+  const browser = await launchBrowser();
+  try {
+    await fixture(browser, async ({page, cli, url}) => {
+      await cli('dep', 'rm', 'Alpha', '--target', 'Beta');
+      const node = JSON.parse((await cli('show', 'Alpha')).stdout);
+      const content = 'theorem renameProof : True := by trivial\n';
+      const saved = await fetch(`${url}/api/node/${node.fnode}/block/lean`, {
+        method: 'PUT', headers: {'content-type': 'application/json', 'if-match': `"${node.revision}"`}, body: JSON.stringify({content}),
+      });
+      assert.ok(saved.ok);
+      await page.reload();
+      await page.getByRole('button', {name: 'Start Lean server', exact: true}).click();
+      await page.getByText('Lean editor ready', {exact: true}).waitFor();
+      const frame = page.frameLocator('iframe[title="Lean source and Infoview"]');
+      const input = frame.getByRole('textbox', {name: /Editor content/});
+      await input.press('ControlOrMeta+A');
+      await page.keyboard.insertText(content + '-- keep this draft\n');
+      await page.getByText('Unsaved', {exact: true}).waitFor();
+      await rename(page, 'Renamed.Proof');
+      await page.getByRole('button', {name: 'Save name', exact: true}).click();
+      await title(page, 'Renamed.Proof');
+      await page.getByText('Lean editor ready', {exact: true}).waitFor();
+      assert.match(await frame.locator('.view-lines').innerText(), /keep.this.draft/);
+      await page.getByText('Unsaved', {exact: true}).waitFor();
+      await page.locator('article[data-srctype="lean"]').getByRole('button', {name: 'Save', exact: true}).click();
+      await center(page).getByLabel('Lean: Verified', {exact: true}).waitFor();
+      const updated = JSON.parse((await cli('show', 'Renamed.Proof')).stdout);
+      assert.equal(updated.fnode, node.fnode);
+      assert.match(updated.blocks.find(block => block.srctype === 'lean').content, /keep this draft/);
+    });
+  } finally { await browser.close(); }
+});
+
 await test('project directory creates, forks, starts, stops and deletes branches', {timeout: 90000}, async () => {
   const browser = await launchBrowser();
   try {

@@ -36,6 +36,7 @@
   let progress = $state("");
   let generation = 0;
   let openedNode = "";
+  let openedModule: string | undefined;
   let openedSelection = -1;
   let initialTheme = $state<Theme>("light");
   let alive = true;
@@ -44,7 +45,15 @@
   $effect(() => { setDraftDirty(draft, !!block && dirty); });
   $effect(() => {
     const node = block ? fnode : "";
-    if (node === openedNode && selection === openedSelection) return;
+    if (node === openedNode && selection === openedSelection) {
+      if (module !== openedModule) {
+        openedModule = module;
+        // A rename changes the native URI, but must retain the current draft.
+        untrack(() => { generation++; ready = false; result = null; error = null; selectNode(); });
+      }
+      return;
+    }
+    openedModule = module;
     // Navigation has already confirmed discarding edits. Reset the old native
     // document as well, so its retained worker never carries an abandoned draft.
     untrack(() => frame?.contentWindow?.postMessage({ type: "lean-source", fnode: openedNode, value: baseline }, location.origin));

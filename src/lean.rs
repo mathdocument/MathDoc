@@ -357,7 +357,6 @@ impl Input {
         let node = &self.chain.last().context("no Lean target")?.0;
         Ok(digest(&serde_json::to_vec(&(
             &self.project_key,
-            &self.modules,
             &node.name,
             self.chain[..self.chain.len() - 1]
                 .iter()

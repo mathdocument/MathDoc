@@ -100,3 +100,6 @@ can be module names. This is Lean syntax escaping, not another node identifier.
 Qualified names such as `MX.Dot32.Exact` are emitted directly. Compiler workspaces
 record their generated module names and remove obsolete source/artifact paths
 after renames or deletions, including when a worker restarts.
+
+An open Lean editor rebinds to the renamed module while preserving its unsaved
+source. Adding unrelated nodes keeps existing Lean document workers warm.

@@ -109,7 +109,7 @@ async function validate(entry: OpenDocument) {
 function showNode(fnode: string, source: string, generation: number, module: string) {
   if (selected && !preview) selected.view = editor.saveViewState();
   const oldPreview = preview;
-  selected = [...documents.values()].find(entry => entry.document.fnode === fnode);
+  selected = [...documents.values()].find(entry => entry.document.fnode === fnode && entry.document.filename === leanSourcePath(module));
   shownFnode = fnode;
   // While connected, cold nodes use temporary models until their files are
   // prepared. Offline models already have the URI they will use on attachment.
@@ -171,6 +171,10 @@ async function selectNode(fnode: string, revision: string, generation: number, s
   if (signal.aborted) return;
   document.getElementById("error")!.textContent = "";
 
+  for (const [filename, entry] of documents) {
+    if (entry.document.fnode === fnode && filename !== next.filename) await evict(filename);
+  }
+  if (signal.aborted) return;
   let entry = documents.get(next.filename);
   const restart = entry && entry.document.environment_key !== next.environment_key;
   if (!entry) {
