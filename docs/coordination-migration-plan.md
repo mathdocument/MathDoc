@@ -212,7 +212,8 @@ TypeScript 后端（coordinator/ 扩展而来）
   `metadata`，不改块的源码。
 - **`Project/lean` 原样保存、原样返回**：它继续表示旧 Lake 项目，不能写入 Base/context 等新字段；旧 Rust 类型使用
   `deny_unknown_fields`，改写其含义会破坏双后端兼容。LeanGround 的 Base、context、options、minimum_trust
-  存入 PostgreSQL 中独立的证明环境；ProofRequest 另存 database、branch、根节点与前提/定义依赖节点的修订快照。
+  存入 PostgreSQL 中独立的证明环境；ProofRequest 另存 database、branch、根节点与依赖节点的 Lean 内容指纹
+  （§6.4 第 2 条）。
   分支 data_version 只用于审计和回写前置条件，不进入环境或请求身份。旧配置到新环境的映射必须由用户显式选择，不能静默推断。
 - **旧的本地认证缓存**（`CACHE/checks-v1`）不迁移、不再读取；界面上旧的「已检查」不能当作正式认证。
 - **协作数据**全部在 PostgreSQL，与文档数据没有外键；删除协作项目不影响文档。
@@ -258,10 +259,16 @@ TypeScript 后端（coordinator/ 扩展而来）
 
 1. **文档权限契约**：工作区、分支、角色、继承规则，以及所有读写/分支/导入导出/删除操作的授权矩阵。
 2. **证明环境契约**：环境身份仅由完整 BaseRef、context、options、minimum_trust 决定；不复用 `Project/lean`。
-   ProofRequest 另行绑定 database、branch、根节点的 `legacyNodeRevision`，以及前提/定义依赖节点（含传递依赖）的修订快照。
+   ProofRequest 另行绑定 database、branch，以及根节点和依赖节点的 **Lean 内容指纹**（该节点 Lean 块文本的
+   SHA-256，不含标题、其他块和 metadata）。依赖范围：定义依赖取传递闭包；定理前提只取直接依赖，不向下展开。
+   不用整节点修订号 `legacyNodeRevision`：它覆盖 metadata，而协作层按 §5 把定义 ID、认证 ID 写进 metadata，
+   用它判断过期会让登记定义、写回认证本身就使依赖请求过期；改说明文字、改标题也会。`legacyNodeRevision`
+   仍用于文档写入的修订保护（§5），两者分开。
    分支 data_version 仅作审计快照和回写前置条件，不参与环境或 ProofRequest 身份。
-   环境改变创建新的 ProofRequest，不能覆盖旧 Goal 状态；根节点或依赖节点修订变化才令旧请求过期，
-   同分支无关节点修改不影响环境、请求身份或有效性。fixture 必须分别覆盖这三类节点修改。
+   环境改变创建新的 ProofRequest，不能覆盖旧 Goal 状态；只有根节点或快照中依赖节点的 Lean 文本变化、节点缺失
+   或失去 Lean 块，才令旧请求过期。无关节点、metadata、说明文字、标题、定理前提自己的依赖变化都不令其过期。
+   fixture 必须分别覆盖这些情况。已知取舍：定理前提只改证明、不改陈述时仍判为过期（保守，不会错用）；
+   更精确的做法是比较前提的 GoalKey，留待以后。
 3. **声明绑定契约**：一个 Node/Lean block 怎样判定为定义节点或定理节点；定理节点如何选择唯一结论声明，辅助
    声明（含证明内部定义）如何处理，支持哪些源码形态，怎样生成前提占位、`definitions` 定义 ID 列表和 GoalKey
    （§7.3）。多声明或无法判定的节点必须返回明确的 `unsupported_source`，不能猜测。
@@ -289,7 +296,7 @@ TypeScript 后端（coordinator/ 扩展而来）
 | 协作对象 | 绑定的文档对象 |
 |---|---|
 | DocumentWorkspace | 一个 TerminusDB 数据库及其分支集合；独立保存 owner/editor/viewer，不从 ProofRequest 反推权限 |
-| Project / ProofRequest | 绑定 database、branch、根节点及前提/定义依赖节点的修订号；固定 BaseRef、context、options、minimum_trust。分支 data_version 只作审计快照和回写前置条件，不参与身份；无关节点修改不令请求过期 |
+| Project / ProofRequest | 绑定 database、branch、根节点及依赖节点的 Lean 内容指纹（§6.4 第 2 条）；固定 BaseRef、context、options、minimum_trust。分支 data_version 只作审计快照和回写前置条件，不参与身份；无关节点修改不令请求过期 |
 | Goal | 按 GoalKey 合并；可关联一个或多个经过明确声明绑定的节点别名 |
 | Decomposition | 引用 LeanGround 的条件认证；审阅、暂停、退役状态只在协作层 |
 | Task / Attempt | 与文档无关；租约带 `lease_epoch` |

@@ -88,18 +88,40 @@ export const baseRefSchema = z
     schema_version: z.literal(1),
   })
   .strict();
+// ProofRequest snapshots fingerprint only the Lean block text (leanContentSha256), not the
+// whole-node legacyNodeRevision: titles, prose/LaTeX blocks and block metadata (where the
+// coordinator itself writes definition/certification IDs) must not make a request stale.
 const nodeSnapshot = z
-  .object({ node_id: z.string().uuid(), revision: sha256 })
+  .object({ node_id: z.string().uuid(), lean_content_sha256: sha256 })
+  .strict();
+const dependencySnapshot = z
+  .object({
+    node_id: z.string().uuid(),
+    // definition: transitive closure; premise: direct theorem dependency only.
+    relation: z.enum(["definition", "premise"]),
+    lean_content_sha256: sha256,
+  })
   .strict();
 export const proofRequestBindingSchema = z
   .object({
     database: z.string().regex(/^[A-Za-z0-9_-]+$/),
     branch: z.string().regex(/^[A-Za-z0-9_-]+$/),
     root: nodeSnapshot,
-    dependencies: z.array(nodeSnapshot),
+    dependencies: z.array(dependencySnapshot),
     data_version: id,
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const ids = [
+      value.root.node_id,
+      ...value.dependencies.map((d) => d.node_id),
+    ];
+    if (new Set(ids).size !== ids.length)
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "duplicate_snapshot_node",
+      });
+  });
 
 export const proofEnvironmentContractSchema = z
   .object({
@@ -304,14 +326,84 @@ export function proofRequestIdentity(environment: Environment): string {
     ),
   });
 }
+type LegacyNode = {
+  fnode: string;
+  depens: string[];
+  blocks: Array<{ srctype: string; content: string }>;
+};
+
+// SHA-256 of the node's Lean block text (UTF-8). null when the node has no Lean block.
+export function leanContentSha256(node: LegacyNode): string | null {
+  const lean = node.blocks.find((block) => block.srctype === "lean");
+  return lean === undefined
+    ? null
+    : createHash("sha256").update(lean.content, "utf8").digest("hex");
+}
+
+// Which nodes a ProofRequest must snapshot. Definition dependencies are followed
+// transitively (a definition's meaning depends on the definitions it uses); theorem
+// dependencies are premises and only their own Lean text matters, so they are not
+// expanded. `roles` comes from the declaration-binding classification of each node.
+export function proofRequestSnapshot(
+  nodes: Record<string, LegacyNode>,
+  rootId: string,
+  roles: Record<string, "definition" | "theorem">,
+): {
+  root: z.infer<typeof nodeSnapshot>;
+  dependencies: z.infer<typeof dependencySnapshot>[];
+} {
+  const fingerprint = (id: string) => {
+    const node = nodes[id];
+    const sha = node === undefined ? null : leanContentSha256(node);
+    if (sha === null) throw new Error(`snapshot_node_without_lean_block:${id}`);
+    return sha;
+  };
+  const dependencies = new Map<string, z.infer<typeof dependencySnapshot>>();
+  const pending = [...(nodes[rootId]?.depens ?? [])].map((id) => ({
+    id,
+    viaDefinition: false,
+  }));
+  while (pending.length > 0) {
+    const { id, viaDefinition } = pending.shift()!;
+    if (id === rootId || dependencies.has(id)) continue;
+    const role = roles[id];
+    if (role === undefined) throw new Error(`unclassified_dependency:${id}`);
+    if (role === "theorem" && viaDefinition)
+      throw new Error(`definition_depends_on_theorem:${id}`);
+    const relation = role === "definition" ? "definition" : "premise";
+    dependencies.set(id, {
+      node_id: id,
+      relation,
+      lean_content_sha256: fingerprint(id),
+    });
+    if (relation === "definition")
+      pending.push(
+        ...(nodes[id]?.depens ?? []).map((dep) => ({
+          id: dep,
+          viaDefinition: true,
+        })),
+      );
+  }
+  return {
+    root: { node_id: rootId, lean_content_sha256: fingerprint(rootId) },
+    dependencies: [...dependencies.values()].sort((a, b) =>
+      a.node_id.localeCompare(b.node_id),
+    ),
+  };
+}
+
+// Stale when the root or any snapshotted dependency is missing, lost its Lean block, or its
+// Lean text changed. `current` maps node_id to leanContentSha256 of the current document.
 export function proofRequestIsStale(
   environment: Environment,
-  revisions: Record<string, string>,
+  current: Record<string, string | null>,
 ): boolean {
   return [
     environment.proof_request.root,
     ...environment.proof_request.dependencies,
-  ].some((node) => revisions[node.node_id] !== node.revision);
+  ].some(
+    (node) => (current[node.node_id] ?? null) !== node.lean_content_sha256,
+  );
 }
 // Conservative exact comparison: no semantic rewriting or reordering of commands.
 export function bindingContextMatches(

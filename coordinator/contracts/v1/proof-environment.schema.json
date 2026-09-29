@@ -153,14 +153,14 @@
               "type": "string",
               "format": "uuid"
             },
-            "revision": {
+            "lean_content_sha256": {
               "type": "string",
               "pattern": "^[a-f0-9]{64}$"
             }
           },
           "required": [
             "node_id",
-            "revision"
+            "lean_content_sha256"
           ],
           "additionalProperties": false
         },
@@ -173,14 +173,22 @@
                 "type": "string",
                 "format": "uuid"
               },
-              "revision": {
+              "relation": {
+                "type": "string",
+                "enum": [
+                  "definition",
+                  "premise"
+                ]
+              },
+              "lean_content_sha256": {
                 "type": "string",
                 "pattern": "^[a-f0-9]{64}$"
               }
             },
             "required": [
               "node_id",
-              "revision"
+              "relation",
+              "lean_content_sha256"
             ],
             "additionalProperties": false
           }
@@ -198,7 +206,8 @@
         "dependencies",
         "data_version"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "$comment": "Snapshots fingerprint the Lean block text only (leanContentSha256), never the whole-node revision. Semantic validation also requires root and dependency node_ids to be distinct; dependencies follow proofRequestSnapshot in contracts.ts (definitions transitively, theorem premises directly)."
     },
     "project_lean_compatibility": {
       "type": "string",

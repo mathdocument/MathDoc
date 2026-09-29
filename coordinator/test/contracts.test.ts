@@ -16,6 +16,8 @@ import {
   environmentIdentity,
   proofRequestIdentity,
   proofRequestIsStale,
+  proofRequestSnapshot,
+  leanContentSha256,
   bindingRejection,
 } from "../src/contracts.js";
 
@@ -128,36 +130,95 @@ test("legacy node revision is independent of dependency and metadata order", () 
   }
 });
 
-test("node snapshots invalidate only root and dependency edits", () => {
+test("ProofRequest snapshots track Lean content, not whole-node revisions", () => {
   const environment = proofEnvironmentContractSchema.parse(
     fixture.proof_environments[0],
   );
-  for (const scenario of fixture.staleness_cases) {
-    const snapshot = structuredClone(environment);
-    snapshot.proof_request.data_version = scenario.data_version;
-    assert.equal(
-      environmentIdentity(snapshot),
-      environmentIdentity(environment),
+  const { nodes, roles, root, cases } = fixture.staleness_cases;
+  // The fixture snapshot is computed independently (Python); the reference function must agree:
+  // definitions transitively (D1 -> D0), theorem premises directly (P, but not P's own dependency Q).
+  const {
+    data_version: _dv,
+    database: _db,
+    branch: _br,
+    ...expected
+  } = environment.proof_request;
+  assert.deepEqual(proofRequestSnapshot(nodes, root, roles), expected);
+  assert.deepEqual(
+    environment.proof_request.dependencies
+      .map((d: { relation: string }) => d.relation)
+      .sort(),
+    ["definition", "definition", "premise"],
+  );
+  const fingerprints = (all: Record<string, unknown>) =>
+    Object.fromEntries(
+      Object.entries(all)
+        .filter(([, node]) => node !== null)
+        .map(([id, node]) => [
+          id,
+          leanContentSha256(node as Parameters<typeof leanContentSha256>[0]),
+        ]),
     );
+  assert.equal(proofRequestIsStale(environment, fingerprints(nodes)), false);
+  for (const scenario of cases) {
+    const current = fingerprints({ ...nodes, ...scenario.replace });
     assert.equal(
-      proofRequestIdentity(snapshot),
-      proofRequestIdentity(environment),
-    );
-    const revisions = Object.fromEntries(
-      scenario.nodes.map((node: Parameters<typeof legacyNodeRevision>[0]) => [
-        node.fnode,
-        legacyNodeRevision(node),
-      ]),
-    );
-    assert.equal(
-      proofRequestIsStale(snapshot, revisions),
+      proofRequestIsStale(environment, current),
       scenario.expected_stale,
       scenario.change,
     );
   }
+  // Whole-node revisions do change in the "not stale" scenarios: that is exactly why they are
+  // not used for staleness (metadata carries coordinator-written IDs).
+  for (const change of [
+    "definition_metadata_written",
+    "definition_prose_edited",
+    "root_title_edited",
+  ]) {
+    const scenario = cases.find((c: { change: string }) => c.change === change);
+    const [id, edited] = Object.entries(scenario.replace)[0] as [
+      string,
+      Parameters<typeof legacyNodeRevision>[0],
+    ];
+    assert.notEqual(
+      legacyNodeRevision(edited),
+      legacyNodeRevision(nodes[id]),
+      change,
+    );
+  }
+  // The branch data version is an audit snapshot only: it changes neither identity.
+  const moved = structuredClone(environment);
+  moved.proof_request.data_version = "branch:v9";
+  assert.equal(environmentIdentity(moved), environmentIdentity(environment));
+  assert.equal(proofRequestIdentity(moved), proofRequestIdentity(environment));
   assert.notEqual(
     environmentIdentity(fixture.proof_environments[1]),
     environmentIdentity(environment),
+  );
+  // Snapshots refuse what the contract cannot represent.
+  assert.throws(
+    () =>
+      proofRequestSnapshot(nodes, root, {
+        ...roles,
+        "a1111111-1111-4111-8111-111111111111": undefined as never,
+      }),
+    /unclassified_dependency/,
+  );
+  const defOnTheorem = structuredClone(nodes);
+  defOnTheorem["a0000000-0000-4000-8000-000000000000"].depens = [
+    "b0000000-0000-4000-8000-000000000000",
+  ];
+  assert.throws(
+    () => proofRequestSnapshot(defOnTheorem, root, roles),
+    /definition_depends_on_theorem/,
+  );
+  const duplicated = structuredClone(fixture.proof_environments[0]);
+  duplicated.proof_request.dependencies.push(
+    duplicated.proof_request.dependencies[0],
+  );
+  assert.equal(
+    proofEnvironmentContractSchema.safeParse(duplicated).success,
+    false,
   );
 });
 

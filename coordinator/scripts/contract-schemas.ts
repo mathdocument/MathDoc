@@ -49,6 +49,8 @@ export function contractSchemas(): Record<string, any> {
   ];
   theorem.$comment =
     "Semantic validation also requires unique premise declaration names, distinct from conclusion.name; failure is unsupported/premise_name_collision. Required context must match the fixed ProofRequest context per contracts.ts.";
+  schemas["proof-environment"].properties.proof_request.$comment =
+    "Snapshots fingerprint the Lean block text only (leanContentSha256), never the whole-node revision. Semantic validation also requires root and dependency node_ids to be distinct; dependencies follow proofRequestSnapshot in contracts.ts (definitions transitively, theorem premises directly).";
   schemas["writeback-batch"].properties.operations.items.allOf = [
     {
       if: { properties: { kind: { const: "update_lean_block" } } },

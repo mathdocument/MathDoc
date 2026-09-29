@@ -37,11 +37,16 @@
 ### 2.2 证明环境契约
 
 - 环境身份只取完整 BaseRef、context、options、minimum_trust（`environmentIdentity`）；environment_id 是标签，不作为哈希输入。
-- ProofRequest 在 `proof_request` 中另行绑定 database、branch、根节点 UUID 与 `legacyNodeRevision`，以及所有前提/定义依赖节点（含传递依赖）的 UUID/修订快照。
+- ProofRequest 在 `proof_request` 中另行绑定 database、branch、根节点与依赖节点的 UUID 和 Lean 内容指纹
+  `lean_content_sha256`（`leanContentSha256`：Lean 块文本的 SHA-256，不含标题、其他块和 metadata）。依赖由
+  `proofRequestSnapshot` 计算：定义依赖（`relation: definition`）取传递闭包，定理前提（`relation: premise`）只取
+  直接依赖；定义依赖到定理、未分类的依赖、无 Lean 块的节点都拒绝生成快照。不用 `legacyNodeRevision`，因为它
+  覆盖 metadata，而协作层会把定义 ID、认证 ID 写进 metadata（见 §7 第二轮）。
 - `proofRequestIdentity` 取环境身份和上述节点绑定，依赖按 UUID 排序；`data_version` 仅作审计快照和回写前置条件，不进入两个身份。
 - `Project/lean` 只能标记为 `preserved_unmodified`；不得把 Base、context 或 options 写入旧字段。
 - BaseRef、context、options、minimum_trust 改变才换环境，形成新的 ProofRequest；用 `replaces_environment_id` 建历史边。
-- 根节点或依赖节点修订变化（或节点缺失）令原请求过期，保留旧成果；同分支无关节点修改不改变身份、不令请求过期。
+- 根节点或快照中依赖节点的 Lean 文本变化、节点缺失或失去 Lean 块，令原请求过期，保留旧成果；无关节点、metadata、
+  说明文字、标题、定理前提自己的依赖变化都不令其过期。已知取舍：定理前提只改证明时仍判为过期。
 - context 仅允许 raw、local_options、universes、opens、namespaces、local_notation、local_attrs、variables，值均为字符串数组；namespaces 只能缺省或空数组，禁止 definitions 与所有未知键。
 - BaseRef 完整字段与 `3965273` 的既有 GET 基座接口所用 `BaseRef.to_dict` 对齐：base_id、base_key、root_module、lean_version、lean_githash、package_revision、package_manifest_hash、module_list_hash、build_flags_hash、platform、promotion_generation、schema_version。示例为合成数据，不是可访问的真实基座。
 
@@ -130,7 +135,7 @@ TerminusDB 权限、冲突自动合并。
 | 协调层只从启用拆法选路，再交固定计划组装 | 已满足 | `domain.ts` 265–310 仅选 active/available；`worker.ts` 186–256 在 plan 前复核 active 并固定 plan ID |
 | 同计划重试；换路线新计划；响应丢失按同尝试重放 | 已满足 | `domain.ts` 565–586 继承 plan；`worker.ts` 219–230 以 run ID 为 attempt ID；`store.ts` 203–231 对可重试 job 原 ID 重跑。仍建议评审远端已成功但本地超时场景 |
 | 暂停只影响调度/选路，不删除事实；证否未接入时人工暂停 | 已满足 | `domain.ts` 526–530 只改 state；`recompute` 246–263 保留事实；`selectRoute` 280–285 才过滤 active |
-| 题面修改保留旧成果，但不能标记新版本认证 | 不满足 | `contracts.ts` 的 environmentIdentity / proofRequestIdentity / proofRequestIsStale 已定义节点级过期规则并通过三类 fixture；`documents.ts` 176–199 能拒绝修订冲突，但 Board/worker 尚未接入依赖快照和自动 stale 传播，仍可能展示旧 Goal 的 certified。契约测试通过不能视为运行链路满足 |
+| 题面修改保留旧成果，但不能标记新版本认证 | 不满足 | `contracts.ts` 的 environmentIdentity / proofRequestIdentity / proofRequestSnapshot / proofRequestIsStale 已定义按 Lean 内容指纹的过期规则并通过 11 个场景的 fixture；`documents.ts` 176–199 能拒绝修订冲突，但 Board/worker 尚未接入依赖快照和自动 stale 传播，仍可能展示旧 Goal 的 certified。契约测试通过不能视为运行链路满足 |
 | 项目完成需可访问、满足信任、无前提根认证；公开另操作 | 不满足 | `worker.ts` 236–246 对最终认证检查 root/无前提且 `ingest` 检查权限/信任；但没有显式项目 completed 状态，也没有独立公开操作 |
 | 服务身份是 LeanGround 项目成员；私有成果显式共享后吸收 | 不确定 | `worker.ts` 70–74 把服务身份和成员推给 project；`domain.ts` 211–229 拒绝 private/错误 project。当前没有显式“个人私有成果共享”工作流，docs/12 也没有项目成员读取接口可反查 |
 
@@ -157,6 +162,20 @@ TerminusDB 权限、冲突自动合并。
 JSON Schema 由 `coordinator/scripts/contract-schemas.ts` 从 Zod 生成并补足条件约束，测试比较提交文件与生成结果。
 跨数组名称唯一性和跨文档 context 相等属于语义规则，标准 JSON Schema 无法表达此类投影/外部比较；schema 中显式注记，调用者必须继续执行 `bindingRejection`，不能只验证 JSON 形状。
 本阶段新增的身份、过期与声明检查均为合同参考函数，未接入 worker/HTTP 状态机。
+
+### 第二轮（2026-09-29，评审方直接修改）
+
+上一轮评审说明规定用整节点 `legacyNodeRevision` 判断过期，这是评审说明的错误，不是实现错误：它覆盖 metadata、
+标题和全部块，而 §5 要求把定义 ID、认证 ID 写进 metadata。实测只改 metadata、只改 LaTeX 块、只改标题，
+`legacyNodeRevision` 都会变，依赖请求因此会被自己的回写打成过期。修改：
+
+| 项 | 处理 |
+|---|---|
+| 快照内容 | `revision` 改为 `lean_content_sha256`（Lean 块文本的 SHA-256）；依赖增加 `relation`（definition / premise）；根与依赖不得重复 |
+| 快照范围 | 新增参考函数 `proofRequestSnapshot`：定义依赖取传递闭包，定理前提只取直接依赖 |
+| 过期判断 | `proofRequestIsStale` 比较 Lean 内容指纹；节点缺失或失去 Lean 块视为过期 |
+| fixture | `staleness_cases` 改为专用图（两级定义、带自身依赖的定理前提、根、无关节点）与 11 个场景：无关节点、写 metadata、改说明文字、改标题、改定理前提自己的依赖 5 个不过期；改根、改直接定义、改传递定义、改前提、前提缺失、定义失去 Lean 块 6 个过期。快照由 Python 独立计算，与 TS 参考函数比对 |
+| JSON Schema | 由生成脚本重新生成 `proof-environment.schema.json`，其余三份不变；无法用 JSON Schema 表达的去重规则写入 `$comment` |
 
 维护者待填写（推荐不算选择）：
 
