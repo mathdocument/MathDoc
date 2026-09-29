@@ -1,14 +1,21 @@
-import type { FormalCodeStatus, GraphFull } from '../../lib/types';
-import type { Theme } from '../../lib/theme';
-import { shortFnode } from '../../lib/format';
+import type { FormalCodeStatus, GraphFull } from "../../lib/types";
+import type { Theme } from "../../lib/theme";
+import { shortFnode } from "../../lib/format";
 
-export interface GraphAppearance { active: boolean; theme: Theme; selectedFnode: string | null }
+export interface GraphAppearance {
+  active: boolean;
+  theme: Theme;
+  selectedFnode: string | null;
+}
 
 /** Canvas ownership stays outside React: pointer frames never update component state. */
-export function createGraphRenderer(canvasEl: HTMLCanvasElement, containerEl: HTMLDivElement,
-  onSelect: (id: string | null) => void) {
+export function createGraphRenderer(
+  canvasEl: HTMLCanvasElement,
+  containerEl: HTMLDivElement,
+  onSelect: (id: string | null) => void,
+) {
   let active = false;
-  let theme: Theme = 'light';
+  let theme: Theme = "light";
   let selectedFnode: string | null = null;
   interface SimNode {
     id: string;
@@ -80,7 +87,12 @@ export function createGraphRenderer(canvasEl: HTMLCanvasElement, containerEl: HT
   let edgePathSelection: string | null | undefined;
   let selectedOutgoingPath = new Path2D();
   let selectedIncomingPath = new Path2D();
-  let graphBounds = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+  let graphBounds = {
+    minX: Infinity,
+    maxX: -Infinity,
+    minY: Infinity,
+    maxY: -Infinity,
+  };
 
   function nodeRadius(n: SimNode, selection: string | null): number {
     const r = n.baseRadius;
@@ -156,13 +168,18 @@ export function createGraphRenderer(canvasEl: HTMLCanvasElement, containerEl: HT
     }
 
     const depths = [...layers.keys()].sort((a, b) => b - a);
-    const rowsPerColumn = Math.max(24, Math.ceil(Math.sqrt(nodes.length) * 1.5));
+    const rowsPerColumn = Math.max(
+      24,
+      Math.ceil(Math.sqrt(nodes.length) * 1.5),
+    );
     const spacing = 58;
     let cursorX = 0;
     nodesByX = [];
     for (const depth of depths) {
       const layer = layers.get(depth)!;
-      layer.sort((a, b) => lexicalCompare(a.name, b.name) || lexicalCompare(a.id, b.id));
+      layer.sort(
+        (a, b) => lexicalCompare(a.name, b.name) || lexicalCompare(a.id, b.id),
+      );
       const columns = Math.ceil(layer.length / rowsPerColumn);
       const rows = Math.min(rowsPerColumn, layer.length);
       for (let index = 0; index < layer.length; index++) {
@@ -182,7 +199,10 @@ export function createGraphRenderer(canvasEl: HTMLCanvasElement, containerEl: HT
   }
 
   function computeGraphBounds() {
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    let minX = Infinity,
+      maxX = -Infinity,
+      minY = Infinity,
+      maxY = -Infinity;
     for (const node of nodes) {
       minX = Math.min(minX, node.x - node.baseRadius);
       maxX = Math.max(maxX, node.x + node.baseRadius);
@@ -252,7 +272,13 @@ export function createGraphRenderer(canvasEl: HTMLCanvasElement, containerEl: HT
     if (source === target) {
       const loopRadius = source.baseRadius + 8 + loopOffset;
       path.moveTo(source.x, source.y);
-      path.arc(source.x, source.y - loopRadius, loopRadius, Math.PI / 2, Math.PI * 2.5);
+      path.arc(
+        source.x,
+        source.y - loopRadius,
+        loopRadius,
+        Math.PI / 2,
+        Math.PI * 2.5,
+      );
     } else if (reciprocal) {
       const dx = target.x - source.x;
       const dy = target.y - source.y;
@@ -260,8 +286,8 @@ export function createGraphRenderer(canvasEl: HTMLCanvasElement, containerEl: HT
       const curve = 10;
       path.moveTo(source.x, source.y);
       path.quadraticCurveTo(
-        (source.x + target.x) / 2 - dy / length * curve,
-        (source.y + target.y) / 2 + dx / length * curve,
+        (source.x + target.x) / 2 - (dy / length) * curve,
+        (source.y + target.y) / 2 + (dx / length) * curve,
         target.x,
         target.y,
       );
@@ -284,7 +310,12 @@ export function createGraphRenderer(canvasEl: HTMLCanvasElement, containerEl: HT
     const incomingIds = new Set(incoming.map((node) => node.id));
     const outgoingIds = new Set(outgoing.map((node) => node.id));
     for (const target of outgoing) {
-      appendEdge(selectedOutgoingPath, selected, target, incomingIds.has(target.id));
+      appendEdge(
+        selectedOutgoingPath,
+        selected,
+        target,
+        incomingIds.has(target.id),
+      );
     }
     for (const source of incoming) {
       appendEdge(
@@ -321,16 +352,18 @@ export function createGraphRenderer(canvasEl: HTMLCanvasElement, containerEl: HT
 
     // LOD thresholds.
     const showLabels = viewK > 0.9;
-    const graphSelection = selectedFnode && nodesById.has(selectedFnode)
-      ? selectedFnode
-      : null;
+    const graphSelection =
+      selectedFnode && nodesById.has(selectedFnode) ? selectedFnode : null;
     const palette = theme === "light" ? LIGHT_PALETTE : DARK_PALETTE;
 
     ensureSelectedEdgePaths(graphSelection);
     if (graphSelection) {
       const selected = nodesById.get(graphSelection)!;
       const selectedDegree = selected.inDegree + selected.outDegree;
-      const highlightAlpha = Math.max(0.77, Math.min(0.9, 12 / Math.sqrt(Math.max(1, selectedDegree))));
+      const highlightAlpha = Math.max(
+        0.77,
+        Math.min(0.9, 12 / Math.sqrt(Math.max(1, selectedDegree))),
+      );
       ctx.lineWidth = (selectedDegree > 1_000 ? 1.25 : 2) / viewK;
       ctx.setLineDash([]);
       ctx.strokeStyle = `rgba(${palette.outgoing}, ${highlightAlpha})`;
@@ -347,53 +380,89 @@ export function createGraphRenderer(canvasEl: HTMLCanvasElement, containerEl: HT
       const n = nodesByX[index]!;
       if (n.x > maxX + nodeMargin) break;
       const r = nodeRadius(n, graphSelection);
-      if (n.x + r < minX || n.x - r > maxX || n.y + r < minY || n.y - r > maxY) continue;
+      if (n.x + r < minX || n.x - r > maxX || n.y + r < minY || n.y - r > maxY)
+        continue;
       visibleNodes.push(n);
     }
 
     const labelStride = Math.max(1, Math.ceil(visibleNodes.length / 500));
-    const paths = { unverified: new Path2D(), sorry: new Path2D(), conditional: new Path2D(), verified: new Path2D() };
+    const paths = {
+      unverified: new Path2D(),
+      sorry: new Path2D(),
+      conditional: new Path2D(),
+      verified: new Path2D(),
+    };
     for (const n of visibleNodes) {
       const r = nodeRadius(n, graphSelection);
       const path = paths[n.lean];
       path.moveTo(n.x + r, n.y);
       path.arc(n.x, n.y, r, 0, 2 * Math.PI);
     }
-    for (const status of ["unverified", "sorry", "conditional", "verified"] as const) {
+    for (const status of [
+      "unverified",
+      "sorry",
+      "conditional",
+      "verified",
+    ] as const) {
       ctx.fillStyle = palette[status];
       ctx.globalAlpha = 0.12;
       ctx.fill(paths[status]);
       ctx.globalAlpha = 0.85;
       ctx.strokeStyle = palette[status];
       ctx.lineWidth = Math.min(1.8 / viewK, 2.5);
-      ctx.setLineDash(status === 'conditional' ? [3 / viewK, 3 / viewK] : []);
+      ctx.setLineDash(status === "conditional" ? [3 / viewK, 3 / viewK] : []);
       ctx.stroke(paths[status]);
       ctx.setLineDash([]);
       ctx.globalAlpha = 1;
     }
 
     // A solid core keeps status legible when zoomed out; the outer ring adds structure.
-    const cores = { unverified: new Path2D(), sorry: new Path2D(), conditional: new Path2D(), verified: new Path2D() };
+    const cores = {
+      unverified: new Path2D(),
+      sorry: new Path2D(),
+      conditional: new Path2D(),
+      verified: new Path2D(),
+    };
     for (const node of visibleNodes) {
       const radius = nodeRadius(node, graphSelection) * 0.36;
       cores[node.lean].moveTo(node.x + radius, node.y);
       cores[node.lean].arc(node.x, node.y, radius, 0, Math.PI * 2);
     }
-    for (const status of ['unverified', 'sorry', 'conditional', 'verified'] as const) {
-      ctx.fillStyle = palette[status]; ctx.fill(cores[status]);
+    for (const status of [
+      "unverified",
+      "sorry",
+      "conditional",
+      "verified",
+    ] as const) {
+      ctx.fillStyle = palette[status];
+      ctx.fill(cores[status]);
     }
 
-    const selectedNode = graphSelection ? nodesById.get(graphSelection) ?? null : null;
+    const selectedNode = graphSelection
+      ? (nodesById.get(graphSelection) ?? null)
+      : null;
     if (selectedNode) {
       ctx.beginPath();
-      ctx.arc(selectedNode.x, selectedNode.y, nodeRadius(selectedNode, graphSelection) + 5 / viewK, 0, 2 * Math.PI);
+      ctx.arc(
+        selectedNode.x,
+        selectedNode.y,
+        nodeRadius(selectedNode, graphSelection) + 5 / viewK,
+        0,
+        2 * Math.PI,
+      );
       ctx.strokeStyle = palette.outline;
       ctx.lineWidth = 1.25 / viewK;
       ctx.stroke();
     }
     if (hoveredNode && hoveredNode.id !== graphSelection) {
       ctx.beginPath();
-      ctx.arc(hoveredNode.x, hoveredNode.y, nodeRadius(hoveredNode, graphSelection), 0, 2 * Math.PI);
+      ctx.arc(
+        hoveredNode.x,
+        hoveredNode.y,
+        nodeRadius(hoveredNode, graphSelection),
+        0,
+        2 * Math.PI,
+      );
       ctx.strokeStyle = palette.outline;
       ctx.lineWidth = 1.5 / viewK;
       ctx.stroke();
@@ -433,13 +502,14 @@ export function createGraphRenderer(canvasEl: HTMLCanvasElement, containerEl: HT
       const isSelected = selectedFnode === n.id;
       const isHovered = hoveredNode?.id === n.id;
       const r = nodeRadius(n, graphSelection);
-      ctx.fillStyle = isSelected || isHovered
-        ? palette.outline
-        : `rgba(${palette.label}, 0.82)`;
+      ctx.fillStyle =
+        isSelected || isHovered
+          ? palette.outline
+          : `rgba(${palette.label}, 0.82)`;
       const labelY = n.y + r + 5 / viewK;
-      const labelLines = n.labelLines ??= wrapLabel(n.name, 16);
+      const labelLines = (n.labelLines ??= wrapLabel(n.name, 16));
       for (let line = 0; line < labelLines.length; line++) {
-        ctx.fillText(labelLines[line]!, n.x, labelY + line * 13 / viewK);
+        ctx.fillText(labelLines[line]!, n.x, labelY + (line * 13) / viewK);
       }
     }
   }
@@ -449,7 +519,11 @@ export function createGraphRenderer(canvasEl: HTMLCanvasElement, containerEl: HT
     if (characters.length <= maxLineLength) return [characters.join("")];
 
     let firstEnd = maxLineLength;
-    for (let index = maxLineLength - 1; index >= Math.ceil(maxLineLength * 0.6); index--) {
+    for (
+      let index = maxLineLength - 1;
+      index >= Math.ceil(maxLineLength * 0.6);
+      index--
+    ) {
       if (/\s/.test(characters[index]!)) {
         firstEnd = index;
         break;
@@ -458,9 +532,10 @@ export function createGraphRenderer(canvasEl: HTMLCanvasElement, containerEl: HT
     const first = characters.slice(0, firstEnd).join("").trimEnd();
     const remainder = characters.slice(firstEnd).join("").trimStart();
     const rest = Array.from(remainder);
-    const second = rest.length > maxLineLength
-      ? rest.slice(0, maxLineLength - 3).join("") + "..."
-      : remainder;
+    const second =
+      rest.length > maxLineLength
+        ? rest.slice(0, maxLineLength - 3).join("") + "..."
+        : remainder;
     return second ? [first, second] : [first];
   }
 
@@ -487,7 +562,9 @@ export function createGraphRenderer(canvasEl: HTMLCanvasElement, containerEl: HT
 
   function watchDevicePixelRatio() {
     dprQuery?.removeEventListener("change", watchDevicePixelRatio);
-    dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    dprQuery = window.matchMedia(
+      `(resolution: ${window.devicePixelRatio}dppx)`,
+    );
     dprQuery.addEventListener("change", watchDevicePixelRatio);
     requestRender();
   }
@@ -564,7 +641,8 @@ export function createGraphRenderer(canvasEl: HTMLCanvasElement, containerEl: HT
     const y = e.clientY - rect.top;
 
     if (panStart) {
-      if (!panStart.moved) panStart.moved = Math.hypot(x - panStart.x, y - panStart.y) > 3;
+      if (!panStart.moved)
+        panStart.moved = Math.hypot(x - panStart.x, y - panStart.y) > 3;
       if (panStart.moved) {
         viewX = panStart.viewX + (x - panStart.x);
         viewY = panStart.viewY + (y - panStart.y);
@@ -590,7 +668,9 @@ export function createGraphRenderer(canvasEl: HTMLCanvasElement, containerEl: HT
 
     if (!cancelled && start && !start.moved) {
       if (start.pressedNode) {
-        onSelect(start.pressedNode.id === selectedFnode ? null : start.pressedNode.id);
+        onSelect(
+          start.pressedNode.id === selectedFnode ? null : start.pressedNode.id,
+        );
       } else if (selectedFnode) {
         onSelect(null);
       }
@@ -635,11 +715,12 @@ export function createGraphRenderer(canvasEl: HTMLCanvasElement, containerEl: HT
 
     // Mouse position in world coords before zoom.
     const worldBefore = screenToWorld(x, y);
-    const deltaY = e.deltaMode === WheelEvent.DOM_DELTA_LINE
-      ? e.deltaY * 16
-      : e.deltaMode === WheelEvent.DOM_DELTA_PAGE
-        ? e.deltaY * Math.max(canvas.clientHeight, 1)
-        : e.deltaY;
+    const deltaY =
+      e.deltaMode === WheelEvent.DOM_DELTA_LINE
+        ? e.deltaY * 16
+        : e.deltaMode === WheelEvent.DOM_DELTA_PAGE
+          ? e.deltaY * Math.max(canvas.clientHeight, 1)
+          : e.deltaY;
     const factor = Math.exp(-deltaY * 0.0015);
     const nextScale = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, viewK * factor));
     if (nextScale === viewK) return;
@@ -665,7 +746,10 @@ export function createGraphRenderer(canvasEl: HTMLCanvasElement, containerEl: HT
     const margin = 0.2;
     const scaleX = cw / (graphW + 2 * 20);
     const scaleY = ch / (graphH + 2 * 20);
-    viewK = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.min(scaleX, scaleY) * (1 - margin)));
+    viewK = Math.max(
+      MIN_ZOOM,
+      Math.min(MAX_ZOOM, Math.min(scaleX, scaleY) * (1 - margin)),
+    );
     viewX = cw / 2 - cx * viewK;
     viewY = ch / 2 - cy * viewK;
     requestRender();
@@ -684,50 +768,73 @@ export function createGraphRenderer(canvasEl: HTMLCanvasElement, containerEl: HT
     requestRender();
   }
 
-
   let needsFit = true;
   const observer = new ResizeObserver(() => {
-    if (canvasCssWidth !== containerEl.clientWidth || canvasCssHeight !== containerEl.clientHeight) requestRender();
-    if (needsFit && containerEl.clientWidth && containerEl.clientHeight) { needsFit = false; fitToNodes(); }
+    if (
+      canvasCssWidth !== containerEl.clientWidth ||
+      canvasCssHeight !== containerEl.clientHeight
+    )
+      requestRender();
+    if (needsFit && containerEl.clientWidth && containerEl.clientHeight) {
+      needsFit = false;
+      fitToNodes();
+    }
   });
   const blur = () => finishPointer(null, true);
-  canvasEl.style.cursor = 'grab';
+  canvasEl.style.cursor = "grab";
   watchDevicePixelRatio();
   observer.observe(containerEl);
-  canvasEl.addEventListener('wheel', onWheel, { passive: false });
-  canvasEl.addEventListener('pointerdown', onPointerDown);
-  canvasEl.addEventListener('pointermove', onPointerMove);
-  canvasEl.addEventListener('pointerup', onPointerUp);
-  canvasEl.addEventListener('pointercancel', onPointerCancel);
-  canvasEl.addEventListener('lostpointercapture', onLostPointerCapture);
-  canvasEl.addEventListener('pointerleave', onPointerLeave);
-  window.addEventListener('blur', blur);
-  window.addEventListener('resize', requestRender);
+  canvasEl.addEventListener("wheel", onWheel, { passive: false });
+  canvasEl.addEventListener("pointerdown", onPointerDown);
+  canvasEl.addEventListener("pointermove", onPointerMove);
+  canvasEl.addEventListener("pointerup", onPointerUp);
+  canvasEl.addEventListener("pointercancel", onPointerCancel);
+  canvasEl.addEventListener("lostpointercapture", onLostPointerCapture);
+  canvasEl.addEventListener("pointerleave", onPointerLeave);
+  window.addEventListener("blur", blur);
+  window.addEventListener("resize", requestRender);
   return {
     setGraph(data: GraphFull) {
       const wasEmpty = nodes.length === 0;
       installGraph(data);
-      if (wasEmpty) { needsFit = true; if (containerEl.clientWidth && containerEl.clientHeight) { fitToNodes(); needsFit = false; } }
+      if (wasEmpty) {
+        needsFit = true;
+        if (containerEl.clientWidth && containerEl.clientHeight) {
+          fitToNodes();
+          needsFit = false;
+        }
+      }
       requestRender();
     },
     update(next: GraphAppearance) {
-      active = next.active; theme = next.theme; selectedFnode = next.selectedFnode;
+      active = next.active;
+      theme = next.theme;
+      selectedFnode = next.selectedFnode;
       if (active) requestRender();
-      else { finishPointer(null, true); stopRaf(); canvasEl.width = 1; canvasEl.height = 1; }
+      else {
+        finishPointer(null, true);
+        stopRaf();
+        canvasEl.width = 1;
+        canvasEl.height = 1;
+      }
     },
     fit: fitToNodes,
     zoom: zoomBy,
     destroy() {
-      running = false; finishPointer(null, true); stopRaf(); observer.disconnect();
-      dprQuery?.removeEventListener('change', watchDevicePixelRatio);
-      canvasEl.removeEventListener('wheel', onWheel);
-      canvasEl.removeEventListener('pointerdown', onPointerDown);
-      canvasEl.removeEventListener('pointermove', onPointerMove);
-      canvasEl.removeEventListener('pointerup', onPointerUp);
-      canvasEl.removeEventListener('pointercancel', onPointerCancel);
-      canvasEl.removeEventListener('lostpointercapture', onLostPointerCapture);
-      canvasEl.removeEventListener('pointerleave', onPointerLeave);
-      window.removeEventListener('blur', blur); window.removeEventListener('resize', requestRender);
+      running = false;
+      finishPointer(null, true);
+      stopRaf();
+      observer.disconnect();
+      dprQuery?.removeEventListener("change", watchDevicePixelRatio);
+      canvasEl.removeEventListener("wheel", onWheel);
+      canvasEl.removeEventListener("pointerdown", onPointerDown);
+      canvasEl.removeEventListener("pointermove", onPointerMove);
+      canvasEl.removeEventListener("pointerup", onPointerUp);
+      canvasEl.removeEventListener("pointercancel", onPointerCancel);
+      canvasEl.removeEventListener("lostpointercapture", onLostPointerCapture);
+      canvasEl.removeEventListener("pointerleave", onPointerLeave);
+      window.removeEventListener("blur", blur);
+      window.removeEventListener("resize", requestRender);
     },
   };
 }

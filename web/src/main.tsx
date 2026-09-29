@@ -1,5 +1,4 @@
-import { mount } from "svelte";
-import App from "./App.svelte";
+import Workspace from "./features/workspace/Workspace";
 import { createRoot } from "react-dom/client";
 import { Tooltip } from "@base-ui/react/tooltip";
 import Projects from "./features/projects/Projects";
@@ -16,16 +15,28 @@ if (!target) {
 }
 
 let pageReady!: () => void;
-const ready = new Promise<void>(resolve => { pageReady = resolve; });
-window.addEventListener("pagereveal", event => {
+const ready = new Promise<void>((resolve) => {
+  pageReady = resolve;
+});
+window.addEventListener("pagereveal", (event) => {
   const transition = event.viewTransition;
   if (!transition) return;
   document.documentElement.dataset.vtScope = "ready";
   void transition.ready.catch(() => {});
-  void ready.then(settleEditorLayout).catch(console.error).finally(() => {
-    transition.skipTransition();
-    delete document.documentElement.dataset.vtScope;
-  });
+  void ready
+    .then(settleEditorLayout)
+    .catch(console.error)
+    .finally(() => {
+      transition.skipTransition();
+      delete document.documentElement.dataset.vtScope;
+    });
 });
-if (projectName()) mount(App, { target, props: { onReady: pageReady } });
-else createRoot(target).render(<Tooltip.Provider><Projects onReady={pageReady} /></Tooltip.Provider>);
+createRoot(target).render(
+  <Tooltip.Provider>
+    {projectName() ? (
+      <Workspace onReady={pageReady} />
+    ) : (
+      <Projects onReady={pageReady} />
+    )}
+  </Tooltip.Provider>,
+);

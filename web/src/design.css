@@ -8,29 +8,29 @@
 
 :root {
   /* Surface ramp */
-  --mdc-bg: #08090d;
-  --mdc-panel: #0e1116;
-  --mdc-panel-raised: #14171f;
-  --mdc-card: #191d26;
-  --mdc-card-hover: #212632;
-  --mdc-card-selected: #282f3f;
-  --mdc-border: #1d212b;
-  --mdc-border-strong: #333b4b;
+  --mdc-bg: #101715;
+  --mdc-panel: #151e1b;
+  --mdc-panel-raised: #192420;
+  --mdc-card: #1d2924;
+  --mdc-card-hover: #26372f;
+  --mdc-card-selected: #2b4036;
+  --mdc-border: #29372f;
+  --mdc-border-strong: #43534a;
 
   /* Text ramp */
-  --mdc-fg: #eef1f7;
-  --mdc-fg-soft: #c6cdda;
-  --mdc-dim: #8a93a3;
+  --mdc-fg: #e8eee9;
+  --mdc-fg-soft: #c5d0c8;
+  --mdc-dim: #97a59c;
   --mdc-muted: #79828f;
 
   /* Accents */
-  --mdc-accent: #7c8cff;
-  --mdc-accent-strong: #9dabff;
+  --mdc-accent: #82c8b8;
+  --mdc-accent-strong: #a0ddce;
   --mdc-accent-up: #b48cff;
   --mdc-accent-down: #4fd6ae;
   --mdc-warning: #f0b661;
   --mdc-error: #ff6f85;
-  --mdc-on-accent: #080b18;
+  --mdc-on-accent: #10251f;
   --mdc-on-success: #05100d;
   --mdc-on-error: #180509;
 
@@ -41,7 +41,7 @@
   --mdc-code-error: #ff6f85;
 
   /* Per-srctype hues */
-  --mdc-block-text: #7c8cff;
+  --mdc-block-text: #82c8b8;
   --mdc-block-latex: #b48cff;
   --mdc-block-lean: #ff9d63;
   --mdc-block-rocq: #4fd6ae;
@@ -57,36 +57,37 @@
 
   --mdc-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.32);
   --mdc-shadow-md:
-    0 1px 2px rgba(0, 0, 0, 0.3),
-    0 6px 16px -6px rgba(0, 0, 0, 0.5);
+    0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 16px -6px rgba(0, 0, 0, 0.5);
   --mdc-shadow-lg:
-    0 1px 2px rgba(0, 0, 0, 0.28),
-    0 12px 32px -12px rgba(0, 0, 0, 0.62);
+    0 1px 2px rgba(0, 0, 0, 0.28), 0 12px 32px -12px rgba(0, 0, 0, 0.62);
   --mdc-shadow-panel:
-    0 1px 2px rgba(0, 0, 0, 0.26),
-    0 20px 48px -20px rgba(0, 0, 0, 0.7);
+    0 1px 2px rgba(0, 0, 0, 0.26), 0 20px 48px -20px rgba(0, 0, 0, 0.7);
 
   color-scheme: dark;
 
   /* ----- Theme-independent tokens ----- */
 
-  --mdc-font: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --mdc-mono: "SFMono-Regular", "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+  --mdc-font:
+    Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  --mdc-mono:
+    "SFMono-Regular", "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo,
+    Consolas, monospace;
 
   /* Type scale */
-  --mdc-text-2xs: 0.6875rem;  /* 11px — micro labels, counts */
-  --mdc-text-xs: 0.75rem;     /* 12px — meta, paths, fnodes */
-  --mdc-text-sm: 0.8125rem;   /* 13px — secondary UI text */
-  --mdc-text-md: 0.875rem;    /* 14px — body, controls */
-  --mdc-text-xl: 1.375rem;    /* 22px — node title */
+  --mdc-text-2xs: 0.6875rem; /* 11px — micro labels, counts */
+  --mdc-text-xs: 0.75rem; /* 12px — meta, paths, fnodes */
+  --mdc-text-sm: 0.8125rem; /* 13px — secondary UI text */
+  --mdc-text-md: 0.875rem; /* 14px — body, controls */
+  --mdc-text-xl: 1.375rem; /* 22px — node title */
 
   --mdc-tracking-label: 0.055em;
   --mdc-tracking-tight: -0.018em;
 
   /* Radii */
-  --mdc-radius-sm: 8px;
-  --mdc-radius-md: 12px;
-  --mdc-radius-lg: 16px;
+  --mdc-radius-sm: 5px;
+  --mdc-radius-md: 6px;
+  --mdc-radius-lg: 8px;
   --mdc-radius-pill: 999px;
 
   /* Motion */
@@ -101,36 +102,36 @@
 }
 
 :root[data-theme="light"] {
-  --mdc-bg: #f6f7f9;
-  --mdc-panel: #ffffff;
-  --mdc-panel-raised: #fbfcfe;
-  --mdc-card: #f3f5f8;
-  --mdc-card-hover: #eaeef4;
-  --mdc-card-selected: #e2e9f8;
-  --mdc-border: #e4e7ee;
-  --mdc-border-strong: #c2c9d6;
+  --mdc-bg: #f4f3ef;
+  --mdc-panel: #fcfcfa;
+  --mdc-panel-raised: #f7f7f3;
+  --mdc-card: #efefea;
+  --mdc-card-hover: #e8ebe4;
+  --mdc-card-selected: #e1ebe4;
+  --mdc-border: #e0e4dc;
+  --mdc-border-strong: #bac7bd;
 
-  --mdc-fg: #0f1420;
-  --mdc-fg-soft: #333c4d;
+  --mdc-fg: #202b25;
+  --mdc-fg-soft: #3d4b43;
   --mdc-dim: #5a6474;
   --mdc-muted: #69727f;
 
-  --mdc-accent: #4d5bd9;
-  --mdc-accent-strong: #3b47b8;
+  --mdc-accent: #216f61;
+  --mdc-accent-strong: #165646;
   --mdc-accent-up: #7440d0;
   --mdc-accent-down: #0a7d64;
   --mdc-warning: #96601a;
   --mdc-error: #c8384d;
-  --mdc-on-accent: #ffffff;
-  --mdc-on-success: #ffffff;
-  --mdc-on-error: #ffffff;
+  --mdc-on-accent: #fcfcfa;
+  --mdc-on-success: #fcfcfa;
+  --mdc-on-error: #fcfcfa;
 
-  --mdc-code-bg: #ffffff;
+  --mdc-code-bg: #fcfcfa;
   --mdc-code-fg: #1f2430;
   --mdc-code-dim: #6b7482;
   --mdc-code-error: #cb2431;
 
-  --mdc-block-text: #3b47b8;
+  --mdc-block-text: #165646;
   --mdc-block-latex: #6a3fc0;
   --mdc-block-lean: #91430a;
   --mdc-block-rocq: #06705a;
@@ -145,18 +146,14 @@
 
   --mdc-shadow-sm: 0 1px 2px rgba(19, 30, 51, 0.07);
   --mdc-shadow-md:
-    0 1px 2px rgba(19, 30, 51, 0.06),
-    0 6px 16px -8px rgba(19, 30, 51, 0.16);
+    0 1px 2px rgba(19, 30, 51, 0.06), 0 6px 16px -8px rgba(19, 30, 51, 0.16);
   --mdc-shadow-lg:
-    0 1px 2px rgba(19, 30, 51, 0.06),
-    0 12px 32px -14px rgba(19, 30, 51, 0.2);
+    0 1px 2px rgba(19, 30, 51, 0.06), 0 12px 32px -14px rgba(19, 30, 51, 0.2);
   --mdc-shadow-panel:
-    0 1px 2px rgba(19, 30, 51, 0.05),
-    0 20px 48px -24px rgba(19, 30, 51, 0.24);
+    0 1px 2px rgba(19, 30, 51, 0.05), 0 20px 48px -24px rgba(19, 30, 51, 0.24);
 
   color-scheme: light;
 }
-
 
 /* Shared shell geometry keeps project navigation and theme controls in place. */
 .app-header {
@@ -181,9 +178,21 @@
   text-decoration: none;
   line-height: 1;
 }
-.app-brand img { display: block; width: 1.65rem; height: 1.65rem; }
-.app-brand strong { font-size: var(--mdc-text-md); font-weight: 680; letter-spacing: -0.03em; }
-.app-brand:focus-visible { outline: 2px solid var(--mdc-accent); outline-offset: 4px; border-radius: 4px; }
+.app-brand img {
+  display: block;
+  width: 1.65rem;
+  height: 1.65rem;
+}
+.app-brand strong {
+  font-size: var(--mdc-text-md);
+  font-weight: 680;
+  letter-spacing: -0.03em;
+}
+.app-brand:focus-visible {
+  outline: 2px solid var(--mdc-accent);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
 .header-theme {
   display: grid;
   place-items: center;
@@ -198,5 +207,12 @@
   border-radius: var(--mdc-radius-sm);
   cursor: pointer;
 }
-.header-theme:hover { background: var(--mdc-card-hover); color: var(--mdc-fg); }
-@media (max-width: 1000px) { .app-brand strong { display: none; } }
+.header-theme:hover {
+  background: var(--mdc-card-hover);
+  color: var(--mdc-fg);
+}
+@media (max-width: 1000px) {
+  .app-brand strong {
+    display: none;
+  }
+}

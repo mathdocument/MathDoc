@@ -4,10 +4,13 @@ import type { GraphCheckReport } from "./types";
 
 /** Owns graph refresh ordering and invalidation independently of mounted views. */
 export class WorkspaceSession extends ObservableModel {
-  constructor() { super(); this.observe("report", "loading", "error", "stale"); }
-  report = (null) as GraphCheckReport | null;
+  constructor() {
+    super();
+    this.observe("report", "loading", "error", "stale");
+  }
+  report = null as GraphCheckReport | null;
   loading = false;
-  error = (null) as string | null;
+  error = null as string | null;
   stale = false;
   private request = 0;
 

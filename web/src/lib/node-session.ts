@@ -1,5 +1,8 @@
 import { ObservableModel } from "./observable";
-import { browserHistoryAdapter, type BrowserHistoryAdapter } from "./browser-history";
+import {
+  browserHistoryAdapter,
+  type BrowserHistoryAdapter,
+} from "./browser-history";
 import type { NodeDetail, NodePreview, NodeView } from "./types";
 import { api } from "./api";
 import { latexApi, type PreparedLatexPreview } from "./latex";
@@ -18,7 +21,11 @@ import {
 } from "./history";
 
 export { browserHistoryEntry, browserHistoryTarget } from "./history";
-export type { BrowserHistoryEntry, BrowserHistoryMode, FocusedHistoryOptions } from "./history";
+export type {
+  BrowserHistoryEntry,
+  BrowserHistoryMode,
+  FocusedHistoryOptions,
+} from "./history";
 
 export type LoadState =
   | { kind: "idle" }
@@ -32,27 +39,51 @@ interface NavigateOptions extends FocusedHistoryOptions {
 }
 
 export class NodeSession extends ObservableModel {
-  constructor(private readonly browserHistory: BrowserHistoryAdapter = browserHistoryAdapter) { super(); this.observe("snapshot", "selectionCleared", "history", "historyIdx", "latexPreview", "editorRevision", "lastVisitedFnode", "navigationError", "failedNavigationFnode", "loadError", "preparedLatex"); }
+  constructor(
+    private readonly browserHistory: BrowserHistoryAdapter = browserHistoryAdapter,
+  ) {
+    super();
+    this.observe(
+      "snapshot",
+      "selectionCleared",
+      "history",
+      "historyIdx",
+      "latexPreview",
+      "editorRevision",
+      "lastVisitedFnode",
+      "navigationError",
+      "failedNavigationFnode",
+      "loadError",
+      "preparedLatex",
+    );
+  }
 
-  snapshot = (null) as NodeView | null;
+  snapshot = null as NodeView | null;
   selectionCleared = false;
-  history = ([]) as string[];
+  history = [] as string[];
   historyIdx = -1;
   latexPreview = false;
   editorRevision = 0;
   /** fnode of the previously focused node — highlighted in columns. */
-  lastVisitedFnode = (null) as string | null;
-  navigationError = (null) as string | null;
-  failedNavigationFnode = (null) as string | null;
-  private loadError = (null) as string | null;
+  lastVisitedFnode = null as string | null;
+  navigationError = null as string | null;
+  failedNavigationFnode = null as string | null;
+  private loadError = null as string | null;
   private navigationRequest = 0;
   private syncRequest = 0;
-  private preparedLatex = (undefined) as PreparedLatexPreview | undefined;
+  private preparedLatex = undefined as PreparedLatexPreview | undefined;
   private preparing: AbortController | null = null;
 
   get load(): LoadState {
-    if (this.snapshot) return { kind: "ready", node: this.snapshot.node, latexPreview: this.preparedLatex };
-    return this.loadError ? { kind: "error", message: this.loadError } : { kind: "idle" };
+    if (this.snapshot)
+      return {
+        kind: "ready",
+        node: this.snapshot.node,
+        latexPreview: this.preparedLatex,
+      };
+    return this.loadError
+      ? { kind: "error", message: this.loadError }
+      : { kind: "idle" };
   }
 
   get selectedLoad(): LoadState {
@@ -64,7 +95,7 @@ export class NodeSession extends ObservableModel {
   }
 
   get selectedFnode(): string | null {
-    return this.selectionCleared ? null : this.node?.fnode ?? null;
+    return this.selectionCleared ? null : (this.node?.fnode ?? null);
   }
 
   get referrers(): NodePreview[] {
@@ -91,8 +122,10 @@ export class NodeSession extends ObservableModel {
 
   removeNode(fnode: string): void {
     this.cancel();
-    this.historyIdx -= this.history.slice(0, this.historyIdx + 1).filter(id => id === fnode).length;
-    this.history = this.history.filter(id => id !== fnode);
+    this.historyIdx -= this.history
+      .slice(0, this.historyIdx + 1)
+      .filter((id) => id === fnode).length;
+    this.history = this.history.filter((id) => id !== fnode);
     if (this.lastVisitedFnode === fnode) this.lastVisitedFnode = null;
     if (this.node?.fnode === fnode) {
       this.snapshot = null;
@@ -110,7 +143,7 @@ export class NodeSession extends ObservableModel {
     if (!opts.skipUnsavedGuard && !confirmDiscardDrafts()) return false;
     this.cancel();
     const request = this.navigationRequest;
-    if (!await settlePendingMutations()) return false;
+    if (!(await settlePendingMutations())) return false;
     if (request !== this.navigationRequest) return false;
 
     const confirmedDraftRevision = unsavedDraftRevision();
@@ -118,13 +151,26 @@ export class NodeSession extends ObservableModel {
       const view = await api.nodeView(fnode);
       if (request !== this.navigationRequest) return false;
       let latexPreview: PreparedLatexPreview | undefined;
-      const source = view.node.blocks.find(block => block.srctype === "latex")?.content;
-      if (this.latexPreview && source !== undefined && (this.selectionCleared || this.node?.fnode !== view.node.fnode)) {
-        const preparing = this.preparing = new AbortController();
+      const source = view.node.blocks.find(
+        (block) => block.srctype === "latex",
+      )?.content;
+      if (
+        this.latexPreview &&
+        source !== undefined &&
+        (this.selectionCleared || this.node?.fnode !== view.node.fnode)
+      ) {
+        const preparing = (this.preparing = new AbortController());
         try {
-          latexPreview = {preview: await latexApi.preview(view.node.fnode, source, preparing.signal), error: null};
+          latexPreview = {
+            preview: await latexApi.preview(
+              view.node.fnode,
+              source,
+              preparing.signal,
+            ),
+            error: null,
+          };
         } catch (error) {
-          latexPreview = {preview: null, error: errMsg(error)};
+          latexPreview = { preview: null, error: errMsg(error) };
         } finally {
           if (this.preparing === preparing) this.preparing = null;
         }
@@ -151,9 +197,13 @@ export class NodeSession extends ObservableModel {
       else await withViewTransition(apply);
       return committed;
     } catch (error) {
-      if (request !== this.navigationRequest ||
-        unsavedDraftRevision() !== confirmedDraftRevision) return false;
-      this.navigationError = error instanceof Error ? error.message : String(error);
+      if (
+        request !== this.navigationRequest ||
+        unsavedDraftRevision() !== confirmedDraftRevision
+      )
+        return false;
+      this.navigationError =
+        error instanceof Error ? error.message : String(error);
       this.failedNavigationFnode = fnode;
       if (opts.clearOnError) this.snapshot = null;
       if (!this.snapshot) this.loadError = this.navigationError;
@@ -165,13 +215,16 @@ export class NodeSession extends ObservableModel {
     if (!opts.skipUnsavedGuard && !confirmDiscardDrafts()) return false;
     this.cancel();
     const request = this.navigationRequest;
-    if (!await settlePendingMutations()) return false;
+    if (!(await settlePendingMutations())) return false;
     if (request !== this.navigationRequest) return false;
     const confirmedDraftRevision = unsavedDraftRevision();
     let committed = false;
     await withViewTransition(() => {
-      if (request !== this.navigationRequest ||
-        unsavedDraftRevision() !== confirmedDraftRevision) return;
+      if (
+        request !== this.navigationRequest ||
+        unsavedDraftRevision() !== confirmedDraftRevision
+      )
+        return;
       this.editorRevision++;
       this.selectionCleared = true;
       this.commitClearedHistory(opts);
@@ -189,15 +242,26 @@ export class NodeSession extends ObservableModel {
     try {
       const view = await api.nodeView(fnode);
       const node = this.node;
-      if (request !== this.syncRequest || node?.fnode !== fnode ||
-        node.revision !== revision) return false;
+      if (
+        request !== this.syncRequest ||
+        node?.fnode !== fnode ||
+        node.revision !== revision
+      )
+        return false;
       if (view.node.revision !== revision) {
-        throw new Error(`${fnode} changed externally; refresh before continuing`);
+        throw new Error(
+          `${fnode} changed externally; refresh before continuing`,
+        );
       }
-      this.snapshot = { node, referrers: view.referrers, children: view.children };
+      this.snapshot = {
+        node,
+        referrers: view.referrers,
+        children: view.children,
+      };
       return true;
     } catch (error) {
-      if (request !== this.syncRequest || this.node?.fnode !== fnode) return false;
+      if (request !== this.syncRequest || this.node?.fnode !== fnode)
+        return false;
       throw error;
     }
   }
@@ -214,17 +278,21 @@ export class NodeSession extends ObservableModel {
     return { pushHistory: true, browserHistory: "replace" };
   }
 
-  commitFocusedHistory(
-    fnode: string,
-    opts: FocusedHistoryOptions = {},
-  ): void {
+  commitFocusedHistory(fnode: string, opts: FocusedHistoryOptions = {}): void {
     const push = opts.pushHistory ?? true;
     const previousIndex = this.historyIdx;
-    const history = focusedHistoryState(this.history, this.historyIdx, fnode, opts);
+    const history = focusedHistoryState(
+      this.history,
+      this.historyIdx,
+      fnode,
+      opts,
+    );
     this.history = history.entries;
     this.historyIdx = history.index;
 
-    const mode = opts.browserHistory ?? (push ? previousIndex < 0 ? "replace" : "push" : "none");
+    const mode =
+      opts.browserHistory ??
+      (push ? (previousIndex < 0 ? "replace" : "push") : "none");
     if (mode === "none") return;
     const state: BrowserHistoryEntry = {
       mdcHistory: 1,
@@ -235,9 +303,7 @@ export class NodeSession extends ObservableModel {
     this.browserHistory.commit(mode, fnode, state);
   }
 
-  commitClearedHistory(
-    opts: FocusedHistoryOptions = {},
-  ): void {
+  commitClearedHistory(opts: FocusedHistoryOptions = {}): void {
     const backingEntries = opts.historyEntries ?? this.history;
     const backingIndex = opts.historyIndex ?? this.historyIdx;
     const backingFnode = backingEntries[backingIndex];
@@ -248,7 +314,12 @@ export class NodeSession extends ObservableModel {
     }
 
     const push = opts.pushHistory ?? true;
-    const history = focusedHistoryState(this.history, this.historyIdx, backingFnode, opts);
+    const history = focusedHistoryState(
+      this.history,
+      this.historyIdx,
+      backingFnode,
+      opts,
+    );
     this.history = history.entries;
     this.historyIdx = history.index;
 
@@ -262,7 +333,6 @@ export class NodeSession extends ObservableModel {
     };
     this.browserHistory.commit(mode, null, state);
   }
-
 }
 
 export const nodeSession = new NodeSession();
@@ -280,7 +350,10 @@ export async function withViewTransition(
   scope?: string,
   ready?: () => Promise<void>,
 ): Promise<void> {
-  if (typeof document === "undefined" || typeof document.startViewTransition !== "function") {
+  if (
+    typeof document === "undefined" ||
+    typeof document.startViewTransition !== "function"
+  ) {
     mutate();
     await ready?.();
     return;

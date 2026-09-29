@@ -4,7 +4,9 @@ export class ObservableModel {
   private readonly listeners = new Set<() => void>();
   readonly subscribe = (listener: () => void) => {
     this.listeners.add(listener);
-    return () => { this.listeners.delete(listener); };
+    return () => {
+      this.listeners.delete(listener);
+    };
   };
   readonly getSnapshot = () => this.version;
   protected notifyListeners() {
@@ -16,9 +18,10 @@ export class ObservableModel {
     for (const key of keys) {
       let value = Reflect.get(this, key);
       Object.defineProperty(this, key, {
-        enumerable: true, configurable: true,
+        enumerable: true,
+        configurable: true,
         get: () => value,
-        set: next => {
+        set: (next) => {
           if (Object.is(value, next)) return;
           value = next;
           this.notifyListeners();

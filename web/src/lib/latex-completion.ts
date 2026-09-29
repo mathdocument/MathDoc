@@ -1,4 +1,4 @@
-import type { LatexSession } from './latex-session.svelte';
+import type { LatexSession } from './latex-session';
 import { fuzzyScore, fuzzyScoreGracefulAggressive } from 'vscode/vscode/vs/base/common/filters';
 
 function filter<T extends {label: string; search: string}>(items: T[], query: string) {

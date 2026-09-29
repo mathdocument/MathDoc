@@ -1,9 +1,17 @@
-import { SvelteSet } from "svelte/reactivity";
-
 const dirtyDrafts = new Set<symbol>();
-const pendingMutations = new SvelteSet<symbol>();
+const pendingMutations = new Set<symbol>();
 let pendingWaiters: Array<() => void> = [];
 let draftRevision = 0;
+const mutationListeners = new Set<() => void>();
+export function subscribeMutations(listener: () => void) {
+  mutationListeners.add(listener);
+  return () => {
+    mutationListeners.delete(listener);
+  };
+}
+function notifyMutations() {
+  for (const listener of mutationListeners) listener();
+}
 
 export function setDraftDirty(id: symbol, dirty: boolean): void {
   if (dirty) {
@@ -21,9 +29,11 @@ export function removeDraft(id: symbol): void {
 export function trackMutation(): () => void {
   const id = Symbol("pending mutation");
   pendingMutations.add(id);
+  notifyMutations();
   draftRevision++;
   return () => {
     if (!pendingMutations.delete(id)) return;
+    notifyMutations();
     draftRevision++;
     if (pendingMutations.size === 0) {
       const waiters = pendingWaiters;
@@ -49,9 +59,10 @@ export async function settlePendingMutations(): Promise<boolean> {
 }
 
 export function hasUnsavedDrafts(excludeDraft?: symbol): boolean {
-  const hasDirtyDraft = excludeDraft === undefined
-    ? dirtyDrafts.size > 0
-    : dirtyDrafts.size > (dirtyDrafts.has(excludeDraft) ? 1 : 0);
+  const hasDirtyDraft =
+    excludeDraft === undefined
+      ? dirtyDrafts.size > 0
+      : dirtyDrafts.size > (dirtyDrafts.has(excludeDraft) ? 1 : 0);
   return hasDirtyDraft || pendingMutations.size > 0;
 }
 
@@ -60,11 +71,14 @@ export function unsavedDraftRevision(): number {
 }
 
 export function confirmDiscardDrafts(excludeDraft?: symbol): boolean {
-  return !hasUnsavedDrafts(excludeDraft) || window.confirm(
-    "You have unsaved edits or pending changes. Discard them?",
+  return (
+    !hasUnsavedDrafts(excludeDraft) ||
+    window.confirm("You have unsaved edits or pending changes. Discard them?")
   );
 }
 
 export function confirmDiscardDraft(id: symbol): boolean {
-  return !dirtyDrafts.has(id) || window.confirm("Discard this unfinished draft?");
+  return (
+    !dirtyDrafts.has(id) || window.confirm("Discard this unfinished draft?")
+  );
 }
