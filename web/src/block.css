@@ -74,7 +74,7 @@
   }
   .saving { color: var(--mdc-muted); font-family: var(--mdc-mono); font-size: var(--mdc-text-2xs); }
   .error { display: inline-flex; color: var(--mdc-error); cursor: help; }
-  .save, .delete, .icon-btn, .preview-toggle {
+  .delete, .icon-btn, .preview-toggle {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -106,16 +106,6 @@
     opacity: 0.35;
     cursor: default;
   }
-  .save:disabled { opacity: 0.3; cursor: default; }
-  /* Save only draws attention once there is something to save. */
-  .save:not(:disabled) {
-    color: var(--mdc-on-accent);
-    background: var(--block-accent);
-    font-weight: 620;
-  }
-  .save:not(:disabled):hover {
-    filter: brightness(1.08);
-  }
   .delete:hover {
     background: color-mix(in srgb, var(--mdc-error) 14%, transparent);
     color: var(--mdc-error);
@@ -129,12 +119,10 @@
       display: none;
     }
     .dirty,
-    .preview-toggle,
-    .save {
+    .preview-toggle {
       gap: 0;
     }
-    .preview-toggle,
-    .save {
+    .preview-toggle {
       width: 26px;
       padding: 0;
     }

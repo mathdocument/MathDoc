@@ -221,7 +221,7 @@ await test('renaming an open Lean node preserves its draft and rebinds the modul
       await page.getByText('Lean editor ready', {exact: true}).waitFor();
       assert.match(await frame.locator('.view-lines').innerText(), /keep.this.draft/);
       await page.getByText('Unsaved', {exact: true}).waitFor();
-      await page.locator('article[data-srctype="lean"]').getByRole('button', {name: 'Save', exact: true}).click();
+      await page.getByRole('button', {name: 'Save node', exact: true}).click();
       await center(page).getByLabel('Lean: Verified', {exact: true}).waitFor();
       const updated = JSON.parse((await cli('show', 'Renamed.Proof')).stdout);
       assert.equal(updated.fnode, node.fnode);
@@ -661,7 +661,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
             assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
             await page.screenshot({ path: resolve(process.env.MDC_E2E_ARTIFACTS, "projects-mobile.png"), fullPage: true });
           }
-          await page.goto(`${url}/#ref=${node.fnode}`);
+          await page.goto(`${url}/?batch-save#ref=${node.fnode}`);
           await page.getByRole("button", { name: "Start Lean server", exact: true }).click();
           await page.getByText("Lean editor ready", { exact: true }).waitFor();
           await Promise.all([once(currentSocket, "close", { signal: AbortSignal.timeout(10000) }), manage("stop")]);
@@ -974,17 +974,15 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         console.log("Lean editor layout switch durations (ms):", switchTimes.join(", "));
         let finishSave;
         const saveGate = new Promise(resolve => { finishSave = resolve; });
-        await page.route(/\/block\/lean$/, async route => { await saveGate; await route.continue(); });
+        await page.route(/\/blocks$/, async route => { await saveGate; await route.continue(); });
         await page.getByRole("button", { name: "Graph", exact: true }).click();
-        const saveButton = leanBlock.getByRole("button", { name: "Save", exact: true });
+        const saveButton = page.getByRole('button', {name: 'Save node', exact: true});
         await saveButton.click();
-        const activity = page.getByRole("status").filter({ hasText: /^Saving\.\.\.$/ });
-        await activity.waitFor();
-        assert.equal(await saveButton.textContent(), "Save");
-        const buttonBox = await saveButton.boundingBox(), activityBox = await activity.boundingBox();
-        assert.ok(activityBox.y >= buttonBox.y + buttonBox.height, "saving status must stay below the toolbar");
+        await page.locator('button[aria-label="Save node"][aria-busy="true"]').waitFor();
+        assert.equal(await saveButton.isDisabled(), true);
+        assert.equal(await leanBlock.getByRole('button', {name: 'Save', exact: true}).count(), 0);
         finishSave();
-        await page.unroute(/\/block\/lean$/);
+        await page.unroute(/\/blocks$/);
         await page.getByRole("button", { name: "Knowledge", exact: true }).click();
         await page.getByText("Lean errors", { exact: false }).waitFor();
         assert.match(JSON.parse((await cli("show", a.fnode)).stdout).blocks[0].content, /exact 42/);
@@ -1269,6 +1267,101 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
   } finally { await browser.close(); }
 });
 
+await test('node save atomically persists all blocks and retains drafts through failures and in-flight edits', {timeout: 90000}, async () => {
+  const browser = await launchBrowser();
+  const node = {fnode: randomUUID(), name: 'Batch.Save', depens: [], blocks: [
+    {srctype: 'text', content: 'Original text', metadata: {source: 'fixture'}},
+    {srctype: 'latex', content: 'Original prose'},
+    {srctype: 'lean', content: 'theorem original : True := by trivial\n'},
+    {srctype: 'rocq', content: 'Check True.'},
+  ]};
+  try {
+    await fixture(browser, async ({page, cli, url}) => {
+      await page.goto(`${url}/?batch-save#ref=${node.fnode}`);
+      await title(page, node.name);
+      const save = page.getByRole('button', {name: 'Save node', exact: true});
+      const block = kind => page.locator(`article[data-srctype="${kind}"]`);
+      const input = kind => kind === 'lean'
+        ? page.frameLocator('iframe[title="Lean source and Infoview"]').getByRole('textbox', {name: /Editor content/})
+        : block(kind).getByRole('textbox', {name: new RegExp(`^${kind} source`)});
+      const fill = async (kind, value) => {
+        await input(kind).press('ControlOrMeta+A');
+        await page.keyboard.insertText(value);
+        await block(kind).getByText('Unsaved', {exact: true}).waitFor();
+      };
+      const read = async () => JSON.parse((await cli('show', node.fnode)).stdout);
+      const sources = value => Object.fromEntries(value.blocks.map(b => [b.srctype, b.content]));
+      const submitted = {text: 'Saved text', latex: 'Saved prose', lean: 'theorem saved : True := by trivial\n', rocq: 'Check False.'};
+      for (const [kind, value] of Object.entries(submitted)) await fill(kind, value);
+      assert.equal(await page.locator('.source-block').getByRole('button', {name: 'Save', exact: true}).count(), 0);
+      const requests = [];
+      page.on('request', r => { if (r.method() === 'PUT' && r.url().endsWith('/blocks')) requests.push(r.postDataJSON()); });
+      const before = await cli('history');
+      let release;
+      const gate = new Promise(resolve => { release = resolve; });
+      await page.route(/\/blocks$/, async route => { await gate; await route.continue(); });
+      try {
+        const pending = page.waitForRequest(r => r.method() === 'PUT' && r.url().endsWith('/blocks'));
+        await save.click(); await pending;
+        await fill('text', 'Typed during save');
+      } finally { release(); }
+      await page.locator('button[aria-label="Save node"][aria-busy="false"]').waitFor();
+      await page.unroute(/\/blocks$/);
+      assert.deepEqual(requests, [submitted]);
+      assert.deepEqual(sources(await read()), submitted);
+      const historyBefore = JSON.parse(before.stdout), historyAfter = JSON.parse((await cli('history')).stdout);
+      assert.equal(historyAfter.length, historyBefore.length + 1, 'one database commit for all four blocks');
+      assert.equal((await read()).blocks.find(b => b.srctype === 'text').metadata.source, 'fixture');
+      await block('text').getByText('Unsaved', {exact: true}).waitFor();
+      await block('lean').getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
+      const savedButton = await save.boundingBox(), metadata = await center(page).locator('.meta').boundingBox();
+      assert.ok(Math.abs(savedButton.x + savedButton.width - metadata.x - metadata.width) < 2, 'save stays at the right of the metadata row');
+      if (env.MDC_E2E_ARTIFACTS) {
+        await mkdir(env.MDC_E2E_ARTIFACTS, {recursive: true});
+        await page.screenshot({path: resolve(env.MDC_E2E_ARTIFACTS, 'node-save.png')});
+      }
+      // Any editor's shortcut saves the whole node, even if that editor is unchanged.
+      await input('lean').press('ControlOrMeta+S');
+      await block('text').getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
+      assert.deepEqual(requests[1], {text: 'Typed during save'});
+      assert.equal(sources(await read()).text, 'Typed during save');
+      await fill('text', 'Keep failed text'); await fill('latex', 'Keep failed prose');
+      await page.route(/\/blocks$/, route => route.fulfill({status: 503, contentType: 'application/json', body: JSON.stringify({error: 'Temporary save failure'})}));
+      await save.click();
+      await center(page).getByRole('alert').filter({hasText: 'Temporary save failure'}).waitFor();
+      assert.equal(sources(await read()).text, 'Typed during save');
+      for (const kind of ['text', 'latex']) await block(kind).getByText('Unsaved', {exact: true}).waitFor();
+      await page.unroute(/\/blocks$/);
+      await input('latex').press('ControlOrMeta+S');
+      for (const kind of ['text', 'latex']) await block(kind).getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
+      assert.deepEqual(sources(await read()), {...submitted, text: 'Keep failed text', latex: 'Keep failed prose'});
+      // Do not let a batch save recreate a block while its deletion is in flight.
+      await fill('text', 'Unsaved beside deletion');
+      let finishDelete;
+      const deleteGate = new Promise(resolve => { finishDelete = resolve; });
+      await page.route(/\/block\/rocq$/, async route => {
+        await deleteGate;
+        await route.fulfill({status: 503, contentType: 'application/json', body: JSON.stringify({error: 'Temporary deletion failure'})});
+      });
+      try {
+        const deleting = page.waitForRequest(r => r.method() === 'DELETE' && r.url().endsWith('/block/rocq'));
+        await block('rocq').getByRole('button', {name: 'Delete block'}).click(); await deleting;
+        assert.equal(await save.isDisabled(), true);
+      } finally { finishDelete(); }
+      await block('rocq').getByText('Temporary deletion failure', {exact: true}).waitFor();
+      assert.equal(await save.isDisabled(), false);
+      await page.unroute(/\/block\/rocq$/);
+      // An external edit must reject the entire batch, preserving both local drafts.
+      await fill('text', 'Conflicting text'); await fill('latex', 'Conflicting prose');
+      await cli('rename', node.fnode, 'Batch.External');
+      await save.click();
+      await center(page).getByRole('alert').waitFor();
+      assert.equal(sources(await read()).text, 'Keep failed text');
+      for (const kind of ['text', 'latex']) await block(kind).getByText('Unsaved', {exact: true}).waitFor();
+    }, [node]);
+  } finally { await browser.close(); }
+});
+
 await test('Monaco source blocks retain highlighting, edits and undo across layout changes', {timeout: 60000}, async () => {
   const browser = await launchBrowser();
   const node = {fnode: randomUUID(), name: 'Shared.editors', depens: [], blocks: [
@@ -1336,7 +1429,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await put('Alpha', source);
       await put('Beta', String.raw`\begin{thm}[Named result]\label{thm:b}$\cA$ exists.\end{thm}`);
       await put('Gamma', String.raw`\section{Private result}\label{private}`);
-      const externalName = number => `Beta::theorem ${number}`;
+      const externalName = number => `Beta::Theorem ${number}`;
       await page.reload();
       const block = page.locator('article[data-srctype="latex"]');
       await block.getByText('1 imported dependencies', {exact: false}).waitFor();
@@ -1612,7 +1705,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       // Dependency numbering refreshes without reloading or saving the draft.
       await put('Beta', String.raw`\begin{thm}Earlier result.\end{thm}\begin{thm}[Updated result]\label{thm:b}Updated.\end{thm}`);
       await block.getByRole('link', {name: externalName(2), exact: true}).waitFor({timeout: 10000});
-      await block.getByRole('button', {name: 'Save', exact: true}).click();
+      await page.getByRole('button', {name: 'Save node', exact: true}).click();
       await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
       assert.equal(JSON.parse((await cli('show', 'Alpha')).stdout).blocks[0].content, draft);
       const saved = JSON.parse((await cli('show', 'Alpha')).stdout).blocks[0].content;
@@ -2028,7 +2121,7 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       await input.press(documentEndKey);
       // Exercise normal typing; Firefox can duplicate synthetic insertText IME input.
       await page.keyboard.type('-- saved without a server\n');
-      await block.getByRole('button', {name: 'Save', exact: true}).click();
+      await page.getByRole('button', {name: 'Save node', exact: true}).click();
       await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
       assert.equal(JSON.parse((await cli('show', nodes[0].fnode)).stdout).blocks[0].content.trimEnd(), (nodes[0].blocks[0].content + '-- saved without a server\n').trimEnd());
       const select = async name => {
@@ -2048,7 +2141,7 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       // Saving offline must update the revision used by the next attachment.
       await input.press(documentEndKey);
       await page.keyboard.type('-- offline revision\n');
-      await block.getByRole('button', {name: 'Save', exact: true}).click();
+      await page.getByRole('button', {name: 'Save node', exact: true}).click();
       await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
       persistentEditor = await frame.locator('.monaco-editor[role=code]').elementHandle();
       await input.press(documentEndKey);

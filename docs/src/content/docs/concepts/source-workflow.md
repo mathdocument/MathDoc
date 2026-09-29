@@ -11,6 +11,10 @@ printf 'Explanation.\n' | mdc edit Example -p myproject/main --type text
 mdc edit Example -p myproject/main --type text --delete
 ```
 
+In the browser, **Save node** at the right of the metadata row saves all changed
+blocks in one transaction. Ctrl/⌘+S uses the same operation, including from Lean
+or LaTeX editors. Saving preserves edits made while the request is in flight.
+
 `edit` creates or replaces the block; an empty string is still an existing block.
 `--delete` removes it and does not read stdin. Source edits and compilation are
 separate operations. Only Lean has integrated compilation and language services.
@@ -29,7 +33,7 @@ Browser saves carry the revision they loaded. A stale write fails and leaves the
 newer database state intact; browser drafts remain available for reconciliation.
 See [Versioned mutations](../../development/safe-mutations/).
 
-Lean Server elaborates changed documents incrementally. After **Save**, the
+Lean Server elaborates changed documents incrementally. After **Save node**, the
 browser reuses that editor's native diagnostics and import information to certify
 the exact saved source and compiled dependencies. Unsaved drafts cannot update
 certification of different database contents. Native Lake builds imported

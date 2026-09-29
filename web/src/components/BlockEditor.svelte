@@ -1,12 +1,11 @@
 <script lang="ts">
-  import { onMount, onDestroy, tick } from "svelte";
+  import { onMount, onDestroy, tick, untrack } from "svelte";
   import {
     AlertTriangle,
     ChevronDown,
     ChevronRight,
     Code2,
     Eye,
-    Save as SaveIcon,
     Trash2,
   } from "@lucide/svelte";
   import { editor as Monaco, Uri, KeyMod, KeyCode } from "monaco-editor";
@@ -32,12 +31,14 @@
     latexPreview?: boolean;
     preparedLatex?: PreparedLatexPreview;
     onDeleted?: (node: NodeDetail, srctype: string) => void;
-    onSaved?: (node: NodeDetail) => void;
+    saving?: boolean;
+    onChange?: (content: string | null) => void;
+    onSave?: () => void;
     onReady?: () => void;
     focusLabel?: string;
     onLatexNavigate?: (fnode: string, label: string) => void;
   }
-  let { fnode, revision, block, theme, active = true, latexPreview = $bindable(false), preparedLatex, onDeleted, onSaved, onReady, focusLabel, onLatexNavigate }: Props = $props();
+  let { fnode, revision, block, theme, active = true, latexPreview = $bindable(false), preparedLatex, saving = false, onDeleted, onChange, onSave, onReady, focusLabel, onLatexNavigate }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
   let scroller: HTMLDivElement;
@@ -48,7 +49,6 @@
   let widgets: HTMLDivElement | undefined;
   let ready = $state(false);
   let dirty = $state(false);
-  let saving = $state(false);
   let deleting = $state(false);
   let lastSavedDoc = "";
   let error: string | null = $state(null);
@@ -62,6 +62,8 @@
   function setDirty(value: boolean) {
     dirty = value;
     setDraftDirty(draftId, value);
+    const content = value && editorView ? editorView.getValue() : null;
+    untrack(() => onChange?.(content));
   }
 
   onMount(() => {
@@ -93,8 +95,8 @@
         setDirty(model!.getValue() !== lastSavedDoc);
         latex?.schedule(model!.getValue());
       });
-      editorView.addCommand(KeyMod.CtrlCmd | KeyCode.KeyS, () => void save());
-      editorView.addCommand(KeyMod.CtrlCmd | KeyCode.Enter, () => void save());
+      editorView.addCommand(KeyMod.CtrlCmd | KeyCode.KeyS, () => onSave?.());
+      editorView.addCommand(KeyMod.CtrlCmd | KeyCode.Enter, () => onSave?.());
       if (latex) completion = latexAutocomplete(latex, editorView);
       requestAnimationFrame(() => requestAnimationFrame(() => {
         if (!alive) return;
@@ -127,46 +129,6 @@
       latexPreview = true;
     }
   });
-
-  async function save() {
-    if (!editorView || !dirty || saving || deleting) return;
-    const targetFnode = fnode;
-    const targetSrctype = block.srctype;
-    const targetRevision = revision;
-    saving = true;
-    const clearMutation = trackMutation();
-    error = null;
-    const content = editorView.getValue();
-    const isCurrent = () => alive;
-
-    try {
-      const node = await api.putBlock(targetFnode, targetSrctype, content, targetRevision);
-      if (!isCurrent() || !editorView) return;
-      const updated = node.blocks.find((b) => b.srctype === targetSrctype);
-      if (!updated) {
-        error = `saved response is missing the ${targetSrctype} block`;
-        return;
-      }
-
-      onSaved?.(node);
-      lastSavedDoc = updated.content;
-      // A response may normalize the submitted text, but it must never replace
-      // edits made while that request was in flight.
-      if (editorView.getValue() === content) {
-        if (content !== updated.content) {
-          editorView.setValue(updated.content);
-        }
-      }
-    } catch (e) {
-      if (isCurrent()) error = errMsg(e);
-    } finally {
-      clearMutation();
-      if (isCurrent()) {
-        if (editorView) setDirty(editorView.getValue() !== lastSavedDoc);
-        saving = false;
-      }
-    }
-  }
 
   async function onDelete() {
     if (saving || deleting) return;
@@ -224,7 +186,6 @@
     <span class="spacer"></span>
     {#if dirty}<span class="dirty" title="Unsaved changes"><span class="dirty-dot"></span><span class="btn-label">Unsaved</span></span>{/if}
     {#if latex?.working}<span class="saving">rendering...</span>{/if}
-    {#if saving}<span class="saving">saving...</span>{/if}
     {#if deleting}<span class="saving">deleting...</span>{/if}
     {#if error}<span class="error" title={error}><AlertTriangle size={14} strokeWidth={1.9} /></span>{/if}
     {#if block.srctype === "latex"}
@@ -244,7 +205,6 @@
     <button class="icon-btn expand" onclick={toggleExpand} title={expanded ? "Collapse" : "Expand"} aria-label={expanded ? "Collapse block" : "Expand block"}>
       {#if expanded}<ChevronDown size={15} strokeWidth={1.9} />{:else}<ChevronRight size={15} strokeWidth={1.9} />{/if}
     </button>
-    <button class="save" onclick={save} disabled={!dirty || saving || deleting} title="Save (Ctrl/⌘+S)" aria-label="Save"><SaveIcon size={13} strokeWidth={1.9} /><span class="btn-label">Save</span></button>
     <button class="delete" onclick={onDelete} disabled={saving || deleting} title="Delete block" aria-label="Delete block"><Trash2 size={14} strokeWidth={1.8} /></button>
   </header>
   {#if latex && expanded}<LatexImports imports={latex.context?.imports ?? null} />{/if}

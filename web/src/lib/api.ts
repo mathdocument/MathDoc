@@ -169,6 +169,14 @@ export const api = {
         body: JSON.stringify({ content } satisfies BlockBody),
       },
     )),
+  putBlocks: (fnode: string, blocks: Record<string, string>, expectedRevision: string) =>
+    mutateNode(fnode, expectedRevision, (revision) => req<NodeDetail>(
+      `/api/node/${encodeURIComponent(fnode)}/blocks`, {
+        method: "PUT",
+        headers: { "content-type": "application/json", "if-match": `"${revision}"` },
+        body: JSON.stringify(blocks),
+      },
+    )),
   deleteBlock: (fnode: string, srctype: string, expectedRevision: string) =>
     mutateNode(fnode, expectedRevision, (revision) => req<NodeDetail>(
       `/api/node/${encodeURIComponent(fnode)}/block/${encodeURIComponent(srctype)}`,

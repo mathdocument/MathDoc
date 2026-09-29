@@ -1,5 +1,7 @@
+import { SvelteSet } from "svelte/reactivity";
+
 const dirtyDrafts = new Set<symbol>();
-const pendingMutations = new Set<symbol>();
+const pendingMutations = new SvelteSet<symbol>();
 let pendingWaiters: Array<() => void> = [];
 let draftRevision = 0;
 
@@ -29,6 +31,10 @@ export function trackMutation(): () => void {
       for (const resolve of waiters) resolve();
     }
   };
+}
+
+export function hasPendingMutations(): boolean {
+  return pendingMutations.size > 0;
 }
 
 export async function settlePendingMutations(): Promise<boolean> {

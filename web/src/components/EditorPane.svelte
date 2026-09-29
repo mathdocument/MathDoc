@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { Check, FileText, Hash, Layers3, X } from "@lucide/svelte";
+  import { Check, FileText, Hash, Layers3, LoaderCircle, Save, X } from "@lucide/svelte";
   import { SOURCE_TYPES, type NodeDetail } from "../lib/types";
   import type { LoadState } from "../lib/state.svelte";
   import type { Theme } from "../lib/theme";
@@ -11,6 +11,7 @@
   import { nodeNameError } from "../lib/node-name";
   import { api } from "../lib/api";
   import {
+    hasPendingMutations,
     removeDraft,
     setDraftDirty,
     trackMutation,
@@ -45,6 +46,39 @@
   let blockEditorPromise: Promise<typeof import("./BlockEditor.svelte").default> | null = null;
   let editorLoadError: string | null = $state(null);
   let alive = true;
+  let drafts = $state<Record<string, string>>({});
+  let saving = $state(false);
+  let saveError = $state<string | null>(null);
+  let saveRequest = 0;
+  let changes = $derived(Object.fromEntries((node?.blocks ?? [])
+    .filter(block => drafts[block.srctype] !== undefined && drafts[block.srctype] !== block.content)
+    .map(block => [block.srctype, drafts[block.srctype]!])));
+
+  function updateDraft(fnode: string, srctype: string, content: string | null) {
+    if (node?.fnode !== fnode) return;
+    if (content === null) delete drafts[srctype];
+    else drafts[srctype] = content;
+  }
+
+  async function saveNode() {
+    if (!node || saving || hasPendingMutations() || Object.keys(changes).length === 0) return;
+    const target = node, submitted = { ...changes }, request = ++saveRequest;
+    const isCurrent = () => alive && request === saveRequest && node?.fnode === target.fnode;
+    saving = true; saveError = null;
+    const release = trackMutation();
+    try {
+      const updated = await api.putBlocks(target.fnode, submitted, target.revision);
+      if (isCurrent()) applyBlockUpdate(updated, true);
+    } catch (error) { if (isCurrent()) saveError = errMsg(error); }
+    finally { release(); if (isCurrent()) saving = false; }
+  }
+
+  function saveShortcut(event: KeyboardEvent) {
+    if (!active || event.defaultPrevented || event.isComposing || document.querySelector('dialog[open]') ||
+      !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "s") return;
+    event.preventDefault();
+    void saveNode();
+  }
 
   function applyBlockUpdate(updated: NodeDetail, graphChanged = false) {
     if (load.kind !== "ready" || load.node.fnode !== updated.fnode) return;
@@ -99,6 +133,10 @@
     editingTitle = false;
     titleSaving = false;
     titleError = null;
+    saveRequest++;
+    drafts = {};
+    saving = false;
+    saveError = null;
   });
 
   $effect(() => {
@@ -164,6 +202,8 @@
 
 </script>
 
+<svelte:window onkeydown={saveShortcut} />
+
 <section
   class="center"
   aria-label="current node"
@@ -210,7 +250,12 @@
         <span class="meta-sep" aria-hidden="true"></span>
         <FormalStatus language="Lean" status={node.formalization.lean} />
         <FormalStatus language="Rocq" status={node.formalization.rocq} />
+        <button class="node-save" class:saving onclick={saveNode} disabled={saving || hasPendingMutations() || Object.keys(changes).length === 0}
+          aria-busy={saving} aria-label="Save node" title={saving ? "Saving node..." : "Save all changed source blocks (Ctrl/⌘+S)"}>
+          {#if saving}<LoaderCircle size={14} strokeWidth={1.8} />{:else}<Save size={14} strokeWidth={1.8} />{/if}
+        </button>
       </div>
+      {#if saveError}<div class="save-error" role="alert">{saveError}</div>{/if}
     </header>
   {/if}
     <div class="blocks" class:hidden={!node}>
@@ -235,7 +280,8 @@
         {#if srctype === "lean"}
           <!-- Keep Lean mounted across node changes to preserve its editor runtime. -->
           <LeanBlock fnode={node?.fnode ?? ""} revision={node?.revision ?? ""} module={node?.name} {block} {theme} {active} {selection}
-            onDeleted={(updated) => applyBlockUpdate(updated, true)} onSaved={(updated) => applyBlockUpdate(updated, true)} onReady={() => reportBlockReady("lean")} />
+            {saving} onChange={(content) => updateDraft(node?.fnode ?? "", "lean", content)} onSave={saveNode}
+            onDeleted={(updated) => applyBlockUpdate(updated, true)} onCertified={(updated) => applyBlockUpdate(updated, true)} onReady={() => reportBlockReady("lean")} />
         {:else if node && block && BlockEditorComponent && !editorLoadError}
           {#key `${node.fnode}:${srctype}`}
           <BlockEditorComponent
@@ -244,12 +290,14 @@
             {block}
             {theme}
             {active}
+            {saving}
+            onChange={(content) => updateDraft(node.fnode, block.srctype, content)}
+            onSave={saveNode}
             bind:latexPreview
             preparedLatex={load.kind === "ready" ? load.latexPreview : undefined}
             focusLabel={latexTarget?.fnode === node.fnode ? latexTarget.label : undefined}
             {onLatexNavigate}
             onDeleted={(updated) => applyBlockUpdate(updated)}
-            onSaved={applyBlockUpdate}
             onReady={() => reportBlockReady(block.srctype)}
           />
           {/key}
@@ -398,6 +446,26 @@
     gap: 0.3rem;
     min-width: 0;
   }
+  .node-save {
+    margin-left: auto;
+    display: inline-grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid var(--mdc-border);
+    border-radius: var(--mdc-radius-sm);
+    background: transparent;
+    color: var(--mdc-accent);
+    cursor: pointer;
+  }
+  .node-save:hover:not(:disabled) { background: var(--mdc-card-hover); }
+  .node-save:focus-visible { outline: 2px solid var(--mdc-accent); outline-offset: 2px; }
+  .node-save:disabled { color: var(--mdc-muted); opacity: .4; cursor: default; }
+  .node-save.saving :global(svg) { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .node-save.saving :global(svg) { animation: none; } }
+  .save-error { margin-top: .5rem; color: var(--mdc-error); font-size: var(--mdc-text-xs); }
   .meta-sep {
     width: 1px;
     height: 11px;

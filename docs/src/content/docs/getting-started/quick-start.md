@@ -25,7 +25,7 @@ mdc graph check -p myproject/main -m
 mdc export -p myproject/main > backup.json
 ```
 
-The editor checks as you type. **Save** stores the source; once that exact version
+The editor checks as you type. **Save node** stores the source; once that exact version
 finishes checking, its status and compiled dependencies update automatically.
 Editor certificates and Lake artifacts are shared with CLI checks. Use
 `mdc lean check Example -p myproject/main --build` when you need the target
