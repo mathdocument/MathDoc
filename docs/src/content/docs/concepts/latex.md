@@ -29,8 +29,8 @@ switches on that node. The imported-dependency list stays visible in both Edit a
 from `dep`, and never enters the block source. Reference, citation, macro and
 environment completions appear as you type, or with **Ctrl+Space**. References
 are scoped to the selected node; bibliography candidates are shared by the
-branch. Reference completion shows the target's readable title and inserts
-`NODE_UUID::label` for dependencies, or just `label` within the current node.
+branch. Reference completion shows the target's name and inserts
+`Node.Name::label` for dependencies, or just `label` within the current node.
 Matching and relevance scores use Monaco's native fuzzy matcher. Citation searches
 include the key, title, authors and year; the best 50 matches from the entire
 catalog appear in a natively scrolling list. The display limit does not restrict
@@ -166,9 +166,9 @@ are allowed. Source-level `\externaldocument` and filesystem `\input` are reject
 
 A label is written normally, such as `\label{thm:main}`. In the web editor,
 type `thm:main` inside `\cref{…}` or `\nameref{…}` and accept a suggestion with
-Enter: external references insert `NODE_UUID::thm:main` using the target's full
-UUID; references within the current node insert only `thm:main`. Completion
-also searches theorem and node titles. Agents using `mdc edit --type latex`
+Enter: external references insert `Node.Name::thm:main` using the target's complete
+name; references within the current node insert only `thm:main`. Completion
+also searches theorem titles and node names. Agents using `mdc edit --type latex`
 should write the qualified form directly for external references.
 
 Bare labels remain supported when they identify exactly one target among the
@@ -179,17 +179,24 @@ Removing a dependency immediately removes access to its labels; transitive
 dependencies are not implicitly imported.
 
 Use `\cref` for numbered references: a local reference reads `Theorem 1`, and a
-cross-node reference reads `12345678::Theorem 1`. The prefix is the target
-node's first eight UUID characters; navigation still uses its full UUID.
-External `\ref`, `\Cref` and `\eqref` also show the target type and number.
+cross-node reference reads `Node.Name::theorem 1`. The prefix is the target
+node's complete name; navigation still uses its full UUID.
+External `\ref`, `\Cref` and `\eqref` also show the target type and number; `\Cref` capitalizes the type (`Node.Name::Theorem 1`).
 Within a node, `\ref` displays the number and `\eqref` puts it in parentheses.
 
 For numbered external targets, `\nameref` uses the same type and number as
 `\cref`. Within the current node, it retains the theorem's optional title or the
 section title. Unnumbered external targets retain their title (or their node
-title and label when unnamed), prefixed by `12345678::`.
+name and label when unnamed), prefixed by `Node.Name::`.
 References carry the target UUID and label so the web client can navigate to the
 correct node without reading an `.aux` file or building a PDF.
+
+`mdc rename` rewrites literal `name::label` arguments in saved `\ref`, `\cref`,
+`\Cref`, `\nameref` and `\eqref` commands in the same transaction as the name
+and Lean imports. Local labels, comments and verbatim text are preserved.
+Names constructed by custom macros are not rewritten. Existing open drafts
+remain revision-guarded and must be refreshed if another node's rename changes
+their saved source. Old `UUID::label` references are not supported.
 
 `\cite{key}` uses the shared BibTeX database. Pybtex's BibTeX interpreter runs the
 bundled, unmodified AMS `amsalpha.bst` (version 2.0, under LPPL 1.3c or later).

@@ -91,6 +91,6 @@ files on case-insensitive systems. Paths and UUID prefixes are not references.
 
 `mdc new MX.Dot32.Exact` allocates the stable UUID. `mdc rename MX.Dot32.Exact
 MX.Dot32.Proof` changes the name and module path together, atomically updates
-managed Lean imports, and invalidates affected Lean evidence. UUIDs and edges
+managed Lean imports and literal LaTeX `name::label` references, and invalidates affected Lean evidence. UUIDs and edges
 stay unchanged. There is no separate display title or stored module field.
 Existing-project migration is not included in this naming change.

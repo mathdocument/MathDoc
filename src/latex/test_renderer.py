@@ -242,8 +242,8 @@ class RendererTest(unittest.TestCase):
             \begin{thm}\label{next}Third.\end{thm}
             \begin{setup}[Notation]\label{notation}Unnumbered.\end{setup}
         '''
-        dependency = {'fnode': A, 'name': 'External node', 'source': source}
-        target = {'fnode': B, 'name': 'Current node', 'source': r'''
+        dependency = {'fnode': A, 'name': 'External.Node', 'source': source}
+        target = {'fnode': B, 'name': 'Current.Node', 'source': r'''
             \begin{thm}\label{local}Local.\end{thm}
             \cref{local,main,lemma,definition,next}, \ref{main}, \nameref{main}.
         '''}
@@ -253,8 +253,8 @@ class RendererTest(unittest.TestCase):
         self.assertIn('>Theorem 1</div>', preview['html'])
         self.assertIn('>Theorem 1</a>', preview['html'])
         for text in ('Theorem 1', 'Lemma 2', 'Definition 1', 'Theorem 3'):
-            self.assertIn('>11111111::' + text + '</a>', preview['html'])
-        self.assertEqual(preview['html'].count('>11111111::Theorem 1</a>'), 3)
+            self.assertIn('>External.Node::' + text.lower() + '</a>', preview['html'])
+        self.assertEqual(preview['html'].count('>External.Node::theorem 1</a>'), 3)
         labels = renderer.parse(project['preamble'], source).labels
         self.assertEqual({x['label']: x['number'] for x in labels},
                          {'main': '1', 'lemma': '2', 'definition': '1', 'next': '3', 'notation': ''})
@@ -269,12 +269,22 @@ class RendererTest(unittest.TestCase):
         self.assertNotIn('data-latex-node=', collision['html'])
         qualified = {**request, 'target': {**target, 'source':
             r'\begin{thm}\label{main}Local.\end{thm}' +
-            r'\cref{' + A + r'::main}\nameref{' + A + '::main}'}}
+            r'\cref{' + 'External.Node' + r'::main}\nameref{' + 'External.Node' + '::main}'}}
         resolved = renderer.handle(qualified)
         self.assertEqual(resolved['diagnostics'], [])
         self.assertEqual(resolved['html'].count('data-latex-node="' + A + '"'), 2)
+        old_uuid = renderer.handle({**request, 'target': {**target, 'source': r'\cref{' + A + '::main}'}})
+        self.assertIn('Unknown or undeclared reference: ' + A + '::main', old_uuid['diagnostics'])
+        capitalized = renderer.handle({**request, 'target': {**target, 'source': r'\Cref{External.Node::main}'}})
+        self.assertIn('External.Node::Theorem 1</a>', capitalized['html'])
+        qualified_collision = renderer.handle({**request, 'target': {**target, 'source':
+            r'\begin{thm}\label{External.Node::main}Local.\end{thm}\cref{External.Node::main}'}})
+        self.assertEqual(qualified_collision['diagnostics'], [])
+        self.assertIn('data-latex-node="' + A + '"', qualified_collision['html'])
+
+
         undeclared = renderer.handle({**qualified, 'dependencies': []})
-        self.assertIn('Unknown or undeclared reference: ' + A + '::main', undeclared['diagnostics'])
+        self.assertIn('Unknown or undeclared reference: ' + 'External.Node' + '::main', undeclared['diagnostics'])
         self.assertNotIn('data-latex-node=', undeclared['html'])
         duplicate = {**dependency, 'source': r'''
             \begin{thm}\label{main}First.\end{thm}
@@ -282,7 +292,7 @@ class RendererTest(unittest.TestCase):
         '''}
         for kind in ('context', 'preview'):
             ambiguous = renderer.handle({**request, 'kind': kind, 'dependencies': [duplicate]})
-            self.assertIn('Node External node: Duplicate label: main', ambiguous['diagnostics'])
+            self.assertIn('Node External.Node: Duplicate label: main', ambiguous['diagnostics'])
             if kind == 'context':
                 self.assertFalse(any(ref['label'] == 'main' for ref in ambiguous['references']))
             else:
@@ -394,7 +404,7 @@ class RendererTest(unittest.TestCase):
         request = {'kind': 'preview', 'project': PROJECT, 'target': target, 'dependencies': [dependency]}
         preview = renderer.handle(request)
         self.assertEqual(preview['diagnostics'], [])
-        self.assertIn('11111111::Theorem 1</a>', preview['html'])
+        self.assertIn('A::theorem 1</a>', preview['html'])
         self.assertIn('data-latex-node="' + A, preview['html'])
         self.assertIn('data-tex="\\mathcal{A}"', preview['html'])
         self.assertIn('<ul><li>', preview['html'])
@@ -405,7 +415,7 @@ class RendererTest(unittest.TestCase):
         self.assertEqual(multiple['diagnostics'], [])
         self.assertEqual(multiple['html'].count('data-latex-node='), 2)
         context = renderer.handle({**request, 'kind': 'context'})
-        self.assertIn(A + '::thm:a', [r['key'] for r in context['references']])
+        self.assertIn('A::thm:a', [r['key'] for r in context['references']])
         missing = renderer.handle({**request, 'dependencies': []})
         self.assertTrue(any('undeclared' in e for e in missing['diagnostics']))
         self.assertNotIn('data-latex-node="' + A, missing['html'])
@@ -418,7 +428,7 @@ class RendererTest(unittest.TestCase):
                 renderer.handle({**request, 'target': {**target, 'source': bad}})
         broken = renderer.handle({**request, 'kind': 'context', 'target': {**target, 'source': r'\input{bad}'}})
         self.assertTrue(any('not allowed' in e for e in broken['diagnostics']))
-        self.assertIn(A + '::thm:a', [r['key'] for r in broken['references']])
+        self.assertIn('A::thm:a', [r['key'] for r in broken['references']])
         hostile = renderer.handle({**request, 'target': {**target, 'source': '<script>alert(1)</script>'}})
         self.assertNotIn('<script>', hostile['html'])
         duplicate = renderer.handle({**request, 'target': {**target, 'source': r'\section{A}\label{x}\section{B}\label{x}'}})

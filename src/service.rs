@@ -843,8 +843,16 @@ async fn name(
     {
         let mut updated = other.as_ref().clone();
         for block in &mut updated.blocks {
-            if block.srctype == "lean" {
-                block.content = crate::names::rename_imports(&block.content, &old_name, &node.name);
+            match block.srctype.as_str() {
+                "lean" => {
+                    block.content =
+                        crate::names::rename_imports(&block.content, &old_name, &node.name)
+                }
+                "latex" => {
+                    block.content =
+                        crate::names::rename_latex_refs(&block.content, &old_name, &node.name)
+                }
+                _ => (),
             }
         }
         if &updated != other.as_ref() {

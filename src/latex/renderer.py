@@ -699,7 +699,7 @@ def handle(request):
         return {'citations': bibliography(project['bibliography']), 'commands': sorted(set(parsed.commands + ['frac', 'sqrt', 'sum', 'prod', 'int', 'left', 'right', 'mathbb', 'mathcal', 'mathrm', 'mathbf', 'operatorname', 'begin', 'end', 'section', 'subsection', 'label', 'ref', 'cref', 'nameref', 'cite', 'textbf', 'emph', 'item'])), 'environments': sorted(set(parsed.environments + ['itemize', 'enumerate', 'description', 'equation', 'align', 'gather', 'proof'])), 'diagnostics': parsed.diagnostics}
     target = request['target']
     dependencies = request['dependencies']
-    imports = [{'fnode': n['fnode'], 'title': n['name'], 'prefix': n['fnode'] + '::'} for n in dependencies]
+    imports = [{'fnode': n['fnode'], 'name': n['name'], 'prefix': n['name'] + '::'} for n in dependencies]
     refs = []
     diagnostics = []
     for node in [target] + dependencies:
@@ -713,8 +713,8 @@ def handle(request):
         if node['fnode'] != target['fnode'] or request['kind'] == 'context':
             diagnostics.extend(f'Node {node["name"]}: {message}' for message in parsed.diagnostics)
         for label in parsed.labels:
-            key = label['label'] if node['fnode'] == target['fnode'] else node['fnode'] + '::' + label['label']
-            refs.append({**label, 'key': key, 'fnode': node['fnode'], 'title': node['name']})
+            key = label['label'] if node['fnode'] == target['fnode'] else node['name'] + '::' + label['label']
+            refs.append({**label, 'key': key, 'fnode': node['fnode'], 'node_name': node['name']})
     if request['kind'] == 'context':
         return {'imports': imports, 'references': refs, 'diagnostics': diagnostics}
     current = parse(preamble, target['source'])
@@ -737,8 +737,7 @@ def handle(request):
             output.append(part)
         elif 'ref' in part:
             key = part['ref']
-            matches = by_label.get(key, [])
-            if not matches and key in exact: matches = [exact[key]]
+            matches = ([exact[key]] if key in exact else []) if '::' in key else by_label.get(key, [])
             if len(matches) != 1:
                 message = ('Ambiguous' if matches else 'Unknown or undeclared') + f' reference: {key}'
                 diagnostics.append(message)
@@ -746,15 +745,16 @@ def handle(request):
                 continue
             ref = matches[0]
             command = part['command']
-            name = ref['name'] or f'{ref["title"]} — {ref["label"]}'
+            name = ref['name'] or f'{ref["node_name"]} — {ref["label"]}'
             text = name if command == 'nameref' else ref['number'] or name
             if command in ('cref', 'Cref'): text = ref['type'] + ' ' + text
             if command == 'eqref': text = '(' + text + ')'
             if ref['fnode'] != target['fnode']:
                 if ref['number'] or command != 'nameref' or not ref['name']:
-                    text = ref['type'] + (f' {ref["number"]}' if ref['number'] else f' ({name})')
-                text = f'{ref["fnode"][:8]}::{text}'
-            output.append(f'<a href="#{esc(ref["anchor"])}" data-latex-node="{esc(ref["fnode"])}" data-latex-label="{esc(ref["label"])}" title="{esc(ref["title"])}">{esc(text)}</a>')
+                    kind = ref['type'] if command == 'Cref' else ref['type'].lower()
+                    text = kind + (f' {ref["number"]}' if ref['number'] else f' ({name})')
+                text = f'{ref["node_name"]}::{text}'
+            output.append(f'<a href="#{esc(ref["anchor"])}" data-latex-node="{esc(ref["fnode"])}" data-latex-label="{esc(ref["label"])}" title="{esc(ref["node_name"])}">{esc(text)}</a>')
         elif 'cite' in part:
             links = []
             for key in part['cite']:

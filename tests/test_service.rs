@@ -538,6 +538,11 @@ async fn names_and_import_renames_are_atomic() {
         content: "import A.X\n-- import A.X\ntheorem useA : True := by trivial\n".into(),
         ..Default::default()
     });
+    b.blocks.push(Block {
+        srctype: "latex".into(),
+        content: r"By \cref{A.X::main}.".into(),
+        ..Default::default()
+    });
     db.put(&[a.clone(), b.clone()], &original.version, "Naming fixture")
         .await
         .unwrap();
@@ -578,6 +583,10 @@ async fn names_and_import_renames_are_atomic() {
     assert_eq!(
         after.nodes[&b.fnode].source("lean").unwrap(),
         "import D.Result\n-- import A.X\ntheorem useA : True := by trivial\n"
+    );
+    assert_eq!(
+        after.nodes[&b.fnode].source("latex").unwrap(),
+        r"By \cref{D.Result::main}."
     );
     for id in [&a.fnode, &b.fnode] {
         assert_ne!(before.lean_keys[id], after.lean_keys[id]);

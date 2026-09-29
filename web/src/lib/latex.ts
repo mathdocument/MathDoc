@@ -8,8 +8,8 @@ export interface LatexProject {
   bibliography: string;
 }
 export interface LatexLabel { label: string; name: string; type: string; number: string; anchor: string }
-export interface LatexReference extends LatexLabel { key: string; fnode: string; title: string }
-export interface LatexImport { fnode: string; title: string; prefix: string }
+export interface LatexReference extends LatexLabel { key: string; fnode: string; node_name: string }
+export interface LatexImport { fnode: string; name: string; prefix: string }
 export interface Citation { key: string; label: string; title: string; authors: string; year: string; text: string }
 export interface LatexCatalog { project_key: string; citations: Citation[]; commands: string[]; environments: string[]; diagnostics: string[] }
 export interface LatexContext { context_key: string; project_key: string; imports: LatexImport[]; references: LatexReference[]; diagnostics: string[] }

@@ -572,7 +572,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           let opened = 0, closed = 0, currentSocket;
           page.on("websocket", socket => { currentSocket = socket; opened++; socket.on("close", () => closed++); });
           await page.getByRole("button", { name: /Search nodes/ }).click();
-          await page.getByPlaceholder("Search by name or fnode...").fill(node.name);
+          await page.getByPlaceholder("Search by name or UUID...").fill(node.name);
           await page.getByRole("dialog").getByRole("button", { name: new RegExp(node.name) }).click();
           await page.getByRole("button", { name: "Start Lean server", exact: true }).click();
           await page.getByText("Lean editor ready", { exact: true }).waitFor();
@@ -669,7 +669,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await page.getByRole("button", { name: "Knowledge", exact: true }).click();
         for (const [name, label, token] of [["Empty.Lean", "Unverified", "--mdc-muted"], ["Unchecked", "Unverified", "--mdc-muted"], ["Admitted", "Sorry", "--mdc-error"], ["Conditional", "Conditional", "--mdc-warning"], ["Proven", "Verified", "--mdc-accent-down"]]) {
           await page.getByRole("button", { name: /Search nodes/ }).click();
-          await page.getByPlaceholder("Search by name or fnode...").fill(name);
+          await page.getByPlaceholder("Search by name or UUID...").fill(name);
           await page.getByRole("dialog", { name: "search", exact: true }).getByRole("button", { name: new RegExp(name) }).click();
           await title(page, name);
           const light = center(page).getByLabel(`Lean: ${label}`, { exact: true }).locator('.status-light');
@@ -844,7 +844,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await page.goto(`${url}/?node=${a.fnode}`);
         // Select by exact name through the same browser search used by authors.
         await page.getByRole("button", { name: /Search nodes/ }).click();
-        await page.getByPlaceholder("Search by name or fnode...").fill("Lean.Example");
+        await page.getByPlaceholder("Search by name or UUID...").fill("Lean.Example");
         await page.getByRole("button", { name: /Lean.Example/ }).click();
         await page.getByRole("button", { name: "Start Lean server", exact: true }).click();
         await page.frameLocator('iframe[title="Lean source and Infoview"]').locator('#infoview-pending').waitFor();
@@ -950,7 +950,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.equal(await leanBlock.getByRole("button", { name: /Save & (check|build)/ }).count(), 0);
         const select = async name => {
           await page.getByRole("button", { name: /Search nodes/ }).click();
-          await page.getByPlaceholder("Search by name or fnode...").fill(name);
+          await page.getByPlaceholder("Search by name or UUID...").fill(name);
           await page.getByRole("button", { name: new RegExp(name) }).last().click();
           await title(page, name);
         };
@@ -1093,7 +1093,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await frame.getByText("-- typed before Lean initialized", { exact: true }).waitFor();
         const select = async name => {
           await page.getByRole("button", { name: /Search nodes/ }).click();
-          await page.getByPlaceholder("Search by name or fnode...").fill(name);
+          await page.getByPlaceholder("Search by name or UUID...").fill(name);
           await page.getByRole("button", { name: new RegExp(name) }).last().click();
           await title(page, name);
         };
@@ -1182,7 +1182,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         }));
         const select = async name => {
           await page.getByRole("button", { name: /Search nodes/ }).click();
-          await page.getByPlaceholder("Search by name or fnode...").fill(name);
+          await page.getByPlaceholder("Search by name or UUID...").fill(name);
           await page.getByRole("button", { name: new RegExp(name) }).last().click();
           await title(page, name);
         };
@@ -1274,11 +1274,11 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       const settings = JSON.parse((await cli('project', 'latex', 'show')).stdout).project;
       assert.match(settings.preamble, /newcommand/);
       assert.match(settings.bibliography, /A paper/);
-      const source = String.raw`\section{Introduction}\label{intro}By \nameref{thm:b}, see \cite{paper}. $\cA$ The value $r=0$ is zero. Blackboard bold: $\mathbb{ABCDEFGHIJKLMNOPQRSTUVWXYZ}$.\[\left(\frac{x_1^2}{1+x}\right)=\begin{pmatrix}a&b\\c&d\end{pmatrix}\]\begin{items}\item One\end{items}`;
+      const source = String.raw`\section{Introduction}\label{intro}By \nameref{Beta::thm:b}, see \cite{paper}. $\cA$ The value $r=0$ is zero. Blackboard bold: $\mathbb{ABCDEFGHIJKLMNOPQRSTUVWXYZ}$.\[\left(\frac{x_1^2}{1+x}\right)=\begin{pmatrix}a&b\\c&d\end{pmatrix}\]\begin{items}\item One\end{items}`;
       await put('Alpha', source);
       await put('Beta', String.raw`\begin{thm}[Named result]\label{thm:b}$\cA$ exists.\end{thm}`);
       await put('Gamma', String.raw`\section{Private result}\label{private}`);
-      const externalName = number => `${ids.Beta.slice(0, 8)}::Theorem ${number}`;
+      const externalName = number => `Beta::theorem ${number}`;
       await page.reload();
       const block = page.locator('article[data-srctype="latex"]');
       await block.getByText('1 imported dependencies', {exact: false}).waitFor();
@@ -1439,7 +1439,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await input.press('Control+Space');
       await page.getByRole('option', {selected: true}).filter({hasText: 'Named result'}).waitFor();
       await input.press('Enter');
-      const qualifiedReference = `\\nameref{${ids.Beta}::thm:b`;
+      const qualifiedReference = `\\nameref{Beta::thm:b`;
       await page.waitForFunction(text => document.querySelector('[data-srctype="latex"] .view-lines').innerText.includes(text), qualifiedReference);
       assert.ok((await block.locator('.view-lines').innerText()).includes(qualifiedReference));
       assert.equal(await page.getByRole('option').filter({hasText: 'Private result'}).count(), 0);
@@ -1533,7 +1533,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await input.press('Tab');
       await page.waitForFunction(key => document.querySelector('[data-srctype="latex"] .view-lines').innerText.includes(`cite{${key}`), nextKey);
       assert.ok((await block.locator('.view-lines').innerText()).includes(`cite{${nextKey}`));
-      const draft = String.raw`\section{Draft title}\label{new}By \nameref{thm:b}, see \cite{paper}. $\cA$`;
+      const draft = String.raw`\section{Draft title}\label{new}By \nameref{Beta::thm:b}, see \cite{paper}. $\cA$`;
       await fill(draft);
       const discard = page.listeners('dialog');
       page.removeAllListeners('dialog');
@@ -1755,7 +1755,7 @@ await test('Lean first paint waits for syntax without waiting for hidden iframe 
         requestAnimationFrame(window.observeLeanPaint);
       });
       await page.getByRole('button', {name: /Search nodes/}).click();
-      await page.getByPlaceholder('Search by name or fnode...').fill(node.name);
+      await page.getByPlaceholder('Search by name or UUID...').fill(node.name);
       await page.getByRole('button', {name: new RegExp(node.name)}).click();
       await painted();
       assert.equal(await page.evaluate(() => window.retainedLeanFrame === document.querySelector('iframe[title="Lean source and Infoview"]')), true);
@@ -1892,7 +1892,7 @@ await test('Lean session state survives navigation through nodes without Lean', 
       page.on('websocket', () => sockets++);
       const select = async name => {
         await page.getByRole('button', {name: /Search nodes/}).click();
-        await page.getByPlaceholder('Search by name or fnode...').fill(name);
+        await page.getByPlaceholder('Search by name or UUID...').fill(name);
         await page.getByRole('dialog').getByRole('button', {name: new RegExp(name)}).click();
         await title(page, name);
       };
@@ -1975,7 +1975,7 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       assert.equal(JSON.parse((await cli('show', nodes[0].fnode)).stdout).blocks[0].content.trimEnd(), (nodes[0].blocks[0].content + '-- saved without a server\n').trimEnd());
       const select = async name => {
         await page.getByRole('button', {name: /Search nodes/}).click();
-        await page.getByPlaceholder('Search by name or fnode...').fill(name);
+        await page.getByPlaceholder('Search by name or UUID...').fill(name);
         await page.getByRole('dialog').getByRole('button', {name: new RegExp(name)}).click();
         await title(page, name);
         await page.locator('.native-editor:not(.pending)').waitFor();

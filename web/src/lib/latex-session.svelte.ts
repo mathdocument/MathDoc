@@ -47,7 +47,7 @@ export class LatexSession {
 
   get references(): LatexReference[] {
     const external = this.context?.references.filter(ref => ref.fnode !== this.fnode) ?? [];
-    const local = this.previewSource === this.source ? this.preview?.labels.map(label => ({ ...label, key: label.label, fnode: this.fnode, title: 'Current node' })) ?? []
+    const local = this.previewSource === this.source ? this.preview?.labels.map(label => ({ ...label, key: label.label, fnode: this.fnode, node_name: 'Current node' })) ?? []
       : this.previewSource === null ? this.context?.references.filter(ref => ref.fnode === this.fnode) ?? [] : [];
     return [...local, ...external];
   }

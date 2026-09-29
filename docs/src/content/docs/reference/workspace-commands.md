@@ -193,7 +193,7 @@ from parent to new node are one transaction; `--revision` applies to that parent
 and requires `--parent`. Names are unique within the branch, including case-insensitive file collisions.
 
 `show` returns the node's fields, revision and formalization status. `rename`
-changes the node name and its Lean module path, preserving its UUID and dependency edges. Managed Lean header imports are rewritten in the same transaction. Declaration names and namespaces inside proof bodies are not renamed.
+changes the node name and its Lean module path, preserving its UUID and dependency edges. Managed Lean header imports and literal LaTeX `name::label` reference arguments are rewritten in the same transaction. Declaration names and namespaces inside proof bodies are not renamed.
 `edit` replaces or creates a complete source block from stdin. Types are `text`,
 `lean` (default), `rocq` and `latex`. `--delete` removes that block and reads no
 stdin; an empty source without `--delete` remains an existing block.

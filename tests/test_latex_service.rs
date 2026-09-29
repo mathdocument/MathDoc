@@ -95,7 +95,7 @@ async fn latex_project_previews_follow_dependencies_and_preserve_configuration()
     b.depens.push(a.fnode.clone());
     b.blocks.push(Block {
         srctype: "latex".into(),
-        content: "By \\nameref{thm:main}, see \\cite{paper}.".into(),
+        content: "By \\nameref{First.result::thm:main}, see \\cite{paper}.".into(),
         ..Default::default()
     });
     let mut outsider = Node::new("Unrelated.result".into()).unwrap();
@@ -122,7 +122,7 @@ async fn latex_project_previews_follow_dependencies_and_preserve_configuration()
     assert!(preview["html"]
         .as_str()
         .unwrap()
-        .contains(&format!("{}::Theorem 1</a>", &a.fnode[..8])));
+        .contains(&format!("{}::theorem 1</a>", a.name)));
     assert!(preview["html"].as_str().unwrap().contains("Aut20"));
     let (_, context) = call(&app, "GET", &context_path, Value::Null, None).await;
     assert!(preview["context_key"].is_string());
@@ -130,7 +130,7 @@ async fn latex_project_previews_follow_dependencies_and_preserve_configuration()
     assert_eq!(context["imports"].as_array().unwrap().len(), 1);
     assert_eq!(
         context["references"][0]["key"],
-        format!("{}::thm:main", a.fnode)
+        format!("{}::thm:main", a.name)
     );
     let (_, unchanged) = call(
         &app,
@@ -185,7 +185,43 @@ async fn latex_project_previews_follow_dependencies_and_preserve_configuration()
     assert!(refreshed["html"]
         .as_str()
         .unwrap()
-        .contains(&format!("{}::Theorem 2</a>", &a.fnode[..8])));
+        .contains(&format!("{}::theorem 2</a>", a.name)));
+
+    let current = fixture.db.load().await.unwrap();
+    let (status, renamed) = call(
+        &app,
+        "PUT",
+        &format!("/api/node/{}/name", a.fnode),
+        json!({"name":"Renamed.Result"}),
+        Some(&current.nodes[&a.fnode].revision()),
+    )
+    .await;
+    assert_eq!(status, 200, "{renamed}");
+    let loaded = fixture.db.load().await.unwrap();
+    b = loaded.nodes[&b.fnode].as_ref().clone();
+    assert!(b
+        .source("latex")
+        .unwrap()
+        .contains("Renamed.Result::thm:main"));
+    let draft = json!({"source": b.source("latex").unwrap()});
+    let (_, renamed_preview) = call(&app, "POST", &preview_path, draft.clone(), None).await;
+    assert_eq!(renamed_preview["diagnostics"], json!([]));
+    assert_ne!(renamed_preview["context_key"], refreshed["context_key"]);
+    assert!(renamed_preview["html"]
+        .as_str()
+        .unwrap()
+        .contains("Renamed.Result::theorem 2</a>"));
+    assert!(renamed_preview["html"]
+        .as_str()
+        .unwrap()
+        .contains(&format!("data-latex-node=\"{}\"", a.fnode)));
+    let (_, renamed_context) = call(&app, "GET", &context_path, Value::Null, None).await;
+    assert_eq!(renamed_context["imports"][0]["name"], "Renamed.Result");
+    assert_eq!(renamed_context["imports"][0]["prefix"], "Renamed.Result::");
+    assert_eq!(
+        renamed_context["references"][0]["key"],
+        "Renamed.Result::thm:main"
+    );
     b.depens.clear();
     fixture
         .db

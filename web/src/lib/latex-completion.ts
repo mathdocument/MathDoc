@@ -26,7 +26,7 @@ export function latexCompletions(session: Pick<LatexSession, 'references' | 'cat
       }));
       return {length: fragment.trimStart().length, options: filter(options, fragment)};
     }
-    const options = session.references.map(ref => ({label: ref.name || ref.label, search: `${ref.label} ${ref.name} ${ref.title}`, detail: [ref.title, ref.label].filter(Boolean).join(' · '), insert: ref.key}));
+    const options = session.references.map(ref => ({label: ref.name || ref.label, search: `${ref.label} ${ref.name} ${ref.node_name}`, detail: [ref.node_name, ref.label].filter(Boolean).join(' · '), insert: ref.key}));
     return {length: fragment.trimStart().length, options: filter(options, fragment)};
   }
   const environment = /\\(?:begin|end)\{([A-Za-z*]*)$/.exec(before);
