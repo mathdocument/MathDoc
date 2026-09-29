@@ -148,12 +148,6 @@ impl Node {
         {
             bail!("node identity must be a canonical lowercase hyphenated UUID");
         }
-        if self.name.trim().is_empty()
-            || self.name != self.name.trim()
-            || self.name.chars().any(char::is_control)
-        {
-            bail!("name must be nonempty, trimmed and contain no control characters");
-        }
         validate_name(&self.name)?;
         let mut types = BTreeSet::new();
         for block in &self.blocks {
@@ -815,21 +809,19 @@ impl Snapshot {
         }
     }
     pub fn resolve(&self, reference: &str) -> Result<&Node> {
-        if let Ok(id) = uuid::Uuid::parse_str(reference) {
-            return self
-                .nodes
-                .get(&id.to_string())
-                .map(Arc::as_ref)
-                .context("node not found");
-        }
-        let mut matches = self.nodes.values().filter(|n| n.name == reference);
-        let node = matches
-            .next()
-            .context("node not found; use an exact name or complete UUID")?;
-        if matches.next().is_some() {
-            bail!("name is ambiguous; use the complete UUID");
-        }
-        Ok(node)
+        let named = module_file(reference, "lean")
+            .ok()
+            .and_then(|path| self.modules.get(&path))
+            .and_then(|id| self.nodes.get(id))
+            .filter(|node| node.name == reference);
+        named
+            .or_else(|| {
+                uuid::Uuid::parse_str(reference)
+                    .ok()
+                    .and_then(|id| self.nodes.get(&id.to_string()))
+            })
+            .map(Arc::as_ref)
+            .context("node not found; use an exact name or complete UUID")
     }
     pub fn validate_changes<'a>(&self, changes: impl IntoIterator<Item = &'a Node>) -> Result<()> {
         let changes: Vec<_> = changes.into_iter().collect();
@@ -1112,9 +1104,10 @@ mod tests {
         let a = Node::new("A".into()).unwrap();
         let mut b = Node::new("B".into()).unwrap();
         b.depens.push(a.fnode.clone());
-        let s = Snapshot {
+        let hex = Node::new("abcdef00000000000000000000000000".into()).unwrap();
+        let mut s = Snapshot {
             version: String::new(),
-            nodes: [a.clone(), b.clone()]
+            nodes: [a.clone(), b.clone(), hex.clone()]
                 .into_iter()
                 .map(|n| (n.fnode.clone(), n.into()))
                 .collect(),
@@ -1128,7 +1121,10 @@ mod tests {
             lean_keys: HashMap::new(),
             referrers: HashMap::new(),
         };
+        s.recompute();
         assert_eq!(s.resolve("A").unwrap().fnode, a.fnode);
+        assert_eq!(s.resolve(&hex.name).unwrap().fnode, hex.fnode);
+        assert!(s.resolve("«A»").is_err());
         assert!(s.resolve("A.mdoc").is_err());
         assert!(s.resolve(&a.fnode[..8]).is_err());
         assert_eq!(s.resolve(&a.fnode.to_uppercase()).unwrap().fnode, a.fnode);

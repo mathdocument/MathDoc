@@ -833,6 +833,9 @@ async fn name(
     let mut node = snapshot.resolve(&id)?.clone();
     check_revision(&headers, &node)?;
     crate::store::validate_name(&body.name)?;
+    if body.name == node.name {
+        return Ok(revision_response(&snapshot, &node, &s.lean));
+    }
     let old_name = node.name.clone();
     node.name = body.name;
     let mut changes = vec![node.clone()];

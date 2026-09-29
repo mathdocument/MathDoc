@@ -549,6 +549,17 @@ async fn names_and_import_renames_are_atomic() {
     let app = service::router(Service::open(db.clone()).await.unwrap());
     let path = format!("/api/node/{}/name", a.fnode);
     let before = db.load().await.unwrap();
+    let (status, unchanged) = call(
+        &app,
+        "PUT",
+        &path,
+        json!({"name":a.name}),
+        Some(&a.revision()),
+    )
+    .await;
+    assert_eq!(status, 200, "{unchanged}");
+    assert_eq!(unchanged["revision"], a.revision());
+    assert_eq!(db.version().await.unwrap(), before.version);
     for invalid in ["B.X", "b.x", "Invalid name", "A..X"] {
         assert_eq!(
             call(
