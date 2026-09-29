@@ -64,14 +64,15 @@ function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export interface ServiceStatus {
-  server: { running: boolean; port: number | null; url: string | null };
+  /** on_demand: branches load when used (TypeScript backend); no start/stop. */
+  server: { running: boolean; port: number | null; url: string | null; on_demand?: boolean };
   projects: Record<string, { running: boolean; url: string | null; role?: "admin" | "owner" | "editor" | "viewer"; nodes?: number; edges?: number }>;
 }
 
 export type ProjectAction = {action: "init"; name: string}
   | {action: "remove"; database: string}
   | {action: "new_branch"; project: string; name: string}
-  | {action: "delete_branch"; project: string};
+  | {action: "start" | "stop" | "delete_branch"; project: string};
 export const projectsApi = {
   list: (signal?: AbortSignal) => fetchJson<ServiceStatus>("/api/projects", {signal}),
   change: (body: ProjectAction) => fetchJson<{project?: string; database?: string; deleted?: boolean}>("/api/projects", {

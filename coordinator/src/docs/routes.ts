@@ -325,7 +325,7 @@ export class DocsBackend {
       }
       const port = Number(req.socket.localPort) || null;
       return send(res, 200, {
-        server: { running: true, port, url: origin },
+        server: { running: true, port, url: origin, on_demand: true },
         projects,
       });
     }

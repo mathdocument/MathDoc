@@ -4,6 +4,7 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { once } from "node:events";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,15 +12,20 @@ import { randomUUID } from "node:crypto";
 import { chromium, webkit } from "playwright";
 import { createServer } from "node:net";
 
-// Stage 2 of docs/coordination-migration-plan.md: the suite drives the TypeScript
-// backend (coordinator/src/main.ts) instead of the Rust mdc binary. Test data is built
-// through the HTTP API; `cli(...)` below is a thin HTTP shim for the few CLI commands the
-// tests use. Requires MDC_TERMINUS_URL/MDC_TERMINUS_PASSWORD and MDC_DATABASE_URL.
+// The suite drives either backend (docs/coordination-migration-plan.md, stages 2-5):
+//   MDC_E2E_BACKEND=rust (default): the legacy mdc binary, exactly as before the migration;
+//   MDC_E2E_BACKEND=ts: the TypeScript backend (coordinator/src/main.ts). Test data is built
+//     through the HTTP API and `cli(...)` is a thin HTTP shim for the CLI commands used here.
+//     Also requires MDC_DATABASE_URL. Local-Lean tests are skipped: that backend has no Lean.
 const run = promisify(execFile);
 const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(webRoot, "..");
 const env = { ...process.env };
-const LOCAL_LEAN_REMOVED = "local Lean execution is not part of the TypeScript backend (plan §6.1, stage 3)";
+const BACKEND = process.env.MDC_E2E_BACKEND ?? "rust";
+if (!["rust", "ts"].includes(BACKEND)) throw new Error("MDC_E2E_BACKEND must be rust or ts");
+const binary = resolve(process.env.MDC_BIN ?? resolve(webRoot, "../target/debug/mdc"));
+// Skip reason for tests that need local Lean, which only the legacy backend provides.
+const LOCAL_LEAN_REMOVED = BACKEND === "ts" && "local Lean execution is not part of the TypeScript backend (plan §6.1, stage 3)";
 
 // One actor for the whole suite; the browser receives the same token.
 const E2E_ACTOR = "e2e";
@@ -120,7 +126,7 @@ function cliFor(base, database) {
   };
 }
 
-async function fixture(browser, body, extraNodes = [], expectedPageErrors = []) {
+async function tsFixture(browser, body, extraNodes = [], expectedPageErrors = []) {
   const root = await mkdtemp(resolve(tmpdir(), "mdc-e2e-"));
   let context;
   const server = await startBackend();
@@ -198,6 +204,110 @@ async function fixture(browser, body, extraNodes = [], expectedPageErrors = []) 
   }
 }
 
+
+// ---- Legacy Rust backend (unchanged from before the migration) ----
+
+async function startRustServer(cwd, database) {
+  const reservation = createServer();
+  await new Promise(resolve => reservation.listen(0, "127.0.0.1", resolve));
+  const port = reservation.address().port;
+  await new Promise(resolve => reservation.close(resolve));
+  const { stdout } = await run(binary, ["start", `${database}/main`, "--port", String(port)], {
+    cwd, env: { ...env, MDC_CACHE_DIR: resolve(cwd, "cache") }, timeout: 30000,
+  });
+  const info = JSON.parse(stdout);
+  return { ...info, url: info.url.replace(/\/$/, ""), output: () => readFileSync(info.log, "utf8").slice(-16000) };
+}
+
+async function rustFixture(browser, body, extraNodes = [], expectedPageErrors = []) {
+  const root = await mkdtemp(resolve(tmpdir(), "mdc-e2e-"));
+  let server;
+  let context;
+  const database = `mdce2e${randomUUID().replaceAll("-", "")}`;
+  const cli = (...args) => run(binary, (args[0] === "init" ? ["init", database] : [args[0], "--proj", `${database}/main`, ...args.slice(1)]), { cwd: root, env: { ...env, MDC_CACHE_DIR: resolve(root, "cache") }, timeout: 30000, maxBuffer: 16 * 1024 * 1024 });
+  try {
+    await cli("init");
+    server = await startRustServer(root, database);
+    const bundle = JSON.parse((await cli("export")).stdout);
+    bundle.nodes = ["Alpha", "Beta", "Gamma"].map(title => {
+      const fnode = randomUUID();
+      return { fnode, title, module: `Lib.N_${fnode.replaceAll("-", "")}`, depens: [], blocks: [] };
+    }).concat(extraNodes);
+    const input = resolve(root, "graph.json");
+    await writeFile(input, JSON.stringify(bundle));
+    await cli("import", input);
+    await cli("dep", "add", "Alpha", "--target", "Beta");
+    await cli("graph", "check");
+    context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    await context.tracing.start({ screenshots: true, snapshots: true });
+    const page = await context.newPage();
+    page.setDefaultTimeout(30000);
+    const errors = [], traffic = [];
+    page.on("websocket", ws => {
+      const record = (direction, payload) => {
+        traffic.push({ time: Date.now(), direction, message: String(payload).slice(0, 16000) });
+        if (traffic.length > 300) traffic.shift();
+      };
+      ws.on("framesent", ({ payload }) => record("client", payload));
+      ws.on("framereceived", ({ payload }) => record("server", payload));
+      ws.on("close", () => record("close", ws.url()));
+    });
+    page.on("console", message => { if (message.type() === "error") console.error("Browser console:", message.text()); });
+    page.on("pageerror", (error) => errors.push((error.stack || error.message).replace(/^Unhandled Promise Rejection: /, "")));
+    page.on("dialog", (dialog) => void dialog.accept());
+    try {
+      await page.goto(`${server.url}/#ref=${bundle.nodes[0].fnode}`);
+      await title(page, "Alpha");
+      await body({ root, cli, page, url: server.url, serverOutput: server.output });
+      await cli("graph", "check");
+      assert.deepEqual(errors.filter(error => !expectedPageErrors.some(pattern => pattern.test(error))), []);
+    } catch (e) {
+      const artifacts = process.env.MDC_E2E_ARTIFACTS
+        ? resolve(process.env.MDC_E2E_ARTIFACTS, database)
+        : await mkdtemp(resolve(tmpdir(), "mdc-e2e-failure-"));
+      await mkdir(artifacts, { recursive: true });
+      await page.screenshot({ path: resolve(artifacts, "failure.png"), fullPage: true }).catch(console.error);
+      await context.tracing.stop({ path: resolve(artifacts, "trace.zip") }).catch(console.error);
+      const frames = await Promise.all(page.frames().map(async frame => ({
+        url: frame.url(),
+        text: await frame.locator("body").innerText({ timeout: 1000 }).catch(() => ""),
+        editor: await frame.locator(".view-line, .squiggly-error").evaluateAll(elements => elements.map(el => ({
+          text: el.textContent, class: el.className, bounds: el.getBoundingClientRect().toJSON(),
+        }))).catch(() => []),
+      })));
+      await writeFile(resolve(artifacts, "diagnostics.json"), JSON.stringify({ errors, frames, traffic }, null, 2));
+      await writeFile(resolve(artifacts, "service.log"), server.output());
+      console.error("Browser failure artifacts:", artifacts);
+      console.error("Server:", server.output());
+      console.error("Browser errors:", errors);
+      console.error("Page:", frames.map(frame => frame.text.slice(-3000)));
+      throw e;
+    }
+  } finally {
+    await context?.close();
+    if (server) {
+      await run(binary, ["stop", `${database}/main`], {
+        cwd: root, env: { ...env, MDC_CACHE_DIR: resolve(root, "cache") }, timeout: 35000,
+      });
+      await run(binary, ["stop"], {
+        cwd: root, env: { ...env, MDC_CACHE_DIR: resolve(root, "cache") }, timeout: 35000,
+      });
+    }
+    const serverOutput = server?.output() ?? "";
+    if (env.MDC_TERMINUS_PASSWORD) {
+      const response = await fetch(`${env.MDC_TERMINUS_URL ?? "http://127.0.0.1:6363"}/api/db/admin/${database}`, {
+        method: "DELETE",
+        headers: { Authorization: `Basic ${Buffer.from(`${env.MDC_TERMINUS_USER ?? "admin"}:${env.MDC_TERMINUS_PASSWORD}`).toString("base64")}` },
+      });
+      assert.ok(response.ok || response.status === 404, `test database cleanup failed: ${response.status}`);
+    }
+    await rm(root, { recursive: true, force: true });
+    assert.doesNotMatch(serverOutput, /broken pipe|recursion limit exceeded/, "service shutdown must finish native cleanup before closing the runtime");
+  }
+}
+
+const fixture = (...args) => (BACKEND === "ts" ? tsFixture : rustFixture)(...args);
+
 const center = (page) => page.getByRole("region", { name: "current node" });
 async function title(page, name) {
   await center(page).getByRole("button", { name, exact: true }).waitFor();
@@ -209,7 +319,124 @@ async function rename(page, value) {
 const beta = (page) => page.getByRole("complementary", { name: "Dependencies" })
   .getByRole("button", { name: /^Beta \(/ });
 
-await test('project directory creates, forks and deletes branches and projects', {timeout: 90000}, async () => {
+await test('project directory creates, forks, starts, stops and deletes branches', {timeout: 90000, skip: BACKEND !== 'rust' && 'legacy start/stop semantics'}, async () => {
+  const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
+  try {
+    await fixture(browser, async ({page, url}) => {
+      const base = new URL(url).origin, main = new URL(url).pathname.slice(3);
+      const database = main.split('/')[0], fork = `${database}/draft`;
+      const initialized = `mdce2einit${randomUUID().replaceAll('-', '')}`;
+      const row = name => page.locator(`[data-project="${name}"]`);
+      await page.goto(base);
+      await page.getByRole('textbox', {name: 'Search projects and branches'}).fill(database);
+      await row(main).getByText('Running', {exact: true}).waitFor();
+      assert.equal(await page.getByText('MAIN', {exact: true}).count(), 0);
+      assert.equal(await page.getByText('MATHEMATICAL WORKSPACE', {exact: true}).count(), 0);
+      assert.match(await row(main).locator('.counts').innerText(), /3.*nodes/);
+      assert.match(await row(main).locator('.counts').innerText(), /1.*edge/);
+      assert.equal(await row(main).getByRole('button', {name: `Delete ${main}`, exact: true}).count(), 0);
+      assert.equal(await row(main).locator('.main-branch').evaluate(el => getComputedStyle(el).borderTopStyle), 'solid');
+      const branch = async (source, name) => {
+        await row(source).getByRole('button', {name: `New branch from ${source}`, exact: true}).click();
+        await page.getByLabel('Branch name', {exact: true}).fill('invalid/name');
+        assert.equal(await page.getByLabel('Branch name', {exact: true}).evaluate(el => el.checkValidity()), false);
+        await page.getByLabel('Branch name', {exact: true}).fill(name);
+        await page.getByRole('dialog').getByRole('button', {name: 'New branch', exact: true}).click();
+        await page.getByRole('dialog').waitFor({state: 'hidden'});
+        await page.getByRole('textbox', {name: 'Search projects and branches'}).fill(database);
+      };
+      await branch(main, 'draft');
+      await row(fork).getByText('Stopped', {exact: true}).waitFor();
+      assert.equal((await row(fork).locator('.counts').innerText()).trim(), '');
+      const positions = await Promise.all([main, fork].map(name => row(name).locator('.counts').boundingBox()));
+      assert.equal(positions[0].x, positions[1].x); assert.equal(positions[0].width, positions[1].width);
+      await branch(fork, 'copy');
+      await row(fork).getByRole('button', {name: `Start ${fork}`, exact: true}).click();
+      await row(fork).getByText('Running', {exact: true}).waitFor();
+      assert.match(await row(fork).locator('.counts').innerText(), /3.*nodes/);
+      await row(fork).getByRole('button', {name: `Stop ${fork}`, exact: true}).click();
+      await row(fork).getByText('Stopped', {exact: true}).waitFor();
+      assert.equal((await row(fork).locator('.counts').innerText()).trim(), '');
+      for (const theme of ['dark', 'light']) {
+        if (await page.evaluate(() => document.documentElement.dataset.theme) !== theme) await page.getByRole('button', {name: 'Toggle theme'}).click();
+        for (const width of [1440, 750, 420]) {
+          await page.setViewportSize({width, height: 900});
+          assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth || document.querySelector('.directory').scrollWidth > innerWidth), false);
+          for (const selector of ['.toggle', '.branch-actions', '.branch-actions button', '.open, .open-space']) {
+            const bounds = await Promise.all([main, fork].map(name => row(name).locator(selector).first().boundingBox()));
+            assert.equal(bounds[0].x, bounds[1].x, `${selector} aligns at ${width}px`);
+            assert.equal(bounds[0].width + (selector === '.branch-actions' ? 30 : 0), bounds[1].width);
+          }
+          await page.screenshot({path: resolve(tmpdir(), `mdc-projects-${theme}-${width}-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`), fullPage: true});
+        }
+      }
+      await page.setViewportSize({width: 1440, height: 900});
+      await row(fork).getByRole('button', {name: `Delete ${fork}`, exact: true}).click();
+      await row(fork).waitFor({state: 'hidden'});
+      assert.equal((await fetch(`${url}/api/graph/check`)).ok, true, 'other branches remain usable');
+      try {
+        await page.getByRole('button', {name: 'Init project', exact: true}).click();
+        await page.getByLabel('Project name', {exact: true}).fill(initialized);
+        await page.getByRole('dialog').getByRole('button', {name: 'Init', exact: true}).click();
+        await page.getByRole('dialog').waitFor({state: 'hidden'});
+        await row(`${initialized}/main`).getByText('Stopped', {exact: true}).waitFor();
+        const deleteMain = row(`${initialized}/main`).getByRole('button', {name: `Delete ${initialized}/main`, exact: true});
+        assert.equal(await deleteMain.count(), 0);
+        await row(`${initialized}/main`).getByRole('button', {name: `Start ${initialized}/main`, exact: true}).click();
+        await row(`${initialized}/main`).getByText('Running', {exact: true}).waitFor();
+        assert.match(await row(`${initialized}/main`).locator('.counts').innerText(), /0.*nodes/);
+        const body = JSON.stringify({action: 'remove', database: initialized});
+        for (const origin of [undefined, 'https://attacker.invalid']) {
+          const headers = {'content-type': 'application/json'};
+          if (origin) headers.origin = origin;
+          assert.equal((await fetch(`${base}/api/projects`, {method: 'POST', headers, body})).status, 403);
+        }
+        assert.ok((await fetch(`${base}/api/projects`, {method: 'POST', headers: {'content-type': 'application/json', origin: base},
+          body: JSON.stringify({action: 'new_branch', project: `${initialized}/main`, name: 'hidden'})})).ok);
+        await page.getByRole('textbox', {name: 'Search projects and branches'}).fill(initialized);
+        await page.getByRole('button', {name: 'Running', exact: true}).click();
+        const removeProject = page.getByRole('button', {name: `Delete project ${initialized}`, exact: true});
+        // Cancel must preserve the project; accepting covers even filtered-out branches.
+        page.removeAllListeners('dialog');
+        page.once('dialog', dialog => void dialog.dismiss());
+        await removeProject.click();
+        assert.ok((await fetch(`${base}/p/${initialized}/main/api/graph/check`)).ok);
+        const confirmations = [];
+        page.on('dialog', dialog => { confirmations.push(dialog.message()); void dialog.accept(); });
+        const rejectRemoval = route => route.request().postDataJSON()?.action === 'remove'
+          ? route.fulfill({status: 500, json: {error: 'test removal failed'}}) : route.continue();
+        await page.route('**/api/projects', rejectRemoval);
+        await removeProject.click();
+        await page.getByRole('alert').filter({hasText: 'test removal failed'}).waitFor();
+        await page.unroute('**/api/projects', rejectRemoval);
+        await removeProject.click();
+        await page.getByRole('region', {name: `Project ${initialized}`, exact: true}).waitFor({state: 'hidden'});
+        assert.ok(confirmations.every(text => text.includes('All its branches') && text.includes('history')));
+        assert.ok((await fetch(`${url}/api/graph/check`)).ok, 'removing a project preserves other projects');
+        const inventory = await (await fetch(`${base}/api/projects`)).json();
+        assert.equal(Object.keys(inventory.projects).some(name => name.startsWith(`${initialized}/`)), false);
+        assert.equal(await page.getByRole('alert').filter({hasText: 'test removal failed'}).count(), 0);
+        const db = await fetch(`${env.MDC_TERMINUS_URL ?? 'http://127.0.0.1:6363'}/api/db/admin/${initialized}`, {
+          headers: {Authorization: `Basic ${Buffer.from(`${env.MDC_TERMINUS_USER ?? 'admin'}:${env.MDC_TERMINUS_PASSWORD}`).toString('base64')}`},
+        });
+        assert.equal(db.status, 404);
+      } finally {
+        await fetch(`${base}/api/projects`, {method: 'POST', headers: {'content-type': 'application/json', origin: base}, body: JSON.stringify({action: 'stop', project: `${initialized}/main`})});
+        const removed = await fetch(`${env.MDC_TERMINUS_URL ?? 'http://127.0.0.1:6363'}/api/db/admin/${initialized}`, {
+          method: 'DELETE', headers: {Authorization: `Basic ${Buffer.from(`${env.MDC_TERMINUS_USER ?? 'admin'}:${env.MDC_TERMINUS_PASSWORD}`).toString('base64')}`},
+        });
+        assert.ok(removed.ok || removed.status === 404);
+      }
+      await page.route('**/api/projects', route => route.fulfill({json: {server: {running: true}, projects: {}}}));
+      await page.goto(base);
+      await page.getByRole('heading', {name: 'No projects yet'}).waitFor();
+      assert.equal(await page.getByText(/Create a project with|Open a running branch/).count(), 0);
+      assert.equal(await page.getByRole('button', {name: 'Init project', exact: true}).isEnabled(), true);
+    });
+  } finally { await browser.close(); }
+});
+
+await test('project directory creates, forks and deletes branches and projects', {timeout: 90000, skip: BACKEND !== 'ts' && 'on-demand branches and access tokens'}, async () => {
   const browser = process.env.MDC_E2E_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({headless: true, channel: 'chromium'});
   try {
     await fixture(browser, async ({page, url}) => {

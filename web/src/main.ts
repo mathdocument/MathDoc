@@ -2,7 +2,7 @@ import { mount } from "svelte";
 import App from "./App.svelte";
 import Projects from "./Projects.svelte";
 import { projectName } from "./lib/project-path";
-import { accessToken } from "./lib/auth";
+import { authorized } from "./lib/auth";
 import SignIn from "./components/SignIn.svelte";
 import { settleEditorLayout } from "./lib/editor-layout";
 import "./app.css";
@@ -25,7 +25,15 @@ window.addEventListener("pagereveal", event => {
     delete document.documentElement.dataset.vtScope;
   });
 });
-// Every API request carries an access token; without one, sign in first.
+// The TypeScript backend identifies every request (401 without a valid token). The
+// legacy backend has no identity endpoint (404) and keeps its same-origin model.
 window.addEventListener("mdc:signed-out", () => location.reload());
-if (accessToken()) mount(projectName() ? App : Projects, { target, props: { onReady: pageReady } });
-else { mount(SignIn, { target }); pageReady(); }
+async function start() {
+  let signIn = false;
+  try {
+    signIn = (await fetch("/api/me", authorized())).status === 401;
+  } catch { /* unreachable server: the page reports its own API errors */ }
+  if (signIn) { mount(SignIn, { target: target! }); pageReady(); }
+  else mount(projectName() ? App : Projects, { target: target!, props: { onReady: pageReady } });
+}
+void start();
