@@ -159,8 +159,7 @@
   flex: 0 0 var(--mdc-toolbar-h);
   padding: 0 0.75rem;
   border-bottom: 1px solid var(--mdc-border);
-  background: color-mix(in srgb, var(--mdc-panel) 82%, transparent);
-  backdrop-filter: blur(12px) saturate(160%);
+  background: var(--mdc-panel);
   position: relative;
   z-index: 4;
 }
@@ -213,5 +212,12 @@
 @media (max-width: 1000px) {
   .app-brand strong {
     display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-header {
+    padding-inline: 8px;
+    gap: 6px;
   }
 }

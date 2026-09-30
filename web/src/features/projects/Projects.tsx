@@ -25,7 +25,6 @@ export default function Projects({ onReady }: { onReady?: () => void }) {
   const [status, setStatus] = useState<ServiceStatus | null>(null);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
-  const [updated, setUpdated] = useState("");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | "running" | "stopped">("all");
   const [create, setCreate] = useState<{ source?: string } | null>(null);
@@ -65,12 +64,6 @@ export default function Projects({ onReady }: { onReady?: () => void }) {
       if (controller.signal.aborted) return;
       setStatus(result);
       setError("");
-      setUpdated(
-        new Date().toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
-      );
     } catch (error) {
       if (!controller.signal.aborted && !isAbortError(error))
         setError(errMsg(error));
@@ -161,30 +154,24 @@ export default function Projects({ onReady }: { onReady?: () => void }) {
           <img src="/mdc-logo.svg" alt="" />
           <strong>MathDoc</strong>
         </a>
-        <span className="header-caption">
-          A connected notebook for mathematics
-        </span>
         <div className="header-tools">
           <IconButton
             label="Refresh projects"
+            variant="quiet"
             className={refreshing ? "spinning" : ""}
             disabled={refreshing}
             onClick={() => void refresh()}
           >
             <RefreshCw size={16} />
           </IconButton>
-          <IconButton label="Toggle theme" onClick={toggleTheme}>
+          <IconButton label="Toggle theme" variant="quiet" onClick={toggleTheme}>
             {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
           </IconButton>
         </div>
       </header>
       <main className="directory-main">
         <div className="directory-intro">
-          <div>
-            <span className="eyebrow">YOUR WORKSPACE</span>
-            <h1>Ideas, connected.</h1>
-            <p>Develop definitions. Trace dependencies. Build proofs.</p>
-          </div>
+          <h1>Projects</h1>
           <Button
             variant="primary"
             aria-label="Init project"
@@ -231,163 +218,157 @@ export default function Projects({ onReady }: { onReady?: () => void }) {
             ))}
           </div>
         </div>
-        <ErrorMessage>
-          {error &&
-            `Could not refresh projects: ${error}${status ? ". Showing the last known states." : ""}`}
-        </ErrorMessage>
-        {Object.entries(failures)
-          .filter(([name, message]) => !name.includes("/") && message)
-          .map(([name, message]) => (
-            <ErrorMessage key={name}>
-              Could not delete project {name}: {message}
-            </ErrorMessage>
-          ))}
-        {!status && !error ? (
-          <div className="empty-state" role="status">
-            Loading projects...
-          </div>
-        ) : status && !branches.length ? (
-          <div className="empty-state">
-            <FolderOpen size={32} />
-            <h2>No projects yet</h2>
-            <p>Create your first project to start connecting ideas.</p>
-          </div>
-        ) : status && !groups.size ? (
-          <div className="empty-state">
-            <Search size={28} />
-            <h2>No matching branches</h2>
-            <p>Try a different name or change the status filter.</p>
-          </div>
-        ) : (
-          <div className="project-list">
-            {Array.from(groups, ([database, rows], index) => (
-              <section
-                className="project"
-                aria-label={`Project ${database}`}
-                key={database}
-              >
-                <header className="project-head">
-                  <span className="project-index">
-                    {String(index + 1).padStart(2, "0")}
-                  </span>
-                  <FolderOpen size={19} />
-                  <h2>{database}</h2>
-                  <span className="subtle">
-                    {rows.length} {rows.length === 1 ? "branch" : "branches"}
-                  </span>
-                  <IconButton
-                    label={`Delete project ${database}`}
-                    variant="quiet"
-                    disabled={projectPending(database)}
-                    onClick={() => void manage(database, "remove")}
-                  >
-                    <Trash2 size={15} />
-                  </IconButton>
-                </header>
-                {rows.map((row) => (
-                  <div
-                    className="branch-row"
-                    data-project={row.name}
-                    key={row.name}
-                  >
-                    <span className="branch-name">
-                      <GitBranch size={16} />
-                      {row.branch}
+        <div className="project-scroll">
+          <ErrorMessage>
+            {error &&
+              `Could not refresh projects: ${error}${status ? ". Showing the last known states." : ""}`}
+          </ErrorMessage>
+          {Object.entries(failures)
+            .filter(([name, message]) => !name.includes("/") && message)
+            .map(([name, message]) => (
+              <ErrorMessage key={name}>
+                Could not delete project {name}: {message}
+              </ErrorMessage>
+            ))}
+          {!status && !error ? (
+            <div className="empty-state" role="status">
+              Loading projects...
+            </div>
+          ) : status && !branches.length ? (
+            <div className="empty-state">
+              <FolderOpen size={32} />
+              <h2>No projects yet</h2>
+            </div>
+          ) : status && !groups.size ? (
+            <div className="empty-state">
+              <Search size={28} />
+              <h2>No matching branches</h2>
+            </div>
+          ) : (
+            <div className="project-list">
+              {Array.from(groups, ([database, rows], index) => (
+                <section
+                  className="project"
+                  aria-label={`Project ${database}`}
+                  key={database}
+                >
+                  <header className="project-head">
+                    <span className="project-index">
+                      {String(index + 1).padStart(2, "0")}
                     </span>
-                    <span
-                      className={`branch-state ${row.running ? "online" : ""}`}
+                    <FolderOpen size={19} />
+                    <h2>{database}</h2>
+                    <span className="subtle">
+                      {rows.length} {rows.length === 1 ? "branch" : "branches"}
+                    </span>
+                    <IconButton
+                      label={`Delete project ${database}`}
+                      variant="quiet"
+                      disabled={projectPending(database)}
+                      onClick={() => void manage(database, "remove")}
                     >
-                      <i />
-                      {row.running ? "Running" : "Stopped"}
-                    </span>
-                    <span
-                      className="branch-counts"
-                      aria-label={`Graph size of ${row.name}`}
-                    >
-                      {row.running && row.nodes !== undefined && (
-                        <span>
-                          <strong>{row.nodes.toLocaleString()}</strong>{" "}
-                          {row.nodes === 1 ? "node" : "nodes"}
-                        </span>
-                      )}
-                      {row.running && row.edges !== undefined && (
-                        <span>
-                          <strong>{row.edges.toLocaleString()}</strong>{" "}
-                          {row.edges === 1 ? "edge" : "edges"}
-                        </span>
-                      )}
-                    </span>
+                      <Trash2 size={15} />
+                    </IconButton>
+                  </header>
+                  {rows.map((row) => (
                     <div
-                      className="branch-actions"
-                      aria-label={`Manage ${row.name}`}
+                      className="branch-row"
+                      data-project={row.name}
+                      key={row.name}
                     >
-                      <IconButton
-                        label={`${row.running ? "Stop" : "Start"} ${row.name}`}
-                        disabled={!!pending[row.name] || !!pending[database]}
-                        onClick={() =>
-                          void manage(row.name, row.running ? "stop" : "start")
-                        }
+                      <span className="branch-name">
+                        <GitBranch size={16} />
+                        {row.branch}
+                      </span>
+                      <span
+                        className={`branch-state ${row.running ? "online" : ""}`}
                       >
-                        {pending[row.name] ? (
-                          <RefreshCw size={15} className="spinning" />
-                        ) : row.running ? (
-                          <Square size={13} />
-                        ) : (
-                          <Play size={14} />
+                        <i />
+                        {row.running ? "Running" : "Stopped"}
+                      </span>
+                      <span
+                        className="branch-counts"
+                        aria-label={`Graph size of ${row.name}`}
+                      >
+                        {row.running && row.nodes !== undefined && (
+                          <span>
+                            <strong>{row.nodes.toLocaleString()}</strong>{" "}
+                            {row.nodes === 1 ? "node" : "nodes"}
+                          </span>
                         )}
-                      </IconButton>
-                      <IconButton
-                        label={`New branch from ${row.name}`}
-                        disabled={!!pending[row.name] || !!pending[database]}
-                        onClick={() => setCreate({ source: row.name })}
+                        {row.running && row.edges !== undefined && (
+                          <span>
+                            <strong>{row.edges.toLocaleString()}</strong>{" "}
+                            {row.edges === 1 ? "edge" : "edges"}
+                          </span>
+                        )}
+                      </span>
+                      <div
+                        className="branch-actions"
+                        aria-label={`Manage ${row.name}`}
                       >
-                        <GitBranchPlus size={16} />
-                      </IconButton>
-                      {row.branch === "main" ? (
-                        <span className="branch-delete-space" />
-                      ) : (
                         <IconButton
-                          label={`Delete ${row.name}`}
-                          disabled={
-                            row.running ||
-                            !!pending[row.name] ||
-                            !!pending[database]
+                          label={`${row.running ? "Stop" : "Start"} ${row.name}`}
+                          disabled={!!pending[row.name] || !!pending[database]}
+                          onClick={() =>
+                            void manage(row.name, row.running ? "stop" : "start")
                           }
-                          onClick={() => void manage(row.name, "delete_branch")}
                         >
-                          <Trash2 size={15} />
+                          {pending[row.name] ? (
+                            <RefreshCw size={15} className="spinning" />
+                          ) : row.running ? (
+                            <Square size={13} />
+                          ) : (
+                            <Play size={14} />
+                          )}
                         </IconButton>
-                      )}
-                      {row.running &&
-                      row.url &&
-                      !pending[row.name] &&
-                      !pending[database] ? (
-                        <a
-                          className="branch-open"
-                          href={`/p/${row.name}/`}
-                          aria-label={`Open ${row.name}`}
+                        <IconButton
+                          label={`New branch from ${row.name}`}
+                          disabled={!!pending[row.name] || !!pending[database]}
+                          onClick={() => setCreate({ source: row.name })}
                         >
-                          Open <ArrowUpRight size={16} />
-                        </a>
-                      ) : (
-                        <span className="branch-open-space" />
+                          <GitBranchPlus size={16} />
+                        </IconButton>
+                        {row.branch === "main" ? (
+                          <span className="branch-delete-space" />
+                        ) : (
+                          <IconButton
+                            label={`Delete ${row.name}`}
+                            disabled={
+                              row.running ||
+                              !!pending[row.name] ||
+                              !!pending[database]
+                            }
+                            onClick={() => void manage(row.name, "delete_branch")}
+                          >
+                            <Trash2 size={15} />
+                          </IconButton>
+                        )}
+                        {row.running &&
+                        row.url &&
+                        !pending[row.name] &&
+                        !pending[database] ? (
+                          <a
+                            className="branch-open"
+                            href={`/p/${row.name}/`}
+                            aria-label={`Open ${row.name}`}
+                          >
+                            Open <ArrowUpRight size={16} />
+                          </a>
+                        ) : (
+                          <span className="branch-open-space" />
+                        )}
+                      </div>
+                      {failures[row.name] && (
+                        <ErrorMessage>{failures[row.name]}</ErrorMessage>
                       )}
                     </div>
-                    {failures[row.name] && (
-                      <ErrorMessage>{failures[row.name]}</ErrorMessage>
-                    )}
-                  </div>
-                ))}
-              </section>
-            ))}
-          </div>
-        )}
-        {updated && (
-          <footer className="directory-footer">
-            <span>Last refreshed {updated}</span>
-            <span>Updates automatically</span>
-          </footer>
-        )}
+                  ))}
+                </section>
+              ))}
+            </div>
+          )}
+        </div>
       </main>
       {create && (
         <ProjectCreate

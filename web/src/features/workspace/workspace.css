@@ -4,16 +4,6 @@
   flex-direction: column;
   overflow: hidden;
 }
-.app > .app-header {
-  height: 60px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  gap: 20px;
-  padding: 0 20px;
-  background: var(--mdc-panel);
-  border-bottom: 1px solid var(--mdc-border);
-}
 .brand-zone {
   display: flex;
   align-items: center;
@@ -405,10 +395,6 @@ kbd {
   border-bottom-color: var(--mdc-accent);
 }
 @media (max-width: 1150px) {
-  .app > .app-header {
-    gap: 10px;
-    padding: 0 12px;
-  }
   .brand-zone {
     gap: 10px;
   }
@@ -426,9 +412,6 @@ kbd {
   }
 }
 @media (max-width: 900px) {
-  .app-brand strong {
-    display: none;
-  }
   .search-tool {
     min-width: 30px;
     max-width: 40px;
@@ -469,10 +452,6 @@ kbd {
   }
   .workspace-tools .toolbar-divider {
     display: none;
-  }
-  .app > .app-header {
-    padding: 0 8px;
-    gap: 6px;
   }
   .status-project {
     display: none;

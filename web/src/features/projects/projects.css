@@ -3,36 +3,6 @@
   display: flex;
   flex-direction: column;
 }
-.directory .app-header {
-  display: flex;
-  align-items: center;
-  padding: 0 28px;
-  height: 60px;
-  flex-shrink: 0;
-  background: var(--mdc-panel);
-  border-bottom: 1px solid var(--mdc-border);
-  gap: 24px;
-}
-.app-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--mdc-fg);
-  text-decoration: none;
-  font-size: 15px;
-  letter-spacing: -0.035em;
-  flex-shrink: 0;
-}
-.app-brand img {
-  width: 27px;
-  height: 27px;
-}
-.header-caption {
-  font-size: 11px;
-  color: var(--mdc-muted);
-  padding-left: 24px;
-  border-left: 1px solid var(--mdc-border);
-}
 .header-tools {
   display: flex;
   align-items: center;
@@ -40,31 +10,31 @@
   margin-left: auto;
 }
 .directory-main {
-  overflow: auto;
-  padding: 60px max(24px, calc((100vw - 1100px) / 2)) 24px;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding: 32px max(24px, calc((100vw - 1100px) / 2)) 0;
 }
 .directory-intro {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 24px;
-  margin-bottom: 32px;
+  flex-shrink: 0;
+  margin-bottom: 24px;
 }
 .directory-intro h1 {
-  font-family: "Latin Modern Roman", Georgia, serif;
-  font-size: clamp(30px, 4vw, 46px);
-  font-weight: 400;
-  letter-spacing: -0.04em;
-  margin: 12px 0 8px;
-  line-height: 1.1;
-}
-.directory-intro p {
-  color: var(--mdc-muted);
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.035em;
   margin: 0;
-  font-size: 13px;
+  line-height: 1.2;
 }
 .directory-summary {
   display: flex;
+  flex-shrink: 0;
   gap: 28px;
   font-size: 12px;
   color: var(--mdc-muted);
@@ -99,6 +69,7 @@
 }
 .directory-controls {
   display: flex;
+  flex-shrink: 0;
   justify-content: space-between;
   gap: 16px;
   margin: 26px 0;
@@ -106,8 +77,16 @@
 .directory-controls .search-field {
   width: min(360px, 50%);
 }
+.project-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-bottom: 24px;
+}
 .project-list {
   display: grid;
+  align-content: start;
   gap: 24px;
 }
 .project {
@@ -208,19 +187,9 @@
 .branch-row > .error-message {
   width: 100%;
 }
-.directory-footer {
-  display: flex;
-  justify-content: space-between;
-  color: var(--mdc-muted);
-  font: 10px var(--mdc-mono);
-  margin-top: 28px;
-}
 @media (max-width: 680px) {
-  .header-caption {
-    display: none;
-  }
   .directory-main {
-    padding-top: 32px;
+    padding-top: 24px;
   }
   .directory-intro {
     align-items: flex-start;
