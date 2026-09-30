@@ -1362,6 +1362,44 @@ await test('node save atomically persists all blocks and retains drafts through 
   } finally { await browser.close(); }
 });
 
+await test('refresh discards confirmed drafts in every source editor and the node name', {timeout: 60000}, async () => {
+  const browser = await launchBrowser();
+  const node = {fnode: randomUUID(), name: 'Refresh.Drafts', depens: [], blocks: [
+    {srctype: 'text', content: 'Saved text'},
+    {srctype: 'latex', content: 'Saved prose'},
+    {srctype: 'rocq', content: 'Check True.'},
+  ]};
+  try {
+    await fixture(browser, async ({page, url, cli}) => {
+      await page.goto(`${url}/?refresh-drafts#ref=${node.fnode}`);
+      await title(page, node.name);
+      for (const {srctype} of node.blocks) {
+        const input = page.locator(`[data-srctype="${srctype}"]`).getByRole('textbox', {name: new RegExp(`^${srctype} source`)});
+        await input.press('ControlOrMeta+A');
+        await page.keyboard.insertText(`Discarded ${srctype} draft`);
+      }
+      await rename(page, 'Discarded.Name');
+      page.removeAllListeners('dialog');
+      page.once('dialog', dialog => void dialog.dismiss());
+      await page.getByRole('button', {name: 'Refresh database view'}).click();
+      assert.equal(await page.getByRole('textbox', {name: 'Node name', exact: true}).inputValue(), 'Discarded.Name');
+      assert.equal(await page.getByRole('button', {name: 'Save node', exact: true}).isEnabled(), true);
+      page.on('dialog', dialog => void dialog.accept());
+      await page.getByRole('button', {name: 'Refresh database view'}).click();
+      await page.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden', timeout: 5000});
+      await title(page, node.name);
+      for (const {srctype, content} of node.blocks) {
+        const visible = await page.locator(`[data-srctype="${srctype}"] .view-lines`).innerText();
+        assert.equal(visible.replaceAll('\u00a0', ' ').trim(), content);
+      }
+      assert.equal(await page.getByRole('button', {name: 'Save node', exact: true}).isDisabled(), true);
+      const saved = JSON.parse((await cli('show', node.fnode)).stdout);
+      assert.equal(saved.name, node.name);
+      assert.deepEqual(saved.blocks.map(({srctype, content}) => ({srctype, content})), node.blocks);
+    }, [node]);
+  } finally { await browser.close(); }
+});
+
 await test('Monaco source blocks retain highlighting, edits and undo across layout changes', {timeout: 60000}, async () => {
   const browser = await launchBrowser();
   const node = {fnode: randomUUID(), name: 'Shared.editors', depens: [], blocks: [

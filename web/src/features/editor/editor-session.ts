@@ -65,6 +65,7 @@ export class EditorSession extends ObservableModel {
   titleInputEl: HTMLInputElement | null = null;
   titleDraftId = Symbol("title draft");
   displayedFnode: string | null = null;
+  private displayedSelection = -1;
   titleRequest = 0;
   readyReported = false;
   readyBlocks = new Set<string>();
@@ -240,10 +241,14 @@ export class EditorSession extends ObservableModel {
   }
   resetNode() {
     const fnode = this.load.kind === "ready" ? this.load.node.fnode : null;
-    if (fnode === this.displayedFnode) return;
+    if (fnode === this.displayedFnode && this.selection === this.displayedSelection)
+      return;
+    if (fnode !== this.displayedFnode) {
+      this.readyReported = false;
+      this.readyBlocks.clear();
+    }
     this.displayedFnode = fnode;
-    this.readyReported = false;
-    this.readyBlocks.clear();
+    this.displayedSelection = this.selection;
     this.titleRequest++;
     this.editingTitle = false;
     this.titleSaving = false;

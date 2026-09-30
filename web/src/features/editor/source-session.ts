@@ -21,6 +21,7 @@ export interface SourceEditorSessionProps {
   block: SrcBlock;
   theme: Theme;
   active?: boolean;
+  selection?: number;
   latexPreview?: boolean;
   onPreviewChange: (value: boolean) => void;
   preparedLatex?: PreparedLatexPreview;
@@ -107,7 +108,7 @@ export class SourceEditorSession extends ObservableModel {
     setDraftDirty(this.draftId, value);
     const content =
       value && this.editorView ? this.editorView.getValue() : null;
-    (() => this.onChange?.(content))();
+    this.onChange?.(content);
   };
   ensureEditor = async () => {
     if (!this.alive || this.editorView || this.initializing) return;
@@ -252,14 +253,14 @@ export class SourceEditorSession extends ObservableModel {
     this.model?.dispose();
     this.editorView = null;
   }
-  syncSource() {
+  syncSource(discardDraft = false) {
     const nextContent = this.block.content;
-    if (this.lastSavedDoc === nextContent) return;
+    if (this.lastSavedDoc === nextContent && !discardDraft) return;
     this.error = null;
     this.lastSavedDoc = nextContent;
     if (
       this.editorView &&
-      !this.dirty &&
+      (discardDraft || !this.dirty) &&
       this.editorView.getValue() !== nextContent
     )
       this.editorView.setValue(nextContent);
@@ -295,7 +296,7 @@ export class SourceEditorSession extends ObservableModel {
   update(props: SourceEditorSessionProps) {
     const previous = this.props;
     this.props = props;
-    this.syncSource();
+    this.syncSource(previous.selection !== props.selection);
     this.syncActive();
     this.syncView();
     this.syncFocus();

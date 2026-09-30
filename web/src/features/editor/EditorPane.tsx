@@ -209,6 +209,7 @@ export default function EditorPane(props: EditorSessionProps) {
                     block={block}
                     theme={props.theme}
                     active={props.active}
+                    selection={props.selection}
                     saving={s.saving}
                     onChange={(content) =>
                       s.updateDraft(node.fnode, srctype, content)
