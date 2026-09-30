@@ -205,8 +205,8 @@ export function NodeColumn({
               >
                 <span className="card-title">{item.name}</span>
                 <span className="card-meta">
-                  <code>{shortFnode(item.fnode)}</code>
-                  <span>d{item.depth}</span>
+                  <code># {shortFnode(item.fnode)}</code>
+                  <span>· Depth {item.depth}</span>
                   <span className="card-verification">
                     <FormalStatus
                       language="Lean"

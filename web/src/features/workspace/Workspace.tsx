@@ -15,7 +15,6 @@ import {
   Trash2,
   Unlink2,
 } from "lucide-react";
-import { Group, Panel, Separator, useGroupRef } from "react-resizable-panels";
 import { nodeSession } from "../../lib/node-session";
 import { useModel } from "../../hooks/use-model";
 import { Button, IconButton } from "../../components/ui/button";
@@ -28,7 +27,7 @@ import {
   SearchDialog,
 } from "./NodeDialogs";
 import { ProjectSettings } from "./ProjectSettings";
-import { readLayout, saveLayout } from "./layout";
+import { shortFnode } from "../../lib/format";
 import "./workspace.css";
 const Graph = lazy(() => import("../graph/Graph"));
 
@@ -37,18 +36,10 @@ export default function Workspace({ onReady }: { onReady?: () => void }) {
   const s = useModel(controller),
     session = useModel(nodeSession),
     workspace = useModel(s.workspaceSession);
-  const group = useGroupRef();
-  const [initialLayout] = useState(() => readLayout("columns"));
   useLayoutEffect(() => {
     s.props = { onReady };
     s.reconcile();
   });
-  useLayoutEffect(() => {
-    const frame = requestAnimationFrame(() =>
-      group.current?.setLayout(readLayout(s.view)),
-    );
-    return () => cancelAnimationFrame(frame);
-  }, [group, s.view]);
   useEffect(() => {
     const stopTheme = s.watchTheme(),
       stopListening = s.listen();
@@ -94,11 +85,10 @@ export default function Workspace({ onReady }: { onReady?: () => void }) {
           onClick={() => {
             s.overlay = { kind: "search" };
           }}
-          title="Search nodes (/)"
+          title="Search nodes"
         >
           <Search size={14} />
           <span>Search nodes</span>
-          <kbd>/</kbd>
         </button>
         <div className="workspace-tools">
           <div className="tool-cluster" aria-label="node history">
@@ -222,26 +212,8 @@ export default function Workspace({ onReady }: { onReady?: () => void }) {
         </div>
       )}
       <main className="workspace-main">
-        <Group
-          groupRef={group}
-          defaultLayout={initialLayout}
-          disabled={s.view === "columns"}
-          onLayoutChanged={(layout, meta) => {
-            if (s.view === "force" && meta.isUserInteraction)
-              saveLayout(s.view, layout);
-          }}
-          orientation="horizontal"
-          className="workspace-panels"
-          resizeTargetMinimumSize={{ coarse: 20, fine: 6 }}
-        >
-          <Panel
-            className="context-panel"
-            id="context"
-            defaultSize="22%"
-            minSize={s.view === "force" ? "0%" : "15%"}
-            maxSize={s.view === "force" ? "0%" : "70%"}
-            collapsible
-          >
+        <div className="workspace-panels">
+          <div className="context-panel" id="context">
             <NodeColumn
               title="Referrers"
               accent="up"
@@ -251,18 +223,8 @@ export default function Workspace({ onReady }: { onReady?: () => void }) {
               active={s.view === "columns"}
               onSelect={(id) => void select(id)}
             />
-          </Panel>
-          <Separator
-            className={`panel-separator ${s.view === "force" ? "hidden" : ""}`}
-            disabled
-            aria-label="Referrers and editor boundary"
-          />
-          <Panel
-            className="node-panel"
-            id="editor"
-            defaultSize="56%"
-            minSize="30%"
-          >
+          </div>
+          <div className="node-panel" id="editor">
             <div className="editor-wrap">
               {s.initialError && s.view === "columns" ? (
                 <div className="empty-state">
@@ -299,19 +261,8 @@ export default function Workspace({ onReady }: { onReady?: () => void }) {
                 />
               )}
             </div>
-          </Panel>
-          <Separator
-            className="panel-separator"
-            disabled={s.view === "columns"}
-            aria-label="Resize node and graph"
-          />
-          <Panel
-            className="dependencies-panel"
-            id="dependencies"
-            defaultSize="22%"
-            minSize="15%"
-            maxSize={s.view === "force" ? "70%" : "35%"}
-          >
+          </div>
+          <div className="dependencies-panel" id="dependencies">
             <div
               className={`graph-panel ${s.view !== "force" ? "hidden" : ""}`}
             >
@@ -343,12 +294,12 @@ export default function Workspace({ onReady }: { onReady?: () => void }) {
               active={s.view === "columns"}
               onSelect={(id) => void select(id)}
             />
-          </Panel>
-        </Group>
+          </div>
+        </div>
       </main>
       <footer className="statusbar">
         <span className="status-uuid">
-          {s.statusLoad.kind === "ready" ? s.statusLoad.node.fnode : ""}
+          {s.statusLoad.kind === "ready" ? shortFnode(s.statusLoad.node.fnode) : ""}
         </span>
         <span className="status-node">
           {s.statusLoad.kind === "ready"
@@ -368,9 +319,6 @@ export default function Workspace({ onReady }: { onReady?: () => void }) {
             : workspace.loading
               ? "Checking graph..."
               : "Graph unavailable"}
-        </span>
-        <span className="status-shortcuts">
-          <kbd>/</kbd> search <kbd>g</kbd> graph
         </span>
       </footer>
       {s.overlay.kind === "new-node" && (

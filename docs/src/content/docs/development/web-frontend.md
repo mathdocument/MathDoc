@@ -38,8 +38,8 @@ list. Scrolling and Arrow/Home/End navigation reach all matches. Filters reset
 when selecting another node. Switching views keeps the columns' scroll positions and the
 same editor session. Node snapshots are replaced atomically instead of deeply
 proxied. The graph component loads on first use and keeps its layout in memory;
-desktop panels resize through keyboard-accessible separators and remember their widths
-per view. The graph defaults to a 60:40 graph/editor split. Narrow Knowledge
+desktop panels use fixed CSS grid columns. Graph view places the editor on the
+left in a 40:60 editor/graph split. Narrow Knowledge
 layouts hide relationship columns so the editor remains usable.
 The canvas bitmap fits its own viewport, with an eight-million-pixel budget on
 Retina displays. Window-size and pixel-density changes resize and paint in one

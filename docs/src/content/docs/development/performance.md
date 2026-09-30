@@ -170,7 +170,7 @@ as well as the default Chromium (see [test setup](../setup/)).
 ### React shell migration
 
 The React shell has a 192 KiB gzip cap, including its initial CSS and HTML.
-React DOM, Base UI accessibility behavior, resizable panels and virtual lists
+React DOM, Base UI accessibility behavior and virtual lists
 replace the previous Svelte runtime. For the first comparison from the Svelte shell to `react`, only the shell payload uses this absolute
 cap; later React changes also enforce the existing 8% relative budget. Total
 assets retain their 8% relative guard; the absolute total cap is corrected to

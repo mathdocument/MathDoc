@@ -35,7 +35,6 @@
     "monaco-editor": "npm:@codingame/monaco-vscode-editor-api@8.0.4",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
-    "react-resizable-panels": "^4.14.1",
     "threads": "1.7.0",
     "vite-plugin-node-polyfills": "^0.24.0",
     "vite-plugin-static-copy": "^2.3.2",

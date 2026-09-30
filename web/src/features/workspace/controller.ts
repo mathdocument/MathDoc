@@ -348,36 +348,6 @@ export class WorkspaceController extends ObservableModel {
     };
     let restoringHistory = false;
     let popstateRequest = 0;
-    // Global shortcuts: "/" opens search, "g" toggles the workspace view.
-    // Ignored while typing (inputs, textareas, contenteditable including Monaco).
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (
-        this.overlay.kind !== "none" ||
-        this.refreshing ||
-        this.historyNavigating ||
-        this.changingView
-      )
-        return;
-      const target = event.target;
-      if (target instanceof HTMLElement) {
-        const tag = target.tagName;
-        if (tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable)
-          return;
-      }
-      if (event.key === "/") {
-        event.preventDefault();
-        this.overlay = { kind: "search" };
-      } else if (
-        event.key.toLowerCase() === "g" &&
-        !event.metaKey &&
-        !event.ctrlKey &&
-        !event.altKey &&
-        !event.shiftKey
-      ) {
-        event.preventDefault();
-        void this.toggleGraphView();
-      }
-    };
     const onPopState = async (event: PopStateEvent) => {
       const request = ++popstateRequest;
       this.cancelStartup();
@@ -451,12 +421,10 @@ export class WorkspaceController extends ObservableModel {
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     window.addEventListener("popstate", onPopState);
-    window.addEventListener("keydown", onKeyDown);
     return () => {
       this.workspaceSession.cancel();
       window.removeEventListener("beforeunload", onBeforeUnload);
       window.removeEventListener("popstate", onPopState);
-      window.removeEventListener("keydown", onKeyDown);
     };
   }
   start() {

@@ -13,8 +13,8 @@ The editor toolbar identifies the current branch. Click the MathDoc logo to
 return to **All projects**; unsaved drafts require confirmation before leaving.
 Within a branch, navigate by search, referrers, dependencies or the graph view.
 Nodes are created with a unique qualified name, such as `MX.Dot32.Exact`; it is also the Lean module name. Creation and rename reject invalid identifiers and duplicate names. In Graph view, the
-node editor appears on the left and the graph on the right. Drag their divider
-to resize the panes; the width is remembered. Knowledge view uses fixed columns.
+node editor appears on the left and the graph on the right. Both Graph and
+Knowledge views use fixed column widths.
 Switching views preserves the active Lean session and unsaved edits.
 
 The node name is its Lean module name; use it in imports from other nodes.

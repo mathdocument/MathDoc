@@ -36,9 +36,6 @@
   font-size: 11px;
   cursor: pointer;
 }
-.search-tool kbd {
-  margin-left: auto;
-}
 .workspace-tools,
 .tool-cluster {
   display: flex;
@@ -63,35 +60,26 @@
 }
 .workspace-panels {
   height: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 22fr) minmax(0, 56fr) minmax(0, 22fr);
 }
-.panel-separator {
-  position: relative;
-  width: 5px;
-  background: var(--mdc-bg);
-  border-inline: 1px solid var(--mdc-border);
-  transition: background 120ms;
+.workspace-panels > div {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
-.panel-separator::after {
-  content: "";
-  width: 1px;
-  height: 28px;
-  position: absolute;
-  left: 1px;
-  top: 50%;
-  background: var(--mdc-border-strong);
+.node-panel,
+.dependencies-panel {
+  border-left: 1px solid var(--mdc-border);
 }
-.panel-separator:hover,
-.panel-separator[data-separator-active] {
-  background: var(--mdc-accent);
+.app[data-view="force"] .workspace-panels {
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
 }
-.app[data-view="columns"] .panel-separator {
-  width: 1px;
-  border: 0;
-  background: var(--mdc-border);
-  pointer-events: none;
-}
-.app[data-view="columns"] .panel-separator::after {
+.app[data-view="force"] .context-panel {
   display: none;
+}
+.app[data-view="force"] .node-panel {
+  border-left: 0;
 }
 .hidden {
   display: none !important;
@@ -266,12 +254,6 @@
 .graph-stats.error {
   color: var(--mdc-error);
 }
-.status-shortcuts {
-  display: flex;
-  gap: 5px;
-  align-items: center;
-  font-family: var(--mdc-font);
-}
 kbd {
   display: inline-block;
   font: 10px var(--mdc-mono);
@@ -420,8 +402,7 @@ kbd {
     max-width: 40px;
     flex: none;
   }
-  .search-tool span,
-  .search-tool kbd {
+  .search-tool span {
     display: none;
   }
   .workspace-tools {
@@ -441,9 +422,6 @@ kbd {
     width: 100%;
     margin-left: 0;
   }
-  .status-shortcuts {
-    display: none;
-  }
 }
 @media (max-width: 640px) {
   .project-breadcrumb {
@@ -462,12 +440,14 @@ kbd {
 
 @media (max-width: 740px) {
   .app[data-view="columns"] #context,
-  .app[data-view="columns"] #dependencies,
-  .app[data-view="columns"] .panel-separator {
+  .app[data-view="columns"] #dependencies {
     display: none !important;
   }
-  .app[data-view="columns"] #editor {
-    flex: 1 !important;
+  .app[data-view="columns"] .workspace-panels {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .app[data-view="columns"] .node-panel {
+    border-left: 0;
   }
   .statusbar {
     padding-inline: 10px;
