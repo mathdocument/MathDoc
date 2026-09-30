@@ -1,3 +1,7 @@
+import type { GraphFull, NodeView } from "../src/lib/api-types.ts";
+
+export type Scenario = "editor" | "graph" | "relations";
+
 export const GRAPH_NODE_COUNT = 10_000;
 export const GRAPH_EDGE_COUNT = (GRAPH_NODE_COUNT - 1) + (GRAPH_NODE_COUNT - 6);
 export const EDITOR_LINE_COUNT = 500;
@@ -25,7 +29,7 @@ function summary(index = 0) {
   };
 }
 
-function nodeView(withEditor) {
+function nodeView(withEditor: boolean): NodeView {
   return {
     node: {
       ...summary(),
@@ -41,9 +45,9 @@ function nodeView(withEditor) {
   };
 }
 
-function graph() {
-  const nodes = Array.from({ length: GRAPH_NODE_COUNT }, (_, index) => summary(index));
-  const edges = [];
+function graph(): GraphFull {
+  const nodes = Array.from({ length: GRAPH_NODE_COUNT }, (_, index) => ({ ...summary(index), lean: "unverified" as const }));
+  const edges: [number, number][] = [];
   for (let index = 1; index < GRAPH_NODE_COUNT; index++) {
     edges.push([Math.floor((index - 1) / 2), index]);
     if (index >= 6) edges.push([Math.floor((index - 3) / 3), index]);
@@ -51,7 +55,7 @@ function graph() {
   return { nodes, edges };
 }
 
-export function apiBodies(scenario) {
+export function apiBodies(scenario: Scenario) {
   const fullGraph = scenario !== "editor" ? graph() : { nodes: [summary()], edges: [] };
   if (scenario === "graph" && fullGraph.edges.length !== GRAPH_EDGE_COUNT) {
     throw new Error("graph fixture edge count is stale");
@@ -63,10 +67,10 @@ export function apiBodies(scenario) {
     }));
     view.node.depens = view.children.map(node => node.fnode);
   }
-  const bodies = new Map([
+  const bodies = new Map<string, unknown>([
     ["/api/project/latex/catalog", {project_key: "perf-latex", citations: [], commands: [], environments: [], diagnostics: []}],
     [`/api/node/${rootFnode}/latex/context`, {context_key: "perf-context", project_key: "perf-latex", references: [], imports: [], diagnostics: []}],
-    [`/api/node/${rootFnode}/latex/preview`, {project_key: "perf-latex", html: latexHtml, labels: [], diagnostics: []}],
+    [`/api/node/${rootFnode}/latex/preview`, {project_key: "perf-latex", context_key: "perf-context", html: latexHtml, labels: [], diagnostics: []}],
     ["/api/resolve", { fnode: rootFnode }],
     ["/api/graph/roots", [{ ...summary(), component_size: GRAPH_NODE_COUNT, topo_depth: 0 }]],
     ["/api/graph/check", {

@@ -143,7 +143,7 @@ its timings to the Chromium baseline:
 
 ```sh
 npm exec --prefix web -- playwright install webkit
-node web/perf/run.mjs --browser webkit --output /tmp/mdc-webkit-perf.json
+node web/perf/run.ts --browser webkit --output /tmp/mdc-webkit-perf.json
 ```
 
 `npm --prefix web run perf` compares a new run with `web/perf/baseline.json`. Run it on the same

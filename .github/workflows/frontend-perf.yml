@@ -49,13 +49,13 @@ jobs:
 
       - name: Measure base revision
         run: >-
-          node web/perf/run.mjs
+          node web/perf/run.ts
           --root perf-base/web --baseline
           --output "$RUNNER_TEMP/frontend-perf-base.json"
 
       - name: Compare current revision
         run: >-
-          node perf/run.mjs
+          node perf/run.ts
           --output "$RUNNER_TEMP/frontend-perf-current.json"
           --compare "$RUNNER_TEMP/frontend-perf-base.json"
         working-directory: web

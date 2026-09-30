@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { gzipSync } from "node:zlib";
 import { cpus, platform, arch, release } from "node:os";
@@ -6,20 +6,42 @@ import { once } from "node:events";
 import { readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium, webkit } from "playwright";
+import { chromium, webkit, type Browser, type BrowserContext, type Page } from "playwright";
 import {
   apiBodies,
+  type Scenario,
   EDITOR_LINE_COUNT,
   GRAPH_EDGE_COUNT,
   GRAPH_NODE_COUNT,
   RELATION_COUNT,
-} from "./fixtures.mjs";
+} from "./fixtures.ts";
+
+declare global {
+  interface Window {
+    __mdcPerfStart: number;
+    __mdcPerfAction: number;
+    __canvasResizes: { total: number; unpainted: number };
+    __firstFrameHeader?: boolean;
+    __reveal: { transition: boolean; done: boolean; error?: string };
+  }
+}
+
+interface PerformanceReport {
+  schema: number;
+  shellArchitecture?: string;
+  fixtures: { editorLines: number; graphNodes: number; graphEdges: number };
+  environment: { os: string; cpu: string; node: string; browser: string; viewport: string; samples: number };
+  metrics: Record<string, { value: number; unit: string }>;
+}
+interface Budgets {
+  metrics: Record<string, { max?: number; maxIncreaseRatio: number; noise: number }>;
+}
 
 const perfDir = dirname(fileURLToPath(import.meta.url));
 const defaultRoot = resolve(perfDir, "..");
 const args = process.argv.slice(2);
 
-function option(name) {
+function option(name: string) {
   const exact = args.indexOf(`--${name}`);
   if (exact !== -1) return args[exact + 1];
   const prefix = `--${name}=`;
@@ -35,7 +57,7 @@ const outputPath = resolve(
   option("output") ?? resolve(perfDir, record ? "baseline.json" : "latest.json"),
 );
 const comparePath = option("compare")
-  ? resolve(option("compare"))
+  ? resolve(option("compare")!)
   : !record && !option("output")
     ? resolve(perfDir, "baseline.json")
     : null;
@@ -45,16 +67,16 @@ if (!Number.isInteger(sampleCount) || sampleCount < 2) {
   throw new Error("MDC_PERF_SAMPLES must be an integer of at least 2");
 }
 
-function round(value) {
+function round(value: number) {
   return Math.round(value * 100) / 100;
 }
 
-function percentile(values, fraction) {
+function percentile(values: number[], fraction: number) {
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)];
 }
 
-function median(values) {
+function median(values: number[]) {
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 0
@@ -62,7 +84,7 @@ function median(values) {
     : sorted[middle];
 }
 
-async function filesUnder(path) {
+async function filesUnder(path: string): Promise<string[]> {
   const entries = await readdir(path, { withFileTypes: true });
   const nested = await Promise.all(entries.map((entry) => {
     const entryPath = resolve(path, entry.name);
@@ -71,7 +93,7 @@ async function filesUnder(path) {
   return nested.flat();
 }
 
-function transferSize(path, contents) {
+function transferSize(path: string, contents: Buffer) {
   return [".css", ".html", ".js", ".json", ".svg"].includes(extname(path))
     ? gzipSync(contents, { level: 9 }).length
     : contents.length;
@@ -140,7 +162,7 @@ async function startPreview() {
   throw new Error(`Timed out starting Vite preview:\n${logs}`);
 }
 
-async function stopPreview(child) {
+async function stopPreview(child: ChildProcess) {
   if (child.exitCode !== null) return;
   child.kill("SIGTERM");
   await Promise.race([
@@ -150,9 +172,9 @@ async function stopPreview(child) {
   if (child.exitCode === null) child.kill("SIGKILL");
 }
 
-async function preparePage(context, scenario, resetTheme = true) {
+async function preparePage(context: BrowserContext, scenario: Scenario, resetTheme = true) {
   const page = await context.newPage();
-  const errors = [];
+  const errors: string[] = [];
   page.on("pageerror", (error) => { errors.push(error.message); console.error("Browser error:", error.message); });
   await page.addInitScript((resetTheme) => {
     if (resetTheme) localStorage.setItem("mdc-theme", "dark");
@@ -169,13 +191,13 @@ async function preparePage(context, scenario, resetTheme = true) {
   return { page, errors };
 }
 
-async function nextPaint(page) {
+async function nextPaint(page: Page) {
   await page.evaluate(() => new Promise((resolvePaint) => {
     requestAnimationFrame(() => requestAnimationFrame(resolvePaint));
   }));
 }
 
-async function runEditorSample(context, url) {
+async function runEditorSample(context: BrowserContext, url: string) {
   const { page, errors } = await preparePage(context, "editor");
   try {
     await page.goto(`${url}/p/benchmark/main/`, { waitUntil: "domcontentloaded" });
@@ -217,7 +239,7 @@ async function runEditorSample(context, url) {
     const block = page.locator('.source-block[data-srctype="latex"]');
     const preview = block.locator('.latex-preview');
     const bounded = await block.evaluate(element => {
-      const pane = element.closest('.blocks');
+      const pane = element.closest<HTMLElement>('.blocks')!;
       const style = getComputedStyle(pane);
       const available = pane.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
       return element.getBoundingClientRect().height <= available + 1;
@@ -234,7 +256,7 @@ async function runEditorSample(context, url) {
     await block.getByRole('button', {name: 'Return to LaTeX editor'}).click();
     await page.waitForFunction(() => {
       const element = document.querySelector('.source-block[data-srctype="latex"] .editor-scroll');
-      return element?.clientHeight > 0 && element.scrollHeight > element.clientHeight;
+      return element !== null && element.clientHeight > 0 && element.scrollHeight > element.clientHeight;
     });
     if (errors.length > 0) throw new Error(errors.join("\n"));
     return { editorReadyMs, editorHighlightMs, themeSwitchMs, latexPreviewMs };
@@ -243,7 +265,7 @@ async function runEditorSample(context, url) {
   }
 }
 
-async function runGraphSample(context, url) {
+async function runGraphSample(context: BrowserContext, url: string) {
   const { page, errors } = await preparePage(context, "graph");
   try {
     await page.addInitScript(() => {
@@ -252,12 +274,12 @@ async function runGraphSample(context, url) {
       const fill = CanvasRenderingContext2D.prototype.fill;
       CanvasRenderingContext2D.prototype.fill = function (...args) {
         paints.set(this.canvas, (paints.get(this.canvas) ?? 0) + 1);
-        return fill.apply(this, args);
+        return Reflect.apply(fill, this, args);
       };
       for (const key of ["width", "height"]) {
-        const descriptor = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, key);
-        Object.defineProperty(HTMLCanvasElement.prototype, key, { ...descriptor, set(value) {
-          descriptor.set.call(this, value);
+        const descriptor = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, key)!;
+        Object.defineProperty(HTMLCanvasElement.prototype, key, { ...descriptor, set(this: HTMLCanvasElement, value: number) {
+          descriptor.set!.call(this, value);
           if (!this.closest(".graph-container") || value <= 1) return;
           const before = paints.get(this);
           window.__canvasResizes.total++;
@@ -292,7 +314,7 @@ async function runGraphSample(context, url) {
       const frameTimes = [];
       for (let index = 0; index < 20; index++) {
         await new Promise((resolveFrame) => requestAnimationFrame(resolveFrame));
-        const rect = canvas.parentElement.getBoundingClientRect();
+        const rect = canvas.parentElement!.getBoundingClientRect();
         const start = performance.now();
         canvas.dispatchEvent(new WheelEvent("wheel", {
           bubbles: true,
@@ -324,7 +346,7 @@ async function runGraphSample(context, url) {
   }
 }
 
-async function checkRetinaResize(browser, url) {
+async function checkRetinaResize(browser: Browser, url: string) {
   const context = await browser.newContext({ viewport: { width: 3840, height: 2160 }, deviceScaleFactor: 2 });
   const { page, errors } = await preparePage(context, "graph");
   try {
@@ -337,24 +359,24 @@ async function checkRetinaResize(browser, url) {
       await page.setViewportSize({ width, height: width === 3840 ? 2160 : 1080 });
       await nextPaint(page);
       const layout = await page.evaluate(() => {
-        const graph = document.querySelector(".graph-panel, .force-canvas-wrap").getBoundingClientRect();
-        const editor = document.querySelector(".force-editor-wrap, .app[data-view=force] .editor-wrap").getBoundingClientRect();
-        const canvas = document.querySelector("canvas");
+        const graph = document.querySelector(".graph-panel, .force-canvas-wrap")!.getBoundingClientRect();
+        const editor = document.querySelector(".force-editor-wrap, .app[data-view=force] .editor-wrap")!.getBoundingClientRect();
+        const canvas = document.querySelector("canvas")!;
         return { ratio: editor.width / (graph.width + editor.width), canvasWidth: canvas.clientWidth,
-          viewportWidth: canvas.parentElement.clientWidth, pixels: canvas.width * canvas.height,
-          scale: canvas.width / canvas.clientWidth, grid: getComputedStyle(canvas.parentElement).backgroundImage };
+          viewportWidth: canvas.parentElement!.clientWidth, pixels: canvas.width * canvas.height,
+          scale: canvas.width / canvas.clientWidth, grid: getComputedStyle(canvas.parentElement!).backgroundImage };
       });
       if (Math.abs(layout.ratio - (shellArchitecture === "react" ? .4 : 3/8)) > .001) throw new Error(`default graph editor must use 40% of available width: ${JSON.stringify(layout)}`);
       if (layout.canvasWidth !== layout.viewportWidth) throw new Error("graph bitmap must fit its viewport");
       if (layout.pixels > 8_010_000 || (width === 3840 && layout.scale >= 2)) throw new Error("Retina graph exceeded its backing pixel budget");
       if (layout.grid !== "none") throw new Error("graph grid background was restored");
-      if (await page.getByRole("separator").count() !== (shellArchitecture === "react" ? 1 : 0)) throw new Error("graph must expose one accessible resize handle");
+      if (await page.getByRole("separator").count() !== 0) throw new Error("graph panes must have fixed boundaries");
     }
     if (errors.length) throw new Error(errors.join("\n"));
   } finally { await context.close(); }
 }
 
-async function checkShellNavigation(browser, url) {
+async function checkShellNavigation(browser: Browser, url: string) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: "dark", reducedMotion: "no-preference" });
   const { page, errors } = await preparePage(context, "graph", false);
   try {
@@ -378,10 +400,10 @@ async function checkShellNavigation(browser, url) {
       });
     });
     const geometry = () => page.evaluate(() => [".app-header", ".app-brand"].map(selector => {
-      const rect = document.querySelector(selector).getBoundingClientRect();
+      const rect = document.querySelector(selector)!.getBoundingClientRect();
       return [rect.x, rect.y, rect.width, rect.height];
     }));
-    const ready = async (transition) => {
+    const ready = async (transition: boolean) => {
       await page.waitForFunction(() => window.__firstFrameHeader !== undefined && window.__reveal?.done);
       const state = await page.evaluate(() => ({ first: window.__firstFrameHeader, ...window.__reveal }));
       if (!state.first || state.error || state.transition !== transition) {
@@ -413,7 +435,7 @@ async function checkShellNavigation(browser, url) {
   } finally { await context.close(); }
 }
 
-async function runRelationsSample(context, url) {
+async function runRelationsSample(context: BrowserContext, url: string) {
   const { page, errors } = await preparePage(context, "relations");
   try {
     let graphRequests = 0;
@@ -483,11 +505,11 @@ async function runRelationsSample(context, url) {
     if (!await dialog.getByRole("status").innerText().then(text => text.includes("3 selected"))) {
       throw new Error("dependency selections were lost across pages and filtering");
     }
-    let removed;
+    let removed: { dep_fnodes: string[] } | undefined;
     await page.route("**/api/node/perf-root/dep/rm", async route => {
       removed = route.request().postDataJSON();
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
-        ...JSON.parse(apiBodies("relations").get("/api/node/perf-root/view")).node,
+        ...JSON.parse(apiBodies("relations").get("/api/node/perf-root/view")!).node,
         depens: [],
       }) });
     });
@@ -503,14 +525,14 @@ async function runRelationsSample(context, url) {
   }
 }
 
-function metric(value, unit) {
+function metric(value: number, unit: string) {
   return { value: round(value), unit };
 }
 
-function compareReports(base, current, budgets) {
+function compareReports(base: PerformanceReport, current: PerformanceReport, budgets: Budgets) {
   const failures = [];
   const rows = [];
-  const comparableEnvironment = ({ os, cpu, node, browser, viewport, samples }) => ({
+  const comparableEnvironment = ({ os, cpu, node, browser, viewport, samples }: PerformanceReport["environment"]) => ({
     os: os.split(" ").slice(0, 2).join(" "),
     cpu,
     node: node.split(".")[0],
@@ -544,7 +566,7 @@ function compareReports(base, current, budgets) {
     // relative guard. Runtime and total-asset budgets never get this exception.
     const migratingShell = name === "bundle.shellTransferBytes" &&
       base.shellArchitecture !== "react" && current.shellArchitecture === "react";
-    const regressionLimit = migratingShell ? budget.max : Math.max(relativeLimit, noiseLimit);
+    const regressionLimit = migratingShell && budget.max !== undefined ? budget.max : Math.max(relativeLimit, noiseLimit);
     const limit = budget.max === undefined ? regressionLimit : Math.min(budget.max, regressionLimit);
     const passed = after <= limit;
     rows.push({ metric: name, base: round(before), current: round(after), limit: round(limit), passed });
@@ -574,7 +596,7 @@ async function main() {
     await runEditorSample(context, preview.url);
     await runGraphSample(context, preview.url);
 
-    const editorSamples = [];
+    const editorSamples: Awaited<ReturnType<typeof runEditorSample>>[] = [];
     const graphSamples = [];
     for (let index = 0; index < sampleCount; index++) {
       editorSamples.push(await runEditorSample(context, preview.url));
@@ -593,7 +615,7 @@ async function main() {
     }
     await context.close();
 
-    const values = (name) => editorSamples.map((sample) => sample[name]);
+    const values = (name: keyof Awaited<ReturnType<typeof runEditorSample>>) => editorSamples.map((sample) => sample[name]);
     const zoomFrames = graphSamples.flatMap((sample) => sample.zoomFrames);
     const report = {
       schema: 1,
