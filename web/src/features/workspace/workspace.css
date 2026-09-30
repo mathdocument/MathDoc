@@ -84,6 +84,15 @@
 .panel-separator[data-separator-active] {
   background: var(--mdc-accent);
 }
+.app[data-view="columns"] .panel-separator {
+  width: 1px;
+  border: 0;
+  background: var(--mdc-border);
+  pointer-events: none;
+}
+.app[data-view="columns"] .panel-separator::after {
+  display: none;
+}
 .hidden {
   display: none !important;
 }
@@ -107,7 +116,7 @@
   justify-content: space-between;
   align-items: center;
   gap: 8px;
-  padding: 24px 20px 6px;
+  padding: 20px 20px 12px;
 }
 .column-head > span:first-child {
   display: flex;
@@ -126,12 +135,6 @@
 }
 .column-count {
   font: 11px var(--mdc-mono);
-  color: var(--mdc-muted);
-}
-.column-description {
-  font-size: 10px;
-  margin: 0;
-  padding: 0 20px 16px;
   color: var(--mdc-muted);
 }
 .column-filter {
@@ -431,7 +434,6 @@ kbd {
   .column-head {
     padding-inline: 12px;
   }
-  .column-description,
   .column-filter {
     padding-inline: 12px;
   }
@@ -460,20 +462,11 @@ kbd {
 
 @media (max-width: 740px) {
   .app[data-view="columns"] #context,
-  #dependencies,
-  .panel-separator {
+  .app[data-view="columns"] #dependencies,
+  .app[data-view="columns"] .panel-separator {
     display: none !important;
   }
   .app[data-view="columns"] #editor {
-    flex: 1 !important;
-  }
-  .app[data-view="force"] .workspace-panels {
-    flex-direction: column !important;
-  }
-  .app[data-view="force"] #context {
-    flex: 1 !important;
-  }
-  .app[data-view="force"] #editor {
     flex: 1 !important;
   }
   .statusbar {

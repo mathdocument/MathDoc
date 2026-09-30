@@ -1362,7 +1362,7 @@ await test('node save atomically persists all blocks and retains drafts through 
 await test('Monaco source blocks retain highlighting, edits and undo across layout changes', {timeout: 60000}, async () => {
   const browser = await launchBrowser();
   const node = {fnode: randomUUID(), name: 'Shared.editors', depens: [], blocks: [
-    {srctype: 'text', content: '# Heading\nA **bold** statement.\n'},
+    {srctype: 'text', content: '# Heading\nA **bold** statement。中文标点，测试：\n'},
     {srctype: 'latex', content: '% comment\n\\section{Heading}\nA statement.\n'},
     {srctype: 'rocq', content: '(* comment *)\nTheorem demo : True. Proof. exact I. Qed.\n'},
   ]};
@@ -1382,8 +1382,31 @@ await test('Monaco source blocks retain highlighting, edits and undo across layo
         await input.press(await page.evaluate(() => /Mac/.test(navigator.platform)) ? 'Meta+ArrowDown' : 'Control+End');
         await page.keyboard.insertText('draft');
         await block.getByText('Unsaved', {exact: true}).waitFor();
+        const editor = await block.locator('.monaco-editor[role=code]').elementHandle();
+        if (srctype === 'text') {
+          assert.equal(await block.locator('.unicode-highlight').count(), 0, 'Chinese punctuation is ordinary source text');
+          const before = await page.locator('#editor').boundingBox();
+          const boundary = await page.locator('.panel-separator').first().boundingBox();
+          await page.mouse.move(boundary.x + boundary.width / 2, boundary.y + boundary.height / 2);
+          await page.mouse.down();
+          await page.mouse.move(boundary.x + 100, boundary.y + boundary.height / 2, {steps: 5});
+          await page.mouse.up();
+          assert.equal((await page.locator('#editor').boundingBox()).width, before.width, 'Knowledge columns cannot be resized');
+        }
         await page.getByRole('button', {name: 'Graph', exact: true}).click();
         await page.waitForFunction(() => document.querySelector('button[title="Graph view"]')?.getAttribute('aria-pressed') === 'true' && !document.querySelector('.app[inert]'));
+        assert.equal(await editor.evaluate(el => el.isConnected), true, 'switching views retains the same editor and undo history');
+        if (srctype === 'text') {
+          const before = await page.locator('#editor').boundingBox();
+          assert.ok(before.x < (await page.locator('.graph-panel').boundingBox()).x, 'the node editor is left of the graph');
+          const divider = page.getByRole('separator', {name: 'Resize node and graph'});
+          const bounds = await divider.boundingBox();
+          await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+          await page.mouse.down();
+          await page.mouse.move(bounds.x + 100, bounds.y + bounds.height / 2, {steps: 5});
+          await page.mouse.up();
+          assert.ok((await page.locator('#editor').boundingBox()).width > before.width + 50, 'dragging right expands the left editor');
+        }
         await input.press('ControlOrMeta+z');
         await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
         assert.equal(JSON.parse((await cli('show', node.fnode)).stdout).blocks.find(b => b.srctype === srctype).content, content);

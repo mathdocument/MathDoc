@@ -14,21 +14,6 @@
   height: 100%;
   touch-action: none;
 }
-.graph-caption {
-  position: absolute;
-  top: 22px;
-  right: 24px;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 5px;
-  pointer-events: none;
-  z-index: 1;
-}
-.graph-caption > span:last-child {
-  color: var(--mdc-muted);
-  font-size: 10px;
-}
 .graph-legend {
   position: absolute;
   z-index: 1;
@@ -105,10 +90,6 @@
   display: flex;
   gap: 2px;
 }
-.graph-guide {
-  color: var(--mdc-muted);
-  font-size: 10px;
-}
 .graph-controls > .button {
   margin-left: auto;
 }
@@ -144,10 +125,4 @@
 }
 .graph-error button {
   margin-left: 10px;
-}
-@media (max-width: 750px) {
-  .graph-caption,
-  .graph-guide {
-    display: none;
-  }
 }

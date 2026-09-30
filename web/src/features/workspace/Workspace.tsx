@@ -225,8 +225,10 @@ export default function Workspace({ onReady }: { onReady?: () => void }) {
         <Group
           groupRef={group}
           defaultLayout={initialLayout}
+          disabled={s.view === "columns"}
           onLayoutChanged={(layout, meta) => {
-            if (meta.isUserInteraction) saveLayout(s.view, layout);
+            if (s.view === "force" && meta.isUserInteraction)
+              saveLayout(s.view, layout);
           }}
           orientation="horizontal"
           className="workspace-panels"
@@ -236,31 +238,10 @@ export default function Workspace({ onReady }: { onReady?: () => void }) {
             className="context-panel"
             id="context"
             defaultSize="22%"
-            minSize="15%"
-            maxSize="70%"
+            minSize={s.view === "force" ? "0%" : "15%"}
+            maxSize={s.view === "force" ? "0%" : "70%"}
+            collapsible
           >
-            <div
-              className={`graph-panel ${s.view !== "force" ? "hidden" : ""}`}
-            >
-              {s.graphModule && (
-                <Suspense
-                  fallback={
-                    <div className="empty-state" role="status">
-                      Loading graph...
-                    </div>
-                  }
-                >
-                  <Graph
-                    ref={s.attachGraph}
-                    active={s.view === "force"}
-                    theme={s.theme}
-                    onSelect={s.onForceSelect}
-                    selectedFnode={session.selectedFnode}
-                    revision={s.graphRevision}
-                  />
-                </Suspense>
-              )}
-            </div>
             <NodeColumn
               title="Referrers"
               accent="up"
@@ -272,8 +253,9 @@ export default function Workspace({ onReady }: { onReady?: () => void }) {
             />
           </Panel>
           <Separator
-            className="panel-separator"
-            aria-label="Resize context and editor"
+            className={`panel-separator ${s.view === "force" ? "hidden" : ""}`}
+            disabled
+            aria-label="Referrers and editor boundary"
           />
           <Panel
             className="node-panel"
@@ -319,18 +301,39 @@ export default function Workspace({ onReady }: { onReady?: () => void }) {
             </div>
           </Panel>
           <Separator
-            className={`panel-separator ${s.view === "force" ? "hidden" : ""}`}
-            disabled={s.view === "force"}
-            aria-label="Resize editor and dependencies"
+            className="panel-separator"
+            disabled={s.view === "columns"}
+            aria-label="Resize node and graph"
           />
           <Panel
             className="dependencies-panel"
             id="dependencies"
             defaultSize="22%"
-            minSize={s.view === "force" ? "0%" : "15%"}
-            maxSize={s.view === "force" ? "0%" : "35%"}
-            collapsible
+            minSize="15%"
+            maxSize={s.view === "force" ? "70%" : "35%"}
           >
+            <div
+              className={`graph-panel ${s.view !== "force" ? "hidden" : ""}`}
+            >
+              {s.graphModule && (
+                <Suspense
+                  fallback={
+                    <div className="empty-state" role="status">
+                      Loading graph...
+                    </div>
+                  }
+                >
+                  <Graph
+                    ref={s.attachGraph}
+                    active={s.view === "force"}
+                    theme={s.theme}
+                    onSelect={s.onForceSelect}
+                    selectedFnode={session.selectedFnode}
+                    revision={s.graphRevision}
+                  />
+                </Suspense>
+              )}
+            </div>
             <NodeColumn
               title="Dependencies"
               accent="down"

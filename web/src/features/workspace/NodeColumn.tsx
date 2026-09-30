@@ -152,11 +152,6 @@ export function NodeColumn({
           {needle ? `${matches.length}/${items.length}` : items.length}
         </span>
       </header>
-      <p className="column-description">
-        {accent === "up"
-          ? "Ideas that build on this node"
-          : "The foundations of this node"}
-      </p>
       <label className="column-filter">
         <Search size={13} />
         <input

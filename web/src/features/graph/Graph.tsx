@@ -81,10 +81,6 @@ export default forwardRef<GraphHandle, Props>(function Graph(
   const total = session.data?.nodes.length ?? 0;
   return (
     <div className="graph-container" ref={host}>
-      <div className="graph-caption">
-        <span className="eyebrow">DEPENDENCY ATLAS</span>
-        <span>Explore the structure of your work</span>
-      </div>
       <table className="graph-legend" aria-label="Lean verification colors">
         <tbody>
           {statuses.map((status) => (
@@ -135,7 +131,6 @@ export default forwardRef<GraphHandle, Props>(function Graph(
             <Minus size={15} />
           </IconButton>
         </div>
-        <span className="graph-guide">Drag to explore · Scroll to zoom</span>
         <Button onClick={() => renderer.current?.fit()} aria-label="Fit graph">
           <Maximize2 size={13} />
           Fit graph

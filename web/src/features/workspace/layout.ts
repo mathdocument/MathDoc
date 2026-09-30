@@ -1,10 +1,8 @@
 import type { Layout } from "react-resizable-panels";
 export type WorkspaceView = "columns" | "force";
 export function readLayout(view: WorkspaceView): Layout {
-  const fallback =
-    view === "force"
-      ? { context: 60, editor: 40, dependencies: 0 }
-      : { context: 22, editor: 56, dependencies: 22 };
+  if (view === "columns") return { context: 22, editor: 56, dependencies: 22 };
+  const fallback = { context: 0, editor: 40, dependencies: 60 };
   try {
     const value = JSON.parse(
       localStorage.getItem(`mdc-layout-${view}`) ?? "null",
@@ -20,7 +18,7 @@ export function readLayout(view: WorkspaceView): Layout {
       ) &&
       Math.abs(value.context + value.editor + value.dependencies - 100) < 0.1
     )
-      return value;
+      return { context: 0, editor: value.editor, dependencies: 100 - value.editor };
   } catch {
     /* Storage may be disabled in a private browser. */
   }
