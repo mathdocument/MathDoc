@@ -74,7 +74,6 @@
   gap: 16px;
   align-items: center;
   padding-bottom: 20px;
-  margin-bottom: 24px;
   border-bottom: 1px solid var(--mdc-border);
 }
 .directory-controls .search-field {
@@ -92,7 +91,8 @@
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
-  padding-bottom: 24px;
+  margin-right: -16px;
+  padding: 24px 16px 24px 0;
 }
 .project-scroll::after {
   content: "";
