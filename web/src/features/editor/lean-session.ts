@@ -257,21 +257,24 @@ export class LeanEditorSession extends ObservableModel {
   };
   certified = async (checked: Awaited<ReturnType<typeof api.checkLean>>) => {
     const current = this.generation,
+      connection = this.connection,
       node = this.fnode;
-    if (this.dirty || checked.revision !== this.revision) return;
+    const isCurrent = () =>
+      this.alive && this.generation === current && this.connection === connection &&
+      this.revision === checked.revision && !this.dirty;
+    if (!isCurrent() || checked.fnode !== node) return;
     this.result = checked;
     this.error = null;
     try {
       const view = await api.nodeView(node);
-      if (
-        this.alive &&
-        this.generation === current &&
-        this.revision === checked.revision &&
-        !this.dirty
-      )
-        this.onCertified?.(view.node);
+      if (!isCurrent()) return;
+      if (view.node.revision !== checked.revision) {
+        this.result = null;
+        throw new Error("Node changed externally; refresh before continuing");
+      }
+      this.onCertified?.(view.node);
     } catch (e) {
-      if (this.alive && this.generation === current) this.error = errMsg(e);
+      if (isCurrent()) this.error = errMsg(e);
     }
   };
   remove = async () => {

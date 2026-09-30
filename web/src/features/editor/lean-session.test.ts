@@ -1,6 +1,8 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { LeanEditorSession, type LeanEditorSessionProps } from "./lean-session";
 import { hasUnsavedDrafts } from "../../lib/unsaved";
+import { api } from "../../lib/api";
+import type { NodeDetail, NodeView } from "../../lib/types";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -60,4 +62,47 @@ test("native messages are scoped to this frame; navigation resets drafts without
     "http://localhost",
   );
   s.destroy();
+});
+
+test("certification never replaces the editor with a different database revision", async () => {
+  const node: NodeDetail = {
+    fnode: "a", name: "A", revision: "1", depth: 0, depens: [],
+    blocks: [{ srctype: "lean", content: "saved", metadata: {} }],
+    formalization: { lean: "verified", rocq: "unverified" },
+  };
+  const onCertified = vi.fn();
+  const session = new LeanEditorSession({
+    fnode: node.fnode, revision: node.revision, theme: "light", block: node.blocks[0], onCertified,
+  });
+  const checked = {
+    fnode: "a", revision: "1", passed: true, certified: true, has_sorry: false,
+    built: false, cache_hit: true, elapsed_ms: 0, diagnostics: [], dependency_errors: [],
+  };
+  session.content = session.baseline = "saved";
+  let finish!: (view: NodeView) => void;
+  vi.spyOn(api, "nodeView").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  try {
+    const pending = session.certified(checked);
+    finish({ node: { ...node, revision: "2" }, children: [], referrers: [] });
+    await pending;
+    expect(onCertified).not.toHaveBeenCalled();
+    expect(session.result).toBeNull();
+    expect(session.error).toContain("changed externally");
+
+    await session.certified({ ...checked, fnode: "another-node" });
+    expect(api.nodeView).toHaveBeenCalledTimes(1);
+
+    const retry = session.certified(checked);
+    finish({ node, children: [], referrers: [] });
+    await retry;
+    expect(onCertified).toHaveBeenCalledExactlyOnceWith(node);
+
+    let fail!: (error: Error) => void;
+    vi.mocked(api.nodeView).mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+    const stale = session.certified(checked);
+    session.content = "new draft";
+    fail(new Error("late error"));
+    await stale;
+    expect(session.error).toBeNull();
+  } finally { session.destroy(); }
 });
