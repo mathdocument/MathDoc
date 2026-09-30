@@ -41,6 +41,7 @@ export default function Workspace({ onReady }: { onReady?: () => void }) {
     s.reconcile();
   });
   useEffect(() => {
+    session.prepareEditor = s.prepareEditor;
     const stopTheme = s.watchTheme(),
       stopListening = s.listen();
     s.start();
@@ -48,6 +49,7 @@ export default function Workspace({ onReady }: { onReady?: () => void }) {
     return () => {
       s.cancelStartup();
       session.cancel();
+      session.prepareEditor = undefined;
       stopListening();
       stopTheme();
     };
@@ -244,6 +246,7 @@ export default function Workspace({ onReady }: { onReady?: () => void }) {
                 </div>
               ) : (
                 <EditorPane
+                  ref={s.attachEditor}
                   load={
                     s.view === "force" ? session.selectedLoad : session.load
                   }

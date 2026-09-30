@@ -55,6 +55,12 @@ export class WorkspaceController extends ObservableModel {
     return this.props.onReady;
   }
   editorReady = false;
+  private editor: {prepare: () => Promise<void>} | null = null;
+  attachEditor = (editor: {prepare: () => Promise<void>} | null) => { this.editor = editor; };
+  prepareEditor = async () => {
+    await this.editor?.prepare();
+    await settleEditorLayout();
+  };
   workspaceReady = false;
   overlay: Overlay = { kind: "none" };
   latexTarget: {

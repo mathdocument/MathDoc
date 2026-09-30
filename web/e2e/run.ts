@@ -2653,3 +2653,47 @@ await test('view changes reveal measured editors and loaded pages without interm
     });
   } finally { await browser.close(); }
 });
+
+await test('node selection reveals complete editors together and reuses source viewports', {timeout: 60000}, async () => {
+  const browser = await launchBrowser();
+  const nodes = ['First', 'Second'].map(name => ({fnode: randomUUID(), name: `Paint.${name}`, depens: [], blocks: [
+    {srctype: 'latex', content: `\\section{${name}}\n${name} source.`},
+    {srctype: 'lean', content: `-- ${name} source\nexample : True := by trivial\n`},
+  ]}));
+  try {
+    await fixture(browser, async ({page, url}) => {
+      await page.goto(`${url}/?node-paint#ref=${nodes[0].fnode}`);
+      await page.locator('.editor-scroll:not(.pending) .view-line').first().waitFor();
+      await page.locator('.native-editor:not(.pending)').waitFor();
+      const editor = await page.locator('[data-srctype="latex"] .editor-host').elementHandle();
+      for (const view of ['Knowledge', 'Graph']) {
+        await page.getByRole('button', {name: view, exact: true}).click();
+        await page.waitForFunction(() => !document.documentElement.dataset.vtScope);
+        for (const name of ['Second', 'First']) {
+          await page.getByRole('button', {name: /Search nodes/}).click();
+          await page.getByPlaceholder('Search by name or UUID...').fill(`Paint.${name}`);
+          const sampling = page.evaluate(async name => {
+            let incomplete = 0, exposed = 0;
+            for (let frame = 0; frame < 240 && exposed < 4; frame++) {
+              await new Promise(requestAnimationFrame);
+              if (document.querySelector('h1.title')?.textContent !== `Paint.${name}` || document.documentElement.dataset.vtScope === 'ready') continue;
+              exposed++;
+              const source = document.querySelector<HTMLElement>('[data-srctype="latex"] .view-lines');
+              const lean = document.querySelector<HTMLIFrameElement>('.lean-block iframe')?.contentDocument;
+              if (document.querySelector('.editor-scroll.pending, .native-editor.pending') ||
+                  !source?.textContent?.includes(name) || !lean?.querySelector('.view-lines')?.textContent?.includes(name)) incomplete++;
+            }
+            return {incomplete, exposed};
+          }, name);
+          const start = performance.now();
+          await page.getByRole('dialog').getByRole('button', {name: new RegExp(`Paint.${name}`)}).click();
+          await title(page, `Paint.${name}`);
+          await page.waitForFunction(() => !document.documentElement.dataset.vtScope);
+          console.log('Complete node reveal:', view, name, Math.round(performance.now() - start), 'ms');
+          assert.deepEqual(await sampling, {incomplete: 0, exposed: 4}, 'the first exposed frames contain both source editors');
+          assert.equal(await editor.evaluate(el => el.isConnected), true, 'node navigation reuses the existing Monaco host');
+        }
+      }
+    }, nodes);
+  } finally { await browser.close(); }
+});

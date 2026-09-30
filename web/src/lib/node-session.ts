@@ -68,6 +68,7 @@ export class NodeSession extends ObservableModel {
   private syncRequest = 0;
   private preparedLatex = undefined as PreparedLatexPreview | undefined;
   private preparing: AbortController | null = null;
+  prepareEditor?: () => Promise<void>;
 
   get load(): LoadState {
     if (this.snapshot)
@@ -187,9 +188,10 @@ export class NodeSession extends ObservableModel {
         this.failedNavigationFnode = null;
         committed = true;
       };
-      // Prepared reading content can appear in one paint, without a second fade.
-      if (opts.skipTransition || latexPreview) apply();
-      else await withViewTransition(apply);
+      if (opts.skipTransition) apply();
+      else await withViewTransition(apply, "ready", async () => {
+        if (committed) await this.prepareEditor?.();
+      });
       return committed;
     } catch (error) {
       if (

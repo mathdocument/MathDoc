@@ -3,8 +3,10 @@ import {
   Fragment,
   useEffect,
   useLayoutEffect,
+  useImperativeHandle,
   useState,
   useSyncExternalStore,
+  type Ref,
 } from "react";
 import {
   Check,
@@ -28,7 +30,7 @@ import { LeanBlock } from "./LeanBlock";
 import "./editor-surfaces.css";
 import "./editor.css";
 
-export default function EditorPane(props: EditorSessionProps) {
+export default function EditorPane(props: EditorSessionProps & {ref?: Ref<{prepare: () => Promise<void>}>}) {
   useSyncExternalStore(
     subscribeMutations,
     hasPendingMutations,
@@ -37,7 +39,8 @@ export default function EditorPane(props: EditorSessionProps) {
   const [session] = useState(() => new EditorSession(props));
   useSessionLifetime(session);
   const s = useModel(session),
-    { node, BlockEditorComponent } = s;
+    { node, BlockEditorComponent, selection } = s;
+  useImperativeHandle(props.ref, () => ({prepare: s.prepare}), [s]);
   useLayoutEffect(() => {
     s.update(props);
   });
@@ -187,7 +190,7 @@ export default function EditorPane(props: EditorSessionProps) {
                   block={block}
                   theme={props.theme}
                   active={props.active}
-                  selection={props.selection}
+                  selection={selection}
                   saving={s.saving}
                   onChange={(content) =>
                     s.updateDraft(node?.fnode ?? "", "lean", content)
@@ -195,7 +198,7 @@ export default function EditorPane(props: EditorSessionProps) {
                   onSave={s.saveNode}
                   onDeleted={(updated) => s.applyBlockUpdate(updated, true)}
                   onCertified={(updated) => s.applyBlockUpdate(updated, true)}
-                  onReady={() => s.reportBlockReady("lean")}
+                  onReady={() => s.reportBlockReady("lean", node?.fnode ?? "", selection)}
                 />
               ) : (
                 node &&
@@ -203,13 +206,13 @@ export default function EditorPane(props: EditorSessionProps) {
                 BlockEditorComponent &&
                 !s.editorLoadError && (
                   <BlockEditorComponent
-                    key={`${node.fnode}:${srctype}`}
+                    key={srctype}
                     fnode={node.fnode}
                     revision={node.revision}
                     block={block}
                     theme={props.theme}
                     active={props.active}
-                    selection={props.selection}
+                    selection={selection}
                     saving={s.saving}
                     onChange={(content) =>
                       s.updateDraft(node.fnode, srctype, content)
@@ -218,8 +221,8 @@ export default function EditorPane(props: EditorSessionProps) {
                     latexPreview={props.latexPreview}
                     onPreviewChange={props.onPreviewChange}
                     preparedLatex={
-                      props.load.kind === "ready"
-                        ? props.load.latexPreview
+                      s.load.kind === "ready"
+                        ? s.load.latexPreview
                         : undefined
                     }
                     focusLabel={
@@ -229,7 +232,7 @@ export default function EditorPane(props: EditorSessionProps) {
                     }
                     onLatexNavigate={props.onLatexNavigate}
                     onDeleted={(updated) => s.applyBlockUpdate(updated)}
-                    onReady={() => s.reportBlockReady(srctype)}
+                    onReady={() => s.reportBlockReady(srctype, node.fnode, selection)}
                   />
                 )
               )}

@@ -57,6 +57,9 @@ export class EditorSession extends ObservableModel {
   titleRequest = 0;
   readyReported = false;
   readyBlocks = new Set<string>();
+  private resolveReady = () => {};
+  private readiness = Promise.resolve();
+  prepare = () => this.load.kind === "idle" ? Promise.resolve() : this.readiness;
   BlockEditorComponent: typeof import("./BlockEditor").default | null = null;
   blockEditorPromise: Promise<typeof import("./BlockEditor").default> | null =
     null;
@@ -138,10 +141,13 @@ export class EditorSession extends ObservableModel {
   reportReady = () => {
     if (this.readyReported) return;
     this.readyReported = true;
+    this.resolveReady();
     this.onReady?.();
   };
-  reportBlockReady = (srctype: string) => {
+  reportBlockReady = (srctype: string, fnode: string, selection: number) => {
     if (this.load.kind !== "ready" || this.readyReported) return;
+    if (this.node?.fnode !== fnode || this.selection !== selection) return;
+    if (!this.node.blocks.some(block => block.srctype === srctype)) return;
     this.readyBlocks.add(srctype);
     if (this.readyBlocks.size === this.load.node.blocks.length)
       this.reportReady();
@@ -231,10 +237,10 @@ export class EditorSession extends ObservableModel {
     const fnode = this.load.kind === "ready" ? this.load.node.fnode : null;
     if (fnode === this.displayedFnode && this.selection === this.displayedSelection)
       return;
-    if (fnode !== this.displayedFnode) {
-      this.readyReported = false;
-      this.readyBlocks.clear();
-    }
+    this.resolveReady();
+    this.readiness = new Promise(resolve => { this.resolveReady = resolve; });
+    this.readyReported = false;
+    this.readyBlocks.clear();
     this.displayedFnode = fnode;
     this.displayedSelection = this.selection;
     this.titleRequest++;
@@ -258,6 +264,7 @@ export class EditorSession extends ObservableModel {
   }
   destroy() {
     this.alive = false;
+    this.resolveReady();
     this.titleRequest++;
     removeDraft(this.titleDraftId);
   }

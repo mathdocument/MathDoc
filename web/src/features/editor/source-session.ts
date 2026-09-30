@@ -100,6 +100,7 @@ export class SourceEditorSession extends ObservableModel {
   initializing = false;
   draftId = Symbol("block draft");
   focusedLabel: string | undefined;
+  private revealRequest = 0;
   setDirty = (value: boolean) => {
     this.dirty = value;
     setDraftDirty(this.draftId, value);
@@ -114,9 +115,9 @@ export class SourceEditorSession extends ObservableModel {
       const language = await loadSourceLanguage(
         this.block.srctype as "text" | "latex" | "rocq",
       );
-      if (!this.alive) return;
+      if (!this.alive || this.previewing) return;
       await setMonacoTheme(this.theme);
-      if (!this.alive) return;
+      if (!this.alive || this.previewing) return;
       this.model = Monaco.createModel(
         this.block.content,
         language,
@@ -143,7 +144,7 @@ export class SourceEditorSession extends ObservableModel {
         );
       this.editorView.onDidContentSizeChange(fit);
       fit();
-      this.model.onDidChangeContent(() => {
+      this.editorView.onDidChangeModelContent(() => {
         this.setDirty(this.model!.getValue() !== this.lastSavedDoc);
         this.latex?.schedule(this.model!.getValue());
       });
@@ -155,15 +156,7 @@ export class SourceEditorSession extends ObservableModel {
       );
       if (this.latex)
         this.completion = latexAutocomplete(this.latex, this.editorView);
-      requestAnimationFrame(() =>
-        requestAnimationFrame(() => {
-          if (!this.alive) return;
-          renderSource(this.editorView!);
-          this.ready = true;
-          this.syncView();
-          this.onReady?.();
-        }),
-      );
+      this.reveal();
     } catch (e) {
       if (this.alive) {
         this.error = errMsg(e);
@@ -173,6 +166,16 @@ export class SourceEditorSession extends ObservableModel {
       this.initializing = false;
     }
   };
+  private reveal() {
+    const request = ++this.revealRequest;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (!this.alive || request !== this.revealRequest || !this.editorView) return;
+      renderSource(this.editorView);
+      this.ready = true;
+      this.syncView();
+      this.onReady?.();
+    }));
+  }
   onDelete = async () => {
     if (this.saving || this.deleting) return;
     if (!confirm(`Delete the ${this.block.srctype} block from this node?`))
@@ -183,7 +186,7 @@ export class SourceEditorSession extends ObservableModel {
     this.error = null;
     this.deleting = true;
     const clearMutation = trackMutation();
-    const isCurrent = () => this.alive;
+    const isCurrent = () => this.alive && this.fnode === targetFnode;
     try {
       const node = await api.deleteBlock(
         targetFnode,
@@ -210,7 +213,10 @@ export class SourceEditorSession extends ObservableModel {
   syncView() {
     if (this.previewing) this.showPreview = true;
     else if (this.ready) this.showPreview = false;
-    if (!this.active || !this.expanded) return;
+    if (!this.active || !this.expanded) {
+      this.onReady?.();
+      return;
+    }
     if (!this.previewing) void this.ensureEditor();
     else if (this.latex?.preview || this.latex?.error) this.onReady?.();
   }
@@ -243,11 +249,19 @@ export class SourceEditorSession extends ObservableModel {
     this.stopLatex?.();
     this.latex?.destroy();
     removeDraft(this.draftId);
+    this.disposeEditor();
+  }
+  private disposeEditor() {
+    this.revealRequest++;
     this.completion?.dispose();
+    this.completion = undefined;
     this.disposeScroll?.();
+    this.disposeScroll = undefined;
     this.editorView?.dispose();
     this.widgets?.remove();
+    this.widgets = undefined;
     this.model?.dispose();
+    this.model = null;
     this.editorView = null;
   }
   syncSource(discardDraft = false) {
@@ -269,23 +283,48 @@ export class SourceEditorSession extends ObservableModel {
     );
   }
   private stopLatex?: () => void;
+  private resetLatex() {
+    this.stopLatex?.();
+    this.latex?.destroy();
+    this.completion?.dispose();
+    this.completion = undefined;
+    this.latex = this.block.srctype === "latex"
+      ? new LatexSession(this.fnode, this.block.content, this.preparedLatex)
+      : null;
+    this.stopLatex = this.latex?.subscribe(() => {
+      this.syncView();
+      this.notifyListeners();
+    });
+    if (this.latex && this.editorView)
+      this.completion = latexAutocomplete(this.latex, this.editorView);
+  }
+  private switchNode() {
+    this.ready = false;
+    this.error = null;
+    this.deleting = false;
+    this.expanded = true;
+    this.focusedLabel = undefined;
+    this.lastSavedDoc = this.block.content;
+    this.showPreview = this.previewing;
+    this.setDirty(false);
+    if (this.previewing) this.disposeEditor();
+    else if (this.editorView && this.model) {
+      const previous = this.model;
+      this.model = Monaco.createModel(this.block.content, previous.getLanguageId(),
+        Uri.parse(`inmemory://mdc/${this.fnode}/${this.block.srctype}`));
+      this.editorView.setModel(this.model);
+      previous.dispose();
+      this.reveal();
+    }
+    this.resetLatex();
+  }
   attach(host: HTMLDivElement, scroller: HTMLDivElement) {
     if (this.alive && this.host === host && this.scroller === scroller) return;
     this.host = host;
     this.scroller = scroller;
     this.alive = true;
     this.lastSavedDoc = this.block.content;
-    if (this.block.srctype === "latex") {
-      this.latex = new LatexSession(
-        this.fnode,
-        this.block.content,
-        this.preparedLatex,
-      );
-      this.stopLatex = this.latex.subscribe(() => {
-        this.syncView();
-        this.notifyListeners();
-      });
-    }
+    this.resetLatex();
     this.syncActive();
     this.syncView();
     this.syncFocus();
@@ -293,7 +332,12 @@ export class SourceEditorSession extends ObservableModel {
   update(props: SourceEditorSessionProps) {
     const previous = this.props;
     this.props = props;
+    if (previous.fnode !== props.fnode) this.switchNode();
     this.syncSource(previous.selection !== props.selection);
+    if (previous.fnode === props.fnode && previous.selection !== props.selection && this.editorView) {
+      this.ready = false;
+      this.reveal();
+    }
     this.syncActive();
     this.syncView();
     this.syncFocus();
