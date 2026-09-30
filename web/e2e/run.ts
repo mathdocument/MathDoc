@@ -2697,3 +2697,39 @@ await test('node selection reveals complete editors together and reuses source v
     }, nodes);
   } finally { await browser.close(); }
 });
+
+await test('Lean native scrolling paints the current scroll position in the same frame', {timeout: 60000}, async () => {
+  const browser = await launchBrowser();
+  const node = {fnode: randomUUID(), name: 'Scroll.Paint', depens: [], blocks: [
+    {srctype: 'lean', content: Array.from({length: 1000}, (_, i) => `-- Row ${i + 1}`).join('\n')},
+  ]};
+  try {
+    await fixture(browser, async ({page, url}) => {
+      await page.goto(`${url}/?scroll-paint#ref=${node.fnode}`);
+      await page.locator('.native-editor:not(.pending)').waitFor();
+      const frame = page.frames().find(frame => frame.url().includes('/lean.html?'))!;
+      const result = await frame.evaluate(async () => {
+        const scroller = document.getElementById('editor-scroll')!;
+        let stale = 0, maxOffset = 0;
+        const durations: number[] = [];
+        let previous = performance.now();
+        for (let index = 0; index < 90; index++) {
+          scroller.scrollTop = 1000 + index * 17;
+          await new Promise(requestAnimationFrame);
+          const now = performance.now(); durations.push(now - previous); previous = now;
+          const line = document.querySelector<HTMLElement>('.view-line')!;
+          const number = Number(line.textContent?.match(/Row\s+(\d+)/)?.[1]);
+          const height = line.getBoundingClientRect().height;
+          const expected = (number - 1) * height - scroller.scrollTop;
+          const actual = line.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+          const offset = Math.abs(actual - expected);
+          if (offset > 1) stale++;
+          maxOffset = Math.max(maxOffset, offset);
+        }
+        return {stale, maxOffset, p95: durations.sort((a, b) => a - b)[Math.floor(durations.length * .95)]};
+      });
+      console.log('Lean scroll frames:', result);
+      assert.equal(result.stale, 0, 'native scroll and rendered source advance in the same frame');
+    }, [node]);
+  } finally { await browser.close(); }
+});

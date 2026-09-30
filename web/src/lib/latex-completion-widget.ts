@@ -98,7 +98,9 @@ export function latexAutocomplete(session: LatexSession, target: editor.IStandal
     target.onDidChangeModelContent(schedule),
     target.onDidChangeCursorPosition(() => { if (anchor) schedule(); }),
     target.onDidBlurEditorText(hide),
-    target.onDidScrollChange(hide),
+    target.onDidScrollChange(event => {
+      if (event.scrollTopChanged || event.scrollLeftChanged) hide();
+    }),
     target.onKeyDown(event => {
       if (event.ctrlKey && event.keyCode === KeyCode.Space) {
         event.preventDefault(); event.stopPropagation(); refresh(); return;

@@ -17,8 +17,13 @@ export function nativeMonacoScroll(editor: MonacoEditor.IStandaloneCodeEditor, s
     editor.layout({width, height});
     syncSize();
   };
-  const scroll = () => editor.setScrollPosition({scrollTop: scroller.scrollTop, scrollLeft: scroller.scrollLeft});
-  scroller.addEventListener('scroll', scroll);
+  const scroll = () => {
+    editor.setScrollPosition({scrollTop: scroller.scrollTop, scrollLeft: scroller.scrollLeft});
+    // The browser already moved the native viewport. Flush Monaco's pending
+    // drawing in this scroll frame instead of showing its previous position.
+    editor.render();
+  };
+  scroller.addEventListener('scroll', scroll, {passive: true});
   const changes = [editor.onDidContentSizeChange(syncSize), editor.onDidScrollChange(event => {
     // Keyboard navigation, selection and restoring a node's saved viewport.
     if (Math.abs(scroller.scrollTop - event.scrollTop) > 1) scroller.scrollTop = event.scrollTop;
