@@ -7,8 +7,11 @@ import "./ui.css";
 import "./features/projects/projects.css";
 import { projectName } from "./lib/project-path";
 import { settleEditorLayout } from "./lib/editor-layout";
+import { initializeTheme } from "./lib/theme";
 import "./app.css";
 import "./block.css";
+
+initializeTheme();
 
 const target = document.getElementById("app");
 if (!target) {

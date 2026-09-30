@@ -23,6 +23,10 @@ export function currentTheme(): Theme {
   return document.documentElement.dataset.theme === "light" ? "light" : "dark";
 }
 
+export function initializeTheme() {
+  applyTheme(preferredTheme(), false);
+}
+
 export function applyTheme(theme: Theme, persist = true) {
   document.documentElement.dataset.theme = theme;
   document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')

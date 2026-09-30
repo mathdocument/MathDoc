@@ -22,6 +22,8 @@ declare global {
     __mdcPerfAction: number;
     __canvasResizes: { total: number; unpainted: number };
     __firstFrameHeader?: boolean;
+    __firstFrameTheme?: string;
+    __firstFrameColor?: string | null;
     __reveal: { transition: boolean; done: boolean; error?: string };
   }
 }
@@ -390,7 +392,11 @@ async function checkShellNavigation(browser: Browser, url: string) {
       await route.continue();
     });
     await page.addInitScript(() => {
-      requestAnimationFrame(() => { window.__firstFrameHeader = !!document.querySelector(".app-header"); });
+      requestAnimationFrame(() => {
+        window.__firstFrameHeader = !!document.querySelector(".app-header");
+        window.__firstFrameTheme = document.documentElement.dataset.theme;
+        window.__firstFrameColor = document.querySelector('meta[name="theme-color"]')?.getAttribute("content");
+      });
       addEventListener("pagereveal", event => {
         window.__reveal = { transition: !!event.viewTransition, done: !event.viewTransition };
         if (event.viewTransition) {
@@ -403,11 +409,17 @@ async function checkShellNavigation(browser: Browser, url: string) {
       const rect = document.querySelector(selector)!.getBoundingClientRect();
       return [rect.x, rect.y, rect.width, rect.height];
     }));
-    const ready = async (transition: boolean) => {
+    const ready = async (transition: boolean, theme = "dark") => {
       await page.waitForFunction(() => window.__firstFrameHeader !== undefined && window.__reveal?.done);
-      const state = await page.evaluate(() => ({ first: window.__firstFrameHeader, ...window.__reveal }));
+      const state = await page.evaluate(() => ({
+        first: window.__firstFrameHeader, theme: window.__firstFrameTheme,
+        color: window.__firstFrameColor, ...window.__reveal,
+      }));
       if (!state.first || state.error || state.transition !== transition) {
         throw new Error(`navigation lost its first-frame header or transition: ${JSON.stringify(state)}`);
+      }
+      if (state.theme !== theme || state.color !== (theme === "light" ? "#f5f5f5" : "#111111")) {
+        throw new Error(`navigation painted the wrong initial theme: ${JSON.stringify(state)}`);
       }
     };
     await page.goto(url);
@@ -426,11 +438,14 @@ async function checkShellNavigation(browser: Browser, url: string) {
     await page.getByRole("button", { name: "Toggle theme" }).click();
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.getByRole("link", { name: "Open benchmark/main" }).click();
-    await page.locator("h1.title").waitFor(); await ready(true);
+    await page.locator("h1.title").waitFor(); await ready(true, "light");
     if (await page.evaluate(() => getComputedStyle(document.documentElement, "::view-transition-new(root)").animationName) !== "none") {
       throw new Error("reduced motion must reveal ready pages without a fade");
     }
     if (await page.locator("html").getAttribute("data-theme") !== "light") throw new Error("navigation lost the chosen theme");
+    await page.evaluate(() => localStorage.removeItem("mdc-theme"));
+    await page.emulateMedia({ colorScheme: "light" });
+    await page.reload(); await ready(false, "light");
     if (errors.length) throw new Error(errors.join("\n"));
   } finally { await context.close(); }
 }

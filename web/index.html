@@ -4,16 +4,6 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#111111" />
-    <script>
-      let storedTheme = null;
-      try { storedTheme = localStorage.getItem("mdc-theme"); } catch {}
-      const initialTheme = storedTheme === "light" || storedTheme === "dark"
-        ? storedTheme
-        : matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-      document.documentElement.dataset.theme = initialTheme;
-      document.querySelector('meta[name="theme-color"]').content =
-        initialTheme === "light" ? "#f5f5f5" : "#111111";
-    </script>
     <meta
       name="description"
       content="MathDoc — a versioned graph for formal mathematics: write, link, and organize lemmas across text, Lean, Rocq, and LaTeX."
