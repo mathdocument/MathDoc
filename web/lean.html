@@ -11,7 +11,8 @@
       body.static #layout { grid-template-columns: minmax(0,1fr); }
       body.static #infoview { display: none; }
       #editor-scroll, #infoview { min-width: 0; height: 100%; overflow: hidden; }
-      #editor-scroll { overflow: auto; }
+      #editor-scroll { overflow: auto; scrollbar-width: none; }
+      #editor-scroll::-webkit-scrollbar { display: none; }
       #editor-size { min-width: 100%; min-height: 100%; }
       #editor { position: sticky; top: 0; left: 0; overflow: hidden; }
       #infoview { position: relative; border-left: 1px solid #454854; }

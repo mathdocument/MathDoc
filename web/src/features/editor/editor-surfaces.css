@@ -3,7 +3,9 @@
     min-height: 0;
     height: clamp(10rem, var(--source-height, 10rem), 100cqh);
     overflow: auto;
+    scrollbar-width: none;
   }
+  .editor-scroll::-webkit-scrollbar { display: none; }
   .editor-scroll.collapsed {
     height: 0;
     visibility: hidden;

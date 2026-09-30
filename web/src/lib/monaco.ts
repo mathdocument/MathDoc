@@ -14,7 +14,8 @@ export const sourceOptions: editor.IStandaloneEditorConstructionOptions = {
   wordWrap: 'on', wrappingStrategy: 'simple', minimap: {enabled: false},
   folding: false, stickyScroll: {enabled: false}, lineNumbersMinChars: 1,
   lineDecorationsWidth: 5, scrollBeyondLastLine: false, mouseWheelZoom: false,
-  scrollbar: {handleMouseWheel: false, vertical: 'hidden', horizontal: 'hidden'},
+  // Keep the editor's thumb visible while native boundary handoff suspends overflow.
+  scrollbar: {handleMouseWheel: false, vertical: 'visible', horizontal: 'visible', verticalScrollbarSize: 10, horizontalScrollbarSize: 10},
   fixedOverflowWidgets: true, renderLineHighlight: 'gutter',
   unicodeHighlight: {ambiguousCharacters: false, nonBasicASCII: false},
 };

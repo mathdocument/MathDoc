@@ -2745,6 +2745,26 @@ await test('Lean native scrolling paints the current scroll position in the same
       });
       console.log('Lean scroll frames:', result);
       assert.equal(result.stale, 0, 'native scroll and rendered source advance in the same frame');
+      const scroller = frame.locator('#editor-scroll');
+      await scroller.evaluate(el => { el.scrollTop = 0; });
+      await frame.waitForFunction(() => /Row\s+1$/.test(document.querySelector('.view-line')?.textContent ?? ''));
+      const thumb = await frame.locator('.scrollbar.vertical .slider').boundingBox();
+      const viewport = await scroller.boundingBox();
+      assert.ok(thumb && viewport);
+      await page.mouse.move(thumb.x + thumb.width / 2, thumb.y + thumb.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(thumb.x + thumb.width / 2, viewport.y + viewport.height - 2, {steps: 8});
+      await page.mouse.up();
+      assert.ok(await scroller.evaluate(el => Math.abs(el.scrollTop - (el.scrollHeight - el.clientHeight)) < 2), 'dragging the editor thumb scrolls the native viewport to its bottom');
+      await page.mouse.move(viewport.x + 100, viewport.y + 100);
+      await page.mouse.wheel(0, 80);
+      assert.equal(await frame.evaluate(async () => {
+        for (let i = 0; i < 20; i++) {
+          await new Promise(requestAnimationFrame);
+          if (getComputedStyle(document.querySelector('.scrollbar.vertical')!).opacity !== '1') return false;
+        }
+        return true;
+      }), true, 'the thumb stays visible throughout a boundary gesture');
     }, [node]);
   } finally { await browser.close(); }
 });

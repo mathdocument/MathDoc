@@ -82,7 +82,9 @@ requests target artifacts when required.
 
 All block scrollers share a native gesture handoff, including the same-origin
 Lean and Infoview frames. At a boundary, inner scrolling is suspended until the
-gesture ends; clicks and selection remain enabled. The node pane uses
+gesture ends; clicks and selection remain enabled. Source editors use Monaco's
+scrollbars over the native viewport, so handoff cannot hide or resize the thumb.
+The node pane uses
 `overscroll-behavior-y: contain` so gestures starting at its boundary can still
 rubber-band on macOS. There is no scripted outer scrolling or bounce animation.
 Monaco flushes pending drawing in the native scroll event so the source moves
@@ -172,7 +174,7 @@ phased trackpad events and verifies actual overscroll and gesture ownership.
 Ordinary Playwright wheel events cannot verify macOS rubber-banding. This check
 uses the suite's disposable database and requires the Xcode command-line tools.
 
-Set `MDC_E2E_NATIVE_PAINT=1` and match `source-only` to check source pixels in
+Set `MDC_E2E_NATIVE_PAINT=1` and match `source-only` to check text, LaTeX and Lean pixels in
 the system WebKit. Safari 27 can omit glyphs inserted into a hidden scroller
 even when DOM text and token colors are correct. Pending source editors use
 opacity instead of visibility so text paints before the editor is revealed.

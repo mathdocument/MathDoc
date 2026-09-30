@@ -28,7 +28,7 @@ import WebKit
         for _ in 0..<400 {
             await pause(100)
             _ = try? await js("if (location.href === '\(url)') document.querySelector('button[aria-label=\"Start Lean server\"]:not(:disabled)')?.click()")
-            if (try? await js("location.href === '\(url)' && !!(\(ready))")) as? Bool == true { return }
+            if (try? await js("location.href === '\(url)' && !!(\(ready)) && !document.documentElement.dataset.vtScope && !document.querySelector('.editor-scroll.pending, .native-editor.pending')")) as? Bool == true { return }
         }
         let state = try? await js("JSON.stringify([location.href, document.body.innerText, ...[...document.querySelectorAll('iframe')].map(f=>f.contentDocument?.body?.innerText)]).slice(0,6000)")
         try require(false, "Timed out loading \(url): \(state ?? "unknown")")
@@ -55,13 +55,20 @@ import WebKit
             """)
         await pause(250)
         return try await js("""
-            window.samples = []; window.recording = true;
+            window.samples = []; window.recording = true; window.hiddenScrollbars = 0;
             window.surfaces = [...document.querySelectorAll('.editor-scroll')];
             const lean = document.querySelector('iframe[title="Lean source and Infoview"]')?.contentDocument;
             if (lean?.querySelector('#editor-scroll')) surfaces.push(lean.querySelector('#editor-scroll'));
             if (!surfaces.includes(target)) surfaces.push(target);
             window.initial = surfaces.map(s => s.scrollTop);
-            function sample() { samples.push([pane.scrollTop, ...surfaces.map(s => s.scrollTop)]); if(recording) requestAnimationFrame(sample); } sample();
+            function sample() {
+                samples.push([pane.scrollTop, ...surfaces.map(s => s.scrollTop)]);
+                if (surfaces.some(s => {
+                    const bar = s.querySelector('.monaco-editor .scrollbar.vertical');
+                    return bar && s.scrollHeight > s.clientHeight && s.ownerDocument.defaultView.getComputedStyle(bar).opacity !== '1';
+                })) hiddenScrollbars++;
+                if(recording) requestAnimationFrame(sample);
+            } sample();
             let r = target.getBoundingClientRect(), x = r.left + 80, y = r.top + 100;
             let doc = target.ownerDocument;
             while (doc.defaultView.frameElement) { const f = doc.defaultView.frameElement; const b = f.getBoundingClientRect(); x += b.left; y += b.top; doc = f.ownerDocument; }
@@ -135,9 +142,9 @@ import WebKit
                 recording = false;
                 surfaces.every((s,i)=>s===target || samples.every(row=>Math.abs(row[i+1]-initial[i])<1)) &&
                 samples.every(row=>row[surfaces.indexOf(target)+1]>=0 && row[surfaces.indexOf(target)+1]<=target.scrollHeight-target.clientHeight) &&
-                (samples.at(-1)[0]-samples[0][0])*\(direction)>500;
+                (samples.at(-1)[0]-samples[0][0])*\(direction)>500 && hiddenScrollbars===0;
                 """) as! Bool
-            try require(ok, "Gesture scrolled another editor or failed to reach the outer pane")
+            try require(ok, "Gesture hid a scrollbar, scrolled another editor or failed to reach the outer pane")
         }
         // Short content must still bounce: one collapsed block, all four, or none.
         for id in [args[3], args[4], args[2], args[5]] {
