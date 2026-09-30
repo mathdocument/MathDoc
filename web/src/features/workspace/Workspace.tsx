@@ -1,3 +1,4 @@
+import logo from "../../assets/mdc-logo.svg?no-inline";
 import { lazy, Suspense, useEffect, useLayoutEffect, useState } from "react";
 import {
   ArrowLeft,
@@ -72,7 +73,7 @@ export default function Workspace({ onReady }: { onReady?: () => void }) {
             title="All projects"
             onClick={(event) => void s.showProjects(event.nativeEvent)}
           >
-            <img src="/mdc-logo.svg" alt="" />
+            <img src={logo} alt="" />
             <strong>MathDoc</strong>
           </a>
           <span className="project-breadcrumb">

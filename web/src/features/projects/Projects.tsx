@@ -1,3 +1,4 @@
+import logo from "../../assets/mdc-logo.svg?no-inline";
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowUpRight,
@@ -151,7 +152,7 @@ export default function Projects({ onReady }: { onReady?: () => void }) {
     <div className="directory">
       <header className="app-header">
         <a className="app-brand" href="/" aria-label="MathDoc projects">
-          <img src="/mdc-logo.svg" alt="" />
+          <img src={logo} alt="" />
           <strong>MathDoc</strong>
         </a>
         <div className="header-tools">
