@@ -13,12 +13,12 @@
     box-shadow: var(--mdc-shadow-sm);
     container-type: inline-size;
   }
-  /* Per-srctype accent so block kinds are scannable at a glance. */
+  /* Each block kind uses the shared theme tokens. */
   .source-block[data-srctype="text"] { --block-accent: var(--mdc-block-text); }
   .source-block[data-srctype="latex"] { --block-accent: var(--mdc-block-latex); }
   .source-block[data-srctype="lean"] { --block-accent: var(--mdc-block-lean); }
   .source-block[data-srctype="rocq"] { --block-accent: var(--mdc-block-rocq); }
-  /* Left rail carries the block kind; it is the only always-on decoration. */
+  /* A subtle left rail groups the source and its header. */
   .source-block::before {
     content: "";
     position: absolute;
@@ -44,7 +44,7 @@
     color: var(--mdc-muted);
     border-bottom: 1px solid var(--mdc-border);
   }
-  /* Type is stated once, as a coloured word rather than a bordered chip. */
+  /* The source type is stated once in the block header. */
   .srctype {
     margin-right: 0.15rem;
     color: var(--block-accent);

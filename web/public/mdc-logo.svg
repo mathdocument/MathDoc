@@ -1,11 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200" role="img" aria-labelledby="mathdoc-logo-title" shape-rendering="geometricPrecision">
   <title id="mathdoc-logo-title">MathDoc</title>
   <path
-    fill="#3B82C4"
+    fill="#000000"
     fill-rule="evenodd"
     d="
-      M46 10H154A36 36 0 0 1 190 46V154A36 36 0 0 1 154 190H46A36 36 0 0 1 10 154V46A36 36 0 0 1 46 10Z
-
       M76.05 55.04Q98.99 60.74 121.43 67.81L122.67 64.43Q101.01 55.26 79.85 44.72Z
       M54.53 60.23Q54.10 85.65 52.22 110.91L55.80 111.33Q59.90 86.35 65.45 61.53Z
       M120.75 76.67Q93.41 97.55 65.26 117.22L67.23 120.23Q96.59 102.45 126.76 85.89Z

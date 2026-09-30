@@ -43,29 +43,28 @@ export function createGraphRenderer(
   let viewY = 0;
   let viewK = 1;
 
-  // Canvas cannot read CSS custom properties, so these mirror the accent tokens
-  // in app.css. Keep them in step when the palette changes.
+  // Canvas colors mirror the tokens in design.css.
   const DARK_PALETTE = {
-    unverified: "#79828f",
+    unverified: "#8e8e8e",
     sorry: "#ff6f85",
     conditional: "#f0b661",
     verified: "#4fd6ae",
     outgoing: "79, 214, 174",
     incoming: "180, 140, 255",
-    outline: "#eef1f7",
-    shortLabel: "121, 130, 143",
-    label: "198, 205, 218",
+    outline: "#f0f0f0",
+    shortLabel: "142, 142, 142",
+    label: "212, 212, 212",
   };
   const LIGHT_PALETTE = {
-    unverified: "#69727f",
+    unverified: "#707070",
     sorry: "#c8384d",
     conditional: "#96601a",
     verified: "#0a7d64",
     outgoing: "10, 125, 100",
     incoming: "116, 64, 208",
-    outline: "#0f1420",
-    shortLabel: "90, 100, 116",
-    label: "51, 60, 77",
+    outline: "#202020",
+    shortLabel: "97, 97, 97",
+    label: "69, 69, 69",
   };
   const MAX_NODE_RADIUS = 24;
   const SPATIAL_CELL_SIZE = 64;
