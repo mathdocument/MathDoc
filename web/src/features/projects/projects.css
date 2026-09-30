@@ -87,11 +87,20 @@
   margin-left: auto;
 }
 .project-scroll {
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
   padding-bottom: 24px;
+}
+.project-scroll::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
 }
 .project-list {
   display: grid;
