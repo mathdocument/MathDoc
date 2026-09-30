@@ -158,6 +158,7 @@ export class WorkspaceController extends ObservableModel {
     if (this.refreshing) return;
     if (!confirmDiscardDrafts()) return;
     const request = ++this.refreshRequest;
+    this.cancelStartup();
     this.refreshError = null;
     this.refreshing = true;
     try {
@@ -173,33 +174,23 @@ export class WorkspaceController extends ObservableModel {
           pushHistory: false,
           skipTransition: true,
           skipUnsavedGuard: true,
-          clearOnError: true,
+          clearOnNotFound: true,
         });
-        if (!refreshed && !nodeSession.node) {
-          const defaultFnode = await this.findDefaultFnode();
-          if (request !== this.refreshRequest) return;
-          if (defaultFnode) {
-            refreshed = await nodeSession.select(defaultFnode, {
-              skipTransition: true,
-              skipUnsavedGuard: true,
-              browserHistory: "replace",
-            });
-          } else {
-            this.initialError =
-              "This project has no nodes. Create one with the + button.";
-          }
-        }
-      } else {
+        if (request !== this.refreshRequest) return;
+      }
+      if (!nodeSession.node) {
         const defaultFnode = await this.findDefaultFnode();
         if (request !== this.refreshRequest) return;
         if (defaultFnode) {
           refreshed = await nodeSession.select(defaultFnode, {
             skipTransition: true,
             skipUnsavedGuard: true,
+            browserHistory: "replace",
           });
         } else {
           this.initialError =
             "This project has no nodes. Create one with the + button.";
+          refreshed = true;
         }
       }
       if (selectionWasCleared && this.view === "force")

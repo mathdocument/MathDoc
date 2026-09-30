@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NodeDetail, NodePreview } from "./types";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { latexApi, type LatexPreviewResult } from "./latex";
 import { NodeSession } from "./node-session";
 import { removeDraft, setDraftDirty } from "./unsaved";
@@ -109,17 +109,36 @@ describe("NodeSession", () => {
     removeDraft(draft);
   });
 
-  it("drops a stale snapshot when an explicit refresh fails", async () => {
-    const session = new NodeSession();
+  it("drops a deleted node when an explicit refresh returns not found", async () => {
+    const session = new NodeSession({ state: () => null, commit: vi.fn() });
     session.snapshot = { node: node("r1"), referrers: [], children: [] };
-    vi.spyOn(api, "nodeView").mockRejectedValue(new Error("node not found"));
+    vi.spyOn(api, "nodeView").mockRejectedValue(new ApiError("node not found", 404, null));
 
     await expect(session.select("node", {
       skipTransition: true,
       skipUnsavedGuard: true,
-      clearOnError: true,
+      clearOnNotFound: true,
     })).resolves.toBe(false);
     expect(session.node).toBeNull();
+  });
+
+  it("keeps the current node and history after a transient refresh failure", async () => {
+    const browser = { state: () => null, commit: vi.fn() };
+    const session = new NodeSession(browser);
+    const snapshot = { node: node("r1"), referrers: [], children: [] };
+    session.snapshot = snapshot;
+    session.history = ["previous", "node"];
+    session.historyIdx = 1;
+    vi.spyOn(api, "nodeView").mockRejectedValue(new ApiError("temporarily unavailable", 503, null));
+
+    expect(await session.select("node", {
+      skipTransition: true, skipUnsavedGuard: true, clearOnNotFound: true,
+    })).toBe(false);
+    expect(session.snapshot).toBe(snapshot);
+    expect(session.history).toEqual(["previous", "node"]);
+    expect(session.historyIdx).toBe(1);
+    expect(session.navigationError).toBe("temporarily unavailable");
+    expect(browser.commit).not.toHaveBeenCalled();
   });
 });
 

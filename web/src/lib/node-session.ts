@@ -4,7 +4,7 @@ import {
   type BrowserHistoryAdapter,
 } from "./browser-history";
 import type { NodeDetail, NodePreview, NodeView } from "./types";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { latexApi, type PreparedLatexPreview } from "./latex";
 import { errMsg } from "./format";
 import {
@@ -35,7 +35,7 @@ export type LoadState =
 interface NavigateOptions extends FocusedHistoryOptions {
   skipTransition?: boolean;
   skipUnsavedGuard?: boolean;
-  clearOnError?: boolean;
+  clearOnNotFound?: boolean;
 }
 
 export class NodeSession extends ObservableModel {
@@ -202,10 +202,13 @@ export class NodeSession extends ObservableModel {
         unsavedDraftRevision() !== confirmedDraftRevision
       )
         return false;
+      if (opts.clearOnNotFound && error instanceof ApiError && error.status === 404) {
+        this.removeNode(fnode);
+        return false;
+      }
       this.navigationError =
         error instanceof Error ? error.message : String(error);
       this.failedNavigationFnode = fnode;
-      if (opts.clearOnError) this.snapshot = null;
       if (!this.snapshot) this.loadError = this.navigationError;
       return false;
     }
