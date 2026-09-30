@@ -36,12 +36,6 @@ export function LeanBlock(props: LeanEditorSessionProps) {
       <header className="block-head">
         <span className="srctype">lean</span>
         <span className="spacer" />
-        {s.dirty && (
-          <span className="dirty" title="Unsaved changes">
-            <span className="dirty-dot" />
-            <span className="btn-label">Unsaved</span>
-          </span>
-        )}
         <div className="block-actions">
           <button
             className="icon-btn expand"

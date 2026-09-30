@@ -32,12 +32,6 @@ export default function BlockEditor(props: SourceEditorSessionProps) {
       <header className="block-head">
         <span className="srctype">{props.block.srctype}</span>
         <span className="spacer" />
-        {s.dirty && (
-          <span className="dirty" title="Unsaved changes">
-            <span className="dirty-dot" />
-            <span className="btn-label">Unsaved</span>
-          </span>
-        )}
         {s.latex?.working && <span className="saving">rendering...</span>}
         {s.deleting && <span className="saving">deleting...</span>}
         {s.error && (

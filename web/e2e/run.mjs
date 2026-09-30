@@ -1284,7 +1284,7 @@ await test('node save atomically persists all blocks and retains drafts through 
       const fill = async (kind, value) => {
         await input(kind).press('ControlOrMeta+A');
         await page.keyboard.insertText(value);
-        await block(kind).getByText('Unsaved', {exact: true}).waitFor();
+        await page.getByText('Unsaved', {exact: true}).waitFor();
       };
       const read = async () => JSON.parse((await cli('show', node.fnode)).stdout);
       const sources = value => Object.fromEntries(value.blocks.map(b => [b.srctype, b.content]));
@@ -1309,9 +1309,12 @@ await test('node save atomically persists all blocks and retains drafts through 
       const historyBefore = JSON.parse(before.stdout), historyAfter = JSON.parse((await cli('history')).stdout);
       assert.equal(historyAfter.length, historyBefore.length + 1, 'one database commit for all four blocks');
       assert.equal((await read()).blocks.find(b => b.srctype === 'text').metadata.source, 'fixture');
-      await block('text').getByText('Unsaved', {exact: true}).waitFor();
-      await block('lean').getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
+      await page.getByText('Unsaved', {exact: true}).waitFor();
+      assert.equal(await page.locator('.source-block').getByText('Unsaved', {exact: true}).count(), 0);
       const savedButton = await save.boundingBox(), metadata = await center(page).locator('.node-meta').boundingBox();
+      const unsaved = await page.getByText('Unsaved', {exact: true}).boundingBox();
+      assert.ok(unsaved.x + unsaved.width < savedButton.x, 'one unsaved indicator sits left of Save node');
+      assert.equal(await save.evaluate(el => getComputedStyle(el).borderStyle), 'none');
       assert.ok(Math.abs(savedButton.x + savedButton.width - metadata.x - metadata.width) < 2, 'save stays at the right of the metadata row');
       if (env.MDC_E2E_ARTIFACTS) {
         await mkdir(env.MDC_E2E_ARTIFACTS, {recursive: true});
@@ -1319,7 +1322,7 @@ await test('node save atomically persists all blocks and retains drafts through 
       }
       // Any editor's shortcut saves the whole node, even if that editor is unchanged.
       await input('lean').press('ControlOrMeta+S');
-      await block('text').getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
+      await page.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
       assert.deepEqual(requests[1], {text: 'Typed during save'});
       assert.equal(sources(await read()).text, 'Typed during save');
       await fill('text', 'Keep failed text'); await fill('latex', 'Keep failed prose');
@@ -1327,10 +1330,10 @@ await test('node save atomically persists all blocks and retains drafts through 
       await save.click();
       await center(page).getByRole('alert').filter({hasText: 'Temporary save failure'}).waitFor();
       assert.equal(sources(await read()).text, 'Typed during save');
-      for (const kind of ['text', 'latex']) await block(kind).getByText('Unsaved', {exact: true}).waitFor();
+      await page.getByText('Unsaved', {exact: true}).waitFor();
       await page.unroute(/\/blocks$/);
       await input('latex').press('ControlOrMeta+S');
-      for (const kind of ['text', 'latex']) await block(kind).getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
+      await page.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
       assert.deepEqual(sources(await read()), {...submitted, text: 'Keep failed text', latex: 'Keep failed prose'});
       // Do not let a batch save recreate a block while its deletion is in flight.
       await fill('text', 'Unsaved beside deletion');
@@ -1354,7 +1357,7 @@ await test('node save atomically persists all blocks and retains drafts through 
       await save.click();
       await center(page).getByRole('alert').waitFor();
       assert.equal(sources(await read()).text, 'Keep failed text');
-      for (const kind of ['text', 'latex']) await block(kind).getByText('Unsaved', {exact: true}).waitFor();
+      await page.getByText('Unsaved', {exact: true}).waitFor();
     }, [node]);
   } finally { await browser.close(); }
 });
@@ -1381,7 +1384,7 @@ await test('Monaco source blocks retain highlighting, edits and undo across layo
         const input = block.getByRole('textbox', {name: new RegExp(`^${srctype} source`)});
         await input.press(await page.evaluate(() => /Mac/.test(navigator.platform)) ? 'Meta+ArrowDown' : 'Control+End');
         await page.keyboard.insertText('draft');
-        await block.getByText('Unsaved', {exact: true}).waitFor();
+        await page.getByText('Unsaved', {exact: true}).waitFor();
         const editor = await block.locator('.monaco-editor[role=code]').elementHandle();
         if (srctype === 'text') {
           assert.equal(await block.locator('.unicode-highlight').count(), 0, 'Chinese punctuation is ordinary source text');
@@ -1396,7 +1399,7 @@ await test('Monaco source blocks retain highlighting, edits and undo across layo
           assert.equal(await page.getByRole('separator').count(), 0, 'Graph panes have fixed boundaries');
         }
         await input.press('ControlOrMeta+z');
-        await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
+        await page.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
         assert.equal(JSON.parse((await cli('show', node.fnode)).stdout).blocks.find(b => b.srctype === srctype).content, content);
         await page.getByRole('button', {name: 'Knowledge', exact: true}).click();
         await page.waitForFunction(() => document.querySelector('button[title="Knowledge view"]')?.getAttribute('aria-pressed') === 'true' && !document.querySelector('.app[inert]'));
@@ -1712,7 +1715,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await put('Beta', String.raw`\begin{thm}Earlier result.\end{thm}\begin{thm}[Updated result]\label{thm:b}Updated.\end{thm}`);
       await block.getByRole('link', {name: externalName(2), exact: true}).waitFor({timeout: 10000});
       await page.getByRole('button', {name: 'Save node', exact: true}).click();
-      await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
+      await page.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
       assert.equal(JSON.parse((await cli('show', 'Alpha')).stdout).blocks[0].content, draft);
       const saved = JSON.parse((await cli('show', 'Alpha')).stdout).blocks[0].content;
       assert.doesNotMatch(saved, /externaldocument/);
@@ -2128,7 +2131,7 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       // Exercise normal typing; Firefox can duplicate synthetic insertText IME input.
       await page.keyboard.type('-- saved without a server\n');
       await page.getByRole('button', {name: 'Save node', exact: true}).click();
-      await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
+      await page.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
       assert.equal(JSON.parse((await cli('show', nodes[0].fnode)).stdout).blocks[0].content.trimEnd(), (nodes[0].blocks[0].content + '-- saved without a server\n').trimEnd());
       const select = async name => {
         await page.getByRole('button', {name: /Search nodes/}).click();
@@ -2148,13 +2151,13 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       await input.press(documentEndKey);
       await page.keyboard.type('-- offline revision\n');
       await page.getByRole('button', {name: 'Save node', exact: true}).click();
-      await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
+      await page.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
       persistentEditor = await frame.locator('.monaco-editor[role=code]').elementHandle();
       await input.press(documentEndKey);
       // A trailing newline is its own Monaco undo group. Use a single-line
       // edit so one Undo specifically tests history surviving attachment.
       await page.keyboard.type('-- draft before startup');
-      await block.getByText('Unsaved', {exact: true}).waitFor();
+      await page.getByText('Unsaved', {exact: true}).waitFor();
       await block.getByRole('button', {name: 'Collapse block'}).click();
       await block.getByRole('button', {name: 'Start Lean server', exact: true}).click();
       await page.getByText('Lean editor ready', {exact: true}).waitFor();

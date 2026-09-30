@@ -55,23 +55,6 @@
     text-transform: uppercase;
   }
   .spacer { flex: 1; }
-  .dirty {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.32rem;
-    margin-right: 0.15rem;
-    color: var(--mdc-warning);
-    font-size: var(--mdc-text-2xs);
-    font-weight: 550;
-  }
-  .dirty-dot {
-    width: 5px;
-    height: 5px;
-    flex: 0 0 auto;
-    border-radius: 50%;
-    background: currentColor;
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--mdc-warning) 20%, transparent);
-  }
   .saving { color: var(--mdc-muted); font-family: var(--mdc-mono); font-size: var(--mdc-text-2xs); }
   .error { display: inline-flex; color: var(--mdc-error); cursor: help; }
   .delete, .icon-btn, .preview-toggle {
@@ -118,7 +101,6 @@
     .btn-label {
       display: none;
     }
-    .dirty,
     .preview-toggle {
       gap: 0;
     }

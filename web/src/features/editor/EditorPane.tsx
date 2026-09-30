@@ -47,6 +47,7 @@ export default function EditorPane(props: EditorSessionProps) {
       window.removeEventListener("keydown", s.saveShortcut);
     };
   }, [s]);
+  const dirty = Object.keys(s.changes).length > 0;
   return (
     <section className="center" aria-label="current node">
       {props.load.kind === "idle" ? (
@@ -128,20 +129,22 @@ export default function EditorPane(props: EditorSessionProps) {
               <span className="meta-sep" />
               <FormalStatus language="Lean" status={node.formalization.lean} />
               <FormalStatus language="Rocq" status={node.formalization.rocq} />
-              <Button
-                className={`node-save icon-button ${s.saving ? "spinning" : ""}`}
-                onClick={() => void s.saveNode()}
-                disabled={
-                  s.saving ||
-                  hasPendingMutations() ||
-                  !Object.keys(s.changes).length
-                }
-                aria-busy={s.saving}
-                aria-label="Save node"
-                title="Save all changed source blocks (Ctrl/⌘+S)"
-              >
-                {s.saving ? <LoaderCircle size={15} /> : <Save size={15} />}
-              </Button>
+              <span className="node-save-controls">
+                {dirty && (
+                  <span className="node-unsaved" role="status">Unsaved</span>
+                )}
+                <Button
+                  variant="quiet"
+                  className={`node-save icon-button ${s.saving ? "spinning" : ""}`}
+                  onClick={() => void s.saveNode()}
+                  disabled={s.saving || hasPendingMutations() || !dirty}
+                  aria-busy={s.saving}
+                  aria-label="Save node"
+                  title="Save all changed source blocks (Ctrl/⌘+S)"
+                >
+                  {s.saving ? <LoaderCircle size={15} /> : <Save size={15} />}
+                </Button>
+              </span>
             </div>
             {s.saveError && (
               <div className="error-message" role="alert">

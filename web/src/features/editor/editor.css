@@ -72,11 +72,18 @@
   height: 10px;
   background: var(--mdc-border-strong);
 }
-.node-save {
+.node-save-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   margin-left: auto;
-  color: var(--mdc-accent);
-  border-color: transparent;
-  background: transparent;
+}
+.node-unsaved {
+  color: var(--mdc-warning);
+  white-space: nowrap;
+}
+.node-save-controls .node-save {
+  border: 0;
 }
 .formal-status {
   display: inline-flex;
