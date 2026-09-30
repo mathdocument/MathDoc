@@ -53,7 +53,6 @@ export default function EditorPane(props: EditorSessionProps) {
         <div className="empty-state">
           <FileText size={28} />
           <strong>No node selected</strong>
-          <p>Select a node in the graph to read and edit it.</p>
         </div>
       ) : props.load.kind === "error" ? (
         <div className="empty-state error-message">{props.load.message}</div>
@@ -61,7 +60,6 @@ export default function EditorPane(props: EditorSessionProps) {
         node && (
           <header className="node-head">
             <div className="node-heading">
-              <span className="eyebrow">NODE / {shortFnode(node.fnode)}</span>
               <div className="title-row">
                 {s.editingTitle ? (
                   <>

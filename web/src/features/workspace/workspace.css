@@ -238,7 +238,7 @@
   font: 10px var(--mdc-mono);
   flex-shrink: 0;
 }
-.status-project {
+.status-uuid {
   color: var(--mdc-fg-soft);
 }
 .status-node {
@@ -453,7 +453,7 @@ kbd {
   .workspace-tools .toolbar-divider {
     display: none;
   }
-  .status-project {
+  .status-uuid {
     display: none;
   }
 }

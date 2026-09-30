@@ -40,8 +40,8 @@ certification of different database contents. Native Lake builds imported
 artifacts and, on `mdc lean check Example -p myproject/main --build`, the target
 `.olean`. Matching artifacts are reused rather than rebuilt unconditionally.
 
-The Lean block's **Lean import** disclosure shows the module name to use from
-other nodes. The graph and the node's Lean status use the same colors:
+Use the node name as its Lean module name when importing it from other nodes.
+The graph and the node's Lean status use the same colors:
 
 | Label | Color | Meaning |
 | --- | --- | --- |

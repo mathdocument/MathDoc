@@ -8,7 +8,6 @@ import {
   Square,
   Trash2,
 } from "lucide-react";
-import { leanImportName } from "../../lib/node-name";
 import { projectPath } from "../../lib/project-path";
 import { useModel } from "../../hooks/use-model";
 import { LeanEditorSession, type LeanEditorSessionProps } from "./lean-session";
@@ -27,7 +26,7 @@ export function LeanBlock(props: LeanEditorSessionProps) {
       window.removeEventListener("message", s.message);
     };
   }, [s]);
-  const { block, module } = props;
+  const { block } = props;
   return (
     <article
       className={`source-block lean-block ${!block ? "hidden" : ""} ${!s.ready && !s.error && !s.opening && !s.session ? "preparing" : ""}`}
@@ -90,12 +89,6 @@ export function LeanBlock(props: LeanEditorSessionProps) {
           </button>
         </div>
       </header>
-      {module && (
-        <details className="module-import">
-          <summary>Lean import</summary>
-          <code>import {leanImportName(module)}</code>
-        </details>
-      )}
       {s.deleting && (
         <div className="status activity" role="status">
           Deleting...

@@ -614,7 +614,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         let agentRunning = false;
         try {
           await page.goto(base);
-          await page.getByRole("heading", { name: "Ideas, connected.", exact: true }).waitFor();
+          await page.getByRole("heading", { name: "Projects", exact: true }).waitFor();
           await page.getByRole("textbox", { name: "Search projects and branches" }).fill(database);
           const mainRow = page.locator(`[data-project="${project}"]`);
           const agentRow = page.locator(`[data-project="${agent}"]`);
@@ -928,9 +928,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.equal(headers.length, 4);
         for (const style of headers) assert.deepEqual(style, headers[0]);
         const leanBlock = page.locator('article[data-srctype="lean"]');
-        assert.equal(await center(page).locator('.head .module-import').count(), 0);
-        await leanBlock.getByText("Lean import", { exact: true }).click();
-        assert.equal(await leanBlock.locator('.module-import code').textContent(), `import ${a.name}`);
+        assert.equal(await leanBlock.locator('.module-import').count(), 0);
         let browserChecks = 0;
         page.on("request", request => { if (request.url().endsWith("/lean/check")) browserChecks++; });
         const initializedBeforeCollapse = messages.filter(m => m.method === "initialize").length;
@@ -1433,8 +1431,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       const externalName = number => `Beta::Theorem ${number}`;
       await page.reload();
       const block = page.locator('article[data-srctype="latex"]');
-      await block.getByText('1 imported dependencies', {exact: false}).waitFor();
-      await block.locator('.latex-imports summary').click();
+      await block.getByRole('textbox', {name: /^latex source/}).waitFor();
       const requests = [];
       page.on('request', request => requests.push(request.url()));
       const failedMathAssets = [];
@@ -1450,8 +1447,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await page.waitForFunction(() => typeof window.MathJax?.typesetPromise === 'function');
       assert.equal(await block.locator('mjx-container').count(), 0, 'a closed preview stays closed when fonts finish loading');
       await block.getByRole('button', {name: 'Render LaTeX preview'}).click();
-      assert.equal(await block.locator('.latex-imports summary').innerText(), '1 imported dependencies');
-      await block.locator('.latex-imports li').getByText('Beta', {exact: true}).waitFor();
+      assert.equal(await block.locator('.latex-imports').count(), 0);
       await block.getByRole('link', {name: externalName(1), exact: true}).waitFor();
       await block.locator('mjx-container[jax="CHTML"]').first().waitFor();
       assert.equal(await block.locator('mjx-merror, .latex-error').count(), 0);
@@ -1554,7 +1550,6 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await block.locator('.latex-preview .latex-statement').waitFor();
       await back.click();
       await title(page, 'Alpha');
-      await block.locator('.latex-imports summary').getByText('1 imported dependencies', {exact: true}).waitFor();
       await block.getByRole('heading', {name: 'Introduction', exact: true}).waitFor();
       // Reading mode belongs to this page, not the node or other browser tabs.
       const other = await page.context().newPage();
@@ -1571,7 +1566,6 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       assert.equal(await block.locator('.latex-preview').count(), 0);
       await page.goBack();
       await title(page, 'Alpha');
-      await block.locator('.latex-imports summary').getByText('1 imported dependencies', {exact: true}).waitFor();
       const input = block.getByRole('textbox', {name: /^latex source/});
       const fill = async value => { await input.press('ControlOrMeta+A'); await page.keyboard.insertText(value); };
       // First paint without hovering: Safari 27 used to show a blank command
@@ -2445,7 +2439,7 @@ await test('view changes reveal measured editors and loaded pages without interm
       assert.equal(saved.status, 200);
       await page.reload();
       await page.locator('.line-numbers').nth(2).waitFor();
-      await page.waitForFunction(() => document.querySelector('.latex-imports') || document.querySelector('.source-block .view-line'));
+      await page.waitForFunction(() => document.querySelector('.source-block .view-line'));
       await page.evaluate(() => { window.originalEditor = document.querySelector('.monaco-editor[role=code]'); });
       let release, entered;
       const gate = new Promise(resolve => { release = resolve; });
@@ -2499,7 +2493,7 @@ await test('view changes reveal measured editors and loaded pages without interm
         await page.unroute(pattern);
       };
       await held('**/api/projects', () => page.getByRole('link', {name: 'All projects', exact: true}).click());
-      await page.getByRole('heading', {name: 'Ideas, connected.', exact: true}).waitFor();
+      await page.getByRole('heading', {name: 'Projects', exact: true}).waitFor();
       const project = new URL(url).pathname.replace(/^\/p\//, '').replace(/\/$/, '');
       await held('**/api/node/*/view', () => page.getByRole('link', {name: `Open ${project}`, exact: true}).click());
       assert.equal(await page.locator('.editor-loading').count(), 0);

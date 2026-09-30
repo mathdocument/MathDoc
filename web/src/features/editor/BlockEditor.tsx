@@ -8,7 +8,6 @@ import {
   Eye,
   Trash2,
 } from "lucide-react";
-import type { LatexImport } from "../../lib/latex";
 import { useModel } from "../../hooks/use-model";
 import {
   SourceEditorSession,
@@ -16,42 +15,6 @@ import {
 } from "./source-session";
 import { LatexPreview } from "./LatexPreview";
 
-function LatexImports({ imports }: { imports: LatexImport[] | null }) {
-  const [query, setQuery] = useState("");
-  const matches =
-    imports?.filter((item) =>
-      `${item.name} ${item.fnode}`.toLowerCase().includes(query.toLowerCase()),
-    ) ?? [];
-  return (
-    <details className="latex-imports">
-      <summary>
-        {imports
-          ? `${imports.length} imported dependencies`
-          : "Loading reference scope..."}
-      </summary>
-      <div className="imports-body">
-        {(imports?.length ?? 0) > 20 && (
-          <input
-            aria-label="Filter LaTeX imports"
-            placeholder="Filter dependencies..."
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        )}
-        <ul>
-          {matches.slice(0, 50).map((item) => (
-            <li title={`${item.fnode} ${item.name}`} key={item.fnode}>
-              <span>{item.name}</span>
-            </li>
-          ))}
-        </ul>
-        {matches.length > 50 && (
-          <p>Showing 50 of {matches.length}. Refine the filter to see more.</p>
-        )}
-      </div>
-    </details>
-  );
-}
 export default function BlockEditor(props: SourceEditorSessionProps) {
   const [session] = useState(() => new SourceEditorSession(props));
   const s = useModel(session);
@@ -126,9 +89,6 @@ export default function BlockEditor(props: SourceEditorSessionProps) {
           <Trash2 size={14} />
         </button>
       </header>
-      {s.latex && s.expanded && (
-        <LatexImports imports={s.latex.context?.imports ?? null} />
-      )}
       <div
         className={`editor-scroll ${!s.ready ? "pending" : ""} ${!s.expanded || s.showPreview ? "collapsed" : ""}`}
         inert={s.deleting || !s.ready || !s.expanded || s.showPreview}

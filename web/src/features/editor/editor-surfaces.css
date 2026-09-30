@@ -61,22 +61,6 @@
   .preparing {
     visibility: hidden;
   }
-  .module-import {
-    flex-shrink: 0;
-    padding: 0.5rem 0.65rem;
-    color: var(--mdc-muted);
-    font-size: var(--mdc-text-xs);
-    border-bottom: 1px solid var(--mdc-border);
-  }
-  .module-import summary {
-    cursor: pointer;
-  }
-  .module-import code {
-    display: block;
-    margin-top: 0.4rem;
-    overflow-wrap: anywhere;
-    user-select: all;
-  }
   .editor-surface {
     position: relative;
     height: 100cqh;
@@ -257,53 +241,4 @@
 }
 .latex-preview dd {
   margin: 0 0 0.8rem 1rem;
-}
-
-.latex-imports {
-  .latex-imports {
-    flex-shrink: 0;
-    max-height: 30cqh;
-    overflow: auto;
-    border-bottom: 1px solid var(--mdc-border);
-    background: var(--mdc-code-bg);
-    color: var(--mdc-muted);
-    font-size: var(--mdc-text-xs);
-  }
-  summary {
-    padding: 0.55rem 0.75rem;
-    cursor: pointer;
-  }
-  .imports-body {
-    padding: 0 0.75rem 0.55rem;
-  }
-  p {
-    margin: 0.25rem 0 0.6rem;
-  }
-  ul {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-  }
-  li {
-    display: flex;
-    align-items: baseline;
-    gap: 1ch;
-    padding: 0.35rem 0;
-    border-top: 1px solid var(--mdc-border);
-  }
-  li span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--mdc-fg);
-  }
-  input {
-    width: 100%;
-    padding: 0.4rem;
-    margin-bottom: 0.5rem;
-    background: var(--mdc-bg);
-    color: var(--mdc-fg);
-    border: 1px solid var(--mdc-border);
-  }
 }

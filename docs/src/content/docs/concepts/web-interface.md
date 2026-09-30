@@ -16,8 +16,8 @@ editor sidebar uses a fixed 3/8 of the available width and the graph uses 5/8.
 Narrow screens retain the stacked layout. Switching views preserves the active
 Lean session and unsaved edits.
 
-**Lean import** is inside the Lean source block and shows the module name other
-nodes should import. Graph nodes share the Lean status colors: gray for Unverified
+The node name is its Lean module name; use it in imports from other nodes.
+Graph nodes share the Lean status colors: gray for Unverified
 (no Lean code, or unchecked, failed or stale evidence), red for Sorry,
 yellow for Conditional (a direct or transitive managed dependency uses sorry), and
 green for Verified (complete sorry-free evidence across the managed dependency

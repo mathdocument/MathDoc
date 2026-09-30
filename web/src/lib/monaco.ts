@@ -16,6 +16,7 @@ export const sourceOptions: editor.IStandaloneEditorConstructionOptions = {
   lineDecorationsWidth: 5, scrollBeyondLastLine: false, mouseWheelZoom: false,
   scrollbar: {handleMouseWheel: false, vertical: 'hidden', horizontal: 'hidden'},
   fixedOverflowWidgets: true, renderLineHighlight: 'gutter',
+  unicodeHighlight: {ambiguousCharacters: false, nonBasicASCII: false},
 };
 /** Finish visible syntax before revealing an editor; leave the rest to its worker. */
 export function renderSource(view: editor.IStandaloneCodeEditor) {

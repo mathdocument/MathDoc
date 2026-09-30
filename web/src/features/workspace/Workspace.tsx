@@ -125,7 +125,7 @@ export default function Workspace({ onReady }: { onReady?: () => void }) {
           <span className="toolbar-divider" />
           <IconButton
             label="Create node"
-            variant="primary"
+            variant="quiet"
             onClick={() => {
               s.overlay = { kind: "new-node" };
             }}
@@ -344,7 +344,9 @@ export default function Workspace({ onReady }: { onReady?: () => void }) {
         </Group>
       </main>
       <footer className="statusbar">
-        <span className="status-project">{s.project}</span>
+        <span className="status-uuid">
+          {s.statusLoad.kind === "ready" ? s.statusLoad.node.fnode : ""}
+        </span>
         <span className="status-node">
           {s.statusLoad.kind === "ready"
             ? s.statusLoad.node.name
