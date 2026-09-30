@@ -17,6 +17,8 @@ Text, LaTeX and Rocq share one runtime in the page. Lean keeps its isolated ifra
 Both use native TextMate tokenization; `@shikijs/langs` supplies grammar data only.
 LaTeX completion providers are scoped to the current model and disposed with it.
 Ordinary editors and their undo history survive layout and preview changes.
+Source-to-source node navigation reuses each editor instance and replaces only
+its node-local model and completion context.
 Confirmed navigation or refresh discards source and name drafts together. Saving
 updates each editor's baseline while preserving edits made during the request.
 `web/src/design.css` supplies the shared colors, fonts and header geometry for
@@ -27,8 +29,8 @@ theme persistence.
 Project-directory navigation retains the outgoing native view-transition snapshot
 until the destination has loaded its data and initialized its editors (or has an
 error to display). Monaco wrapping and gutters are measured before revealing
-the page in one step. Knowledge/Graph switches use the same readiness rule,
-including the first graph fetch. There is no fade for these switches, including
+the page in one step. Node selection and Knowledge/Graph switches use the same
+readiness rule, including the first graph fetch. There is no fade for these switches, including
 with reduced motion enabled. Ordinary links, browser history and unsaved-draft
 guards are preserved; browsers without View Transitions use normal navigation.
 
@@ -83,7 +85,8 @@ Lean and Infoview frames. At a boundary, inner scrolling is suspended until the
 gesture ends; clicks and selection remain enabled. The node pane uses
 `overscroll-behavior-y: contain` so gestures starting at its boundary can still
 rubber-band on macOS. There is no scripted outer scrolling or bounce animation.
-Monaco renders a native scrolling viewport. Its disabled wheel-zoom observer is
+Monaco flushes pending drawing in the native scroll event so the source moves
+in the same frame as the viewport. Its disabled wheel-zoom observer is
 made passive by `web/build/monaco-wheel.ts`, in both Vite builds and dependency
 prebundling; the build fails if the upstream listener changes shape. This avoids
 Safari's synchronous wheel path, which otherwise suppresses boundary feedback.

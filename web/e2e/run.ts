@@ -2666,31 +2666,37 @@ await test('node selection reveals complete editors together and reuses source v
       await page.locator('.editor-scroll:not(.pending) .view-line').first().waitFor();
       await page.locator('.native-editor:not(.pending)').waitFor();
       const editor = await page.locator('[data-srctype="latex"] .editor-host').elementHandle();
-      for (const view of ['Knowledge', 'Graph']) {
+      for (const [running, view] of [[false, 'Knowledge'], [false, 'Graph'], [true, 'Knowledge'], [true, 'Graph']] as const) {
+        if (running && view === 'Knowledge') {
+          await page.getByRole('button', {name: 'Start Lean server', exact: true}).click();
+          await page.getByText('Lean editor ready', {exact: true}).waitFor();
+        }
         await page.getByRole('button', {name: view, exact: true}).click();
         await page.waitForFunction(() => !document.documentElement.dataset.vtScope);
         for (const name of ['Second', 'First']) {
           await page.getByRole('button', {name: /Search nodes/}).click();
           await page.getByPlaceholder('Search by name or UUID...').fill(`Paint.${name}`);
-          const sampling = page.evaluate(async name => {
+          const frames = running ? 60 : 4;
+          const sampling = page.evaluate(async ({name, frames}) => {
             let incomplete = 0, exposed = 0;
-            for (let frame = 0; frame < 240 && exposed < 4; frame++) {
+            for (let frame = 0; frame < 240 && exposed < frames; frame++) {
               await new Promise(requestAnimationFrame);
               if (document.querySelector('h1.title')?.textContent !== `Paint.${name}` || document.documentElement.dataset.vtScope === 'ready') continue;
               exposed++;
               const source = document.querySelector<HTMLElement>('[data-srctype="latex"] .view-lines');
               const lean = document.querySelector<HTMLIFrameElement>('.lean-block iframe')?.contentDocument;
               if (document.querySelector('.editor-scroll.pending, .native-editor.pending') ||
-                  !source?.textContent?.includes(name) || !lean?.querySelector('.view-lines')?.textContent?.includes(name)) incomplete++;
+                  !source?.textContent?.includes(name) || !lean?.querySelector('.view-lines')?.textContent?.includes(name) ||
+                  new Set([...lean.querySelectorAll('.view-line span')].map(el => lean.defaultView!.getComputedStyle(el).color)).size < 2) incomplete++;
             }
             return {incomplete, exposed};
-          }, name);
+          }, {name, frames});
           const start = performance.now();
           await page.getByRole('dialog').getByRole('button', {name: new RegExp(`Paint.${name}`)}).click();
           await title(page, `Paint.${name}`);
           await page.waitForFunction(() => !document.documentElement.dataset.vtScope);
-          console.log('Complete node reveal:', view, name, Math.round(performance.now() - start), 'ms');
-          assert.deepEqual(await sampling, {incomplete: 0, exposed: 4}, 'the first exposed frames contain both source editors');
+          console.log('Complete node reveal:', running ? 'connected' : 'offline', view, name, Math.round(performance.now() - start), 'ms');
+          assert.deepEqual(await sampling, {incomplete: 0, exposed: frames}, 'the first exposed frames contain both highlighted source editors');
           assert.equal(await editor.evaluate(el => el.isConnected), true, 'node navigation reuses the existing Monaco host');
         }
       }
