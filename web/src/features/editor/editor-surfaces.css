@@ -10,7 +10,8 @@
     overflow: hidden;
   }
   .editor-scroll.pending {
-    visibility: hidden;
+    /* Safari can omit source glyphs inserted into a visibility:hidden scroller. */
+    opacity: 0;
   }
   .editor-size {
     min-width: 100%;

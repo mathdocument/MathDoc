@@ -2739,3 +2739,50 @@ await test('Lean native scrolling paints the current scroll position in the same
     }, [node]);
   } finally { await browser.close(); }
 });
+
+await test('source-only node selections paint together from empty and populated panes', {timeout: 90000}, async () => {
+  const browser = await launchBrowser();
+  const nodes = ['text', 'latex'].flatMap(srctype => ['Short', 'Long'].map(size => ({
+    fnode: randomUUID(), name: `${srctype}.${size}`, depens: [], blocks: [{srctype,
+      content: Array.from({length: size === 'Short' ? 3 : 80}, (_, i) => srctype === 'latex'
+        ? `\\section{${size} ${i + 1}} $x^2$ source.` : `## ${size} ${i + 1} **source**.`).join('\n')}],
+  })));
+  try {
+    await fixture(browser, async ({page, url}) => {
+      if (env.MDC_E2E_NATIVE_PAINT === '1') {
+        const artifacts = await mkdtemp(resolve(tmpdir(), 'mdc-source-paint-'));
+        console.log((await run('swift', [resolve(webRoot, 'e2e/native-paint.swift'), url,
+          ...nodes.map(node => node.fnode), artifacts], {timeout: 80000})).stdout);
+      }
+      for (const srctype of ['text', 'latex']) {
+        await page.reload();
+        await page.getByRole('button', {name: 'Graph', exact: true}).click();
+        await page.locator('.graph-container canvas').click({position: {x: 10, y: 10}});
+        await page.getByText('No node selected', {exact: true}).waitFor();
+        for (const [view, size] of [['Graph', 'Short'], ['Knowledge', 'Long'], ['Knowledge', 'Short'], ['Graph', 'Long']]) {
+          await page.getByRole('button', {name: view, exact: true}).click();
+          await page.waitForFunction(() => !document.documentElement.dataset.vtScope);
+          const target = nodes.find(node => node.name === `${srctype}.${size}`)!;
+          // Navigate without a search dialog masking the source pane.
+          const frames = await page.evaluate(async ({target, srctype, size}) => {
+            const state = {mdcHistory: 1, fnode: target.fnode, index: 0, entries: [target.fnode]};
+            history.pushState(state, '', `#ref=${target.fnode}`);
+            window.dispatchEvent(new PopStateEvent('popstate', {state}));
+            let exposed = 0, incomplete = 0;
+            for (let frame = 0; frame < 240 && exposed < 8; frame++) {
+              await new Promise(requestAnimationFrame);
+              if (document.querySelector('h1.title')?.textContent !== target.name || document.documentElement.dataset.vtScope) continue;
+              exposed++;
+              const block = document.querySelector(`[data-srctype="${srctype}"]`);
+              const scroller = block?.querySelector('.editor-scroll');
+              if (!block?.querySelector('.view-lines')?.textContent?.includes(size) || scroller?.classList.contains('pending') ||
+                  scroller?.clientHeight !== block?.querySelector('.editor-host')?.clientHeight) incomplete++;
+            }
+            return {exposed, incomplete};
+          }, {target, srctype, size});
+          assert.deepEqual(frames, {exposed: 8, incomplete: 0});
+        }
+      }
+    }, nodes);
+  } finally {await browser.close();}
+});
