@@ -17,7 +17,7 @@ import { projectsApi, isAbortError, type ServiceStatus } from "../../lib/api";
 import { errMsg } from "../../lib/format";
 import { useTheme } from "../../hooks/use-theme";
 import { useLatest } from "../../hooks/use-latest";
-import { Button, IconButton } from "../../components/ui/button";
+import { IconButton } from "../../components/ui/button";
 import { ErrorMessage } from "../../components/ui/dialog";
 import { ProjectCreate } from "./ProjectCreate";
 
@@ -172,25 +172,17 @@ export default function Projects({ onReady }: { onReady?: () => void }) {
       <main className="directory-main">
         <div className="directory-intro">
           <h1>Projects</h1>
-          <Button
-            variant="primary"
-            aria-label="Init project"
-            onClick={() => setCreate({})}
-          >
-            <Plus size={17} />
-            New project
-          </Button>
-        </div>
-        <div className="directory-summary" aria-label="Project summary">
-          <span>
-            <strong>{projectCount}</strong> projects
-          </span>
-          <span>
-            <strong>{branches.length}</strong> branches
-          </span>
-          <span className="running-total">
-            <i /> <strong>{running}</strong> running
-          </span>
+          <div className="directory-summary" aria-label="Project summary">
+            <span>
+              <strong>{projectCount}</strong> projects
+            </span>
+            <span>
+              <strong>{branches.length}</strong> branches
+            </span>
+            <span className="running-total">
+              <i /> <strong>{running}</strong> running
+            </span>
+          </div>
         </div>
         <div className="directory-controls">
           <label className="search-field">
@@ -202,20 +194,29 @@ export default function Projects({ onReady }: { onReady?: () => void }) {
               onChange={(event) => setQuery(event.target.value)}
             />
           </label>
-          <div className="segmented" aria-label="Filter branches">
-            {(["all", "running", "stopped"] as const).map((value) => (
-              <button
-                key={value}
-                aria-pressed={filter === value}
-                onClick={() => setFilter(value)}
-              >
-                {value === "all"
-                  ? "All branches"
-                  : value === "running"
-                    ? "Running"
-                    : "Stopped"}
-              </button>
-            ))}
+          <div className="directory-actions">
+            <IconButton
+              label="Init project"
+              variant="quiet"
+              onClick={() => setCreate({})}
+            >
+              <Plus size={16} />
+            </IconButton>
+            <div className="segmented" aria-label="Filter branches">
+              {(["all", "running", "stopped"] as const).map((value) => (
+                <button
+                  key={value}
+                  aria-pressed={filter === value}
+                  onClick={() => setFilter(value)}
+                >
+                  {value === "all"
+                    ? "All branches"
+                    : value === "running"
+                      ? "Running"
+                      : "Stopped"}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
         <div className="project-scroll">
@@ -246,19 +247,16 @@ export default function Projects({ onReady }: { onReady?: () => void }) {
             </div>
           ) : (
             <div className="project-list">
-              {Array.from(groups, ([database, rows], index) => (
+              {Array.from(groups, ([database, rows]) => (
                 <section
                   className="project"
                   aria-label={`Project ${database}`}
                   key={database}
                 >
                   <header className="project-head">
-                    <span className="project-index">
-                      {String(index + 1).padStart(2, "0")}
-                    </span>
                     <FolderOpen size={19} />
                     <h2>{database}</h2>
-                    <span className="subtle">
+                    <span className="project-branches subtle">
                       {rows.length} {rows.length === 1 ? "branch" : "branches"}
                     </span>
                     <IconButton

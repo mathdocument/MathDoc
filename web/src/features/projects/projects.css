@@ -38,8 +38,8 @@
   gap: 28px;
   font-size: 12px;
   color: var(--mdc-muted);
-  padding-bottom: 26px;
-  border-bottom: 1px solid var(--mdc-border);
+  margin-left: auto;
+  white-space: nowrap;
 }
 .directory-summary strong {
   color: var(--mdc-fg-soft);
@@ -72,10 +72,19 @@
   flex-shrink: 0;
   justify-content: space-between;
   gap: 16px;
-  margin: 26px 0;
+  align-items: center;
+  padding-bottom: 20px;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--mdc-border);
 }
 .directory-controls .search-field {
   width: min(360px, 50%);
+}
+.directory-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
 }
 .project-scroll {
   flex: 1;
@@ -106,25 +115,24 @@
 .project-head > svg {
   color: var(--mdc-muted);
 }
-.project-index {
-  font: 10px var(--mdc-mono);
-  color: var(--mdc-muted);
-  margin-right: 3px;
-}
 .project-head h2 {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 14px;
   font-weight: 600;
   margin: 0;
 }
-.project-head .icon-button {
+.project-branches {
   margin-left: auto;
+  white-space: nowrap;
 }
 .branch-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 20px;
-  padding: 17px 20px 17px 53px;
+  gap: 16px;
+  padding: 17px 20px;
   border-bottom: 1px solid var(--mdc-border);
 }
 .branch-row:last-child {
@@ -134,14 +142,15 @@
   display: flex;
   align-items: center;
   gap: 9px;
-  min-width: 120px;
+  flex: 1;
+  min-width: 80px;
   font: 12px var(--mdc-mono);
 }
 .branch-name svg {
   color: var(--mdc-muted);
 }
 .branch-state {
-  min-width: 65px;
+  flex: 0 0 80px;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -152,10 +161,14 @@
   color: var(--mdc-accent-down);
 }
 .branch-counts {
-  display: flex;
-  gap: 20px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  flex: 0 0 220px;
+  text-align: right;
+  white-space: nowrap;
   color: var(--mdc-muted);
-  font-size: 11px;
+  font: 11px var(--mdc-mono);
 }
 .branch-counts strong {
   font-family: var(--mdc-mono);
@@ -166,7 +179,7 @@
   display: flex;
   align-items: center;
   gap: 5px;
-  margin-left: auto;
+  flex-shrink: 0;
 }
 .branch-actions .button {
   background: transparent;
@@ -192,17 +205,21 @@
     padding-top: 24px;
   }
   .directory-intro {
-    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+  .directory-summary {
+    gap: 16px;
   }
   .branch-row {
     padding: 15px;
     gap: 12px;
   }
-  .branch-counts {
-    display: none;
-  }
   .branch-name {
-    min-width: 85px;
+    flex-basis: 100%;
+  }
+  .branch-state {
+    margin-left: auto;
   }
   .directory-controls {
     flex-direction: column;
@@ -212,10 +229,6 @@
   }
 }
 
-.branch-counts {
-  width: 155px;
-  flex-shrink: 0;
-}
 .branch-open,
 .branch-open-space {
   width: 65px;
@@ -228,9 +241,6 @@
   flex-shrink: 0;
 }
 @media (max-width: 680px) {
-  .branch-name {
-    flex: 1;
-  }
   .branch-actions {
     width: 100%;
     justify-content: flex-end;
