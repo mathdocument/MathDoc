@@ -165,11 +165,6 @@
   line-height: 1.6;
   resize: vertical;
 }
-.field input:focus,
-.field textarea:focus {
-  outline: 2px solid var(--mdc-ring);
-  outline-offset: 1px;
-}
 .path-preview {
   display: flex;
   align-items: center;
@@ -264,9 +259,6 @@
   font-size: 12px;
   width: 100%;
   min-width: 0;
-}
-.search-field:focus-within {
-  border-color: var(--mdc-accent);
 }
 .spinning svg,
 svg.spinning {

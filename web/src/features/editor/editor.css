@@ -45,7 +45,7 @@
   flex: 1;
   font-size: 20px;
   border: 0;
-  border-bottom: 1px solid var(--mdc-accent);
+  border-bottom: 1px solid var(--mdc-border-strong);
   padding: 4px 0;
   background: transparent;
   color: var(--mdc-fg);

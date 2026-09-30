@@ -12,7 +12,7 @@ export default defineConfig({
         src: './src/assets/mdc-logo.svg',
         alt: 'MathDoc',
       },
-      favicon: '/mdc-logo.png',
+      favicon: '/mdc-logo.png?v=3',
       components: { Header: './src/components/Header.astro' },
       customCss: ['./src/styles/custom.css'],
       social: [
@@ -31,7 +31,7 @@ export default defineConfig({
           attrs: {
             rel: 'apple-touch-icon',
             sizes: '400x400',
-            href: '/MathDoc/mdc-logo.png?v=2',
+            href: '/MathDoc/mdc-logo.png?v=3',
           },
         },
         {
