@@ -1400,6 +1400,22 @@ await test('refresh discards confirmed drafts in every source editor and the nod
   } finally { await browser.close(); }
 });
 
+await test('a graph module load failure leaves the knowledge workspace usable', {timeout: 60000}, async () => {
+  const browser = await launchBrowser();
+  try {
+    await fixture(browser, async ({page}) => {
+      await page.route(/\/assets\/Graph-[^/]+\.js$/, route => route.fulfill({status: 503, body: 'temporarily unavailable'}));
+      await page.getByRole('button', {name: 'Graph', exact: true}).click();
+      await page.locator('.app-error').waitFor();
+      await page.locator('.app:not([inert])').waitFor();
+      assert.equal(await page.getByRole('button', {name: 'Knowledge', exact: true}).getAttribute('aria-pressed'), 'true');
+      await title(page, 'Alpha');
+      await beta(page).click();
+      await title(page, 'Beta');
+    });
+  } finally { await browser.close(); }
+});
+
 await test('Monaco source blocks retain highlighting, edits and undo across layout changes', {timeout: 60000}, async () => {
   const browser = await launchBrowser();
   const node = {fnode: randomUUID(), name: 'Shared.editors', depens: [], blocks: [

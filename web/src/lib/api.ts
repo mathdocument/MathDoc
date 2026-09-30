@@ -29,10 +29,6 @@ export class ApiError extends Error {
     super(message);
     this.name = "ApiError";
   }
-
-  get isConflict(): boolean {
-    return this.status === 409 || this.status === 412;
-  }
 }
 
 export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -126,6 +122,18 @@ export interface LeanProject {
   lakefile_name?: "lakefile.toml" | "lakefile.lean";
   files?: Record<string, string>;
 }
+export interface LeanCheckResult {
+  fnode: string;
+  revision: string;
+  passed: boolean;
+  certified: boolean;
+  has_sorry: boolean | null;
+  built: boolean;
+  cache_hit: boolean;
+  elapsed_ms: number;
+  diagnostics: unknown[];
+  dependency_errors: string[];
+}
 export const api = {
   project: () => req<{ revision: string; project: LeanProject }>("/api/project/lean"),
   putProject: (project: LeanProject, revision: string) => req<{ revision: string; project: LeanProject }>("/api/project/lean", {
@@ -136,9 +144,6 @@ export const api = {
   }),
   closeLeanSession: (id: string) => req<void>(`/api/lean/session/${encodeURIComponent(id)}`, {
     method: "DELETE", keepalive: true,
-  }),
-  checkLean: (fnode: string, revision: string, build = false) => req<{ fnode: string; revision: string; passed: boolean; certified: boolean; has_sorry: boolean | null; built: boolean; cache_hit: boolean; elapsed_ms: number; diagnostics: unknown[]; dependency_errors: string[] }>(`/api/node/${encodeURIComponent(fnode)}/lean/check`, {
-    method: "POST", headers: { "content-type": "application/json", "if-match": `"${revision}"` }, body: JSON.stringify({ build }),
   }),
   roots: () => req<GraphRootItem[]>("/api/graph/roots"),
   graphCheck: () => req<GraphCheckReport>("/api/graph/check"),

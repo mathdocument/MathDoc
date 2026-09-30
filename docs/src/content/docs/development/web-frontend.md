@@ -17,6 +17,8 @@ Text, LaTeX and Rocq share one runtime in the page. Lean keeps its isolated ifra
 Both use native TextMate tokenization; `@shikijs/langs` supplies grammar data only.
 LaTeX completion providers are scoped to the current model and disposed with it.
 Ordinary editors and their undo history survive layout and preview changes.
+Confirmed navigation or refresh discards source and name drafts together. Saving
+updates each editor's baseline while preserving edits made during the request.
 `web/src/design.css` supplies the shared colors, fonts and header geometry for
 the project directory, editor and documentation site. The documentation theme
 maps Starlight surfaces to these tokens; its header retains native search and
@@ -91,6 +93,8 @@ Safari's synchronous wheel path, which otherwise suppresses boundary feedback.
 - `features/projects` owns project and branch management.
 - `features/workspace` owns navigation, relationship lists, dialogs and panel layout.
   Its controller coordinates the framework-independent node and graph-report sessions.
+  It loads the graph component before mounting it, so a failed module download
+  leaves Knowledge view usable.
 - `features/editor` adapts Monaco and the isolated Lean iframe to React. Session
   objects own drafts, requests and native editor lifetimes; React owns surrounding
   controls and mounts each editor surface once. Changing views does not reparent
@@ -101,9 +105,13 @@ Safari's synchronous wheel path, which otherwise suppresses boundary feedback.
 - `lib` contains API clients, immutable snapshots, domain sessions and native editor
   utilities. `ObservableModel` publishes top-level changes through `use-model` and
   React's `useSyncExternalStore`; replace arrays and records instead of mutating them.
+  History validation lives in `lib/history.ts`; browser transition scheduling
+  lives in `lib/view-transition.ts`, separately from node snapshot state.
 - `components/ui` owns shared visual primitives. Base UI supplies accessible dialog,
   tooltip, tab and menu behavior. Feature modules communicate through typed props
   and API clients, not by querying another feature's component state.
+  Shared components such as `FormalStatus` own their styles without depending on
+  an editor feature stylesheet.
 
 Lean's upstream Infoview keeps its own React version inside its existing iframe;
 it does not share the application's React root. Keep that dependency boundary

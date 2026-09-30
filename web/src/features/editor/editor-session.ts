@@ -31,29 +31,17 @@ export class EditorSession extends ObservableModel {
   get load() {
     return this.props.load;
   }
-  get theme() {
-    return this.props.theme;
-  }
   get active() {
     return this.props.active ?? true;
   }
   get selection() {
     return this.props.selection ?? 0;
   }
-  get latexPreview() {
-    return this.props.latexPreview ?? false;
-  }
   get onRefresh() {
     return this.props.onRefresh;
   }
   get onReady() {
     return this.props.onReady;
-  }
-  get latexTarget() {
-    return this.props.latexTarget;
-  }
-  get onLatexNavigate() {
-    return this.props.onLatexNavigate;
   }
   get node() {
     return this.load.kind === "ready" ? this.load.node : null;

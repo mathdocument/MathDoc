@@ -74,9 +74,6 @@ export class SourceEditorSession extends ObservableModel {
   get focusLabel() {
     return this.props.focusLabel;
   }
-  get onLatexNavigate() {
-    return this.props.onLatexNavigate;
-  }
   host: HTMLDivElement | null = null;
   scroller!: HTMLDivElement;
   editorView: Monaco.IStandaloneCodeEditor | null = null;

@@ -92,7 +92,7 @@ export function NodeColumn({
       setFocusIndex(null);
     }
   }, [rows, focusIndex]);
-  async function moveFocus(event: KeyboardEvent, index: number) {
+  function moveFocus(event: KeyboardEvent, index: number) {
     if (event.altKey || event.ctrlKey || event.metaKey) return;
     const current = pendingFocus.current ?? index;
     const target = (
@@ -201,7 +201,7 @@ export function NodeColumn({
                 data-index={row.index}
                 aria-label={`${item.name} (${shortFnode(item.fnode)})`}
                 onClick={() => onSelect(item.fnode)}
-                onKeyDown={(event) => void moveFocus(event, row.index)}
+                onKeyDown={(event) => moveFocus(event, row.index)}
               >
                 <span className="card-title">{item.name}</span>
                 <span className="card-meta">

@@ -1,12 +1,30 @@
+import { nodeSession } from "../../lib/node-session";
+import { withViewTransition } from "../../lib/view-transition";
 import {
-  nodeSession,
-  withViewTransition,
   browserHistoryEntry,
   browserHistoryTarget,
   type BrowserHistoryEntry,
   type FocusedHistoryOptions,
-} from "../../lib/node-session";
+} from "../../lib/history";
 import { WorkspaceSession } from "../../lib/workspace-session";
+import { settleEditorLayout } from "../../lib/editor-layout";
+import { api } from "../../lib/api";
+import { errMsg } from "../../lib/format";
+import { projectName } from "../../lib/project-path";
+import type { NodeDetail } from "../../lib/types";
+import {
+  confirmDiscardDrafts,
+  hasUnsavedDrafts,
+  settlePendingMutations,
+  trackMutation,
+} from "../../lib/unsaved";
+import {
+  applyTheme,
+  currentTheme,
+  observeTheme,
+  type Theme,
+} from "../../lib/theme";
+import { ObservableModel } from "../../lib/observable";
 export interface WorkspaceControllerProps {
   onReady?: () => void;
 }
@@ -31,24 +49,6 @@ type Overlay =
   | {
       kind: "project";
     };
-import { settleEditorLayout } from "../../lib/editor-layout";
-import { api } from "../../lib/api";
-import { errMsg } from "../../lib/format";
-import { projectName } from "../../lib/project-path";
-import type { NodeDetail } from "../../lib/types";
-import {
-  confirmDiscardDrafts,
-  hasUnsavedDrafts,
-  settlePendingMutations,
-  trackMutation,
-} from "../../lib/unsaved";
-import {
-  applyTheme,
-  currentTheme,
-  observeTheme,
-  type Theme,
-} from "../../lib/theme";
-import { ObservableModel } from "../../lib/observable";
 export class WorkspaceController extends ObservableModel {
   props: WorkspaceControllerProps;
   get onReady() {
@@ -81,7 +81,7 @@ export class WorkspaceController extends ObservableModel {
         prepare: () => Promise<void>;
       }
     | undefined;
-  graphModule: Promise<typeof import("../graph/Graph")> | null = null;
+  GraphComponent: typeof import("../graph/Graph").default | null = null;
   graphRevision = 0;
   get activeFnode() {
     return this.view === "force"
@@ -95,9 +95,6 @@ export class WorkspaceController extends ObservableModel {
   }
   get activeReady() {
     return this.activeFnode !== null && this.activeNode !== null;
-  }
-  get activeRevision() {
-    return this.activeNode?.revision ?? null;
   }
   get activeDepens() {
     return this.activeNode?.depens ?? [];
@@ -296,8 +293,8 @@ export class WorkspaceController extends ObservableModel {
     nodeSession.cancel();
     this.changingView = true;
     try {
-      if (this.view === "columns")
-        await (this.graphModule ??= import("../graph/Graph"));
+      if (this.view === "columns" && !this.GraphComponent)
+        this.GraphComponent = (await import("../graph/Graph")).default;
       // Retain the same editor and LSP; reveal only after the new width is measured.
       await withViewTransition(
         () => {
@@ -542,7 +539,7 @@ export class WorkspaceController extends ObservableModel {
       "historyNavigating",
       "view",
       "changingView",
-      "graphModule",
+      "GraphComponent",
       "graphRevision",
     );
   }

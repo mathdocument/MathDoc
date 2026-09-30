@@ -206,11 +206,6 @@
   font-size: 12px;
   margin: 0;
 }
-.eyebrow {
-  color: var(--mdc-muted);
-  font: 10px var(--mdc-mono);
-  letter-spacing: 0.13em;
-}
 .subtle {
   color: var(--mdc-muted);
   font-size: 12px;
@@ -277,4 +272,10 @@ svg.spinning {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+.meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }

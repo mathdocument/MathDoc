@@ -1,5 +1,5 @@
 import logo from "../../assets/mdc-logo.svg?no-inline";
-import { lazy, Suspense, useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -30,7 +30,6 @@ import {
 import { ProjectSettings } from "./ProjectSettings";
 import { shortFnode } from "../../lib/format";
 import "./workspace.css";
-const Graph = lazy(() => import("../graph/Graph"));
 
 export default function Workspace({ onReady }: { onReady?: () => void }) {
   const [controller] = useState(() => new WorkspaceController({ onReady }));
@@ -62,6 +61,7 @@ export default function Workspace({ onReady }: { onReady?: () => void }) {
     if (await session.select(id)) closeOverlay();
   };
   const active = s.activeNode;
+  const Graph = s.GraphComponent;
   return (
     <div className="app" data-view={s.view} inert={busy} aria-busy={busy}>
       <header className="app-header">
@@ -267,23 +267,15 @@ export default function Workspace({ onReady }: { onReady?: () => void }) {
             <div
               className={`graph-panel ${s.view !== "force" ? "hidden" : ""}`}
             >
-              {s.graphModule && (
-                <Suspense
-                  fallback={
-                    <div className="empty-state" role="status">
-                      Loading graph...
-                    </div>
-                  }
-                >
-                  <Graph
-                    ref={s.attachGraph}
-                    active={s.view === "force"}
-                    theme={s.theme}
-                    onSelect={s.onForceSelect}
-                    selectedFnode={session.selectedFnode}
-                    revision={s.graphRevision}
-                  />
-                </Suspense>
+              {Graph && (
+                <Graph
+                  ref={s.attachGraph}
+                  active={s.view === "force"}
+                  theme={s.theme}
+                  onSelect={s.onForceSelect}
+                  selectedFnode={session.selectedFnode}
+                  revision={s.graphRevision}
+                />
               )}
             </div>
             <NodeColumn

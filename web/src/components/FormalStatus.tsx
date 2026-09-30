@@ -1,4 +1,6 @@
 import type { FormalCodeStatus } from "../lib/types";
+import "./FormalStatus.css";
+
 const labels = {
   unverified: "Unverified",
   sorry: "Sorry",

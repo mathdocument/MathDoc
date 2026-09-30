@@ -1,0 +1,31 @@
+.formal-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.status-light {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--mdc-muted);
+}
+.formal-status[data-status="sorry"] .status-light {
+  background: var(--mdc-error);
+}
+.formal-status[data-status="conditional"] .status-light {
+  background: var(--mdc-warning);
+}
+.formal-status[data-status="verified"] .status-light {
+  background: var(--mdc-accent-down);
+}
+.formal-language {
+  color: var(--mdc-fg-soft);
+  font-weight: 550;
+}
+.status-text {
+  color: var(--mdc-muted);
+}

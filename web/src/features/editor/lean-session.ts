@@ -1,6 +1,6 @@
 import type { NodeDetail, SrcBlock } from "../../lib/types";
 import type { Theme } from "../../lib/theme";
-import { api } from "../../lib/api";
+import { api, type LeanCheckResult } from "../../lib/api";
 import { errMsg } from "../../lib/format";
 import { removeDraft, setDraftDirty, trackMutation } from "../../lib/unsaved";
 import { ObservableModel } from "../../lib/observable";
@@ -71,7 +71,7 @@ export class LeanEditorSession extends ObservableModel {
     return this.saving || this.deleting;
   }
   error: string | null = null;
-  result: Awaited<ReturnType<typeof api.checkLean>> | null = null;
+  result: LeanCheckResult | null = null;
   ready = false;
   runtimeReady = false;
   opening = false;
@@ -255,7 +255,7 @@ export class LeanEditorSession extends ObservableModel {
     // Kill the native process immediately, even during initialization/checking.
     return Promise.all([stopped, id ? api.closeLeanSession(id) : undefined]);
   };
-  certified = async (checked: Awaited<ReturnType<typeof api.checkLean>>) => {
+  certified = async (checked: LeanCheckResult) => {
     const current = this.generation,
       connection = this.connection,
       node = this.fnode;
@@ -364,47 +364,42 @@ export class LeanEditorSession extends ObservableModel {
       if (this.module !== this.openedModule) {
         this.openedModule = this.module;
         // A rename changes the native URI, but must retain the current draft.
-        (() => {
-          this.generation++;
-          this.ready = false;
-          this.result = null;
-          this.error = null;
-          this.selectNode();
-        })();
+        this.generation++;
+        this.ready = false;
+        this.result = null;
+        this.error = null;
+        this.selectNode();
       }
       return;
     }
     this.openedModule = this.module;
     // Navigation has already confirmed discarding edits. Reset the old native
     // document as well, so its retained worker never carries an abandoned draft.
-    (() =>
-      this.frame?.contentWindow?.postMessage(
-        { type: "lean-source", fnode: this.openedNode, value: this.baseline },
-        location.origin,
-      ))();
+    this.frame?.contentWindow?.postMessage(
+      { type: "lean-source", fnode: this.openedNode, value: this.baseline },
+      location.origin,
+    );
     this.openedNode = node;
     this.openedSelection = this.selection;
-    (() => {
-      this.generation++;
-      this.ready = false;
-      this.error = null;
-      this.result = null;
-      this.progress = "";
-      this.validating = false;
-      this.content = this.block?.content ?? "";
-      this.baseline = this.content;
-      if (node) {
-        if (!this.mounted && !this.opening) {
-          this.initialTheme = this.theme;
-          this.mounted = true;
-        }
-        this.selectNode();
-      } else
-        this.frame?.contentWindow?.postMessage(
-          { type: "lean-cancel" },
-          location.origin,
-        );
-    })();
+    this.generation++;
+    this.ready = false;
+    this.error = null;
+    this.result = null;
+    this.progress = "";
+    this.validating = false;
+    this.content = this.block?.content ?? "";
+    this.baseline = this.content;
+    if (node) {
+      if (!this.mounted && !this.opening) {
+        this.initialTheme = this.theme;
+        this.mounted = true;
+      }
+      this.selectNode();
+    } else
+      this.frame?.contentWindow?.postMessage(
+        { type: "lean-cancel" },
+        location.origin,
+      );
   }
   syncTheme() {
     this.frame?.contentWindow?.postMessage(
