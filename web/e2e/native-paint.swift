@@ -32,12 +32,13 @@ import WebKit
             dispatchEvent(new PopStateEvent('popstate',{state})); undefined;
             """)
     }
-    func painted(_ id: String, _ name: String, _ label: String, _ artifacts: URL) async throws {
+    func painted(_ id: String, _ name: String, _ label: String, _ artifacts: URL, lean: Bool = false) async throws {
         try await navigate(id)
-        try await wait("document.querySelector('h1.title')?.textContent === '\(name)' && !document.documentElement.dataset.vtScope && document.querySelector('.editor-scroll:not(.pending) .view-line')")
+        let ready = lean ? "document.querySelector('.native-editor:not(.pending) iframe')?.contentDocument?.querySelector('.view-line')" : "document.querySelector('.editor-scroll:not(.pending) .view-line')"
+        try await wait("document.querySelector('h1.title')?.textContent === '\(name)' && !document.documentElement.dataset.vtScope && \(ready)")
         var counts: [Int] = []
         for index in 0..<8 {
-            let bounds = try await js("document.querySelector('.editor-scroll .view-line').getBoundingClientRect().toJSON()") as! [String: Double]
+            let bounds = try await js(lean ? "const f = document.querySelector('.lean-block iframe'), r = f.contentDocument.querySelector('.view-line').getBoundingClientRect(), b = f.getBoundingClientRect(); ({x:b.x+r.x,y:b.y+r.y,height:r.height});" : "document.querySelector('.editor-scroll .view-line').getBoundingClientRect().toJSON()") as! [String: Double]
             let snapshot = try await web.takeSnapshot(configuration: nil)
             let bitmap = NSBitmapImageRep(data: snapshot.tiffRepresentation!)!
             let scale = Double(bitmap.pixelsWide) / web.bounds.width
@@ -60,23 +61,23 @@ import WebKit
         print(label, "source pixels:", counts)
     }
     func check() async throws {
-        let args = CommandLine.arguments, artifacts = URL(fileURLWithPath: CommandLine.arguments[6])
+        let args = CommandLine.arguments, artifacts = URL(fileURLWithPath: CommandLine.arguments.last!)
         web.load(URLRequest(url: URL(string: "\(args[1])/?native-paint#ref=\(args[2])")!))
         try await wait("document.querySelector('.editor-scroll:not(.pending) .view-line')")
         // Fix the palette so blank white source pixels cannot pass the ink check.
         _ = try await js("if(document.documentElement.dataset.theme !== 'light') document.querySelector('button[aria-label=\"Switch to light mode\"]').click(); undefined;")
         try await wait("getComputedStyle(document.querySelector('.monaco-editor')).backgroundColor === 'rgb(255, 255, 255)'")
-        for (kind, first, second) in [("text", args[2], args[3]), ("latex", args[4], args[5])] {
+        for (kind, first, second) in [("text", args[2], args[3]), ("latex", args[4], args[5]), ("lean", args[6], args[7])] {
             _ = try await js("document.querySelector('button[title=\"Knowledge view\"]').click(); undefined;")
             try await wait("!document.documentElement.dataset.vtScope && document.querySelector('.app')?.dataset.view === 'columns'")
-            try await painted(first, "\(kind).Short", "\(kind)-knowledge-short", artifacts)
-            try await painted(second, "\(kind).Long", "\(kind)-knowledge-long", artifacts)
+            try await painted(first, "\(kind).Short", "\(kind)-knowledge-short", artifacts, lean: kind == "lean")
+            try await painted(second, "\(kind).Long", "\(kind)-knowledge-long", artifacts, lean: kind == "lean")
             _ = try await js("document.querySelector('button[title=\"Graph view\"]').click(); undefined;")
             try await wait("document.querySelector('.graph-container canvas') && !document.documentElement.dataset.vtScope")
             try await navigate(second, clear: true)
             try await wait("document.body.innerText.includes('No node selected') && !document.documentElement.dataset.vtScope")
-            try await painted(first, "\(kind).Short", "\(kind)-graph-empty", artifacts)
-            try await painted(second, "\(kind).Long", "\(kind)-graph-long", artifacts)
+            try await painted(first, "\(kind).Short", "\(kind)-graph-empty", artifacts, lean: kind == "lean")
+            try await painted(second, "\(kind).Long", "\(kind)-graph-long", artifacts, lean: kind == "lean")
         }
     }
 }

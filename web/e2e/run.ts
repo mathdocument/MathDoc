@@ -2007,7 +2007,7 @@ await test('Lean first paint waits for syntax without waiting for hidden iframe 
         const observe = () => {
           const frame = document.querySelector<HTMLIFrameElement>('iframe[title="Lean source and Infoview"]');
           const lines = frame?.contentDocument?.querySelectorAll('.view-line span');
-          if (frame && getComputedStyle(frame).visibility === 'visible' && lines?.length) {
+          if (frame && !frame.parentElement!.classList.contains('pending') && getComputedStyle(frame).visibility === 'visible' && lines?.length) {
             window.firstLeanPaint = [...new Set([...lines].map(el => el.ownerDocument.defaultView!.getComputedStyle(el).color))];
           } else requestAnimationFrame(observe);
         };
@@ -2020,7 +2020,7 @@ await test('Lean first paint waits for syntax without waiting for hidden iframe 
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
         assert.equal(await page.getByText('Loading Lean editor...', {exact: true}).isVisible(), false);
         assert.equal(await page.getByLabel('Lean source while editor loads').isVisible(), false);
-        assert.equal(await page.locator('iframe[title="Lean source and Infoview"]').isVisible(), false, 'hold the editor until its grammar is loaded');
+        assert.equal(await page.locator('.native-editor').evaluate(el => getComputedStyle(el).opacity), '0', 'hold the editor until its grammar is loaded');
       } finally { release(); }
       const painted = async () => {
         await page.locator('.native-editor:not(.pending)').waitFor();
@@ -2751,10 +2751,11 @@ await test('Lean native scrolling paints the current scroll position in the same
 
 await test('source-only node selections paint together from empty and populated panes', {timeout: 90000}, async () => {
   const browser = await launchBrowser();
-  const nodes = ['text', 'latex'].flatMap(srctype => ['Short', 'Long'].map(size => ({
+  const nodes = ['text', 'latex', 'lean'].flatMap(srctype => ['Short', 'Long'].map(size => ({
     fnode: randomUUID(), name: `${srctype}.${size}`, depens: [], blocks: [{srctype,
       content: Array.from({length: size === 'Short' ? 3 : 80}, (_, i) => srctype === 'latex'
-        ? `\\section{${size} ${i + 1}} $x^2$ source.` : `## ${size} ${i + 1} **source**.`).join('\n')}],
+        ? `\\section{${size} ${i + 1}} $x^2$ source.` : srctype === 'lean'
+          ? `-- ${size} ${i + 1} Lean source.` : `## ${size} ${i + 1} **source**.`).join('\n')}],
   })));
   try {
     await fixture(browser, async ({page, url}) => {

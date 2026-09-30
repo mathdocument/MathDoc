@@ -80,7 +80,8 @@
     height: 100cqh;
   }
   .pending {
-    visibility: hidden;
+    /* Keep the iframe paintable while Safari prepares the next Lean model. */
+    opacity: 0;
     position: absolute;
     inset: 0;
   }
