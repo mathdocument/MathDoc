@@ -8,7 +8,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowDownRight, ArrowUpRight, Search } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, Layers3, Search } from "lucide-react";
 import type { NodePreview } from "../../lib/types";
 import { shortFnode } from "../../lib/format";
 import { FormalStatus } from "../../components/FormalStatus";
@@ -206,7 +206,7 @@ export function NodeColumn({
                 <span className="card-title">{item.name}</span>
                 <span className="card-meta">
                   <code># {shortFnode(item.fnode)}</code>
-                  <span>· Depth {item.depth}</span>
+                  <span className="meta-item"><Layers3 size={12} />Depth {item.depth}</span>
                   <span className="card-verification">
                     <FormalStatus
                       language="Lean"

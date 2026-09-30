@@ -112,10 +112,7 @@
   gap: 7px;
 }
 .column-head svg {
-  color: var(--mdc-accent-up);
-}
-.column[data-accent="down"] .column-head svg {
-  color: var(--mdc-accent-down);
+  color: var(--mdc-muted);
 }
 .column-head strong {
   font-size: 12px;

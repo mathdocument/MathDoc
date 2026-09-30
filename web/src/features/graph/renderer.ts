@@ -49,8 +49,7 @@ export function createGraphRenderer(
     sorry: "#ff6f85",
     conditional: "#f0b661",
     verified: "#4fd6ae",
-    outgoing: "79, 214, 174",
-    incoming: "180, 140, 255",
+    edge: "142, 142, 142",
     outline: "#f0f0f0",
     shortLabel: "142, 142, 142",
     label: "212, 212, 212",
@@ -60,8 +59,7 @@ export function createGraphRenderer(
     sorry: "#c8384d",
     conditional: "#96601a",
     verified: "#0a7d64",
-    outgoing: "10, 125, 100",
-    incoming: "116, 64, 208",
+    edge: "112, 112, 112",
     outline: "#202020",
     shortLabel: "97, 97, 97",
     label: "69, 69, 69",
@@ -365,9 +363,9 @@ export function createGraphRenderer(
       );
       ctx.lineWidth = (selectedDegree > 1_000 ? 1.25 : 2) / viewK;
       ctx.setLineDash([]);
-      ctx.strokeStyle = `rgba(${palette.outgoing}, ${highlightAlpha})`;
+      ctx.strokeStyle = `rgba(${palette.edge}, ${highlightAlpha})`;
       ctx.stroke(selectedOutgoingPath);
-      ctx.strokeStyle = `rgba(${palette.incoming}, ${highlightAlpha})`;
+      ctx.strokeStyle = `rgba(${palette.edge}, ${highlightAlpha})`;
       ctx.stroke(selectedIncomingPath);
     }
 

@@ -54,7 +54,7 @@
 .legend-label i {
   width: 7px;
   height: 7px;
-  border: 1px solid currentColor;
+  background: currentColor;
   border-radius: 50%;
 }
 .legend-label.unverified i {
@@ -62,15 +62,12 @@
 }
 .legend-label.sorry i {
   color: var(--mdc-error);
-  background: var(--mdc-error);
 }
 .legend-label.conditional i {
   color: var(--mdc-warning);
-  border-style: dashed;
 }
 .legend-label.verified i {
   color: var(--mdc-accent-down);
-  background: var(--mdc-accent-down);
 }
 .graph-controls {
   position: absolute;
