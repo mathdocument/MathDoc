@@ -17,7 +17,7 @@ export function latexAutocomplete(session: LatexSession, target: editor.IStandal
   let result: ReturnType<typeof latexCompletions> = null;
   let anchor: ReturnType<typeof target.getPosition> = null;
   let range: editor.IIdentifiedSingleEditOperation['range'];
-  let selected = 0, accepting = false, disposed = false, pending = false;
+  let selected = 0, accepting = false, disposed = false, pending = false, waitingForData = false;
   const widget: editor.IContentWidget = {
     getId: () => list.id, getDomNode: () => list,
     allowEditorOverflow: true, suppressMouseDown: true,
@@ -25,6 +25,7 @@ export function latexAutocomplete(session: LatexSession, target: editor.IStandal
   };
   target.addContentWidget(widget);
   const hide = () => {
+    waitingForData = false;
     anchor = null; result = null;
     input?.removeAttribute('aria-activedescendant');
     input?.removeAttribute('aria-controls');
@@ -51,7 +52,11 @@ export function latexAutocomplete(session: LatexSession, target: editor.IStandal
     if (!model || !position || !target.getSelection()?.isEmpty()) { hide(); return; }
     const offset = model.getOffsetAt(position);
     result = latexCompletions(session, model.getValue().slice(Math.max(0, offset - 1024), offset));
-    if (!result?.options.length) { hide(); return; }
+    if (!result?.options.length) {
+      const waiting = !!result && (!session.context || !session.catalog);
+      hide(); waitingForData = waiting; return;
+    }
+    waitingForData = false;
     anchor = model.getPositionAt(offset - result.length);
     range = {startLineNumber: anchor.lineNumber, startColumn: anchor.column, endLineNumber: position.lineNumber, endColumn: position.column};
     list.replaceChildren(...result.options.map((item, index) => {
@@ -75,6 +80,7 @@ export function latexAutocomplete(session: LatexSession, target: editor.IStandal
     pending = true;
     queueMicrotask(() => { pending = false; refresh(); });
   };
+  const stopWaiting = session.subscribe(() => { if (waitingForData) schedule(); });
   const accept = (index: number) => {
     const item = result?.options[index];
     if (!item || !anchor) return;
@@ -96,7 +102,7 @@ export function latexAutocomplete(session: LatexSession, target: editor.IStandal
   };
   const subscriptions = [
     target.onDidChangeModelContent(schedule),
-    target.onDidChangeCursorPosition(() => { if (anchor) schedule(); }),
+    target.onDidChangeCursorPosition(() => { if (anchor || waitingForData) schedule(); }),
     target.onDidBlurEditorText(hide),
     target.onDidScrollChange(event => {
       if (event.scrollTopChanged || event.scrollLeftChanged) hide();
@@ -105,7 +111,10 @@ export function latexAutocomplete(session: LatexSession, target: editor.IStandal
       if (event.ctrlKey && event.keyCode === KeyCode.Space) {
         event.preventDefault(); event.stopPropagation(); refresh(); return;
       }
-      if (!anchor) return;
+      if (!anchor) {
+        if (event.keyCode === KeyCode.Escape) hide();
+        return;
+      }
       switch (event.keyCode) {
         case KeyCode.DownArrow: select(selected + 1, true); break;
         case KeyCode.UpArrow: select(selected - 1, true); break;
@@ -119,6 +128,7 @@ export function latexAutocomplete(session: LatexSession, target: editor.IStandal
     }),
   ];
   return {dispose() {
+    stopWaiting();
     disposed = true; subscriptions.forEach(item => item.dispose());
     hide(); target.removeContentWidget(widget); list.remove();
   }};

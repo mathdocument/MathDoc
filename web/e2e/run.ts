@@ -1696,14 +1696,23 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await title(page, 'Beta');
       await block.getByRole('textbox', {name: /^latex source/}).waitFor();
       assert.equal(await block.locator('.latex-preview').count(), 0);
-      await page.goBack();
-      await title(page, 'Alpha');
       const input = block.getByRole('textbox', {name: /^latex source/});
       const fill = async (value: string) => { await input.press('ControlOrMeta+A'); await page.keyboard.insertText(value); };
+      // A freshly selected source can accept input before its completion data arrives.
+      let releaseContext!: () => void;
+      const contextGate = new Promise<void>(resolve => { releaseContext = resolve; });
+      const contextPath = `**/node/${ids.Alpha}/latex/context*`;
+      await page.route(contextPath, async route => { await contextGate; await route.continue(); });
       // First paint without hovering: Safari 27 used to show a blank command
       // list until individual rows were invalidated by the pointer.
-      await page.mouse.move(0, 0);
-      await fill('\\');
+      try {
+        await page.goBack();
+        await title(page, 'Alpha');
+        await page.waitForFunction(() => !document.querySelector('.app[inert]') && !document.documentElement.dataset.vtScope);
+        await page.mouse.move(0, 0);
+        await fill('\\');
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      } finally { releaseContext(); await page.unroute(contextPath); }
       const commands = page.getByRole('listbox', {name: 'LaTeX suggestions'});
       await commands.waitFor();
       assert.ok(await commands.getByRole('option').count() > 1);
