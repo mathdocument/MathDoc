@@ -12,7 +12,7 @@
     "perf": "npm run build && node perf/run.ts",
     "perf:measure": "npm run build && node perf/run.ts --output perf/latest.json",
     "perf:record": "npm run build && node perf/run.ts --record",
-    "test:e2e": "node --test e2e/run.mjs"
+    "test:e2e": "node --test e2e/run.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
@@ -46,7 +46,7 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^4.7.0",
     "playwright": "^1.62.1",
-    "typescript": "^5.7.3",
+    "typescript": "^5.9.3",
     "vite": "^6.0.7",
     "vitest": "^4.1.10"
   }

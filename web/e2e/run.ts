@@ -9,8 +9,59 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { chromium, firefox, webkit } from "playwright";
+import { chromium, firefox, webkit, type Browser, type Page, type Locator, type Route, type ElementHandle, type WebSocket as BrowserSocket } from "playwright";
 import { createServer } from "node:net";
+
+import type { SrcBlock, NodeDetail, GraphFull } from "../src/lib/api-types.ts";
+
+type FixtureNode = {
+  fnode: string;
+  name: string;
+  depens: string[];
+  blocks: (Omit<SrcBlock, "metadata"> & { metadata?: SrcBlock["metadata"] })[];
+};
+type Cli = (...args: string[]) => Promise<{ stdout: string; stderr: string }>;
+interface Fixture {
+  root: string;
+  cli: Cli;
+  page: Page;
+  url: string;
+  serverOutput: () => string;
+}
+
+interface ClientMessage {
+  method: string;
+  params: {
+    id?: number | string;
+    textDocument?: {uri: string; version?: number};
+    contentChanges?: {text: string}[];
+  };
+}
+
+declare global {
+  interface Window {
+    MathJax?: {
+      typesetPromise: (elements: HTMLElement[]) => Promise<void>;
+      startup: {document: {math: Iterable<unknown>}};
+    };
+    previewLoadingFrames: number;
+    watchPreview: boolean;
+    completionFrames: {
+      x: number; y: number; height: number; shown: string;
+      list: number; retained: boolean; pane: number; hit: boolean;
+    }[];
+    recordCompletion: boolean;
+    completionRows: Element[];
+    diagramInjected?: number;
+    releaseLeanFrames: () => void;
+    firstLeanPaint: string[] | null;
+    observeLeanPaint: () => void;
+    retainedLeanFrame: HTMLIFrameElement | null;
+    boundaryWheel: {cancelled: boolean; trusted: boolean} | null;
+    originalEditor: Element | null;
+    firstLayout: Promise<{number: string; difference: number}[]>;
+  }
+}
 
 const run = promisify(execFile);
 const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -24,11 +75,13 @@ function launchBrowser() {
   if (env.MDC_E2E_BROWSER === 'webkit') return webkit.launch();
   return chromium.launch({headless: true, channel: 'chromium'});
 }
-async function startServer(cwd, database, overrides = {}) {
+async function startServer(cwd: string, database: string, overrides: NodeJS.ProcessEnv = {}) {
   const reservation = createServer();
-  await new Promise(resolve => reservation.listen(0, "127.0.0.1", resolve));
-  const port = reservation.address().port;
-  await new Promise(resolve => reservation.close(resolve));
+  await new Promise<void>(resolve => reservation.listen(0, "127.0.0.1", resolve));
+  const address = reservation.address();
+  assert.ok(address && typeof address !== "string");
+  const port = address.port;
+  await new Promise<void>((resolve, reject) => reservation.close(error => error ? reject(error) : resolve()));
   const { stdout } = await run(binary, ["start", `${database}/main`, "--port", String(port)], {
     cwd, env: { ...env, ...overrides, MDC_CACHE_DIR: resolve(cwd, "cache") }, timeout: 30000,
   });
@@ -36,17 +89,17 @@ async function startServer(cwd, database, overrides = {}) {
   return { ...info, url: info.url.replace(/\/$/, ""), output: () => readFileSync(info.log, "utf8").slice(-16000) };
 }
 
-async function fixture(browser, body, extraNodes = [], expectedPageErrors = [], serverEnv = {}) {
+async function fixture(browser: Browser, body: (fixture: Fixture) => Promise<void>, extraNodes: FixtureNode[] = [], expectedPageErrors: RegExp[] = [], serverEnv: NodeJS.ProcessEnv = {}) {
   const root = await mkdtemp(resolve(tmpdir(), "mdc-e2e-"));
   let server;
   let context;
   const database = `mdce2e${randomUUID().replaceAll("-", "")}`;
-  const cli = (...args) => run(binary, (args[0] === "init" ? ["init", database] : [args[0], "--proj", `${database}/main`, ...args.slice(1)]), { cwd: root, env: { ...env, MDC_CACHE_DIR: resolve(root, "cache") }, timeout: 30000, maxBuffer: 16 * 1024 * 1024 });
+  const cli: Cli = (...args: string[]) => run(binary, (args[0] === "init" ? ["init", database] : [args[0], "--proj", `${database}/main`, ...args.slice(1)]), { cwd: root, env: { ...env, MDC_CACHE_DIR: resolve(root, "cache") }, timeout: 30000, maxBuffer: 16 * 1024 * 1024 });
   try {
     await cli("init");
     server = await startServer(root, database, serverEnv);
     const bundle = JSON.parse((await cli("export")).stdout);
-    bundle.nodes = ["Alpha", "Beta", "Gamma"].map(title => {
+    bundle.nodes = ["Alpha", "Beta", "Gamma"].map((title): FixtureNode => {
       const fnode = randomUUID();
       return { fnode, name: title, depens: [], blocks: [] };
     }).concat(extraNodes);
@@ -59,9 +112,9 @@ async function fixture(browser, body, extraNodes = [], expectedPageErrors = [], 
     await context.tracing.start({ screenshots: true, snapshots: true });
     const page = await context.newPage();
     page.setDefaultTimeout(30000);
-    const errors = [], traffic = [];
+    const errors: string[] = [], traffic: {time: number; direction: string; message: string}[] = [];
     page.on("websocket", ws => {
-      const record = (direction, payload) => {
+      const record = (direction: string, payload: string | Buffer) => {
         traffic.push({ time: Date.now(), direction, message: String(payload).slice(0, 16000) });
         if (traffic.length > 300) traffic.shift();
       };
@@ -123,11 +176,11 @@ async function fixture(browser, body, extraNodes = [], expectedPageErrors = [], 
   }
 }
 
-const center = (page) => page.getByRole("region", { name: "current node" });
-async function title(page, name) {
+const center = (page: Page) => page.getByRole("region", { name: "current node" });
+async function title(page: Page, name: string) {
   await center(page).getByRole("button", { name, exact: true }).waitFor();
 }
-async function leanReply(socket, method) {
+async function leanReply(socket: BrowserSocket, method: string) {
   const sent = await socket.waitForEvent("framesent", {predicate: ({payload}) => JSON.parse(String(payload)).method === method});
   const {id} = JSON.parse(String(sent.payload));
   const received = await socket.waitForEvent("framereceived", {predicate: ({payload}) => JSON.parse(String(payload)).id === id});
@@ -135,11 +188,11 @@ async function leanReply(socket, method) {
   assert.equal(reply.error, undefined, JSON.stringify(reply.error));
   return reply.result;
 }
-async function rename(page, value) {
+async function rename(page: Page, value: string) {
   await center(page).getByTitle("Click to rename").click();
   await page.getByRole("textbox", { name: "Node name" }).fill(value);
 }
-const beta = (page) => page.getByRole("complementary", { name: "Dependencies" })
+const beta = (page: Page) => page.getByRole("complementary", { name: "Dependencies" })
   .getByRole("button", { name: /^Beta \(/ });
 
 await test('short relationship lists retain native boundary scrolling', async () => {
@@ -170,7 +223,7 @@ await test('node names validate creation, collisions and renames in the browser'
   const browser = await launchBrowser();
   try {
     await fixture(browser, async ({page, cli}) => {
-      const original = JSON.parse((await cli('show', 'Alpha')).stdout);
+      const original: NodeDetail = JSON.parse((await cli('show', 'Alpha')).stdout);
       await rename(page, 'A..X');
       assert.ok(await page.getByRole('button', {name: 'Save name', exact: true}).isDisabled());
       await page.getByRole('textbox', {name: 'Node name'}).fill('beta');
@@ -201,7 +254,7 @@ await test('renaming an open Lean node preserves its draft and rebinds the modul
   try {
     await fixture(browser, async ({page, cli, url}) => {
       await cli('dep', 'rm', 'Alpha', '--target', 'Beta');
-      const node = JSON.parse((await cli('show', 'Alpha')).stdout);
+      const node: NodeDetail = JSON.parse((await cli('show', 'Alpha')).stdout);
       const content = 'theorem renameProof : True := by trivial\n';
       const saved = await fetch(`${url}/api/node/${node.fnode}/block/lean`, {
         method: 'PUT', headers: {'content-type': 'application/json', 'if-match': `"${node.revision}"`}, body: JSON.stringify({content}),
@@ -223,9 +276,9 @@ await test('renaming an open Lean node preserves its draft and rebinds the modul
       await page.getByText('Unsaved', {exact: true}).waitFor();
       await page.getByRole('button', {name: 'Save node', exact: true}).click();
       await center(page).getByLabel('Lean: Verified', {exact: true}).waitFor();
-      const updated = JSON.parse((await cli('show', 'Renamed.Proof')).stdout);
+      const updated: NodeDetail = JSON.parse((await cli('show', 'Renamed.Proof')).stdout);
       assert.equal(updated.fnode, node.fnode);
-      assert.match(updated.blocks.find(block => block.srctype === 'lean').content, /keep this draft/);
+      assert.match(updated.blocks.find(block => block.srctype === 'lean')!.content, /keep this draft/);
     });
   } finally { await browser.close(); }
 });
@@ -237,7 +290,7 @@ await test('project directory creates, forks, starts, stops and deletes branches
       const base = new URL(url).origin, main = new URL(url).pathname.slice(3);
       const database = main.split('/')[0], fork = `${database}/draft`;
       const initialized = `mdce2einit${randomUUID().replaceAll('-', '')}`;
-      const row = name => page.locator(`[data-project="${name}"]`);
+      const row = (name: string) => page.locator(`[data-project="${name}"]`);
       await page.goto(base);
       await page.getByRole('textbox', {name: 'Search projects and branches'}).fill(database);
       await row(main).getByText('Running', {exact: true}).waitFor();
@@ -247,10 +300,10 @@ await test('project directory creates, forks, starts, stops and deletes branches
       assert.match(await row(main).locator('.branch-counts').innerText(), /1.*edge/);
       assert.equal(await row(main).getByRole('button', {name: `Delete ${main}`, exact: true}).count(), 0);
       assert.equal(await row(main).locator('.branch-name').innerText(), 'main');
-      const branch = async (source, name) => {
+      const branch = async (source: string, name: string) => {
         await row(source).getByRole('button', {name: `New branch from ${source}`, exact: true}).click();
         await page.getByLabel('Branch name', {exact: true}).fill('invalid/name');
-        assert.equal(await page.getByLabel('Branch name', {exact: true}).evaluate(el => el.checkValidity()), false);
+        assert.equal(await page.getByLabel('Branch name', {exact: true}).evaluate((el: HTMLInputElement) => el.checkValidity()), false);
         await page.getByLabel('Branch name', {exact: true}).fill(name);
         await page.getByRole('dialog').getByRole('button', {name: 'New branch', exact: true}).click();
         await page.getByRole('dialog').waitFor({state: 'hidden'});
@@ -260,6 +313,7 @@ await test('project directory creates, forks, starts, stops and deletes branches
       await row(fork).getByText('Stopped', {exact: true}).waitFor();
       assert.equal((await row(fork).locator('.branch-counts').innerText()).trim(), '');
       const positions = await Promise.all([main, fork].map(name => row(name).locator('.branch-counts').boundingBox()));
+      assert.ok(positions[0] && positions[1]);
       assert.equal(positions[0].x, positions[1].x); assert.equal(positions[0].width, positions[1].width);
       await branch(fork, 'copy');
       await row(fork).getByRole('button', {name: `Start ${fork}`, exact: true}).click();
@@ -272,9 +326,10 @@ await test('project directory creates, forks, starts, stops and deletes branches
         if (await page.evaluate(() => document.documentElement.dataset.theme) !== theme) await page.getByRole('button', {name: 'Toggle theme'}).click();
         for (const width of [1440, 750, 420]) {
           await page.setViewportSize({width, height: 900});
-          assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth || document.querySelector('.directory').scrollWidth > innerWidth), false);
+          assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth || document.querySelector('.directory')!.scrollWidth > innerWidth), false);
           for (const selector of ['.branch-state', '.branch-actions', '.branch-actions button', '.branch-open, .branch-open-space']) {
             const bounds = await Promise.all([main, fork].map(name => row(name).locator(selector).first().boundingBox()));
+            assert.ok(bounds[0] && bounds[1]);
             assert.equal(bounds[0].x, bounds[1].x, `${selector} aligns at ${width}px`);
             assert.equal(bounds[0].width, bounds[1].width);
           }
@@ -298,7 +353,7 @@ await test('project directory creates, forks, starts, stops and deletes branches
         assert.match(await row(`${initialized}/main`).locator('.branch-counts').innerText(), /0.*nodes/);
         const body = JSON.stringify({action: 'remove', database: initialized});
         for (const origin of [undefined, 'https://attacker.invalid']) {
-          const headers = {'content-type': 'application/json'};
+          const headers: Record<string, string> = {'content-type': 'application/json'};
           if (origin) headers.origin = origin;
           assert.equal((await fetch(`${base}/api/projects`, {method: 'POST', headers, body})).status, 403);
         }
@@ -312,9 +367,9 @@ await test('project directory creates, forks, starts, stops and deletes branches
         page.once('dialog', dialog => void dialog.dismiss());
         await removeProject.click();
         assert.ok((await fetch(`${base}/p/${initialized}/main/api/graph/check`)).ok);
-        const confirmations = [];
+        const confirmations: string[] = [];
         page.on('dialog', dialog => { confirmations.push(dialog.message()); void dialog.accept(); });
-        const rejectRemoval = route => route.request().postDataJSON()?.action === 'remove'
+        const rejectRemoval = (route: Route) => route.request().postDataJSON()?.action === 'remove'
           ? route.fulfill({status: 500, json: {error: 'test removal failed'}}) : route.continue();
         await page.route('**/api/projects', rejectRemoval);
         await removeProject.click();
@@ -349,7 +404,7 @@ await test('project directory creates, forks, starts, stops and deletes branches
 
 await test("large relation lists filter and retain natural card heights", { timeout: 90000 }, async () => {
   const browser = await launchBrowser();
-  const node = (title, fnode = randomUUID(), depens = []) => ({ fnode, name: title.replaceAll(" ", ".").replace(/\.(?=\d)/g, ".N"), depens, blocks: [] });
+  const node = (title: string, fnode: string = randomUUID(), depens: string[] = []): FixtureNode => ({ fnode, name: title.replaceAll(" ", ".").replace(/\.(?=\d)/g, ".N"), depens, blocks: [] });
   const hub = node("Shared foundation");
   const leaves = Array.from({length: 8500}, (_, i) => node(
     `Entry ${String(i).padStart(5, "0")}${i % 3 === 0 ? " with a deliberately long mathematical title that wraps across two lines" : ""}`,
@@ -362,10 +417,10 @@ await test("large relation lists filter and retain natural card heights", { time
       await title(page, root.name);
       const column = page.getByRole("complementary", {name: "Dependencies", exact: true});
       const cards = column.locator("button.card");
-      const card = (id) => column.locator(`button.card[data-fnode="${id}"]`);
+      const card = (id: string) => column.locator(`button.card[data-fnode="${id}"]`);
       await card(leaves[1].fnode).waitFor();
       assert.ok(await cards.count() < 80, "large columns only mount a viewport of cards");
-      const measure = async locator => locator.evaluate(el => el.getBoundingClientRect().height);
+      const measure = async (locator: Locator) => locator.evaluate(el => el.getBoundingClientRect().height);
       const shortHeight = await measure(card(leaves[1].fnode));
       const longHeight = await measure(card(leaves[0].fnode));
       assert.ok(longHeight > shortHeight + 10, `${longHeight} vs ${shortHeight}: short titles do not reserve an empty second line`);
@@ -374,15 +429,15 @@ await test("large relation lists filter and retain natural card heights", { time
       await page.waitForFunction(() => document.querySelector('[aria-label="Dependencies"] .column-count')?.textContent === "1/8500");
       assert.equal(await cards.count(), 1);
       assert.ok(Math.abs(await measure(card(leaves[1].fnode)) - shortHeight) < 0.5, "small and virtual lists share the same card height");
-      await filter.fill(leaves.at(-1).fnode);
-      await card(leaves.at(-1).fnode).waitFor();
+      await filter.fill(leaves.at(-1)!.fnode);
+      await card(leaves.at(-1)!.fnode).waitFor();
       assert.equal(await cards.count(), 1);
       await filter.fill("no such node");
       await column.getByText("No matching nodes", {exact: true}).waitFor();
       await filter.fill("");
       await card(leaves[0].fnode).focus();
       await page.keyboard.press("End");
-      await page.waitForFunction(id => document.activeElement?.getAttribute("data-fnode") === id, leaves.at(-1).fnode);
+      await page.waitForFunction(id => document.activeElement?.getAttribute("data-fnode") === id, leaves.at(-1)!.fnode);
       const contiguous = async () => {
         await page.waitForFunction(() => {
           const rows = [...document.querySelectorAll('[aria-label="Dependencies"] li[data-fnode]')].map(el => el.getBoundingClientRect());
@@ -412,7 +467,7 @@ await test("large relation lists filter and retain natural card heights", { time
       const refs = page.getByRole("complementary", {name: "Referrers", exact: true});
       assert.ok(await refs.locator("button.card").count() < 80);
       await refs.getByRole("searchbox", {name: "Filter referrers"}).fill("ENTRY.N08499");
-      await refs.locator(`button.card[data-fnode="${leaves.at(-1).fnode}"]`).waitFor();
+      await refs.locator(`button.card[data-fnode="${leaves.at(-1)!.fnode}"]`).waitFor();
       assert.equal(await refs.locator("button.card").count(), 1);
     }, [hub, root, ...leaves]);
   } finally { await browser.close(); }
@@ -423,7 +478,7 @@ await test('node operation dialogs share layout, focus and Escape handling', {ti
   try {
     await fixture(browser, async ({page}) => {
       const toolbar = page.locator('.workspace-tools');
-      const open = async (button, label) => {
+      const open = async (button: string, label: string) => {
         await toolbar.getByRole('button', {name: button, exact: true}).press('Enter');
         const dialog = page.getByRole('dialog', {name: label, exact: true});
         await dialog.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished)));
@@ -442,11 +497,11 @@ await test('node operation dialogs share layout, focus and Escape handling', {ti
             const dialog = await open(button, label);
             await page.waitForFunction(() => document.querySelector('[role=dialog] [data-autofocus]') === document.activeElement);
             layouts.push(await dialog.evaluate(el => {
-              const box = el.getBoundingClientRect(), head = el.querySelector('.dialog-header').getBoundingClientRect();
-              const close = el.querySelector('.close-btn').getBoundingClientRect();
+              const box = el.getBoundingClientRect(), head = el.querySelector('.dialog-header')!.getBoundingClientRect();
+              const close = el.querySelector('.close-btn')!.getBoundingClientRect();
               return {width: box.width, top: box.top, headerHeight: head.height, closeRight: close.right, radius: getComputedStyle(el).borderRadius};
             }));
-            assert.ok(layouts.at(-1).width <= width, 'dialog fits the viewport');
+            assert.ok(layouts.at(-1)!.width <= width, 'dialog fits the viewport');
             assert.equal(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth), true, 'dialog contents fit narrow screens');
             await dialog.locator('input').first().fill(query);
             await page.screenshot({path: resolve(tmpdir(), `mdc-${label.replaceAll(' ', '-')}-${theme}-${width}-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
@@ -491,20 +546,20 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
   try {
     await suite.test("node deletion detaches referrers and dependency dialogs share their layout", () =>
       fixture(browser, async ({ cli, page, url }) => {
-        const alpha = JSON.parse((await cli("show", "Alpha")).stdout);
+        const alpha: NodeDetail = JSON.parse((await cli("show", "Alpha")).stdout);
         const toolbar = page.locator(".workspace-tools");
         const positions = await Promise.all(["Create node", "Add dependency", "Remove dependency", "Delete node"].map(async name =>
-          (await toolbar.getByRole("button", { name, exact: true }).boundingBox()).x));
+          (await toolbar.getByRole("button", { name, exact: true }).boundingBox())!.x));
         assert.deepEqual(positions, [...positions].sort((a, b) => a - b));
         assert.equal(await toolbar.getByRole("button", { name: "Create node", exact: true }).innerText(), "");
         await toolbar.getByRole("button", { name: "Add dependency", exact: true }).click();
         const add = page.getByRole("dialog", { name: "add dependency", exact: true });
-        const addHeader = await add.locator(".dialog-header").evaluate(el => ({width: el.offsetWidth, height: el.offsetHeight}));
+        const addHeader = await add.locator(".dialog-header").evaluate((el: HTMLElement) => ({width: el.offsetWidth, height: el.offsetHeight}));
         await add.getByRole("combobox").fill("Gamma");
         await add.getByRole("button", { name: /Gamma/ }).click();
         await toolbar.getByRole("button", { name: "Remove dependency", exact: true }).click();
         const remove = page.getByRole("dialog", { name: "remove dependencies", exact: true });
-        const removeHeader = await remove.locator(".dialog-header").evaluate(el => ({width: el.offsetWidth, height: el.offsetHeight}));
+        const removeHeader = await remove.locator(".dialog-header").evaluate((el: HTMLElement) => ({width: el.offsetWidth, height: el.offsetHeight}));
         assert.equal(addHeader.width, removeHeader.width);
         assert.equal(addHeader.height, removeHeader.height);
         await remove.getByRole("checkbox", { name: /Gamma/ }).click();
@@ -550,10 +605,10 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
 
     await suite.test("navigation waits for an in-flight save before switching nodes", () =>
       fixture(browser, async ({ cli, page }) => {
-        let release;
-        let entered;
-        const gate = new Promise((resolveGate) => { release = resolveGate; });
-        const started = new Promise((resolveStarted) => { entered = resolveStarted; });
+        let release!: () => void;
+        let entered!: () => void;
+        const gate = new Promise<void>((resolveGate) => { release = resolveGate; });
+        const started = new Promise<void>((resolveStarted) => { entered = resolveStarted; });
         await page.route("**/api/node/*/name", async (route) => {
           entered();
           await gate;
@@ -585,7 +640,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
 
     await suite.test("CLI and browser cannot concurrently introduce opposite edges", () =>
       fixture(browser, async ({ cli, page, url }) => {
-        const resolveNode = async (ref) => (await (await fetch(`${url}/api/resolve?ref=${ref}`)).json()).fnode;
+        const resolveNode = async (ref: string) => (await (await fetch(`${url}/api/resolve?ref=${ref}`)).json()).fnode;
         const b = await resolveNode("Beta");
         const c = await resolveNode("Gamma");
         const view = await (await fetch(`${url}/api/node/${c}/view`)).json();
@@ -609,7 +664,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         const project = new URL(url).pathname.slice(3);
         const database = project.split("/")[0];
         const agent = `${database}/agent`;
-        const manage = (...args) => run(binary, args, { cwd: root, env: { ...env, MDC_CACHE_DIR: resolve(root, "cache") }, timeout: 35000 });
+        const manage = (...args: string[]) => run(binary, args, { cwd: root, env: { ...env, MDC_CACHE_DIR: resolve(root, "cache") }, timeout: 35000 });
         await cli("branch", "new", "agent");
         let agentRunning = false;
         try {
@@ -627,7 +682,8 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           await mainRow.getByRole("link", { name: `Open ${project}` }).click();
           await title(page, "Alpha");
           assert.equal(new URL(page.url()).pathname, `/p/${project}/`);
-          let opened = 0, closed = 0, currentSocket;
+          let opened = 0, closed = 0;
+          let currentSocket!: BrowserSocket;
           page.on("websocket", socket => { currentSocket = socket; opened++; socket.on("close", () => closed++); });
           await page.getByRole("button", { name: /Search nodes/ }).click();
           await page.getByPlaceholder("Search by name or UUID...").fill(node.name);
@@ -640,7 +696,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           await otherPage.getByRole("button", { name: "Start Lean server", exact: true }).click();
           await otherPage.getByText("Lean editor ready", { exact: true }).waitFor();
           const otherSocket = await otherConnection;
-          await Promise.all([once(otherSocket, "close", { signal: AbortSignal.timeout(10000) }), manage("stop", agent)]);
+          await Promise.all([otherSocket.waitForEvent("close", { timeout: 10000 }), manage("stop", agent)]);
           agentRunning = false;
           await otherPage.close();
           assert.equal((await fetch(`${base}/p/${agent}/api/graph/check`)).status, 503);
@@ -664,7 +720,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           await page.goto(`${url}/?batch-save#ref=${node.fnode}`);
           await page.getByRole("button", { name: "Start Lean server", exact: true }).click();
           await page.getByText("Lean editor ready", { exact: true }).waitFor();
-          await Promise.all([once(currentSocket, "close", { signal: AbortSignal.timeout(10000) }), manage("stop")]);
+          await Promise.all([currentSocket.waitForEvent("close", { timeout: 10000 }), manage("stop")]);
           const stopped = JSON.parse((await manage("status")).stdout);
           assert.equal(stopped.server.running, false);
           assert.equal(stopped.projects[project].running, false);
@@ -680,7 +736,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         ["Unchecked", "lean", "#check Nat\n"],
         ["Admitted", "lean", "theorem admitted : True := by sorry\n"],
         ["Proven", "lean", '-- sorry in a comment\ndef text := "sorry"\ntheorem proven : True := by trivial\n'],
-      ].map(([title, srctype, content], i) => ({
+      ].map(([title, srctype, content]): FixtureNode => ({
         fnode: randomUUID(), name: title, depens: [], blocks: [{ srctype, content }],
       }));
       const conditional = { fnode: randomUUID(), name: "Conditional", depens: [nodes[3].fnode], blocks: [{ srctype: "lean", content: "import Admitted\ntheorem conditional : True := admitted\n" }] };
@@ -694,10 +750,10 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         }
         const response = page.waitForResponse(r => r.url().endsWith("/graph/full"));
         await page.getByRole("button", { name: "Graph", exact: true }).click();
-        const graph = await (await response).json();
-        const expected = { "Rocq.only": "unverified", "Empty.Lean": "unverified", Unchecked: "unverified", Admitted: "sorry", Proven: "verified", Conditional: "conditional", Transitive: "conditional" };
+        const graph: GraphFull = await (await response).json();
+        const expected: Record<string, string> = { "Rocq.only": "unverified", "Empty.Lean": "unverified", Unchecked: "unverified", Admitted: "sorry", Proven: "verified", Conditional: "conditional", Transitive: "conditional" };
         for (const node of nodes) {
-          const status = graph.nodes.find(n => n.fnode === node.fnode).lean;
+          const status = graph.nodes.find(n => n.fnode === node.fnode)!.lean;
           assert.equal(status, expected[node.name]);
           const view = await (await fetch(`${url}/api/node/${node.fnode}/view`)).json();
           assert.equal(view.node.formalization.lean, status);
@@ -707,9 +763,9 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           await legend.getByText(label, { exact: true }).waitFor();
         }
         await page.waitForFunction(() => {
-          const canvas = document.querySelector('.graph-container canvas');
+          const canvas = document.querySelector<HTMLCanvasElement>('.graph-container canvas');
           if (!canvas?.width) return false;
-          const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+          const pixels = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data;
           const style = getComputedStyle(canvas);
           return ['--mdc-muted', '--mdc-error', '--mdc-warning', '--mdc-accent-down'].every(token => {
             const hex = style.getPropertyValue(token).trim().slice(1);
@@ -739,7 +795,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
             return getComputedStyle(el).backgroundColor === expected;
           }, token));
         }
-        const admitted = JSON.parse((await cli("show", "Admitted")).stdout);
+        const admitted: NodeDetail = JSON.parse((await cli("show", "Admitted")).stdout);
         const changed = await fetch(`${url}/api/node/${admitted.fnode}/block/lean`, {
           method: "PUT", headers: { "content-type": "application/json", "if-match": `"${admitted.revision}"` },
           body: JSON.stringify({ content: "theorem admitted : True := by trivial\n" }),
@@ -755,7 +811,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
     await suite.test("native Lean bridge drains bidirectional backpressure and cancels a busy session", () => {
       const node = { fnode: randomUUID(), name: "Transport", depens: [], blocks: [{ srctype: "lean", content: "#check Nat\n" }] };
       return fixture(browser, async ({ cli, url }) => {
-        const current = JSON.parse((await cli("show", node.fnode)).stdout);
+        const current: NodeDetail = JSON.parse((await cli("show", node.fnode)).stdout);
         const response = await fetch(`${url}/api/node/${node.fnode}/lean/session`, {
           method: "POST", headers: { "if-match": `"${current.revision}"` },
         });
@@ -764,9 +820,9 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         const path = `${url}/api/lean/session/${session.id}`;
         const ws = new WebSocket(`${path.replace("http:", "ws:")}/ws`);
         const closed = new Promise(resolve => ws.addEventListener("close", resolve, { once: true }));
-        const initialized = Promise.withResolvers(), drained = Promise.withResolvers();
+        const initialized = Promise.withResolvers<void>(), drained = Promise.withResolvers<void>();
         const replies = new Set();
-        const send = message => ws.send(JSON.stringify({ jsonrpc: "2.0", ...message }));
+        const send = (message: Record<string, unknown>) => ws.send(JSON.stringify({ jsonrpc: "2.0", ...message }));
         ws.addEventListener("error", e => { initialized.reject(e); drained.reject(e); });
         ws.addEventListener("open", () => send({ id: 0, method: "initialize", params: { processId: null, rootUri: "file:///project", capabilities: {} } }));
         ws.addEventListener("message", ({ data }) => {
@@ -785,7 +841,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           const uri = `file:///${"x".repeat(65536)}`;
           for (let id = 1; id <= 2000; id++) send({ id, method: "$/lean/rpc/connect", params: { uri } });
         };
-        let timer;
+        let timer: ReturnType<typeof setTimeout> | undefined;
         try {
           await Promise.race([
             (async () => { await initialized.promise; burst(); await drained.promise; })(),
@@ -804,7 +860,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
     await suite.test("slow certification leaves LSP and graph responsive and timeout is recoverable", () => {
       const node = { fnode: randomUUID(), name: "Certification", depens: [], blocks: [{ srctype: "lean", content: "theorem truth : True := by trivial\n" }] };
       return fixture(browser, async ({ root, cli, url }) => {
-        const current = JSON.parse((await cli("show", node.fnode)).stdout);
+        const current: NodeDetail = JSON.parse((await cli("show", node.fnode)).stdout);
         const checked = await (await fetch(`${url}/api/node/${node.fnode}/lean/check`, {
           method: "POST", headers: { "content-type": "application/json", "if-match": `"${current.revision}"` }, body: JSON.stringify({ build: false }),
         })).json();
@@ -816,9 +872,9 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         // Hold the real publication lock to reproduce slow certification without
         // a large library, sleeps in production code, or a fake Lean server.
         const holder = execFile("python3", ["-u", "-c", "import fcntl,sys; f=open(sys.argv[1], 'a'); fcntl.flock(f, fcntl.LOCK_EX); print('ready'); sys.stdin.read()", resolve(root, "cache", lock)]);
-        await once(holder.stdout, "data");
-        let ws, path;
-        const pending = new Map();
+        await once(holder.stdout!, "data");
+        let ws: WebSocket | undefined, path: string | undefined;
+        const pending = new Map<number, {resolve: (value: unknown) => void; reject: (error: Error) => void}>();
         let serial = 0;
         try {
           const session = await (await fetch(`${url}/api/node/${node.fnode}/lean/session`, {
@@ -826,8 +882,8 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           })).json();
           path = `${url}/api/lean/session/${session.id}`;
           ws = new WebSocket(`${path.replace("http:", "ws:")}/ws`);
-          const send = message => ws.send(JSON.stringify({ jsonrpc: "2.0", ...message }));
-          const rpc = (method, params) => new Promise((resolve, reject) => {
+          const send = (message: Record<string, unknown>) => ws!.send(JSON.stringify({ jsonrpc: "2.0", ...message }));
+          const rpc = (method: string, params: Record<string, unknown>) => new Promise<unknown>((resolve, reject) => {
             const id = serial++;
             pending.set(id, { resolve, reject }); send({ id, method, params });
           });
@@ -835,7 +891,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
             const message = JSON.parse(data);
             if (message.method && message.id !== undefined) send({ id: message.id, result: null });
             else if (pending.has(message.id)) {
-              const reply = pending.get(message.id); pending.delete(message.id);
+              const reply = pending.get(message.id)!; pending.delete(message.id);
               message.error ? reply.reject(new Error(message.error.message)) : reply.resolve(message.result);
             }
           });
@@ -855,11 +911,13 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           const graph = await fetch(`${url}/api/graph/full`, { signal: AbortSignal.timeout(3000) });
           assert.equal(graph.status, 200);
           assert.equal(settled, false, "other work finishes while certification is waiting");
-          assert.match((await certification).message, /request timed out/);
+          const failure = await certification;
+          assert.ok(failure instanceof Error);
+          assert.match(failure.message, /request timed out/);
           assert.equal(ws.readyState, WebSocket.OPEN);
           await goal();
-          holder.stdin.end(); await once(holder, "exit");
-          assert.equal((await rpc("mdc/certify", params)).certified, true, "retry succeeds on the same connection");
+          holder.stdin!.end(); await once(holder, "exit");
+          assert.equal((await rpc("mdc/certify", params) as {certified: boolean}).certified, true, "retry succeeds on the same connection");
         } finally {
           holder.kill(); ws?.close();
           if (path) await fetch(path, { method: "DELETE" });
@@ -872,28 +930,28 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
       const a = { fnode: randomUUID(), name: "Lean.Example", depens: [], blocks: [{ srctype: "lean", content: source }, { srctype: "text", content: "A shared block header." }, { srctype: "rocq", content: "Check nat." }, { srctype: "latex", content: "A formula: $x^2$." }] };
       return fixture(browser, async ({ root, page, cli, url }) => {
         let sessions = 0;
-        const messages = [];
-        let socket;
+        const messages: ClientMessage[] = [];
+        let socket!: BrowserSocket;
         page.on("websocket", ws => {
           socket = ws;
           ws.on("framesent", ({ payload }) => {
             try { messages.push(JSON.parse(String(payload))); } catch {}
           });
         });
-        const nativeError = source => socket.waitForEvent("framereceived", {
+        const nativeError = (source: string) => socket.waitForEvent("framereceived", {
           predicate: ({ payload }) => {
             const message = JSON.parse(String(payload));
             if (message.method !== "textDocument/publishDiagnostics") return false;
-            const change = messages.findLast(m => m.method === "textDocument/didChange" && m.params.textDocument.uri === message.params.uri);
+            const change = messages.findLast(m => m.method === "textDocument/didChange" && m.params.textDocument?.uri === message.params.uri);
             // Monaco may auto-indent the final blank line after keyboard insertion.
-            return change?.params.contentChanges.at(-1).text.trimEnd() === source.trimEnd() &&
-              change.params.textDocument.version === message.params.version &&
-              message.params.diagnostics.some(d => d.severity === 1);
+            return change?.params.contentChanges?.at(-1)?.text.trimEnd() === source.trimEnd() &&
+              change?.params.textDocument?.version === message.params.version &&
+              message.params.diagnostics.some((d: {severity?: number}) => d.severity === 1);
           },
         });
         page.on("request", request => { if (request.method() === "POST" && request.url().endsWith("/lean/session")) sessions++; });
-        let releaseSession;
-        const sessionGate = new Promise(resolveGate => { releaseSession = resolveGate; });
+        let releaseSession!: () => void;
+        const sessionGate = new Promise<void>(resolveGate => { releaseSession = resolveGate; });
         await page.route(/\/lean\/session$/, async route => {
           const response = await route.fetch();
           await sessionGate;
@@ -923,7 +981,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await frame.frameLocator("#infoview iframe").getByText("True", { exact: true }).first().waitFor();
         await page.locator('article[data-srctype] .block-head').nth(3).waitFor();
         const headers = await page.locator('article[data-srctype] .block-head').evaluateAll(elements => elements.map(el => {
-          const s = getComputedStyle(el); return [s.minHeight, s.backgroundColor, s.fontSize, getComputedStyle(el.parentElement).borderRadius];
+          const s = getComputedStyle(el); return [s.minHeight, s.backgroundColor, s.fontSize, getComputedStyle(el.parentElement!).borderRadius];
         }));
         assert.equal(headers.length, 4);
         for (const style of headers) assert.deepEqual(style, headers[0]);
@@ -970,8 +1028,8 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         }
         assert.equal(sessions, 1, "layout changes must reuse the Lean session, including a loading or dirty editor");
         console.log("Lean editor layout switch durations (ms):", switchTimes.join(", "));
-        let finishSave;
-        const saveGate = new Promise(resolve => { finishSave = resolve; });
+        let finishSave!: () => void;
+        const saveGate = new Promise<void>(resolve => { finishSave = resolve; });
         await page.route(/\/blocks$/, async route => { await saveGate; await route.continue(); });
         await page.getByRole("button", { name: "Graph", exact: true }).click();
         const saveButton = page.getByRole('button', {name: 'Save node', exact: true});
@@ -992,9 +1050,9 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         console.log("Save to automatic Verified (ms):", Math.round(performance.now()-savedAt));
         const refreshedGraph = page.waitForResponse(r => r.url().endsWith("/graph/full"));
         await page.getByRole("button", { name: "Graph", exact: true }).click();
-        assert.equal((await (await refreshedGraph).json()).nodes.find(n => n.fnode === a.fnode).lean, "verified");
+        assert.equal((await (await refreshedGraph).json() as GraphFull).nodes.find(n => n.fnode === a.fnode)!.lean, "verified");
         await page.getByRole("button", { name: "Knowledge", exact: true }).click();
-        const current = JSON.parse((await cli("show", a.fnode)).stdout);
+        const current: NodeDetail = JSON.parse((await cli("show", a.fnode)).stdout);
         const cached = await (await fetch(`${url}/api/node/${a.fnode}/lean/check`, {
           method: "POST", headers: { "content-type": "application/json", "if-match": `"${current.revision}"` }, body: JSON.stringify({ build: false }),
         })).json();
@@ -1002,7 +1060,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         assert.equal(cached.cache_hit, true, "CLI/API checks must reuse editor certification");
         assert.equal(browserChecks, 0, "saving must reuse the editor instead of starting a second checker");
         assert.equal(await leanBlock.getByRole("button", { name: /Save & (check|build)/ }).count(), 0);
-        const select = async name => {
+        const select = async (name: string) => {
           await page.getByRole("button", { name: /Search nodes/ }).click();
           await page.getByPlaceholder("Search by name or UUID...").fill(name);
           await page.getByRole("button", { name: new RegExp(name) }).last().click();
@@ -1065,7 +1123,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
     });
     await suite.test("Lean startup failure is reported immediately and preserves editable source", () =>
       fixture(browser, async ({ cli, page, url }) => {
-        const node = JSON.parse((await cli("show", "Alpha")).stdout);
+        const node: NodeDetail = JSON.parse((await cli("show", "Alpha")).stdout);
         const response = await fetch(`${url}/api/node/${node.fnode}/block/lean`, {
           method: "PUT", headers: { "content-type": "application/json", "if-match": `"${node.revision}"` },
           body: JSON.stringify({ content: "theorem startup : True := by trivial\n" }),
@@ -1106,10 +1164,10 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
       ]));
     await suite.test("Lean cancels stale selections and recovers from preparation timeouts without losing drafts", () =>
       fixture(browser, async ({ root, cli, page, url, serverOutput }) => {
-        const ids = {};
+        const ids: Record<string, string> = {};
         await cli("new", "Delta");
         for (const name of ["Alpha", "Gamma", "Delta"]) {
-          const node = JSON.parse((await cli("show", name)).stdout);
+          const node: NodeDetail = JSON.parse((await cli("show", name)).stdout);
           ids[name] = node.fnode;
           const response = await fetch(`${url}/api/node/${node.fnode}/block/lean`, {
             method: "PUT", headers: { "content-type": "application/json", "if-match": `"${node.revision}"` },
@@ -1117,12 +1175,15 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
           });
           assert.equal(response.status, 200);
         }
-        let releaseInit, releaseSelect, initSeen, selectionHeld;
-        const initializeGate = new Promise(resolve => { releaseInit = resolve; });
-        const initializeSeen = new Promise(resolve => { initSeen = resolve; });
+        let releaseInit!: () => void;
+        let releaseSelect!: () => void;
+        let initSeen!: () => void;
+        let selectionHeld: ((id: number | string) => void) | undefined;
+        const initializeGate = new Promise<void>(resolve => { releaseInit = resolve; });
+        const initializeSeen = new Promise<void>(resolve => { initSeen = resolve; });
         let selectionGate = Promise.resolve();
         let blockSelect = false;
-        const sent = [];
+        const sent: ClientMessage[] = [];
         await page.routeWebSocket(/\/api\/lean\/session\/.*\/ws$/, ws => {
           const server = ws.connectToServer();
           ws.onMessage(message => { sent.push(JSON.parse(String(message))); server.send(message); });
@@ -1145,14 +1206,14 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         releaseInit();
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
         await frame.getByText("-- typed before Lean initialized", { exact: true }).waitFor();
-        const select = async name => {
+        const select = async (name: string) => {
           await page.getByRole("button", { name: /Search nodes/ }).click();
           await page.getByPlaceholder("Search by name or UUID...").fill(name);
           await page.getByRole("button", { name: new RegExp(name) }).last().click();
           await title(page, name);
         };
         blockSelect = true;
-        selectionGate = new Promise(resolve => { releaseSelect = resolve; });
+        selectionGate = new Promise<void>(resolve => { releaseSelect = resolve; });
         await select("Gamma");
         await frame.getByText("gamma", { exact: true }).waitFor({ timeout: 1000 });
         await input.press(documentEndKey);
@@ -1167,8 +1228,8 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await frame.getByText("-- typed while preparing node", { exact: true }).waitFor();
         // Delay an older selection, then navigate away before its response arrives.
         blockSelect = true;
-        const held = new Promise(resolve => { selectionHeld = resolve; });
-        selectionGate = new Promise(resolve => { releaseSelect = resolve; });
+        const held = new Promise<number | string>(resolve => { selectionHeld = resolve; });
+        selectionGate = new Promise<void>(resolve => { releaseSelect = resolve; });
         await select("Alpha");
         await frame.getByText("alpha", { exact: true }).waitFor({ timeout: 1000 });
         const stale = await held;
@@ -1187,7 +1248,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await select("Alpha");
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
         blockSelect = true;
-        selectionGate = new Promise(resolve => { releaseSelect = resolve; });
+        selectionGate = new Promise<void>(resolve => { releaseSelect = resolve; });
         await select("Gamma");
         await frame.getByText("gamma", { exact: true }).waitFor();
         await input.press(documentEndKey);
@@ -1212,14 +1273,14 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         const remaining = await workers();
         assert.ok(oldWorkers.every(pid => !remaining.includes(pid)), "disconnect must reap the old workers, including their separate process groups");
         assert.doesNotMatch(serverOutput(), /broken pipe|recursion limit exceeded/, "disconnect must keep stdout open through native shutdown");
-        assert.ok(sent.filter(m => m.method === "textDocument/didOpen").every(m => m.params.textDocument.uri.startsWith("file:///project/")), "temporary display models must not create Lean workers");
+        assert.ok(sent.filter(m => m.method === "textDocument/didOpen").every(m => m.params.textDocument?.uri.startsWith("file:///project/")), "temporary display models must not create Lean workers");
         assert.doesNotMatch(JSON.parse((await cli("show", ids.Gamma)).stdout).blocks[0].content, /draft must survive/, "reconnection must not save drafts implicitly");
       }));
     await suite.test("changed dependencies refresh the native worker without restarting its connection", () =>
       fixture(browser, async ({ cli, page, url }) => {
         const dep = JSON.parse((await cli("new", "Lean.Dependency")).stdout);
         const target = JSON.parse((await cli("new", "Lean.Dependent")).stdout);
-        const put = async (id, content) => {
+        const put = async (id: string, content: string) => {
           const { node } = await (await fetch(`${url}/api/node/${id}/view`)).json();
           const response = await fetch(`${url}/api/node/${id}/block/lean`, {
             method: "PUT", headers: { "content-type": "application/json", "if-match": `"${node.revision}"` }, body: JSON.stringify({ content }),
@@ -1229,11 +1290,11 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await put(dep.fnode, "def anchor : Nat := 1\n");
         await put(target.fnode, `import ${dep.name}\ntheorem usesAnchor : anchor = 1 := rfl\n`);
         await cli("dep", "add", target.fnode, "--target", dep.fnode);
-        const sent = [];
+        const sent: ClientMessage[] = [];
         page.on("websocket", ws => ws.on("framesent", ({ payload }) => {
           try { sent.push(JSON.parse(String(payload))); } catch {}
         }));
-        const select = async name => {
+        const select = async (name: string) => {
           await page.getByRole("button", { name: /Search nodes/ }).click();
           await page.getByPlaceholder("Search by name or UUID...").fill(name);
           await page.getByRole("button", { name: new RegExp(name) }).last().click();
@@ -1243,7 +1304,7 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         await page.getByRole("button", { name: "Start Lean server", exact: true }).click();
         await page.getByText("Lean editor ready", { exact: true }).waitFor();
         await center(page).getByLabel("Lean: Verified", { exact: true }).waitFor();
-        const leanStatus = async id => (await (await fetch(`${url}/api/node/${id}/view`)).json()).node.formalization.lean;
+        const leanStatus = async (id: string) => (await (await fetch(`${url}/api/node/${id}/view`)).json()).node.formalization.lean;
         assert.equal(await leanStatus(dep.fnode), "verified", "the editor's compiled imports must certify dependencies too");
         const dependencyCard = page.locator(`.card[data-fnode="${dep.fnode}"]`);
         await dependencyCard.getByLabel("Lean: Verified", { exact: true }).waitFor();
@@ -1277,25 +1338,25 @@ await test('node save atomically persists all blocks and retains drafts through 
       await page.goto(`${url}/?batch-save#ref=${node.fnode}`);
       await title(page, node.name);
       const save = page.getByRole('button', {name: 'Save node', exact: true});
-      const block = kind => page.locator(`article[data-srctype="${kind}"]`);
-      const input = kind => kind === 'lean'
+      const block = (kind: string) => page.locator(`article[data-srctype="${kind}"]`);
+      const input = (kind: string) => kind === 'lean'
         ? page.frameLocator('iframe[title="Lean source and Infoview"]').getByRole('textbox', {name: /Editor content/})
         : block(kind).getByRole('textbox', {name: new RegExp(`^${kind} source`)});
-      const fill = async (kind, value) => {
+      const fill = async (kind: string, value: string) => {
         await input(kind).press('ControlOrMeta+A');
         await page.keyboard.insertText(value);
         await page.getByText('Unsaved', {exact: true}).waitFor();
       };
-      const read = async () => JSON.parse((await cli('show', node.fnode)).stdout);
-      const sources = value => Object.fromEntries(value.blocks.map(b => [b.srctype, b.content]));
+      const read = async (): Promise<NodeDetail> => JSON.parse((await cli('show', node.fnode)).stdout);
+      const sources = (value: NodeDetail) => Object.fromEntries(value.blocks.map(b => [b.srctype, b.content]));
       const submitted = {text: 'Saved text', latex: 'Saved prose', lean: 'theorem saved : True := by trivial\n', rocq: 'Check False.'};
       for (const [kind, value] of Object.entries(submitted)) await fill(kind, value);
       assert.equal(await page.locator('.source-block').getByRole('button', {name: 'Save', exact: true}).count(), 0);
-      const requests = [];
+      const requests: Record<string, string>[] = [];
       page.on('request', r => { if (r.method() === 'PUT' && r.url().endsWith('/blocks')) requests.push(r.postDataJSON()); });
       const before = await cli('history');
-      let release;
-      const gate = new Promise(resolve => { release = resolve; });
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
       await page.route(/\/blocks$/, async route => { await gate; await route.continue(); });
       try {
         const pending = page.waitForRequest(r => r.method() === 'PUT' && r.url().endsWith('/blocks'));
@@ -1308,11 +1369,12 @@ await test('node save atomically persists all blocks and retains drafts through 
       assert.deepEqual(sources(await read()), submitted);
       const historyBefore = JSON.parse(before.stdout), historyAfter = JSON.parse((await cli('history')).stdout);
       assert.equal(historyAfter.length, historyBefore.length + 1, 'one database commit for all four blocks');
-      assert.equal((await read()).blocks.find(b => b.srctype === 'text').metadata.source, 'fixture');
+      assert.equal((await read()).blocks.find((b: SrcBlock) => b.srctype === 'text')!.metadata.source, 'fixture');
       await page.getByText('Unsaved', {exact: true}).waitFor();
       assert.equal(await page.locator('.source-block').getByText('Unsaved', {exact: true}).count(), 0);
       const savedButton = await save.boundingBox(), metadata = await center(page).locator('.node-meta').boundingBox();
       const unsaved = await page.getByText('Unsaved', {exact: true}).boundingBox();
+      assert.ok(unsaved && savedButton && metadata);
       assert.ok(unsaved.x + unsaved.width < savedButton.x, 'one unsaved indicator sits left of Save node');
       assert.equal(await save.evaluate(el => getComputedStyle(el).borderStyle), 'none');
       assert.ok(Math.abs(savedButton.x + savedButton.width - metadata.x - metadata.width) < 2, 'save stays at the right of the metadata row');
@@ -1337,8 +1399,8 @@ await test('node save atomically persists all blocks and retains drafts through 
       assert.deepEqual(sources(await read()), {...submitted, text: 'Keep failed text', latex: 'Keep failed prose'});
       // Do not let a batch save recreate a block while its deletion is in flight.
       await fill('text', 'Unsaved beside deletion');
-      let finishDelete;
-      const deleteGate = new Promise(resolve => { finishDelete = resolve; });
+      let finishDelete!: () => void;
+      const deleteGate = new Promise<void>(resolve => { finishDelete = resolve; });
       await page.route(/\/block\/rocq$/, async route => {
         await deleteGate;
         await route.fulfill({status: 503, contentType: 'application/json', body: JSON.stringify({error: 'Temporary deletion failure'})});
@@ -1393,7 +1455,7 @@ await test('refresh discards confirmed drafts in every source editor and the nod
         assert.equal(visible.replaceAll('\u00a0', ' ').trim(), content);
       }
       assert.equal(await page.getByRole('button', {name: 'Save node', exact: true}).isDisabled(), true);
-      const saved = JSON.parse((await cli('show', node.fnode)).stdout);
+      const saved: NodeDetail = JSON.parse((await cli('show', node.fnode)).stdout);
       assert.equal(saved.name, node.name);
       assert.deepEqual(saved.blocks.map(({srctype, content}) => ({srctype, content})), node.blocks);
     }, [node]);
@@ -1449,12 +1511,13 @@ await test('Monaco source blocks retain highlighting, edits and undo across layo
         assert.equal(await editor.evaluate(el => el.isConnected), true, 'switching views retains the same editor and undo history');
         if (srctype === 'text') {
           const before = await page.locator('#editor').boundingBox();
-          assert.ok(before.x < (await page.locator('.graph-panel').boundingBox()).x, 'the node editor is left of the graph');
+          assert.ok(before);
+          assert.ok(before.x < (await page.locator('.graph-panel').boundingBox())!.x, 'the node editor is left of the graph');
           assert.equal(await page.getByRole('separator').count(), 0, 'Graph panes have fixed boundaries');
         }
         await input.press('ControlOrMeta+z');
         await page.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
-        assert.equal(JSON.parse((await cli('show', node.fnode)).stdout).blocks.find(b => b.srctype === srctype).content, content);
+        assert.equal(JSON.parse((await cli('show', node.fnode)).stdout).blocks.find((b: SrcBlock) => b.srctype === srctype).content, content);
         await page.getByRole('button', {name: 'Knowledge', exact: true}).click();
         await page.waitForFunction(() => document.querySelector('button[title="Knowledge view"]')?.getAttribute('aria-pressed') === 'true' && !document.querySelector('.app[inert]'));
       }
@@ -1469,9 +1532,9 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
   const browser = await launchBrowser();
   try {
     await fixture(browser, async ({root, cli, page, url}) => {
-      const ids = {};
-      const put = async (name, content) => {
-        const node = JSON.parse((await cli('show', name)).stdout);
+      const ids: Record<string, string> = {};
+      const put = async (name: string, content: string) => {
+        const node: NodeDetail = JSON.parse((await cli('show', name)).stdout);
         ids[name] = node.fnode;
         const response = await fetch(`${url}/api/node/${node.fnode}/block/latex`, {
           method: 'PUT', headers: {'content-type': 'application/json', 'if-match': `"${node.revision}"`}, body: JSON.stringify({content}),
@@ -1496,16 +1559,16 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await put('Alpha', source);
       await put('Beta', String.raw`\begin{thm}[Named result]\label{thm:b}$\cA$ exists.\end{thm}`);
       await put('Gamma', String.raw`\section{Private result}\label{private}`);
-      const externalName = number => `Beta::Theorem ${number}`;
+      const externalName = (number: number) => `Beta::Theorem ${number}`;
       await page.reload();
       const block = page.locator('article[data-srctype="latex"]');
       await block.getByRole('textbox', {name: /^latex source/}).waitFor();
-      const requests = [];
+      const requests: string[] = [];
       page.on('request', request => requests.push(request.url()));
-      const failedMathAssets = [];
+      const failedMathAssets: string[] = [];
       page.on('response', response => { if (response.url().includes('/mathjax/') && response.status() >= 400) failedMathAssets.push(response.url()); });
-      let releaseFont;
-      const fontGate = new Promise(resolve => { releaseFont = resolve; });
+      let releaseFont!: () => void;
+      const fontGate = new Promise<void>(resolve => { releaseFont = resolve; });
       await page.route('**/mathjax/**/chtml.js', async route => { await fontGate; await route.continue(); });
       const fontRequest = page.waitForRequest('**/mathjax/**/chtml.js');
       await block.getByRole('button', {name: 'Render LaTeX preview'}).click();
@@ -1523,7 +1586,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       assert.equal(await block.locator('mjx-mtable').count(), 1);
       assert.ok(await block.locator('mjx-assistive-mml math').count() > 0, 'retain accessible MathML');
       const inline = await block.locator('.latex-math[data-tex="r=0"] mjx-container').evaluate(element => ({
-        math: getComputedStyle(element).fontSize, text: getComputedStyle(element.closest('p')).fontSize,
+        math: getComputedStyle(element).fontSize, text: getComputedStyle(element.closest('p')!).fontSize,
         weight: getComputedStyle(element).fontWeight,
       }));
       assert.equal(inline.math, inline.text, 'inline math must not be enlarged relative to surrounding text');
@@ -1571,9 +1634,10 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       assert.equal(await forward.isDisabled(), true);
       // A slow renderer must leave the current readable node in place, not
       // replace it with a new heading and "Preparing preview...".
-      let releasePreview, previewRequested;
-      const previewGate = new Promise(resolve => { releasePreview = resolve; });
-      const previewStarted = new Promise(resolve => { previewRequested = resolve; });
+      let releasePreview!: () => void;
+      let previewRequested!: () => void;
+      const previewGate = new Promise<void>(resolve => { releasePreview = resolve; });
+      const previewStarted = new Promise<void>(resolve => { previewRequested = resolve; });
       const previewPath = `**/node/${ids.Beta}/latex/preview`;
       const previousPreviews = requests.filter(path => path.endsWith(`/node/${ids.Beta}/latex/preview`)).length;
       await page.route(previewPath, async route => { previewRequested(); await previewGate; await route.continue(); });
@@ -1599,12 +1663,12 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       assert.equal(await block.locator('.monaco-editor[role=code]').count(), 0, 'reading a new node does not create a hidden source editor');
       assert.equal(await page.evaluate(() => { window.watchPreview = false; return window.previewLoadingFrames; }), 0);
       assert.equal(requests.filter(path => path.endsWith(`/node/${ids.Beta}/latex/preview`)).length - previousPreviews, 1, 'reuse the prepared response after mounting');
-      assert.equal(await page.evaluate(() => [...window.MathJax.startup.document.math].length), 1, 'discard the previous node math when navigating');
+      assert.equal(await page.evaluate(() => [...window.MathJax!.startup.document.math].length), 1, 'discard the previous node math when navigating');
       assert.equal(await block.locator('[id="latex-thm%3Ab"]').count(), 1);
       assert.equal(await block.locator('.latex-statement-title').innerText(), 'Theorem 1 (Named result)');
       const headingGap = await block.locator('.latex-statement').evaluate(element => {
-        const title = element.querySelector('.latex-statement-title').getClientRects()[0];
-        const paragraph = element.querySelector('p').getClientRects()[0];
+        const title = element.querySelector('.latex-statement-title')!.getClientRects()[0];
+        const paragraph = element.querySelector('p')!.getClientRects()[0];
         return Math.abs(title.y - paragraph.y);
       });
       assert.ok(headingGap < 4, 'theorem heading and first paragraph must share a line');
@@ -1635,7 +1699,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await page.goBack();
       await title(page, 'Alpha');
       const input = block.getByRole('textbox', {name: /^latex source/});
-      const fill = async value => { await input.press('ControlOrMeta+A'); await page.keyboard.insertText(value); };
+      const fill = async (value: string) => { await input.press('ControlOrMeta+A'); await page.keyboard.insertText(value); };
       // First paint without hovering: Safari 27 used to show a blank command
       // list until individual rows were invalidated by the pointer.
       await page.mouse.move(0, 0);
@@ -1654,7 +1718,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await page.getByRole('option', {selected: true}).filter({hasText: 'Named result'}).waitFor();
       await input.press('Enter');
       const qualifiedReference = `\\nameref{Beta::thm:b`;
-      await page.waitForFunction(text => document.querySelector('[data-srctype="latex"] .view-lines').innerText.includes(text), qualifiedReference);
+      await page.waitForFunction(text => document.querySelector<HTMLElement>('[data-srctype="latex"] .view-lines')!.innerText.includes(text), qualifiedReference);
       assert.ok((await block.locator('.view-lines').innerText()).includes(qualifiedReference));
       assert.equal(await page.getByRole('option').filter({hasText: 'Private result'}).count(), 0);
       for (const theme of ['dark', 'light']) {
@@ -1668,8 +1732,8 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
         assert.equal(await popup.getByRole('option').count(), 50, 'all 50 candidates are mounted, including offscreen rows');
         assert.equal(await popup.evaluate(el => getComputedStyle(el).overflowY), 'auto');
         const geometry = await option.evaluate(el => {
-          const add = document.querySelector('.add-btn').getBoundingClientRect();
-          const widget = el.closest('.latex-completions');
+          const add = document.querySelector('.add-btn')!.getBoundingClientRect();
+          const widget = el.closest('.latex-completions')!;
           const row = widget.getBoundingClientRect();
           const left = Math.max(row.left, add.left), right = Math.min(row.right, add.right);
           const top = Math.max(row.top, add.top), bottom = Math.min(row.bottom, add.bottom);
@@ -1684,6 +1748,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
         assert.equal(geometry.radius, await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--mdc-radius-md'))), 'use the app popup shape');
         assert.equal(await page.locator('.suggest-details:visible').count(), 0, 'no duplicate details panel');
         const popupBox = await popup.boundingBox();
+        assert.ok(popupBox);
         assert.equal(await popup.evaluate(el => { el.scrollTop = 100; return el.scrollTop; }), 100, 'use native scrolling');
         await popup.evaluate(el => { el.scrollTop = 0; });
         await page.mouse.move(popupBox.x + 100, popupBox.y + 70);
@@ -1693,7 +1758,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
           const sample = () => {
             const box = el.getBoundingClientRect();
             window.completionFrames.push({x: box.x, y: box.y, height: box.height, shown: getComputedStyle(el).visibility,
-              list: el.scrollTop, retained: window.completionRows.every((row, i) => el.children[i] === row), pane: document.querySelector('.blocks').scrollTop,
+              list: el.scrollTop, retained: window.completionRows.every((row, i) => el.children[i] === row), pane: document.querySelector('.blocks')!.scrollTop,
               hit: el.contains(document.elementFromPoint(box.x + 100, box.y + 70))});
             if (window.recordCompletion) requestAnimationFrame(sample);
           }; requestAnimationFrame(sample);
@@ -1709,7 +1774,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
         assert.equal(new Set(frames.map(frame => frame.pane)).size, 1, 'candidate scrolling never moves the page underneath');
         await page.screenshot({path: resolve(tmpdir(), `mdc-completion-${theme}-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
         await option.click();
-        await page.waitForFunction(() => /cite\{paper/.test(document.querySelector('[data-srctype="latex"] .view-lines').innerText));
+        await page.waitForFunction(() => /cite\{paper/.test(document.querySelector<HTMLElement>('[data-srctype="latex"] .view-lines')!.innerText));
         assert.match(await block.locator('.view-lines').innerText(), /cite\{paper/);
       }
       // Search the full catalog while typing and expand again on backspace.
@@ -1732,10 +1797,10 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await input.press('Control+Space');
       await page.getByRole('option').filter({hasText: 'A paper'}).waitFor();
       await input.press('Enter');
-      await page.waitForFunction(() => /cite\{paper/.test(document.querySelector('[data-srctype="latex"] .view-lines').innerText));
+      await page.waitForFunction(() => /cite\{paper/.test(document.querySelector<HTMLElement>('[data-srctype="latex"] .view-lines')!.innerText));
       assert.match(await block.locator('.view-lines').innerText(), /cite\{paper/);
       await input.press('ControlOrMeta+z');
-      await page.waitForFunction(() => /cite\{A.paper/.test(document.querySelector('[data-srctype="latex"] .view-lines').innerText));
+      await page.waitForFunction(() => /cite\{A.paper/.test(document.querySelector<HTMLElement>('[data-srctype="latex"] .view-lines')!.innerText));
       assert.match(await block.locator('.view-lines').innerText(), /cite\{A.paper/);
       await input.press('Escape');
       assert.equal(await page.locator('.latex-completions:visible').count(), 0);
@@ -1745,11 +1810,10 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
       await input.press('ArrowDown');
       const nextKey = await page.getByRole('option', {selected: true}).locator('span').first().innerText();
       await input.press('Tab');
-      await page.waitForFunction(key => document.querySelector('[data-srctype="latex"] .view-lines').innerText.includes(`cite{${key}`), nextKey);
+      await page.waitForFunction(key => document.querySelector<HTMLElement>('[data-srctype="latex"] .view-lines')!.innerText.includes(`cite{${key}`), nextKey);
       assert.ok((await block.locator('.view-lines').innerText()).includes(`cite{${nextKey}`));
       const draft = String.raw`\section{Draft title}\label{new}By \nameref{Beta::thm:b}, see \cite{paper}. $\cA$`;
       await fill(draft);
-      const discard = page.listeners('dialog');
       page.removeAllListeners('dialog');
       try {
         const prompted = page.waitForEvent('dialog');
@@ -1761,7 +1825,7 @@ await test('LaTeX macros, scoped completion, citations and draft previews', {tim
         assert.match(await block.locator('.view-lines').innerText(), /Draft.title/);
         assert.equal(await back.isDisabled(), true);
         assert.equal(await forward.isDisabled(), false);
-      } finally { discard.forEach(listener => page.on('dialog', listener)); }
+      } finally { page.on('dialog', dialog => void dialog.accept()); }
       await block.getByRole('button', {name: 'Render LaTeX preview'}).click();
       await block.getByRole('heading', {name: 'Draft title', exact: true}).waitFor();
       assert.equal(JSON.parse((await cli('show', 'Alpha')).stdout).blocks[0].content, source);
@@ -1795,9 +1859,9 @@ await test('LaTeX tables, colors and TikZ diagrams render shared macros locally'
       const bibliography = resolve(root, 'diagrams.bib');
       await writeFile(bibliography, '');
       await cli('project', 'latex', 'set', '--preamble', preamble, '--bib', bibliography);
-      const requests = [];
+      const requests: string[] = [];
       page.on('request', request => requests.push(request.url()));
-      const failedMathAssets = [];
+      const failedMathAssets: string[] = [];
       page.on('response', response => { if (response.url().includes('/mathjax/') && response.status() >= 400) failedMathAssets.push(response.url()); });
       await page.goto(`${url}/?diagrams#ref=${node.fnode}`);
       await page.getByRole('button', {name: 'Render LaTeX preview'}).click();
@@ -1814,7 +1878,7 @@ await test('LaTeX tables, colors and TikZ diagrams render shared macros locally'
       assert.deepEqual(failedMathAssets, [], 'all requested MathJax assets are bundled');
       await page.screenshot({path: resolve(tmpdir(), `mdc-rich-latex-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
       let previewVersion = 0;
-      const preview = async source => {
+      const preview = async (source: string) => {
         await page.getByRole('button', {name: 'Return to LaTeX editor'}).click();
         const input = page.getByRole('textbox', {name: /^latex source/});
         const marker = `Preview version ${++previewVersion}`;
@@ -1901,9 +1965,11 @@ await test('Lean first paint waits for syntax without waiting for hidden iframe 
   ]};
   try {
     await fixture(browser, async ({page, url}) => {
-      let release, requested, sessions = 0;
-      const gate = new Promise(resolve => { release = resolve; });
-      const grammar = new Promise(resolve => { requested = resolve; });
+      let release!: () => void;
+      let requested!: () => void;
+      let sessions = 0;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const grammar = new Promise<void>(resolve => { requested = resolve; });
       await page.route(/\/assets\/lean4-[^/]+\.json$/, async route => {
         requested(); await gate; await route.continue();
       });
@@ -1915,7 +1981,7 @@ await test('Lean first paint waits for syntax without waiting for hidden iframe 
           // the parent must reveal rendered source before we release it.
           const requestFrame = window.requestAnimationFrame.bind(window);
           let held = false;
-          const pending = [];
+          const pending: FrameRequestCallback[] = [];
           window.addEventListener('message', event => {
             if (event.origin === location.origin && event.source === parent && event.data?.type === 'lean-select') held = true;
           });
@@ -1930,10 +1996,10 @@ await test('Lean first paint waits for syntax without waiting for hidden iframe 
           return;
         }
         const observe = () => {
-          const frame = document.querySelector('iframe[title="Lean source and Infoview"]');
+          const frame = document.querySelector<HTMLIFrameElement>('iframe[title="Lean source and Infoview"]');
           const lines = frame?.contentDocument?.querySelectorAll('.view-line span');
           if (frame && getComputedStyle(frame).visibility === 'visible' && lines?.length) {
-            window.firstLeanPaint = [...new Set([...lines].map(el => frame.contentWindow.getComputedStyle(el).color))];
+            window.firstLeanPaint = [...new Set([...lines].map(el => el.ownerDocument.defaultView!.getComputedStyle(el).color))];
           } else requestAnimationFrame(observe);
         };
         window.observeLeanPaint = observe;
@@ -1950,8 +2016,9 @@ await test('Lean first paint waits for syntax without waiting for hidden iframe 
       const painted = async () => {
         await page.locator('.native-editor:not(.pending)').waitFor();
         await page.waitForFunction(() => window.firstLeanPaint);
-        assert.ok((await page.evaluate(() => window.firstLeanPaint)).length >= 2, 'the first visible frame must already contain syntax colors');
+        assert.ok((await page.evaluate(() => window.firstLeanPaint))!.length >= 2, 'the first visible frame must already contain syntax colors');
         const frame = page.frames().find(frame => frame.url().includes('/lean.html?'));
+        assert.ok(frame);
         await frame.getByText('firstPaint', {exact: true}).waitFor();
         await frame.evaluate(() => window.releaseLeanFrames());
       };
@@ -1964,7 +2031,7 @@ await test('Lean first paint waits for syntax without waiting for hidden iframe 
       await canvas.click({position: {x: 10, y: 10}});
       await page.getByText('No node selected', {exact: true}).waitFor();
       await page.evaluate(() => {
-        window.retainedLeanFrame = document.querySelector('iframe[title="Lean source and Infoview"]');
+        window.retainedLeanFrame = document.querySelector<HTMLIFrameElement>('iframe[title="Lean source and Infoview"]');
         window.firstLeanPaint = null;
         requestAnimationFrame(window.observeLeanPaint);
       });
@@ -1972,7 +2039,7 @@ await test('Lean first paint waits for syntax without waiting for hidden iframe 
       await page.getByPlaceholder('Search by name or UUID...').fill(node.name);
       await page.getByRole('button', {name: new RegExp(node.name)}).click();
       await painted();
-      assert.equal(await page.evaluate(() => window.retainedLeanFrame === document.querySelector('iframe[title="Lean source and Infoview"]')), true);
+      assert.equal(await page.evaluate(() => window.retainedLeanFrame === document.querySelector<HTMLIFrameElement>('iframe[title="Lean source and Infoview"]')), true);
       assert.equal(sessions, 0);
     }, [node]);
   } finally { await browser.close(); }
@@ -1994,7 +2061,7 @@ await test('Lean hover stays above the active Infoview', {timeout: 45000}, async
       const hover = frame.locator('.monaco-hover:visible');
       await hover.waitFor();
       const overlap = await hover.evaluate(el => {
-        const box = el.getBoundingClientRect(), info = document.getElementById('infoview').getBoundingClientRect();
+        const box = el.getBoundingClientRect(), info = document.getElementById('infoview')!.getBoundingClientRect();
         const x = Math.max(box.left, info.left) + 5, y = box.top + 10;
         return {crosses: x < box.right, onTop: el.contains(document.elementFromPoint(x, y))};
       });
@@ -2024,7 +2091,7 @@ await test('wrapped Lean sources reach the last line before and after server sta
           await page.getByRole('button', {name: view, exact: true}).click();
           await page.waitForFunction(view => document.querySelector(`button[title="${view} view"]`)?.getAttribute('aria-pressed') === 'true' && !document.querySelector('.app[inert]'), view);
           const scroll = frame.locator('#editor-scroll');
-          await scroll.evaluate(el => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          await scroll.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
           const size = await scroll.evaluate(el => {
             el.scrollTop = el.scrollHeight;
             return {height: el.clientHeight, content: el.scrollHeight, viewport: innerHeight, width: el.clientWidth};
@@ -2035,9 +2102,9 @@ await test('wrapped Lean sources reach the last line before and after server sta
           await end.waitFor({timeout: 3000});
           assert.ok(await end.evaluate(el => {
             const r = el.getBoundingClientRect();
-            const frame = window.frameElement;
+            const frame = window.frameElement!;
             return r.top >= 0 && r.bottom <= innerHeight + 1 &&
-              r.bottom + frame.getBoundingClientRect().top <= frame.closest('article').getBoundingClientRect().bottom;
+              r.bottom + frame.getBoundingClientRect().top <= frame.closest('article')!.getBoundingClientRect().bottom;
           }), 'the final source line must fit inside both the iframe and the clipped code block');
         }
       }
@@ -2052,7 +2119,7 @@ await test('stopping an unfinished Lean check clears progress and Infoview conne
   ]};
   try {
     await fixture(browser, async ({page, url, root}) => {
-      let socket;
+      let socket!: BrowserSocket;
       page.on('websocket', ws => { socket = ws; });
       await page.goto(`${url}/?stop#ref=${node.fnode}`);
       const block = page.locator('.lean-block');
@@ -2101,17 +2168,20 @@ await test('Lean session state survives navigation through nodes without Lean', 
   ]}));
   try {
     await fixture(browser, async ({page, url}) => {
-      let sessions = 0, sockets = 0, release, allocated;
+      let sessions = 0;
+      let sockets = 0;
+      let release!: () => void;
+      let allocated!: (id: string) => void;
       page.on('request', r => { if (r.method() === 'POST' && r.url().endsWith('/lean/session')) sessions++; });
       page.on('websocket', () => sockets++);
-      const select = async name => {
+      const select = async (name: string) => {
         await page.getByRole('button', {name: /Search nodes/}).click();
         await page.getByPlaceholder('Search by name or UUID...').fill(name);
         await page.getByRole('dialog').getByRole('button', {name: new RegExp(name)}).click();
         await title(page, name);
       };
-      const gate = new Promise(resolve => { release = resolve; });
-      const allocation = new Promise(resolve => { allocated = resolve; });
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const allocation = new Promise<string>(resolve => { allocated = resolve; });
       await page.route(/\/lean\/session$/, async route => {
         const response = await route.fetch();
         allocated((await response.json()).id);
@@ -2123,7 +2193,7 @@ await test('Lean session state survives navigation through nodes without Lean', 
       const id = await allocation;
       await select('Alpha');
       release();
-      await page.waitForFunction(id => document.querySelector('.lean-block').dataset.session === id, id);
+      await page.waitForFunction(id => document.querySelector<HTMLElement>('.lean-block')?.dataset.session === id, id);
       for (const name of ['Second', 'Alpha', 'First']) {
         await select(name);
         if (name !== 'Alpha') await page.getByText('Lean editor ready', {exact: true}).waitFor();
@@ -2149,8 +2219,9 @@ await test('Lean browsing stays offline until explicitly started and preserves s
   ]}));
   try {
     await fixture(browser, async ({page, url, cli, root}) => {
-      let sessions = 0, sockets = 0, socket;
-      const messages = [];
+      let sessions = 0, sockets = 0;
+      let socket!: BrowserSocket;
+      const messages: ClientMessage[] = [];
       page.on('request', request => { if (request.method() === 'POST' && request.url().endsWith('/lean/session')) sessions++; });
       page.on('websocket', ws => { sockets++; socket = ws; ws.on('framesent', ({payload}) => messages.push(JSON.parse(String(payload)))); });
       await page.goto(`${url}/?offline#ref=${nodes[0].fnode}`);
@@ -2163,14 +2234,14 @@ await test('Lean browsing stays offline until explicitly started and preserves s
         return keyword.evaluate(() => {
           // Semantic tokens may replace a span between locator resolution and
           // evaluation. Read the current token and its style in one DOM turn.
-          const el = [...document.querySelectorAll('.view-line span')].find(el => el.textContent === 'theorem');
+          const el = [...document.querySelectorAll('.view-line span')].find(el => el.textContent === 'theorem')!;
           const style = getComputedStyle(el);
           return {color: style.color, font: style.fontFamily, size: style.fontSize};
         });
       };
       await page.locator('.native-editor:not(.pending)').waitFor();
       const light = await styled();
-      let persistentEditor;
+      let persistentEditor: ElementHandle<HTMLElement | SVGElement>;
       const sameEditor = async () => {
         assert.equal(await persistentEditor.evaluate(el => el.isConnected), true, 'start/stop retain the editor DOM and iframe');
         assert.equal(await block.locator('.native-editor.pending').count(), 0, 'start/stop never hide the source');
@@ -2187,7 +2258,7 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       await page.getByRole('button', {name: 'Save node', exact: true}).click();
       await page.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
       assert.equal(JSON.parse((await cli('show', nodes[0].fnode)).stdout).blocks[0].content.trimEnd(), (nodes[0].blocks[0].content + '-- saved without a server\n').trimEnd());
-      const select = async name => {
+      const select = async (name: string) => {
         await page.getByRole('button', {name: /Search nodes/}).click();
         await page.getByPlaceholder('Search by name or UUID...').fill(name);
         await page.getByRole('dialog').getByRole('button', {name: new RegExp(name)}).click();
@@ -2243,7 +2314,7 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       await other.goto(`${url}/?other#ref=${nodes[0].fnode}`);
       await other.getByRole('button', {name: 'Start Lean server', exact: true}).click();
       await other.getByText('Lean editor ready', {exact: true}).waitFor();
-      const sessionId = p => p.locator(".lean-block").getAttribute("data-session");
+      const sessionId = (p: Page) => p.locator(".lean-block").getAttribute("data-session");
       const oldId = await sessionId(page), otherId = await sessionId(other);
       persistentEditor = await frame.locator('.monaco-editor[role=code]').elementHandle();
       await input.press(documentEndKey);
@@ -2276,9 +2347,10 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       // Stop may overtake a session allocation before its ID reaches the page.
       await block.getByRole('button', {name: 'Stop Lean server', exact: true}).click();
       await page.locator('.native-editor:not(.pending)').waitFor();
-      let release, allocated;
-      const gate = new Promise(resolve => { release = resolve; });
-      const allocation = new Promise(resolve => { allocated = resolve; });
+      let release!: () => void;
+      let allocated!: (id: string) => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const allocation = new Promise<string>(resolve => { allocated = resolve; });
       await page.route(/\/lean\/session$/, async route => {
         const response = await route.fetch();
         allocated((await response.json()).id);
@@ -2296,9 +2368,10 @@ await test('Lean browsing stays offline until explicitly started and preserves s
       assert.equal(sockets, 2, 'a cancelled start must never connect its late session');
       // Navigation while allocating must connect a session prepared for the new node.
       await page.unroute(/\/lean\/session$/);
-      let releaseNavigation, allocatedNavigation;
-      const navigationGate = new Promise(resolve => { releaseNavigation = resolve; });
-      const navigationAllocation = new Promise(resolve => { allocatedNavigation = resolve; });
+      let releaseNavigation!: () => void;
+      let allocatedNavigation!: (id: string) => void;
+      const navigationGate = new Promise<void>(resolve => { releaseNavigation = resolve; });
+      const navigationAllocation = new Promise<string>(resolve => { allocatedNavigation = resolve; });
       await page.route(/\/lean\/session$/, async route => {
         const response = await route.fetch();
         allocatedNavigation((await response.json()).id);
@@ -2324,8 +2397,8 @@ await test('collapsed Lean editors recheck without recreating the browser viewpo
   ]};
   try {
     await fixture(browser, async ({page, url}) => {
-      let socket;
-      const messages = [];
+      let socket!: BrowserSocket;
+      const messages: ClientMessage[] = [];
       page.on('websocket', ws => { socket = ws; ws.on('framesent', ({payload}) => messages.push(JSON.parse(String(payload)))); });
       await page.goto(`${url}/?collapsed-reload#ref=${node.fnode}`);
       await page.getByRole('button', {name: 'Start Lean server', exact: true}).click();
@@ -2374,23 +2447,24 @@ await test('editors and previews pass scrolling to the node pane at both boundar
         const bounds = await pane.evaluate(el => {
           el.scrollTop = 0;
           const top = el.getBoundingClientRect();
-          const next = el.querySelector('[data-srctype="latex"] .block-head').getBoundingClientRect();
+          const next = el.querySelector('[data-srctype="latex"] .block-head')!.getBoundingClientRect();
           el.scrollTop = el.scrollHeight;
-          const last = el.querySelector('[data-srctype="rocq"] .block-head').getBoundingClientRect();
+          const last = el.querySelector('[data-srctype="rocq"] .block-head')!.getBoundingClientRect();
           return {top: top.top, bottom: top.bottom, nextBottom: next.bottom, lastTop: last.top};
         });
         assert.ok(bounds.nextBottom <= bounds.bottom, `${view}: the next header is visible at the top`);
         assert.ok(bounds.lastTop >= bounds.top, `${view}: the last header remains visible above the add button`);
       }
       const outerScroll = () => pane.evaluate(el => el.scrollTop);
-      const check = async (block, surface, position) => {
+      const check = async (block: Locator, surface: Locator, position: (direction: number) => Promise<void>) => {
         for (const direction of [1, -1]) {
           await position(direction);
           await block.evaluate(el => {
-            const pane = el.closest('.blocks');
+            const pane = el.closest('.blocks')!;
             pane.scrollTop += el.getBoundingClientRect().top - pane.getBoundingClientRect().top - 20;
           });
           const bounds = await surface.boundingBox();
+          assert.ok(bounds);
           await page.mouse.move(bounds.x + 80, bounds.y + 100);
           const before = await outerScroll();
           await page.mouse.wheel(0, direction * 80);
@@ -2404,11 +2478,11 @@ await test('editors and previews pass scrolling to the node pane at both boundar
           assert.ok((await outerScroll() - before) * direction > 1, `scroll continues in the outer pane at the ${direction > 0 ? 'bottom' : 'top'}`);
         }
       };
-      const nativeBoundary = async surface => {
+      const nativeBoundary = async (surface: Locator) => {
         for (const direction of [1, -1]) {
           const before = await surface.evaluate((el, direction) => {
-            const pane = el.closest('.blocks');
-            pane.scrollTop += el.closest('article').getBoundingClientRect().top - pane.getBoundingClientRect().top - 20;
+            const pane = el.closest('.blocks')!;
+            pane.scrollTop += el.closest('article')!.getBoundingClientRect().top - pane.getBoundingClientRect().top - 20;
             el.scrollTop = direction > 0 ? el.scrollHeight : 0;
             window.boundaryWheel = null;
             window.addEventListener('wheel', event => {
@@ -2417,9 +2491,10 @@ await test('editors and previews pass scrolling to the node pane at both boundar
             return pane.scrollTop;
           }, direction);
           const bounds = await surface.boundingBox();
+          assert.ok(bounds);
           await page.mouse.move(bounds.x + 80, bounds.y + 100);
           await page.mouse.wheel(0, direction * 40);
-          await page.waitForFunction(({before, direction}) => (document.querySelector('.blocks').scrollTop - before) * direction > 1, {before, direction});
+          await page.waitForFunction(({before, direction}) => (document.querySelector('.blocks')!.scrollTop - before) * direction > 1, {before, direction});
           await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
           const state = await surface.evaluate(el => ({
             wheel: window.boundaryWheel, inner: el.scrollTop, limit: el.scrollHeight - el.clientHeight,
@@ -2444,7 +2519,7 @@ await test('editors and previews pass scrolling to the node pane at both boundar
       await check(page.locator('[data-srctype="lean"]'), frame.locator('.monaco-editor[role=code]'), async direction => {
         await input.press(direction > 0 ? documentStartKey : documentEndKey);
       });
-      for (const reducedMotion of ['no-preference', 'reduce']) {
+      for (const reducedMotion of ['no-preference', 'reduce'] as const) {
         await page.emulateMedia({reducedMotion});
         for (const single of singles) {
           const kind = single.blocks[0].srctype;
@@ -2463,17 +2538,18 @@ await test('editors and previews pass scrolling to the node pane at both boundar
             for (const direction of [1, -1]) {
               await pane.evaluate((el, direction) => { el.scrollTop = direction > 0 ? el.scrollHeight : 0; }, direction);
               await surface.evaluate(el => {
-                const win = el.ownerDocument.defaultView;
+                const win = el.ownerDocument.defaultView!;
                 win.boundaryWheel = null;
                 win.addEventListener('wheel', event => {
                   win.boundaryWheel = {cancelled: event.defaultPrevented, trusted: event.isTrusted};
                 }, {once: true});
               });
               const bounds = await surface.boundingBox();
+              assert.ok(bounds);
               await page.mouse.move(bounds.x + 80, bounds.y + 80);
               await page.mouse.wheel(0, direction * 40);
-              await surface.evaluate(el => new Promise(resolve => el.ownerDocument.defaultView.requestAnimationFrame(() => requestAnimationFrame(resolve))));
-              const wheel = await surface.evaluate(el => el.ownerDocument.defaultView.boundaryWheel);
+              await surface.evaluate(el => new Promise(resolve => el.ownerDocument.defaultView!.requestAnimationFrame(() => requestAnimationFrame(resolve))));
+              const wheel = await surface.evaluate(el => el.ownerDocument.defaultView!.boundaryWheel);
               assert.deepEqual(wheel, {cancelled: false, trusted: true}, `${kind} preserves native boundary handling with ${reducedMotion}`);
               assert.equal(await pane.evaluate(el => getComputedStyle(el).overscrollBehaviorY), 'contain', 'the outer pane terminates the chain and keeps native bounce');
             }
@@ -2499,7 +2575,7 @@ await test('view changes reveal measured editors and loaded pages without interm
   const browser = await launchBrowser();
   try {
     await fixture(browser, async ({cli, page, url}) => {
-      const node = JSON.parse((await cli('show', 'Alpha')).stdout);
+      const node: NodeDetail = JSON.parse((await cli('show', 'Alpha')).stdout);
       const content = Array.from({length: 100}, (_, i) => `Line ${i + 1}: ${'long text with wrapping '.repeat(i % 4 + 1)}`).join('\n');
       const saved = await fetch(`${url}/api/node/${node.fnode}/block/latex`, {
         method: 'PUT', headers: {'content-type': 'application/json', 'if-match': `"${node.revision}"`}, body: JSON.stringify({content}),
@@ -2509,14 +2585,15 @@ await test('view changes reveal measured editors and loaded pages without interm
       await page.locator('.line-numbers').nth(2).waitFor();
       await page.waitForFunction(() => document.querySelector('.source-block .view-line'));
       await page.evaluate(() => { window.originalEditor = document.querySelector('.monaco-editor[role=code]'); });
-      let release, entered;
-      const gate = new Promise(resolve => { release = resolve; });
-      const requested = new Promise(resolve => { entered = resolve; });
+      let release!: () => void;
+      let entered!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const requested = new Promise<void>(resolve => { entered = resolve; });
       await page.route('**/api/graph/full', async route => { entered(); await gate; await route.continue(); });
       await page.getByRole('button', {name: 'Graph', exact: true}).click();
       await requested;
       try {
-        await page.waitForFunction(() => document.getAnimations().some(a => a.animationName === 'mdc-hold'));
+        await page.waitForFunction(() => document.getAnimations().some(a => a instanceof CSSAnimation && a.animationName === 'mdc-hold'));
         assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement, '::view-transition-new(root)').visibility), 'hidden');
       } finally { release(); }
       await page.waitForFunction(() => !document.documentElement.dataset.vtScope);
@@ -2528,8 +2605,8 @@ await test('view changes reveal measured editors and loaded pages without interm
             let changing = false;
             const sample = () => {
               changing ||= document.documentElement.dataset.vtScope === 'ready';
-              if (!changing || document.documentElement.dataset.vtScope) return requestAnimationFrame(sample);
-              const editor = document.querySelector('.monaco-editor[role=code]');
+              if (!changing || document.documentElement.dataset.vtScope) { requestAnimationFrame(sample); return; }
+              const editor = document.querySelector('.monaco-editor[role=code]')!;
               const lines = [...editor.querySelectorAll('.view-line')];
               const gutters = [...editor.querySelectorAll('.line-numbers')].filter(el => el.textContent.trim() && getComputedStyle(el).visibility !== 'hidden');
               resolve(gutters.map(g => ({number: g.textContent, difference: Math.min(...lines.map(line => Math.abs(g.getBoundingClientRect().top - line.getBoundingClientRect().top)))})));
@@ -2546,15 +2623,16 @@ await test('view changes reveal measured editors and loaded pages without interm
       // Cross-document transitions also hold the old view while project and node data are pending.
       // Reduced motion still needs readiness gating, without a fade animation.
       await page.emulateMedia({reducedMotion: 'reduce'});
-      const held = async (pattern, navigate) => {
-        let release, entered;
-        const gate = new Promise(resolve => { release = resolve; });
-        const started = new Promise(resolve => { entered = resolve; });
+      const held = async (pattern: string, navigate: () => Promise<void>) => {
+        let release!: () => void;
+      let entered!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const started = new Promise<void>(resolve => { entered = resolve; });
         await page.route(pattern, async route => { entered(); await gate; await route.continue(); });
         try {
           await navigate();
           await Promise.race([started, new Promise((_, reject) => setTimeout(() => reject(new Error(`request not observed: ${pattern}`)), 5000))]);
-          await page.waitForFunction(() => document.getAnimations().some(a => a.animationName === 'mdc-hold'));
+          await page.waitForFunction(() => document.getAnimations().some(a => a instanceof CSSAnimation && a.animationName === 'mdc-hold'));
           assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement, '::view-transition-new(root)').visibility), 'hidden');
         } finally { release(); }
         await page.waitForFunction(() => !document.documentElement.dataset.vtScope);

@@ -145,6 +145,12 @@ Stop the branch with `mdc stop dev/main`; `mdc stop` shuts down the server and a
 
 ## Release and validation
 
+The frontend, documentation configuration, performance runner and browser tests
+use TypeScript. Node 26 runs `web/perf/run.ts` and `web/e2e/run.ts` directly;
+no separate script compilation or TypeScript loader is needed.
+`npm --prefix web run check` checks both application code and these scripts
+with strict types. `npm --prefix docs run check` checks the documentation site.
+
 `npm --prefix web run build` writes `web/dist`; Cargo embeds those assets with
 `rust-embed`. This directory is ignored by Git: commit source changes and lockfile
 updates, then build the frontend before building or installing the Rust binary.

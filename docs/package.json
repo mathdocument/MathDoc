@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "astro dev",
     "build": "astro build --force",
-    "check": "astro check",
+    "check": "astro check && tsc --noEmit",
     "preview": "astro preview"
   },
   "dependencies": {

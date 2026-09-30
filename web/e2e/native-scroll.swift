@@ -1,5 +1,5 @@
 // Optional macOS integration check: NSEvents carry phases that Playwright wheels omit.
-// Invoked by run.mjs with MDC_E2E_NATIVE_SCROLL=1 against its disposable database.
+// Invoked by run.ts with MDC_E2E_NATIVE_SCROLL=1 against its disposable database.
 import AppKit
 import WebKit
 

@@ -4,7 +4,10 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "allowImportingTsExtensions": true,
-    "types": ["node"]
+    "types": ["node"],
+    "target": "ES2024",
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "erasableSyntaxOnly": true
   },
-  "include": ["perf/**/*.ts"]
+  "include": ["perf/**/*.ts", "e2e/**/*.ts"]
 }
