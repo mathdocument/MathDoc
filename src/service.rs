@@ -89,8 +89,17 @@ impl Service {
         Ok(())
     }
 
-    fn revalidate_rename(self: &Arc<Self>, snapshot: &Snapshot) {
-        let targets = self.lean.revalidation_targets(snapshot);
+    fn revalidate_rename(
+        self: &Arc<Self>,
+        snapshot: &Snapshot,
+        previous_keys: &HashMap<String, String>,
+    ) {
+        let targets: Vec<_> = self
+            .lean
+            .revalidation_targets(snapshot)
+            .into_iter()
+            .filter(|id| previous_keys.get(id) != snapshot.lean_keys.get(id))
+            .collect();
         if targets.is_empty() {
             return;
         }
@@ -891,8 +900,9 @@ async fn name(
             changes.push(updated);
         }
     }
+    let previous_keys = snapshot.lean_keys.clone();
     s.save(&mut snapshot, changes, "Rename node").await?;
-    s.revalidate_rename(&snapshot);
+    s.revalidate_rename(&snapshot, &previous_keys);
     Ok(revision_response(&snapshot, &node, &s.lean))
 }
 #[derive(Deserialize)]
