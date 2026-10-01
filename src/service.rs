@@ -88,50 +88,6 @@ impl Service {
         snapshot.apply(changes, version);
         Ok(())
     }
-
-    fn revalidate_rename(
-        self: &Arc<Self>,
-        snapshot: &Snapshot,
-        previous_keys: &HashMap<String, String>,
-    ) {
-        let targets: Vec<_> = self
-            .lean
-            .revalidation_targets(snapshot)
-            .into_iter()
-            .filter(|id| previous_keys.get(id) != snapshot.lean_keys.get(id))
-            .collect();
-        if targets.is_empty() {
-            return;
-        }
-        let service = self.clone();
-        tokio::spawn(async move {
-            let mut stopping = service.stopping.subscribe();
-            let _request = service.requests.read().await;
-            if *stopping.borrow() {
-                return;
-            }
-            tokio::select! {
-                biased;
-                _ = stopping.changed() => {},
-                result = async {
-                    // One worker at a time; foreground requests share the existing FIFO pool.
-                    for id in targets {
-                        let input = {
-                            let snapshot = service.read().await?;
-                            if !snapshot.nodes.contains_key(&id) { continue; }
-                            crate::lean::Input::capture(&snapshot, &id)?
-                        };
-                        if let Err(error) = service.lean.revalidate(input).await {
-                            eprintln!("Lean rename cache revalidation ({id}): {error:#}");
-                        }
-                    }
-                    Ok::<_, anyhow::Error>(())
-                } => if let Err(error) = result {
-                    eprintln!("Lean rename cache revalidation: {error:#}");
-                },
-            }
-        });
-    }
 }
 
 pub struct ApiError(pub(crate) StatusCode, pub(crate) String);
@@ -900,9 +856,7 @@ async fn name(
             changes.push(updated);
         }
     }
-    let previous_keys = snapshot.lean_keys.clone();
     s.save(&mut snapshot, changes, "Rename node").await?;
-    s.revalidate_rename(&snapshot, &previous_keys);
     Ok(revision_response(&snapshot, &node, &s.lean))
 }
 #[derive(Deserialize)]

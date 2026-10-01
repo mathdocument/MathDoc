@@ -34,7 +34,7 @@ async fn call(
 
 #[tokio::test]
 #[ignore = "requires local TerminusDB, MDC_TERMINUS_PASSWORD and native Lean"]
-async fn rename_restores_web_status_in_the_background_without_elaborating_cached_targets() {
+async fn rename_leaves_certificates_stale_until_an_explicit_check() {
     use mathdoc::{
         lean::Input,
         store::{Block, Node},
@@ -75,22 +75,29 @@ async fn rename_restores_web_status_in_the_background_without_elaborating_cached
     )
     .await;
     assert_eq!(status, 200, "{response}");
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        loop {
-            let (_, graph) = call(&app, "GET", "/api/graph/full", Value::Null, None).await;
-            if graph["nodes"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|n| n["lean"] == "verified")
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("rename must restore current web statuses without a manual check");
+    let (_, pending) = call(&app, "GET", "/api/graph/revision", Value::Null, None).await;
+    assert_ne!(before["graph"], pending["graph"]);
+    assert_eq!(before["lean"], pending["lean"]);
+    let (_, graph) = call(&app, "GET", "/api/graph/full", Value::Null, None).await;
+    assert!(graph["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|n| n["lean"] == "unverified"));
+    let (status, checked) = call(
+        &app,
+        "POST",
+        &format!("/api/node/{}/lean/check", nodes[3].fnode),
+        json!({"build":true}),
+        Some(&nodes[3].revision()),
+    )
+    .await;
+    assert_eq!(status, 200, "{checked}");
+    assert_eq!(checked["certified"], true);
+    assert_eq!(
+        checked["cache_hit"], true,
+        "explicit checks must retain native-input reuse"
+    );
     let (_, after) = call(&app, "GET", "/api/graph/revision", Value::Null, None).await;
     assert_ne!(before["graph"], after["graph"]);
     assert_ne!(before["lean"], after["lean"]);
@@ -106,6 +113,7 @@ async fn rename_restores_web_status_in_the_background_without_elaborating_cached
     assert_eq!(view["node"]["formalization"]["lean"], "verified");
     assert_eq!(view["referrers"][0]["formalization"]["lean"], "verified");
     assert_eq!(view["children"][0]["formalization"]["lean"], "verified");
+    service.lean.shutdown().await;
 }
 
 #[tokio::test]

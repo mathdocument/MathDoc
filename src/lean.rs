@@ -716,51 +716,6 @@ impl LeanService {
             _ => "unverified",
         }
     }
-    pub(crate) fn revalidation_targets(&self, snapshot: &Snapshot) -> Vec<String> {
-        let results = self.results.read().unwrap();
-        let mut targets: Vec<_> = snapshot
-            .nodes
-            .values()
-            .filter(|node| {
-                results.get(&node.fnode).is_some_and(|r| {
-                    r.certified
-                        && r.has_sorry.is_some()
-                        && r.input_key != snapshot.lean_keys[&node.fnode]
-                        && r.revision == node.revision()
-                        && r.artifacts.as_ref().is_some_and(|a| a.input_key.is_some())
-                })
-            })
-            .collect();
-        // A successful leaf reuse also certifies its prepared dependency closure.
-        targets.sort_by_key(|n| std::cmp::Reverse(snapshot.depths[&n.fnode]));
-        targets.into_iter().map(|n| n.fnode.clone()).collect()
-    }
-
-    /// Restore stale evidence only when native inputs match. Unlike an explicit
-    /// check, never fall back to elaborating a target whose inputs changed.
-    pub async fn revalidate(&self, input: Input) -> Result<()> {
-        if self.cached_input(&input, false).await.is_some() {
-            return Ok(());
-        }
-        let mut worker = self.worker().await?;
-        if self.cached_input(&input, false).await.is_some() {
-            return Ok(());
-        }
-        let manager = &mut *worker.0;
-        self.prepare_input(manager, &input).await?;
-        if let Some(cached) = self.revalidate_native_inputs(&manager.root, &input).await? {
-            self.record_check(
-                &manager.root,
-                &input,
-                cached.diagnostics.clone(),
-                cached.imports.clone(),
-                Some(&cached),
-            )
-            .await?;
-        }
-        Ok(())
-    }
-
     pub(crate) async fn status_generation(&self) -> u64 {
         self.synced.lock().await.1
     }
