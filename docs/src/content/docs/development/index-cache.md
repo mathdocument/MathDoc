@@ -39,7 +39,10 @@ eliminate per-LSP elaboration.
 
 Lake's native content cache is shared by all branches and browser sessions in a
 database, partitioned by platform and project configuration. Workspaces keep
-private source, traces and new outputs; they read cached Lean objects directly
-instead of copying a build tree. Artifact availability is checked against Lake's
-output descriptors, including split module outputs. Deleting a branch preserves
+private source, traces and new outputs. Lake restores the requested dependency
+artifacts at their module paths using hard links to shared objects, with a copy
+fallback across filesystems. This includes split `.olean` and IR outputs needed
+by the language server to load private transitive imports; restoring only `.ilean`
+metadata is insufficient. Artifact availability is checked against Lake's
+output descriptors. Deleting a branch preserves
 the shared pool. See [Storage](../../concepts/workspaces/) for paths and cleanup.

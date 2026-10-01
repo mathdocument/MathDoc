@@ -1546,6 +1546,84 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires native Lean and Lake"]
+    async fn cached_private_imports_load_in_cli_and_editor_workspaces() {
+        let cache = tempfile::tempdir().unwrap();
+        let service = LeanService::new(cache.path().join("service")).unwrap();
+        let marker = cache.path().join("compiled");
+        let mut nodes = Vec::<Node>::new();
+        for (name, source) in [
+            ("A", format!("module\nimport Lean\nrun_cmd Lean.Elab.Command.liftIO <| IO.FS.writeFile {} \"compiled\"\npublic theorem a : True := by trivial\n", serde_json::to_string(&marker.to_string_lossy()).unwrap())),
+            ("B", "module\nimport A\npublic theorem b : True := a\n".into()),
+            ("C", "module\nimport B\npublic theorem c : True := b\n".into()),
+            ("D", "module\nimport C\npublic theorem d : True := c\n".into()),
+        ] {
+            let mut node = Node::new(name.into()).unwrap();
+            if let Some(dependency) = nodes.last() {
+                node.depens.push(dependency.fnode.clone());
+            }
+            node.blocks.push(crate::store::Block { srctype: "lean".into(), content: source, ..Default::default() });
+            nodes.push(node);
+        }
+        let input = Input {
+            project: LeanProject::default().into(),
+            project_key: LeanProject::default().key(),
+            modules: nodes
+                .iter()
+                .map(|n| {
+                    (
+                        crate::store::module_file(&n.name, "lean").unwrap(),
+                        n.fnode.clone(),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+                .into(),
+            chain: nodes
+                .iter()
+                .map(|n| (Arc::new(n.clone()), n.fnode.clone()))
+                .collect(),
+        };
+        let producer = service.editor_project(&input).await.unwrap();
+        build_module(producer.path(), "D").await.unwrap();
+        assert!(marker.exists());
+        drop(producer);
+        std::fs::remove_file(&marker).unwrap();
+
+        // Only the shared objects survive. No certificate may bypass either LSP.
+        let result = service.check(input.clone(), true).await.unwrap();
+        assert!(result.certified && result.built, "{result:?}");
+        let draft = service.editor_project(&input).await.unwrap();
+        let mut editor = Lsp::start(draft.path()).await.unwrap();
+        let uri = file_uri(&module_path(draft.path(), "D").unwrap()).unwrap();
+        let (diagnostics, imports) = editor
+            .check(&uri, nodes[3].source("lean").unwrap(), "deps")
+            .await
+            .unwrap();
+        let result = service
+            .record_editor_check(draft.path(), &input, diagnostics, imports)
+            .await
+            .unwrap();
+        assert!(result.certified, "{result:?}");
+        assert!(
+            !marker.exists(),
+            "cache recovery must not rebuild dependencies"
+        );
+
+        // Lake restores names with hard links instead of duplicating object data.
+        use std::os::unix::fs::MetadataExt;
+        let local = draft.path().join(".lake/build/lib/lean/B.olean");
+        let artifacts = cache::Artifacts::from_trace(draft.path(), "B").unwrap();
+        let shared = artifacts.parts(&draft.path().join(".lake/cache"))[0].clone();
+        let (local, shared) = (
+            std::fs::metadata(local).unwrap(),
+            std::fs::metadata(shared).unwrap(),
+        );
+        assert_eq!((local.dev(), local.ino()), (shared.dev(), shared.ino()));
+        editor.server.shutdown().await;
+        service.shutdown().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires native Lean and Lake"]
     async fn editor_evidence_certifies_imports_without_a_second_checker() {
         let cache = tempfile::tempdir().unwrap();
         let service = LeanService::new(cache.path().to_path_buf()).unwrap();
@@ -1828,12 +1906,13 @@ mod tests {
             !marker.exists(),
             "restoring Lake artifacts must not execute the compiler again"
         );
-        assert!(artifact_parts(second.path(), &node.name).is_some());
-        assert!(!second
+        let parts = artifact_parts(second.path(), &node.name).unwrap();
+        let original = std::fs::read(&parts[0]).unwrap();
+        assert!(second
             .path()
             .join(".lake/build/lib/lean")
             .join(crate::store::module_file(&node.name, "olean").unwrap())
-            .exists());
+            .is_file());
         node.blocks[0].content.push_str("\n-- new input\n");
         write_source(second.path(), &node, node.source("lean").unwrap())
             .await
@@ -1842,6 +1921,11 @@ mod tests {
         assert!(
             marker.exists(),
             "changed source must miss the old artifact cache"
+        );
+        assert_eq!(
+            std::fs::read(&parts[0]).unwrap(),
+            original,
+            "rebuilding a restored hard link must preserve the shared object"
         );
         let editor = Lsp::start(second.path()).await.unwrap();
         drop(service);

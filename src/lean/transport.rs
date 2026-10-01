@@ -34,7 +34,10 @@ fn native_command(root: &Path, program: &str, args: &[&str]) -> Result<Command> 
         // Lake keys artifacts by compiler inputs, including transitive imports.
         // Every workspace links this to its database/project pool.
         .env("LAKE_ARTIFACT_CACHE", "true")
-        .env("LAKE_RESTORE_ARTIFACTS", "false")
+        // Lean's server loads private transitive IR by module name, outside
+        // Lake's public import map. Restore named outputs using Lake's native
+        // hard links (copying only across filesystems), not just .ilean files.
+        .env("LAKE_RESTORE_ARTIFACTS", "true")
         .env("LAKE_CACHE_DIR", root.join(".lake/cache"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

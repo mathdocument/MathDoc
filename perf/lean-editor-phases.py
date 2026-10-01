@@ -103,7 +103,7 @@ async def main():
     args = parser.parse_args()
     root = args.root.resolve()
     env = {k: v for k, v in os.environ.items() if not k.startswith(("MDC_", "MATHDOC_"))}
-    env.update(LAKE_ARTIFACT_CACHE="true", LAKE_RESTORE_ARTIFACTS="false",
+    env.update(LAKE_ARTIFACT_CACHE="true", LAKE_RESTORE_ARTIFACTS="true",
                LAKE_CACHE_DIR=str(root / ".lake/cache"))
     # Match the environment inherited by file workers from `lake serve`.
     output = subprocess.check_output(["elan", "run", (root / "lean-toolchain").read_text().strip(),
