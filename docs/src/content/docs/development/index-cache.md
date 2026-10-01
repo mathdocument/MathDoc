@@ -35,6 +35,10 @@ It uses the CLI worker pool and may build changed dependencies, but does not
 fall back to elaborating a target whose inputs differ. Successful recovery also
 certifies the dependencies actually prepared by Lake. Missing evidence, failed
 dependencies and changed target inputs remain Unverified until checked.
+Visible web pages poll graph/evidence revisions every two seconds and refresh
+colors only when that revision changes, including after CLI checks. This does
+not reload the active source blocks or discard editor drafts. A stale certificate
+remains gray while background recovery is pending.
 
 One hot CLI file keeps a live worker; evicted files retain Lake artifacts. One
 service owns each branch cache. CLI checks serialize per branch; identical cold

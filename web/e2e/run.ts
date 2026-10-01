@@ -795,6 +795,8 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
             return getComputedStyle(el).backgroundColor === expected;
           }, token));
         }
+        await page.getByRole("button", { name: "Graph", exact: true }).click();
+        await legend.waitFor();
         const admitted: NodeDetail = JSON.parse((await cli("show", "Admitted")).stdout);
         const changed = await fetch(`${url}/api/node/${admitted.fnode}/block/lean`, {
           method: "PUT", headers: { "content-type": "application/json", "if-match": `"${admitted.revision}"` },
@@ -806,6 +808,9 @@ await test("browser with the real MathDoc backend", { timeout: 240000 }, async (
         for (const name of ["Admitted", "Conditional", "Transitive"]) {
           assert.equal(JSON.parse((await cli("show", name)).stdout).formalization.lean, "verified");
         }
+        // CLI and background checks must repaint the open graph without a reload.
+        await page.waitForFunction(() => document.querySelector('.legend-label.verified')
+          ?.closest('tr')?.querySelector('td')?.textContent === '4');
       }, nodes);
     });
     await suite.test("native Lean bridge drains bidirectional backpressure and cancels a busy session", () => {

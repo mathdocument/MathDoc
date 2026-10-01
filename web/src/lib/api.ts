@@ -148,6 +148,8 @@ export const api = {
   roots: () => req<GraphRootItem[]>("/api/graph/roots"),
   graphCheck: () => req<GraphCheckReport>("/api/graph/check"),
   full: (signal?: AbortSignal) => req<GraphFull>("/api/graph/full", { signal }),
+  graphRevision: (signal?: AbortSignal) =>
+    req<{ graph: string; lean: number }>("/api/graph/revision", { signal, cache: "no-store" }),
   search: (q: string, n = 200, signal?: AbortSignal) =>
     req<NodeInfo[]>(`/api/search?q=${encodeURIComponent(q)}&n=${n}`, { signal }),
   resolve: (ref: string) =>

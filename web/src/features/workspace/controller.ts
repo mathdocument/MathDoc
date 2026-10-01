@@ -334,6 +334,35 @@ export class WorkspaceController extends ObservableModel {
       applyTheme(nextTheme, false);
     });
   }
+  watchStatuses() {
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let revision: string | undefined;
+    const poll = async () => {
+      try {
+        if (document.hidden) return;
+        await settlePendingMutations();
+        if (abort.signal.aborted) return;
+        const next = JSON.stringify(await api.graphRevision(abort.signal));
+        if (abort.signal.aborted || next === revision) return;
+        revision = next;
+        this.graphRevision++;
+        // Refresh colors/relations without reselecting the node or replacing drafts.
+        await nodeSession.syncView().catch(error => {
+          if (!abort.signal.aborted) this.refreshError = errMsg(error);
+        });
+      } catch {
+        // Keep the current view during a restart or transient connection failure.
+      } finally {
+        if (!abort.signal.aborted) timer = setTimeout(poll, 2000);
+      }
+    };
+    void poll();
+    return () => {
+      abort.abort();
+      clearTimeout(timer);
+    };
+  }
   listen() {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
       if (!hasUnsavedDrafts()) return;

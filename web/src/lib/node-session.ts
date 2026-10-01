@@ -254,7 +254,9 @@ export class NodeSession extends ObservableModel {
         );
       }
       this.snapshot = {
-        node,
+        node: node.formalization.lean === view.node.formalization.lean &&
+          node.formalization.rocq === view.node.formalization.rocq
+          ? node : { ...node, formalization: view.node.formalization },
         referrers: view.referrers,
         children: view.children,
       };

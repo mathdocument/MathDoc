@@ -109,6 +109,30 @@ describe("NodeSession", () => {
     removeDraft(draft);
   });
 
+  it("refreshes certification without replacing source blocks, editor generation or drafts", async () => {
+    const session = new NodeSession();
+    const original = node("r1");
+    session.snapshot = { node: original, referrers: [], children: [] };
+    session.editorRevision = 7;
+    session.latexPreview = true;
+    vi.spyOn(api, "nodeView").mockResolvedValue({
+      node: { ...original, formalization: { lean: "verified", rocq: "unverified" } },
+      referrers: [], children: [],
+    });
+    const draft = Symbol("draft");
+    setDraftDirty(draft, true);
+    try {
+      expect(await session.syncView()).toBe(true);
+      expect(session.node?.formalization.lean).toBe("verified");
+      expect(session.node?.blocks).toBe(original.blocks);
+      expect(session.node?.revision).toBe("r1");
+      expect(session.editorRevision).toBe(7);
+      expect(session.latexPreview).toBe(true);
+    } finally {
+      removeDraft(draft);
+    }
+  });
+
   it("drops a deleted node when an explicit refresh returns not found", async () => {
     const session = new NodeSession({ state: () => null, commit: vi.fn() });
     session.snapshot = { node: node("r1"), referrers: [], children: [] };

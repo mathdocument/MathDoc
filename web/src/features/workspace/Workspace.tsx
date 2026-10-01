@@ -43,7 +43,8 @@ export default function Workspace({ onReady }: { onReady?: () => void }) {
   useEffect(() => {
     session.prepareEditor = s.prepareEditor;
     const stopTheme = s.watchTheme(),
-      stopListening = s.listen();
+      stopListening = s.listen(),
+      stopStatuses = s.watchStatuses();
     s.start();
     document.title = `${s.project} · MathDoc`;
     return () => {
@@ -52,6 +53,7 @@ export default function Workspace({ onReady }: { onReady?: () => void }) {
       session.prepareEditor = undefined;
       stopListening();
       stopTheme();
+      stopStatuses();
     };
   }, [s, session]);
   const busy = s.refreshing || s.historyNavigating || s.changingView;
