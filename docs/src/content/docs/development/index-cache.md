@@ -17,6 +17,18 @@ changes; opening nodes is unnecessary. URI paths in shared facts use
 requires complete native objects. Old `checks-v1` records lack the new identity
 and are not promoted; the first check reconstructs evidence using native caches.
 
+Renames still invalidate recursive graph keys immediately, including in-flight
+checks. On demand, an unchanged node with a previous native build certificate can
+recover its evidence under the new graph key: Lake first prepares its dependencies,
+then `--no-build` confirms that its native outputs are current. MathDoc reuses the
+certificate only when Lake's complete compiler input hash also matches the saved
+build. The node's elaborator is skipped, while imports, graph edges and transitive
+`sorry` status are revalidated. Equal `.olean` outputs alone do not qualify. Import
+visibility can stop compiler invalidation; public and legacy transitive imports
+may still carry a rename through the whole chain. Certificates without a saved
+Lake input hash fall back to the normal check. Opening an interactive Lean editor
+still starts its own language-server document.
+
 One hot CLI file keeps a live worker; evicted files retain Lake artifacts. One
 service owns each branch cache. CLI checks serialize per branch; identical cold
 inputs across branches also share a cancellable file lock and recheck evidence

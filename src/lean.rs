@@ -478,7 +478,7 @@ impl LeanService {
         imports: Vec<Value>,
     ) -> Result<CheckResult> {
         let target = &input.chain.last().context("no Lean target")?.0.fnode;
-        self.record_check(root, input, diagnostics, imports)
+        self.record_check(root, input, diagnostics, imports, None)
             .await?
             .remove(target)
             .context("editor check produced no target result")
@@ -489,6 +489,7 @@ impl LeanService {
         input: &Input,
         diagnostics: Vec<Value>,
         imports: Vec<Value>,
+        cached_target: Option<&CheckResult>,
     ) -> Result<HashMap<String, CheckResult>> {
         let started = Instant::now();
         verify_manifest(root, &input.project).await?;
@@ -518,7 +519,10 @@ impl LeanService {
         let mut observed = HashMap::from([(
             target.fnode.clone(),
             (
-                Some(diagnostics_have_sorry(&diagnostics)),
+                cached_target.map_or_else(
+                    || Some(diagnostics_have_sorry(&diagnostics)),
+                    |r| r.has_sorry,
+                ),
                 diagnostics.clone(),
                 imports.clone(),
             ),
@@ -626,10 +630,12 @@ impl LeanService {
                 root,
                 &input.project,
             )?;
-            let artifacts = (node.fnode != target.fnode)
-                .then(|| cache::Artifacts::from_trace(root, &node.name))
-                .flatten()
-                .filter(|a| a.complete(&root.join(".lake/cache")));
+            let artifacts = if node.fnode == target.fnode {
+                cached_target.and_then(|r| r.artifacts.clone())
+            } else {
+                cache::Artifacts::from_trace(root, &node.name)
+            }
+            .filter(|a| a.complete(&root.join(".lake/cache")));
             let result = CheckResult {
                 fnode: node.fnode.clone(),
                 revision: node.revision(),
@@ -640,7 +646,7 @@ impl LeanService {
                 dependencies_have_sorry: dependencies_have_sorry(node, &keys, &evidence),
                 built: artifacts.is_some(),
                 artifacts,
-                cache_hit: false,
+                cache_hit: node.fnode == target.fnode && cached_target.is_some(),
                 diagnostics,
                 imports,
                 dependency_errors: errors,
@@ -924,7 +930,7 @@ impl LeanService {
             .get(&target_id)
             .cloned()
             .context("no Lean target result")?;
-        if build && result.certified {
+        if build && result.certified && self.cached_input(&input, true).await.is_none() {
             build_module(&manager.root, &target.name).await?;
             for (node, key) in &input.chain {
                 let mut checked = if node.fnode == target_id {
@@ -1025,6 +1031,17 @@ impl LeanService {
                 return Ok(evidence);
             }
         }
+        if let Some(cached) = self.revalidate_native_inputs(&manager.root, input).await? {
+            return self
+                .record_check(
+                    &manager.root,
+                    input,
+                    cached.diagnostics.clone(),
+                    cached.imports.clone(),
+                    Some(&cached),
+                )
+                .await;
+        }
         let source = target.source("lean").context("node has no Lean block")?;
         // An interrupted request must drop its LSP instead of returning a
         // half-updated document/protocol state to the next pool user.
@@ -1038,8 +1055,67 @@ impl LeanService {
         // dependency in a second interactive worker.
         let (diagnostics, imports) = lsp.check(&uri, source, &input.environment_key()?).await?;
         manager.lsp = Some(lsp);
-        self.record_check(&manager.root, input, diagnostics, imports)
+        self.record_check(&manager.root, input, diagnostics, imports, None)
             .await
+    }
+
+    /// A recursive graph key can change across an import visibility boundary
+    /// even when Lake's complete compiler inputs do not. Ask Lake to prepare
+    /// dependencies and confirm a native cache hit without compiling the target.
+    async fn revalidate_native_inputs(
+        &self,
+        root: &Path,
+        input: &Input,
+    ) -> Result<Option<CheckResult>> {
+        let (target, key) = input.chain.last().context("no Lean target")?;
+        let Some(store) = self
+            .certificates(&input.project, &input.project_key, false)
+            .await
+        else {
+            return Ok(None);
+        };
+        let revision = target.revision();
+        // ponytail: scan persisted certificates only on a stale check; index
+        // by revision if large pools make this lookup measurable.
+        let candidates: Vec<_> = store
+            .results
+            .read()
+            .unwrap()
+            .values()
+            .filter(|r| {
+                r.fnode == target.fnode
+                    && r.revision == revision
+                    && r.input_key != *key
+                    && r.certified
+                    && r.has_sorry.is_some()
+                    && r.artifacts.as_ref().is_some_and(|a| a.input_key.is_some())
+            })
+            .cloned()
+            .collect();
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        let setup = format!("+{}:presetup", target.name);
+        let build = format!("+{}", target.name);
+        if !lake_succeeds(root, &["-q", "query", &setup]).await?
+            || !lake_succeeds(root, &["-q", "--no-build", "build", &build]).await?
+        {
+            // Unsupported facets, changed inputs and failed dependencies all
+            // fall back to the normal LSP check and its native diagnostics.
+            return Ok(None);
+        }
+        let Some(artifacts) = cache::Artifacts::from_trace(root, &target.name)
+            .filter(|a| a.input_key.is_some() && a.complete(&root.join(".lake/cache")))
+        else {
+            return Ok(None);
+        };
+        Ok(candidates
+            .into_iter()
+            .find(|r| r.artifacts.as_ref().unwrap().input_key == artifacts.input_key)
+            .map(|mut r| {
+                r.artifacts = Some(artifacts);
+                r
+            }))
     }
     pub async fn goals(&self, input: Input, line: u32, character: u32) -> Result<Value> {
         let node = input.chain.last().context("no Lean target")?.0.clone();
@@ -1270,7 +1346,14 @@ async fn verify_manifest(root: &Path, project: &LeanProject) -> Result<()> {
 
 async fn build_module(root: &Path, module: &str) -> Result<()> {
     let target = format!("+{module}");
-    let mut process = spawn(root, &["build", &target])?;
+    if !lake_succeeds(root, &["build", &target]).await? {
+        bail!("Lake build failed");
+    }
+    Ok(())
+}
+
+async fn lake_succeeds(root: &Path, args: &[&str]) -> Result<bool> {
+    let mut process = spawn(root, args)?;
     drop(process.child.stdin.take());
     let mut stdout = process
         .child
@@ -1283,10 +1366,7 @@ async fn build_module(root: &Path, module: &str) -> Result<()> {
         .await
         .context("Lake build timed out")??;
     drain.await??;
-    if !status.success() {
-        bail!("Lake build failed with {status}");
-    }
-    Ok(())
+    Ok(status.success())
 }
 
 #[cfg(test)]

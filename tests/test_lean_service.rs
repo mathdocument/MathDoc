@@ -4,6 +4,119 @@ use mathdoc::{
 };
 use std::collections::HashMap;
 
+#[tokio::test]
+#[ignore = "requires native Lean v4.33.1 and Lake"]
+async fn renames_reuse_certificates_only_when_lake_inputs_are_unchanged() {
+    for public_import in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("checked-d");
+        let mut nodes = Vec::<Node>::new();
+        for (name, source) in [
+            ("A", "module\npublic theorem a : True := by trivial\n".into()),
+            ("B", "module\nimport A\npublic theorem b : True := a\n".into()),
+            ("C", format!("module\n{}import B\npublic theorem c : True := by trivial\n", if public_import { "public " } else { "" })),
+            ("D", format!("module\nimport C\nimport Lean\nrun_cmd Lean.Elab.Command.liftIO <| IO.FS.writeFile {} \"checked\"\npublic theorem d : True := c\n", serde_json::to_string(&marker.to_string_lossy()).unwrap())),
+        ] {
+            let mut node = Node::new(name.into()).unwrap();
+            if let Some(previous) = nodes.last() {
+                node.depens.push(previous.fnode.clone());
+            }
+            node.blocks.push(Block { srctype: "lean".into(), content: source, ..Default::default() });
+            nodes.push(node);
+        }
+        let mut snapshot = Snapshot {
+            version: "before rename".into(),
+            nodes: nodes
+                .iter()
+                .cloned()
+                .map(|n| (n.fnode.clone(), n.into()))
+                .collect(),
+            project: LeanProject::default().into(),
+            latex_project: Default::default(),
+            project_key: String::new(),
+            latex_project_key: String::new(),
+            modules: Default::default(),
+            lean_prefixes: HashMap::new(),
+            depths: HashMap::new(),
+            lean_keys: HashMap::new(),
+            referrers: HashMap::new(),
+        };
+        snapshot.recompute();
+        let cache = temp.path().join("workspace");
+        let service = LeanService::new(cache.clone()).unwrap();
+        let target = &nodes[3];
+        let before = service
+            .check(Input::capture(&snapshot, &target.fnode).unwrap(), true)
+            .await
+            .unwrap();
+        assert!(before.certified && before.built, "{before:?}");
+        let root = cache.join("projects").join(&snapshot.project_key);
+        let c_olean = std::fs::read(root.join(".lake/build/lib/lean/C.olean")).unwrap();
+        service.shutdown().await;
+        drop(service);
+
+        // Recover from persisted evidence, not just the previous live worker.
+        let service = LeanService::new(cache).unwrap();
+        let mut a = nodes[0].clone();
+        let mut b = nodes[1].clone();
+        a.name = "Renamed".into();
+        b.blocks[0].content = mathdoc::names::rename_imports(&b.blocks[0].content, "A", &a.name);
+        snapshot.apply(vec![a.clone(), b], "rename".into());
+        assert_ne!(before.input_key, snapshot.lean_keys[&target.fnode]);
+        service.sync_snapshot(&snapshot).await;
+        assert_eq!(
+            service.formal_status(target, &snapshot.lean_keys[&target.fnode]),
+            "unverified"
+        );
+        std::fs::remove_file(&marker).unwrap();
+        let after = service
+            .check(Input::capture(&snapshot, &target.fnode).unwrap(), true)
+            .await
+            .unwrap();
+        assert!(after.certified && after.built, "{after:?}");
+        assert_eq!(after.input_key, snapshot.lean_keys[&target.fnode]);
+        assert_eq!(
+            std::fs::read(root.join(".lake/build/lib/lean/C.olean")).unwrap(),
+            c_olean,
+            "C's own output is unchanged in both cases; its transitive export trace decides reuse"
+        );
+        assert_eq!(after.cache_hit, !public_import, "{after:?}");
+        assert_eq!(
+            before.artifacts.as_ref().unwrap().input_key
+                == after.artifacts.as_ref().unwrap().input_key,
+            !public_import
+        );
+        assert_eq!(
+            marker.exists(),
+            public_import,
+            "unchanged complete inputs must skip D's elaborator"
+        );
+        assert_eq!(
+            service.formal_status(target, &snapshot.lean_keys[&target.fnode]),
+            "verified"
+        );
+
+        if !public_import {
+            // C does not use b in its proof, but the declared dependency still
+            // makes its graph status conditional when A acquires a sorry.
+            a.blocks[0].content = "module\npublic theorem a : True := by sorry\n".into();
+            snapshot.apply(vec![a], "upstream sorry".into());
+            let checked = service
+                .check(Input::capture(&snapshot, &target.fnode).unwrap(), false)
+                .await
+                .unwrap();
+            assert!(checked.certified && checked.cache_hit, "{checked:?}");
+            assert!(!marker.exists());
+            assert_eq!(
+                service.formal_status(target, &snapshot.lean_keys[&target.fnode]),
+                "conditional",
+                "compiler reuse must still refresh graph-dependent sorry evidence"
+            );
+        }
+        service.shutdown().await;
+    }
+}
+
 #[test]
 #[ignore = "requires native Lean and Lake"]
 fn lazy_toolchain_installation_preserves_shared_cache_single_flight() {

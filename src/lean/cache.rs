@@ -170,6 +170,9 @@ fn import_cache(from: &Path, to: &Path) -> Result<()> {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Artifacts {
+    /// Lake's complete compiler input trace, not a hash of the output .olean.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_key: Option<String>,
     pub parts: Vec<String>,
     pub ilean: String,
     pub files: Vec<String>,
@@ -180,7 +183,12 @@ impl Artifacts {
             .join(".lake/build/lib/lean")
             .join(crate::store::module_file(module, "trace").ok()?);
         let data: Value = serde_json::from_slice(&fs::read(trace).ok()?).ok()?;
-        Self::from_outputs(&data["outputs"])
+        let mut artifacts = Self::from_outputs(&data["outputs"])?;
+        artifacts.input_key = data["depHash"]
+            .as_str()
+            .filter(|key| key.len() == 16 && key.bytes().all(|b| b.is_ascii_hexdigit()))
+            .map(str::to_owned);
+        Some(artifacts)
     }
     fn from_outputs(data: &Value) -> Option<Self> {
         let parts: Vec<String> = serde_json::from_value(data["o"].clone()).ok()?;
@@ -191,6 +199,7 @@ impl Artifacts {
             return None;
         }
         Some(Self {
+            input_key: None,
             parts,
             ilean,
             files,
