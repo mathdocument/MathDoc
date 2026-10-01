@@ -29,6 +29,13 @@ may still carry a rename through the whole chain. Certificates without a saved
 Lake input hash fall back to the normal check. Opening an interactive Lean editor
 still starts its own language-server document.
 
+After a rename, the service also tries this recovery in the background for stale,
+unchanged nodes with native build evidence, starting at the deepest referrers.
+It uses the CLI worker pool and may build changed dependencies, but does not
+fall back to elaborating a target whose inputs differ. Successful recovery also
+certifies the dependencies actually prepared by Lake. Missing evidence, failed
+dependencies and changed target inputs remain Unverified until checked.
+
 One hot CLI file keeps a live worker; evicted files retain Lake artifacts. One
 service owns each branch cache. CLI checks serialize per branch; identical cold
 inputs across branches also share a cancellable file lock and recheck evidence

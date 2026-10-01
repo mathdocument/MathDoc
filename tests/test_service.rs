@@ -33,6 +33,82 @@ async fn call(
 }
 
 #[tokio::test]
+#[ignore = "requires local TerminusDB, MDC_TERMINUS_PASSWORD and native Lean"]
+async fn rename_restores_web_status_in_the_background_without_elaborating_cached_targets() {
+    use mathdoc::{
+        lean::Input,
+        store::{Block, Node},
+    };
+    let fixture = common::TestDatabase::new("mdcrenamecache").await;
+    let marker_dir = tempfile::tempdir().unwrap();
+    let marker = marker_dir.path().join("compiled-d");
+    let mut nodes = Vec::<Node>::new();
+    for (name, source) in [
+        ("A", "module\npublic theorem a : True := by trivial\n".into()),
+        ("B", "module\nimport A\npublic theorem b : True := a\n".into()),
+        ("C", "module\nimport B\npublic theorem c : True := b\n".into()),
+        ("D", format!("module\nimport C\nimport Lean\nrun_cmd Lean.Elab.Command.liftIO <| IO.FS.writeFile {} \"compiled\"\npublic theorem d : True := c\n", serde_json::to_string(&marker.to_string_lossy()).unwrap())),
+    ] {
+        let mut node = Node::new(name.into()).unwrap();
+        if let Some(previous) = nodes.last() { node.depens.push(previous.fnode.clone()); }
+        node.blocks.push(Block { srctype: "lean".into(), content: source, ..Default::default() });
+        nodes.push(node);
+    }
+    let snapshot = fixture.db.load().await.unwrap();
+    fixture
+        .db
+        .put(&nodes, &snapshot.version, "fixture")
+        .await
+        .unwrap();
+    let service = Service::open(fixture.db.clone()).await.unwrap();
+    let app = service::router(service.clone());
+    let input = Input::capture(&service.read().await.unwrap(), &nodes[3].fnode).unwrap();
+    assert!(service.lean.check(input, true).await.unwrap().certified);
+    std::fs::remove_file(&marker).unwrap();
+    let (_, before) = call(&app, "GET", "/api/graph/revision", Value::Null, None).await;
+    let (status, response) = call(
+        &app,
+        "PUT",
+        &format!("/api/node/{}/name", nodes[0].fnode),
+        json!({"name":"Renamed"}),
+        Some(&nodes[0].revision()),
+    )
+    .await;
+    assert_eq!(status, 200, "{response}");
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let (_, graph) = call(&app, "GET", "/api/graph/full", Value::Null, None).await;
+            if graph["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|n| n["lean"] == "verified")
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("rename must restore current web statuses without a manual check");
+    let (_, after) = call(&app, "GET", "/api/graph/revision", Value::Null, None).await;
+    assert_ne!(before["graph"], after["graph"]);
+    assert_ne!(before["lean"], after["lean"]);
+    assert!(!marker.exists(), "unchanged D must not be elaborated");
+    let (_, view) = call(
+        &app,
+        "GET",
+        &format!("/api/node/{}/view", nodes[2].fnode),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(view["node"]["formalization"]["lean"], "verified");
+    assert_eq!(view["referrers"][0]["formalization"]["lean"], "verified");
+    assert_eq!(view["children"][0]["formalization"]["lean"], "verified");
+}
+
+#[tokio::test]
 #[ignore = "requires local TerminusDB and MDC_TERMINUS_PASSWORD"]
 async fn block_batch_preserves_untouched_data_and_commits_all_or_nothing() {
     use mathdoc::store::{Block, Node};

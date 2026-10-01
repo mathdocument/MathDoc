@@ -20,6 +20,7 @@ UUIDs; CLI references are resolved by exact name or UUID first.
 | `GET /graph/check` | `graph check` | Node/edge counts from the validated graph. |
 | `GET /graph/roots` | `graph roots` | Root summaries with depth and component size. |
 | `GET /graph/full` | `graph full` | Node summaries with `lean` status (`unverified`, `sorry`, `conditional`, `verified`) and index-pair edges. |
+| `GET /graph/revision` | — | `{graph, lean}`: graph commit and in-memory evidence generation for lightweight status polling; does not compile. |
 | `GET /search?q=TEXT&n=N` | `search TEXT -n N` | Title/UUID matches; default/cap 200. |
 | `GET /resolve?ref=NAME_OR_UUID` | Used by node commands | `{fnode, name}`. |
 | `GET /node/ID/view` | `show` and `dep` reads | `{node, referrers, children}`; all include `formalization: {lean, rocq}` status. CLI `show` returns `node`. |

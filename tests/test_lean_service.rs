@@ -57,6 +57,7 @@ async fn renames_reuse_certificates_only_when_lake_inputs_are_unchanged() {
 
         // Recover from persisted evidence, not just the previous live worker.
         let service = LeanService::new(cache).unwrap();
+        service.sync_snapshot(&snapshot).await;
         let mut a = nodes[0].clone();
         let mut b = nodes[1].clone();
         a.name = "Renamed".into();
@@ -69,6 +70,23 @@ async fn renames_reuse_certificates_only_when_lake_inputs_are_unchanged() {
             "unverified"
         );
         std::fs::remove_file(&marker).unwrap();
+        service
+            .revalidate(Input::capture(&snapshot, &target.fnode).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            !marker.exists(),
+            "background reuse must never elaborate the target"
+        );
+        assert_eq!(
+            service.formal_status(target, &snapshot.lean_keys[&target.fnode]),
+            if public_import {
+                "unverified"
+            } else {
+                "verified"
+            },
+            "web status must recover exactly when complete native inputs match"
+        );
         let after = service
             .check(Input::capture(&snapshot, &target.fnode).unwrap(), true)
             .await

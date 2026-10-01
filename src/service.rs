@@ -88,6 +88,41 @@ impl Service {
         snapshot.apply(changes, version);
         Ok(())
     }
+
+    fn revalidate_rename(self: &Arc<Self>, snapshot: &Snapshot) {
+        let targets = self.lean.revalidation_targets(snapshot);
+        if targets.is_empty() {
+            return;
+        }
+        let service = self.clone();
+        tokio::spawn(async move {
+            let mut stopping = service.stopping.subscribe();
+            let _request = service.requests.read().await;
+            if *stopping.borrow() {
+                return;
+            }
+            tokio::select! {
+                biased;
+                _ = stopping.changed() => {},
+                result = async {
+                    // One worker at a time; foreground requests share the existing FIFO pool.
+                    for id in targets {
+                        let input = {
+                            let snapshot = service.read().await?;
+                            if !snapshot.nodes.contains_key(&id) { continue; }
+                            crate::lean::Input::capture(&snapshot, &id)?
+                        };
+                        if let Err(error) = service.lean.revalidate(input).await {
+                            eprintln!("Lean rename cache revalidation ({id}): {error:#}");
+                        }
+                    }
+                    Ok::<_, anyhow::Error>(())
+                } => if let Err(error) = result {
+                    eprintln!("Lean rename cache revalidation: {error:#}");
+                },
+            }
+        });
+    }
 }
 
 pub struct ApiError(pub(crate) StatusCode, pub(crate) String);
@@ -170,6 +205,7 @@ pub fn router(service: Arc<Service>) -> Router {
         .route("/graph/check", get(graph_check))
         .route("/graph/roots", get(roots))
         .route("/graph/full", get(full))
+        .route("/graph/revision", get(graph_revision))
         .route("/search", get(search))
         .route("/resolve", get(resolve))
         .route("/node/new", post(new_node))
@@ -725,6 +761,12 @@ async fn full(State(s): State<Arc<Service>>) -> ApiResult<Json<Value>> {
             value
         }).collect::<Vec<_>>(),"edges":edges})))
 }
+async fn graph_revision(State(s): State<Arc<Service>>) -> ApiResult<Json<Value>> {
+    let snapshot = s.read().await?;
+    Ok(Json(
+        json!({"graph": snapshot.version, "lean": s.lean.status_generation().await}),
+    ))
+}
 #[derive(Deserialize)]
 struct Search {
     #[serde(default)]
@@ -850,6 +892,7 @@ async fn name(
         }
     }
     s.save(&mut snapshot, changes, "Rename node").await?;
+    s.revalidate_rename(&snapshot);
     Ok(revision_response(&snapshot, &node, &s.lean))
 }
 #[derive(Deserialize)]
