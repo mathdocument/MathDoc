@@ -280,7 +280,7 @@ impl Artifacts {
         let parts: Vec<String> = serde_json::from_value(data["o"].clone()).ok()?;
         let ilean = data["i"].as_str()?.to_owned();
         let mut files = vec![];
-        object_names(data, &mut files);
+        object_names(data, &mut files).ok()?;
         if parts.is_empty() || files.iter().any(|s| !valid_object(s)) {
             return None;
         }
@@ -311,13 +311,28 @@ impl Artifacts {
             .collect()
     }
 }
-pub(super) fn object_names(value: &Value, paths: &mut Vec<String>) {
+pub(super) fn object_names(value: &Value, paths: &mut Vec<String>) -> Result<()> {
     match value {
         Value::String(s) => paths.push(s.clone()),
-        Value::Array(values) => values.iter().for_each(|v| object_names(v, paths)),
-        Value::Object(values) => values.values().for_each(|v| object_names(v, paths)),
-        _ => (),
+        // Lake also encodes bare artifact hashes as UInt64 JSON numbers.
+        Value::Number(n) => paths.push(format!(
+            "{:016x}.art",
+            n.as_u64()
+                .context("invalid Lake artifact hash; no files removed")?
+        )),
+        Value::Array(values) => {
+            for value in values {
+                object_names(value, paths)?;
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values() {
+                object_names(value, paths)?;
+            }
+        }
+        Value::Null | Value::Bool(_) => (),
     }
+    Ok(())
 }
 pub(super) fn valid_object(name: &str) -> bool {
     !name.is_empty()

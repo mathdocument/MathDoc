@@ -275,7 +275,7 @@ fn collect_pools(
             file.path.display()
         );
         let mut names = vec![];
-        super::cache::object_names(&value["data"], &mut names);
+        super::cache::object_names(&value["data"], &mut names)?;
         ensure!(
             names.iter().all(|n| super::cache::valid_object(n)),
             "invalid Lake object path; no files removed"
@@ -510,6 +510,35 @@ mod tests {
         assert!(object.is_file());
         assert!(!lake.join("artifacts/2222222222222222.olean").exists());
         assert_eq!(fs::metadata(object).unwrap().modified().unwrap(), timestamp);
+    }
+
+    #[test]
+    fn gc_preserves_numeric_lake_artifact_references_and_rejects_invalid_hashes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lake = tmp.path().join("v1/test/project/lake");
+        fs::create_dir_all(lake.join("outputs/pkg")).unwrap();
+        fs::create_dir_all(lake.join("artifacts")).unwrap();
+        let object = lake.join("artifacts/000000000000002a.art");
+        fs::write(&object, [0; 4096]).unwrap();
+        let mapping = lake.join("outputs/pkg/1111111111111111.json");
+        let write_mapping = |data: Value| {
+            fs::write(
+                &mapping,
+                json!({"schemaVersion":"2026-02-25","data":data}).to_string(),
+            )
+            .unwrap();
+        };
+        write_mapping(json!({"artifact":42,"metadata":[true,null]}));
+        collect(tmp.path(), 0, Some(4096), false, false).unwrap();
+        assert!(object.exists() && mapping.exists());
+        for invalid in [json!(-1), json!(1.5)] {
+            write_mapping(invalid);
+            assert!(collect(tmp.path(), 0, Some(0), false, false).is_err());
+            assert!(object.exists() && mapping.exists());
+        }
+        write_mapping(json!(42));
+        collect(tmp.path(), 0, Some(0), false, false).unwrap();
+        assert!(!object.exists() && !mapping.exists());
     }
 
     #[test]
