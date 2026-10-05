@@ -10,7 +10,7 @@ use std::{
 
 pub struct Pool {
     pub root: PathBuf,
-    // ponytail: GC requires stopped branches; use per-closure pins if live GC becomes necessary.
+    // The lifetime lease protects database deletion, not online GC.
     _lease: Lease,
 }
 
@@ -39,9 +39,74 @@ pub fn lease(root: &Path, exclusive: bool) -> Result<Lease> {
     Ok(Lease(Some(file)))
 }
 
+pub(crate) fn lifetime(root: &Path, exclusive: bool) -> Result<Lease> {
+    Ok(Lease(Some(crate::file_lock::acquire(
+        &root.join("live.lock"),
+        exclusive,
+    )?)))
+}
+
+// ponytail: protect the whole database during a check/build. Per-closure pins
+// are only needed if continuously busy databases cannot meet their GC budget.
+pub(super) fn try_access(root: &Path, exclusive: bool) -> std::io::Result<Lease> {
+    crate::file_lock::acquire(&root.join("access.lock"), exclusive).map(|file| Lease(Some(file)))
+}
+
+pub(super) async fn access(root: &Path) -> Result<Lease> {
+    loop {
+        match try_access(root, false) {
+            Ok(lease) => return Ok(lease),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
+pub(super) fn workspace_pool(workspace: &Path) -> Result<Option<PathBuf>> {
+    let local = workspace.join(".lake/cache");
+    if !local.is_symlink() {
+        return Ok(None);
+    }
+    let target = fs::canonicalize(local)?;
+    let ancestors: Vec<_> = target.ancestors().take(5).collect();
+    anyhow::ensure!(
+        ancestors.len() == 5
+            && target.file_name().is_some_and(|n| n == "lake")
+            && ancestors[3].file_name().is_some_and(|n| n == "v1"),
+        "unexpected shared Lake cache path"
+    );
+    Ok(Some(ancestors[4].to_owned()))
+}
+
+/// Separate access records: never change an immutable artifact's timestamp.
+pub(super) fn touch(lake: &Path, key: &str) -> Result<()> {
+    if key.len() != 16 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Ok(());
+    }
+    let path = lake.join("access").join(key);
+    if fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|time| time.elapsed().ok())
+        .is_some_and(|age| age < std::time::Duration::from_secs(60))
+    {
+        return Ok(());
+    }
+    fs::create_dir_all(path.parent().unwrap())?;
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?
+        .set_times(fs::FileTimes::new().set_modified(std::time::SystemTime::now()))?;
+    Ok(())
+}
+
 impl Pool {
     pub fn open(root: PathBuf) -> Result<Self> {
-        let lease = lease(&root, false)?;
+        let lease = lifetime(&root, false)?;
         Ok(Self {
             root,
             _lease: lease,
@@ -66,11 +131,12 @@ impl Pool {
         let local = workspace.join(".lake/cache");
         tokio::fs::create_dir_all(local.parent().unwrap()).await?;
         let lock = lock(local.with_extension("lock")).await?;
-        let lease = lease(&self.root, false)?;
+        let lease = lifetime(&self.root, false)?;
+        let access = access(&self.root).await?;
         // Blocking filesystem work outlives a cancelled await. Its guards must
         // move with it, including the final replacement of the legacy directory.
         tokio::task::spawn_blocking(move || {
-            let (_lock, _lease) = (lock, lease);
+            let (_lock, _lease, _access) = (lock, lease, access);
             if local.is_symlink() {
                 if fs::canonicalize(&local)? == destination {
                     return Ok(());
@@ -108,10 +174,24 @@ pub(super) fn inherit_lease(command: &mut tokio::process::Command, workspace: &P
     }
     // This particular file description must stay locked until the final native
     // child closes it, rather than explicitly unlocking when Command is dropped.
-    let lease = lease(ancestors[4], false)?.0.take().unwrap();
+    let lease = lifetime(ancestors[4], false)?.0.take().unwrap();
     unsafe {
         command.pre_exec(move || {
             if libc::fcntl(lease.as_raw_fd(), libc::F_SETFD, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
+pub(super) fn inherit_access(command: &mut std::process::Command, pool: &Path) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    let file = try_access(pool, false)?.0.take().unwrap();
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(file.as_raw_fd(), libc::F_SETFD, 0) == -1 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
@@ -264,10 +344,10 @@ mod tests {
             fs::read(tmp.path().join("b/.lake/cache/artifacts/123.olean")).unwrap(),
             b"native object"
         );
-        assert!(lease(&shared, true).is_err());
+        assert!(lifetime(&shared, true).is_err());
         drop(a);
         drop(b);
-        assert!(lease(&shared, true).is_ok());
+        assert!(lifetime(&shared, true).is_ok());
         assert!(
             Artifacts::from_outputs(&serde_json::json!({"o":["../outside"],"i":"a.ilean"}))
                 .is_none()
@@ -299,11 +379,11 @@ mod tests {
         assert_eq!(line.trim(), "ready");
         drop(pool);
         assert!(
-            lease(&root, true).is_err(),
+            lifetime(&root, true).is_err(),
             "the child, not mdc, must retain the lock"
         );
         drop(child.stdin.take());
         child.wait().await.unwrap();
-        assert!(lease(&root, true).is_ok());
+        assert!(lifetime(&root, true).is_ok());
     }
 }

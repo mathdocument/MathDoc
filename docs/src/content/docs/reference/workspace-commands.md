@@ -48,16 +48,18 @@ JSON result. No command performs a source-workspace refresh.
 | `mdc start --foreground [--port PORT]` | Run a supervised server in the current process and restore its previously started branches. |
 | `mdc stop [DATABASE/BRANCH]` | Unload one branch and stop its Lean workers, or stop the entire server and all branches when no branch is given. Retain graph data and caches. |
 | `mdc cache stats DATABASE` | Report local shared artifact, mapping and certificate counts and readable sizes (KiB/MiB/GiB), whether branches are running or stopped. Requires neither a service nor a database connection; does not compile. |
-| `mdc cache gc DATABASE [--dry-run] [--older-than-days DAYS] [--max-bytes BYTES] [--certificates]` | Reclaim shared entries after all this database's branches are stopped. Defaults to a seven-day publication grace period. |
+| `mdc cache gc DATABASE [--dry-run] [--older-than-days DAYS] [--max-bytes BYTES] [--certificates]` | Reclaim idle shared entries, including those of running branches. Active checks/builds block that database's GC. Defaults to a seven-day publication grace period. |
 
-Cache GC evicts the oldest eligible Lake mappings, then unreferenced objects.
+Cache GC evicts eligible Lake mappings by approximate last use, then unreferenced objects.
+Access records are separate from artifact timestamps and updated at most once per minute.
 With `--max-bytes`, eviction stops when shared artifact logical bytes fit the
 budget; newer entries can keep `budget_met` false. Without a budget it removes
 all age-eligible mappings and unreferenced objects. `--older-than-days 0` permits
 immediate cleanup. Certificates are retained unless `--certificates` is supplied;
-that option removes age-eligible proof records independently of the artifact
-budget. Unknown or malformed native mappings abort the plan before deletion.
-GC is explicit, never part of a check or branch deletion. All reported sizes use
+that option requires all branches to be stopped and removes age-eligible proof
+records independently of the artifact budget. Unknown or malformed native mappings abort the plan before deletion.
+Manual GC never runs as part of a check or branch deletion.
+Older service binaries without the activity-lease protocol must be stopped before GC. All reported sizes use
 readable binary units (B/KiB/MiB/GiB), including `max_size`, `artifact_size_before`,
 `artifact_size_after` and `reclaimable_file_size`; `max_size` is null when no budget
 is supplied. The `--max-bytes` input remains an exact byte count.

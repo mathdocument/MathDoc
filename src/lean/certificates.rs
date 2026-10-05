@@ -127,7 +127,7 @@ impl Certificates {
             }
         }
         let bytes = serde_json::to_vec(&result)?;
-        let lease = super::cache::lease(
+        let lease = super::cache::lifetime(
             root.ancestors().nth(5).context("certificate pool path")?,
             false,
         )?;

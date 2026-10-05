@@ -68,12 +68,15 @@ running or stopped, even when TerminusDB is offline. This excludes private
 workspace caches, including older Lake caches not yet attached to the shared pool.
 Sizes are reported in readable units, including logical size and allocated disk space.
 `mdc cache gc DATABASE
---dry-run` previews reclamation; omit `--dry-run` to execute it. Every branch in
-that database must be stopped first, including for a preview. Other databases
-can remain running. The default retains entries published in the last seven
+--dry-run` previews reclamation; omit `--dry-run` to execute it. Running branches
+and idle editors allow reclamation. Active checks (including queued requests) and
+native dependency builds protect their database until they finish; retry a busy
+manual GC later. Older service binaries must be stopped before GC. The default
+retains entries published in the last seven
 days; this is publication age, not last access. `--older-than-days 0` removes the
 grace period; `--max-bytes BYTES` limits eviction to the requested artifact
-budget. `--certificates` also removes old proof facts. Without it, artifact
+budget. Eligible mappings are evicted by approximate last use. `--certificates`
+also removes old proof facts and still requires stopped branches. Without it, artifact
 cleanup preserves certification, while a later build may need to recreate
 objects. Neither operation touches graph content or history. See the
 [CLI reference](../../reference/workspace-commands/) for accounting and limits.

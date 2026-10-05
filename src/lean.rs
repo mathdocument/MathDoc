@@ -3,6 +3,7 @@ pub mod cache;
 mod certificates;
 pub(crate) mod editor;
 pub mod gc;
+pub(crate) mod native_cache;
 mod transport;
 use crate::store::{digest, LeanProject, Node, Snapshot};
 use anyhow::{bail, Context, Result};
@@ -491,6 +492,7 @@ impl LeanService {
         imports: Vec<Value>,
         cached_target: Option<&CheckResult>,
     ) -> Result<HashMap<String, CheckResult>> {
+        let _access = cache::access(&self.pool.root).await?;
         let started = Instant::now();
         verify_manifest(root, &input.project).await?;
         let target = &input.chain.last().context("no Lean target")?.0;
@@ -781,6 +783,13 @@ impl LeanService {
         store
     }
     async fn persist_result(&self, input: &Input, result: &CheckResult, root: &Path) -> Result<()> {
+        if let Some(key) = result
+            .artifacts
+            .as_ref()
+            .and_then(|a| a.input_key.as_deref())
+        {
+            cache::touch(&self.pool.project(&input.project_key).join("lake"), key)?;
+        }
         if let Some(store) = self
             .certificates(&input.project, &input.project_key, true)
             .await
@@ -876,20 +885,30 @@ impl LeanService {
         }
         let results = self.results.read().ok()?;
         let artifacts = self.pool.project(&input.project_key).join("lake");
-        input
-            .chain
-            .iter()
-            .all(|(node, key)| {
-                results.get(&node.fnode).is_some_and(|r| {
-                    r.certified
-                        && r.has_sorry.is_some()
-                        && &r.input_key == key
-                        && (!build || r.artifacts.as_ref().is_some_and(|a| a.complete(&artifacts)))
-                })
+        let complete = input.chain.iter().all(|(node, key)| {
+            results.get(&node.fnode).is_some_and(|r| {
+                r.certified
+                    && r.has_sorry.is_some()
+                    && &r.input_key == key
+                    && (!build || r.artifacts.as_ref().is_some_and(|a| a.complete(&artifacts)))
             })
-            .then_some(result)
+        });
+        if complete {
+            for (node, _) in &input.chain {
+                if let Some(key) = results
+                    .get(&node.fnode)
+                    .and_then(|r| r.artifacts.as_ref())
+                    .and_then(|a| a.input_key.as_deref())
+                {
+                    // Access accounting must not turn a valid certificate into a failure.
+                    let _ = cache::touch(&artifacts, key);
+                }
+            }
+        }
+        complete.then_some(result)
     }
     pub async fn check(&self, input: Input, build: bool) -> Result<CheckResult> {
+        let _access = cache::access(&self.pool.root).await?;
         let start = Instant::now();
         let (target, _) = input.chain.last().context("no Lean target")?;
         if let Some(result) = self.cached_input(&input, build).await {
@@ -1123,6 +1142,7 @@ impl LeanService {
     pub async fn goals(&self, input: Input, line: u32, character: u32) -> Result<Value> {
         let node = input.chain.last().context("no Lean target")?.0.clone();
         self.check(input.clone(), false).await?;
+        let _access = cache::access(&self.pool.root).await?;
         let mut worker = self.worker().await?;
         let manager = &mut *worker.0;
         self.prepare_input(manager, &input).await?;
@@ -1621,6 +1641,38 @@ mod tests {
             std::fs::metadata(shared).unwrap(),
         );
         assert_eq!((local.dev(), local.ino()), (shared.dev(), shared.ino()));
+        let reclaimed = gc::collect(&service.pool.root, 0, Some(0), false, false).unwrap();
+        assert_eq!(reclaimed["artifact_size_after"], "0 B");
+        assert_eq!(
+            service.formal_status(&nodes[3], &nodes[3].fnode),
+            "verified"
+        );
+        let (diagnostics, _) = editor
+            .check(
+                &uri,
+                &format!("{}\n-- after online GC\n", nodes[3].source("lean").unwrap()),
+                "deps",
+            )
+            .await
+            .unwrap();
+        assert!(
+            !diagnostics.iter().any(|d| d["severity"] == 1),
+            "{diagnostics:?}"
+        );
+        // A newly opened file must rebuild its cache mappings from retained
+        // named outputs without recompiling or losing private transitive imports.
+        let (diagnostics, _) = editor
+            .check(&uri, nodes[3].source("lean").unwrap(), "reopen")
+            .await
+            .unwrap();
+        assert!(
+            !diagnostics.iter().any(|d| d["severity"] == 1),
+            "{diagnostics:?}"
+        );
+        assert!(
+            !marker.exists(),
+            "online GC must preserve the active workspace's outputs"
+        );
         editor.server.shutdown().await;
         service.shutdown().await;
     }
@@ -1933,11 +1985,11 @@ mod tests {
         let editor = Lsp::start(second.path()).await.unwrap();
         drop(service);
         assert!(
-            cache::lease(&cache.path().join(".shared"), true).is_err(),
+            cache::lifetime(&cache.path().join(".shared"), true).is_err(),
             "a native Lake/Lean server must protect the pool independently of its service"
         );
         editor.server.shutdown().await;
-        assert!(cache::lease(&cache.path().join(".shared"), true).is_ok());
+        assert!(cache::lifetime(&cache.path().join(".shared"), true).is_ok());
     }
 
     #[tokio::test]

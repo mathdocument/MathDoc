@@ -427,6 +427,7 @@ pub(crate) async fn delete_database(database: &str) -> Result<Value> {
         }
     }
     let _pool = crate::lean::cache::lease(&root.join(".shared"), true)?;
+    let _live = crate::lean::cache::lifetime(&root.join(".shared"), true)?;
     db.delete_database().await?;
     crate::file_lock::remove_cache(&root)
         .with_context(|| format!("database {database} was deleted, but cache cleanup failed"))?;

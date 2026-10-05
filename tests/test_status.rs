@@ -965,10 +965,17 @@ async fn branch_deletion_requires_stopped_service_and_cleans_only_its_cache() {
         run(root, &["cache", "stats", &fixture.db.database]).await["artifacts"]["files"],
         1
     );
+    run(root, &["cache", "gc", &fixture.db.database, "--dry-run"]).await;
     reject(
         root,
-        &["cache", "gc", &fixture.db.database, "--dry-run"],
-        "stop this database",
+        &[
+            "cache",
+            "gc",
+            &fixture.db.database,
+            "--certificates",
+            "--dry-run",
+        ],
+        "certificate GC requires all branches",
     )
     .await;
     let cache_file = copy_root.join("projects/toolchain/.lake/build/Lib.olean");

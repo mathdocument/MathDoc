@@ -344,7 +344,7 @@ fn stdin() -> Result<String> {
 enum Cache {
     /// Report on-disk shared cache sizes, whether branches are running or stopped.
     Stats { database: String },
-    /// Reclaim old shared entries; all branches of this database must be stopped.
+    /// Reclaim idle shared entries; active checks/builds protect their database.
     Gc {
         database: String,
         /// Preview deletions without removing files.
@@ -445,6 +445,9 @@ fn group_options(command: clap::Command) -> clap::Command {
 }
 
 pub fn run() -> i32 {
+    if let Some(code) = crate::lean::native_cache::run() {
+        return code;
+    }
     let matches = grouped_command().get_matches();
     let project = matches
         .subcommand()

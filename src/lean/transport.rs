@@ -27,9 +27,22 @@ pub fn command(root: &Path, args: &[&str]) -> Result<Command> {
     native_command(root, "lake", args)
 }
 fn native_command(root: &Path, program: &str, args: &[&str]) -> Result<Command> {
-    let mut c = Command::new(program);
-    c.args(args)
-        .current_dir(root)
+    let mut c = if program == "lake" && args == ["serve"] {
+        let mut c = Command::new("lake");
+        c.args(["env"])
+            .arg(super::native_cache::executable()?)
+            .arg("__mdc_lean_server");
+        c
+    } else if program == "lake" {
+        let mut c = Command::new(super::native_cache::executable()?);
+        c.arg("__mdc_lake").args(args);
+        c
+    } else {
+        let mut c = Command::new(program);
+        c.args(args);
+        c
+    };
+    c.current_dir(root)
         .env_remove("ELAN_TOOLCHAIN")
         // Lake keys artifacts by compiler inputs, including transitive imports.
         // Every workspace links this to its database/project pool.

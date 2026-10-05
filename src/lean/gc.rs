@@ -1,4 +1,4 @@
-//! Explicit, offline reclamation of native Lake objects; no work on request paths.
+//! Reclaim idle native Lake objects, independently of branch service lifetime.
 use anyhow::{ensure, Context, Result};
 use serde_json::{json, Value};
 use std::{
@@ -86,6 +86,7 @@ fn is_certificate(root: &Path, f: &File) -> bool {
 }
 pub fn stats(root: &Path) -> Result<Value> {
     let _lease = super::cache::lease(root, false)?;
+    let _live = super::cache::lifetime(root, false)?;
     let mut all = vec![];
     files(root, &mut all)?;
     Ok(json!({"path":root,"total":totals(all.iter()),
@@ -101,7 +102,13 @@ pub fn collect(
     certificates: bool,
     dry_run: bool,
 ) -> Result<Value> {
+    // Old service binaries hold this lease for their lifetime. Never clean a
+    // pool still used by a version without the online-GC activity protocol.
     let _lease = super::cache::lease(root, true)?;
+    let _live = super::cache::lifetime(root, certificates)
+        .context("certificate GC requires all branches of this database to be stopped")?;
+    let _access = super::cache::try_access(root, true)
+        .context("Lean cache has active checks/builds; retry when they finish")?;
     let cutoff = SystemTime::now()
         .checked_sub(Duration::from_secs(
             days.checked_mul(86400).context("age is too large")?,
@@ -146,7 +153,15 @@ pub fn collect(
         }
         mappings.push((file, paths));
     }
-    mappings.sort_by_key(|(f, _)| (f.meta.modified().ok(), &f.path));
+    mappings.sort_by_key(|(f, _)| {
+        let p = parts(root, f);
+        let access = root
+            .join(p[..4].iter().collect::<PathBuf>())
+            .join("access")
+            .join(f.path.file_stem().unwrap());
+        let touched = fs::metadata(access).and_then(|m| m.modified()).ok();
+        (touched.max(f.meta.modified().ok()), f.path.clone())
+    });
     let before: u64 = objects.values().map(|f| f.meta.len()).sum();
     let mut remaining = before;
     let mut remove = HashSet::new();
@@ -209,6 +224,37 @@ pub fn collect(
 mod tests {
     use super::*;
     #[test]
+    fn gc_evicts_least_recently_used_mapping_without_touching_artifacts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let lake = root.join("v1/test/project/lake");
+        fs::create_dir_all(lake.join("outputs/pkg")).unwrap();
+        fs::create_dir_all(lake.join("artifacts")).unwrap();
+        let old = SystemTime::now() - Duration::from_secs(3600);
+        for key in ["1111111111111111", "2222222222222222"] {
+            let object = lake.join("artifacts").join(format!("{key}.olean"));
+            fs::write(&object, [0; 4096]).unwrap();
+            let mapping = lake.join("outputs/pkg").join(format!("{key}.json"));
+            fs::write(
+                &mapping,
+                json!({"schemaVersion":"2026-02-25","data":format!("{key}.olean")}).to_string(),
+            )
+            .unwrap();
+            fs::File::open(mapping)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(old))
+                .unwrap();
+        }
+        let object = lake.join("artifacts/1111111111111111.olean");
+        let timestamp = fs::metadata(&object).unwrap().modified().unwrap();
+        super::super::cache::touch(&lake, "1111111111111111").unwrap();
+        collect(root, 0, Some(4096), false, false).unwrap();
+        assert!(object.is_file());
+        assert!(!lake.join("artifacts/2222222222222222.olean").exists());
+        assert_eq!(fs::metadata(object).unwrap().modified().unwrap(), timestamp);
+    }
+
+    #[test]
     fn gc_preserves_shared_references_obeys_leases_and_plans_before_deletion() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join(".shared");
@@ -237,7 +283,23 @@ mod tests {
                 .unwrap();
         }
         let pool = super::super::cache::Pool::open(root.clone()).unwrap();
+        assert!(
+            collect(&root, 7, None, false, true).is_ok(),
+            "idle running branches allow GC"
+        );
+        assert!(
+            collect(&root, 0, None, true, true).is_err(),
+            "certificate deletion still requires stopped branches"
+        );
+        let active = super::super::cache::try_access(&root, false).unwrap();
         assert!(collect(&root, 0, None, false, false).is_err());
+        drop(active);
+        let legacy = super::super::cache::lease(&root, false).unwrap();
+        assert!(
+            collect(&root, 0, None, false, false).is_err(),
+            "old binaries have no online-GC protocol"
+        );
+        drop(legacy);
         let report = stats(&root).unwrap();
         assert_eq!(report["artifacts"]["files"], 3);
         assert_eq!(report["artifacts"]["logical_size"], "12.00 KiB");
