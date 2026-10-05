@@ -2676,6 +2676,18 @@ await test('node selection reveals complete editors together and reuses source v
   ]}));
   try {
     await fixture(browser, async ({page, url}) => {
+      // Attach native models only after the preview is visible, so a fast local
+      // LSP cannot hide a model-swap flash behind the navigation transition.
+      await page.routeWebSocket(/\/api\/lean\/session\/.*\/ws$/, ws => {
+        const server = ws.connectToServer();
+        ws.onMessage(message => server.send(message));
+        server.onMessage(async message => {
+          if (JSON.parse(String(message)).result?.filename) {
+            await page.waitForFunction(() => !document.documentElement.dataset.vtScope && !document.querySelector('.native-editor.pending'));
+          }
+          ws.send(message);
+        });
+      });
       await page.goto(`${url}/?node-paint#ref=${nodes[0].fnode}`);
       await page.locator('.editor-scroll:not(.pending) .view-line').first().waitFor();
       await page.locator('.native-editor:not(.pending)').waitFor();
@@ -2692,16 +2704,19 @@ await test('node selection reveals complete editors together and reuses source v
           await page.getByPlaceholder('Search by name or UUID...').fill(`Paint.${name}`);
           const frames = running ? 60 : 4;
           const sampling = page.evaluate(async ({name, frames}) => {
-            let incomplete = 0, exposed = 0;
+            const incomplete: {frame: number; pending: boolean; source: string | null | undefined; lean: string | null | undefined; colors: number}[] = [];
+            let exposed = 0;
             for (let frame = 0; frame < 240 && exposed < frames; frame++) {
               await new Promise(requestAnimationFrame);
               if (document.querySelector('h1.title')?.textContent !== `Paint.${name}` || document.documentElement.dataset.vtScope === 'ready') continue;
               exposed++;
               const source = document.querySelector<HTMLElement>('[data-srctype="latex"] .view-lines');
               const lean = document.querySelector<HTMLIFrameElement>('.lean-block iframe')?.contentDocument;
-              if (document.querySelector('.editor-scroll.pending, .native-editor.pending') ||
+              const pending = !!document.querySelector('.editor-scroll.pending, .native-editor.pending');
+              const colors = new Set([...lean?.querySelectorAll('.view-line span') ?? []].map(el => lean!.defaultView!.getComputedStyle(el).color)).size;
+              if (pending ||
                   !source?.textContent?.includes(name) || !lean?.querySelector('.view-lines')?.textContent?.includes(name) ||
-                  new Set([...lean.querySelectorAll('.view-line span')].map(el => lean.defaultView!.getComputedStyle(el).color)).size < 2) incomplete++;
+                  colors < 2) incomplete.push({frame, pending, source: source?.textContent, lean: lean?.querySelector('.view-lines')?.textContent, colors});
             }
             return {incomplete, exposed};
           }, {name, frames});
@@ -2710,7 +2725,7 @@ await test('node selection reveals complete editors together and reuses source v
           await title(page, `Paint.${name}`);
           await page.waitForFunction(() => !document.documentElement.dataset.vtScope);
           console.log('Complete node reveal:', running ? 'connected' : 'offline', view, name, Math.round(performance.now() - start), 'ms');
-          assert.deepEqual(await sampling, {incomplete: 0, exposed: frames}, 'the first exposed frames contain both highlighted source editors');
+          assert.deepEqual(await sampling, {incomplete: [], exposed: frames}, 'the first exposed frames contain both highlighted source editors');
           assert.equal(await editor.evaluate(el => el.isConnected), true, 'node navigation reuses the existing Monaco host');
         }
       }

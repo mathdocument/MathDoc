@@ -211,6 +211,9 @@ async function selectNode(fnode: string, revision: string, generation: number, s
   updating = false;
   if (preview !== model) preview?.dispose();
   preview = undefined;
+  // The preview may already be visible when the LSP attaches its native model.
+  // Finish that swap in this frame; reveal() waits for two later frames.
+  renderSource(editor);
   if (!runtime.infoProvider!.isOpen()) void getService(ICommandService).then(commands => { if (!signal.aborted) return commands.executeCommand("lean4.displayGoal"); });
   document.getElementById("infoview-pending")!.hidden = true;
   if (focused) editor.focus();
