@@ -90,6 +90,10 @@ mod tests {
                 acquire(&path, exclusive).unwrap_err().kind(),
                 io::ErrorKind::WouldBlock
             );
+            assert_eq!(
+                unsafe { libc::flock(new_owner.as_raw_fd(), libc::LOCK_UN) },
+                0
+            );
             drop(new_owner);
             assert!(acquire(&path, exclusive).is_ok());
         }
