@@ -80,11 +80,7 @@ fn automatic(root: &Path, budget: u64, since: SystemTime) -> Result<Option<Value
     let due = since
         .elapsed()
         .map_or(true, |age| age >= Duration::from_secs(300))
-        || pools.iter().any(|p| {
-            fs::metadata(p.join("gc.pending"))
-                .and_then(|m| m.modified())
-                .is_ok_and(|time| time >= since)
-        });
+        || pools.iter().any(|p| p.join("gc.pending").exists());
     if !due {
         return Ok(None);
     }
@@ -236,7 +232,7 @@ fn collect_pools(
         let mut entries = vec![];
         match guards {
             Ok(guards) => {
-                leases.push(guards);
+                leases.push((root, guards));
                 files(root, &mut entries)?;
                 all.extend(entries.into_iter().map(|f| (root, f)));
             }
@@ -362,6 +358,18 @@ fn collect_pools(
         for (_, file) in selected.iter().filter(|(r, f)| is_artifact(r, f)) {
             fs::remove_file(&file.path)?;
         }
+        if automatic_budget.is_some() {
+            // Acknowledge only scanned pools while holding their activity locks.
+            // Writers cannot lose a new request, and busy pools retry next tick.
+            // Comparing mtimes to the process clock can miss writes on Linux.
+            for (root, _) in &leases {
+                match fs::remove_file(root.join("gc.pending")) {
+                    Ok(()) => (),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        }
     }
     Ok(result)
 }
@@ -436,12 +444,20 @@ mod tests {
         }
         let now = SystemTime::now();
         assert!(automatic(tmp.path(), 16384, now).unwrap().is_none());
-        fs::write(roots[0].join("gc.pending"), []).unwrap();
+        let pending = roots[0].join("gc.pending");
+        fs::write(&pending, []).unwrap();
+        // Filesystem timestamps can lag the process clock (notably on Linux).
+        fs::File::open(&pending)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(old))
+            .unwrap();
         let below = automatic(tmp.path(), 16384, now).unwrap().unwrap();
         assert_eq!(
             below["selected"]["files"], 0,
             "do not trim to 80% until over budget"
         );
+        assert!(!pending.exists());
+        assert!(automatic(tmp.path(), 16384, now).unwrap().is_none());
         let report = automatic(tmp.path(), 12288, SystemTime::UNIX_EPOCH)
             .unwrap()
             .unwrap();
@@ -449,6 +465,7 @@ mod tests {
         assert!(!objects[0].exists() && !objects[3].exists());
         assert!(objects[1].exists() && objects[2].exists());
         let active = super::super::cache::try_access(&roots[0], false).unwrap();
+        fs::write(&pending, []).unwrap();
         let report = automatic(tmp.path(), 2048, SystemTime::UNIX_EPOCH)
             .unwrap()
             .unwrap();
@@ -456,12 +473,12 @@ mod tests {
         assert_eq!(report["protected_artifact_size"], "4.00 KiB");
         assert_eq!(report["skipped_pools"].as_array().unwrap().len(), 1);
         assert!(objects[1].exists() && !objects[2].exists());
+        assert!(pending.exists(), "a busy pool must retain its GC request");
         drop(active);
-        let report = automatic(tmp.path(), 2048, SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .unwrap();
+        let report = automatic(tmp.path(), 2048, now).unwrap().unwrap();
         assert_eq!(report["budget_met"], true);
         assert!(!objects[1].exists());
+        assert!(!pending.exists());
     }
 
     #[test]
