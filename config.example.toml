@@ -7,3 +7,7 @@
 # Per-branch Lean concurrency. Tune for the host/container CPU and memory budget.
 # lean_cli_workers = 4
 # lean_web_sessions = 4
+
+# Combined shared Lean artifact budget across databases: 30 GiB by default.
+# Automatic LRU collection targets 80% after exceeding this budget; 0 disables it.
+# cache_max_bytes = 32_212_254_720

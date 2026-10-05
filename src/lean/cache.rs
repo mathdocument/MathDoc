@@ -40,10 +40,16 @@ pub fn lease(root: &Path, exclusive: bool) -> Result<Lease> {
 }
 
 pub(crate) fn lifetime(root: &Path, exclusive: bool) -> Result<Lease> {
-    Ok(Lease(Some(crate::file_lock::acquire(
-        &root.join("live.lock"),
-        exclusive,
-    )?)))
+    let file = crate::file_lock::acquire(&root.join("live.lock"), exclusive).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            anyhow::anyhow!(
+                "Lean shared cache is in use; stop this database's branches before removing it"
+            )
+        } else {
+            anyhow::Error::from(error).context("lock Lean cache lifetime")
+        }
+    })?;
+    Ok(Lease(Some(file)))
 }
 
 // ponytail: protect the whole database during a check/build. Per-closure pins
@@ -385,5 +391,28 @@ mod tests {
         drop(child.stdin.take());
         child.wait().await.unwrap();
         assert!(lifetime(&root, true).is_ok());
+    }
+
+    #[test]
+    fn native_build_retains_activity_protection_after_wrapper_drop() {
+        use std::io::{BufRead, BufReader};
+        let tmp = tempfile::tempdir().unwrap();
+        let mut command = std::process::Command::new("sh");
+        command
+            .args(["-c", "echo ready; read stop"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped());
+        inherit_access(&mut command, tmp.path()).unwrap();
+        let mut child = command.spawn().unwrap();
+        drop(command);
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        assert_eq!(ready.trim(), "ready");
+        assert!(try_access(tmp.path(), true).is_err());
+        drop(child.stdin.take());
+        child.wait().unwrap();
+        assert!(try_access(tmp.path(), true).is_ok());
     }
 }

@@ -63,6 +63,14 @@ locks until the database mutation finishes, then atomically moves the directory
 aside before removing it. Lock acquisition rejects retired files, so concurrent
 same-name recreation cannot bypass a live lock or have its new cache removed.
 
+While the entry server runs, a default **30 GiB** shared artifact budget applies
+across databases and endpoint namespaces in its cache root. Automatic GC evicts
+least recently used mappings and unreferenced objects toward 80% of that budget.
+It preserves proof certificates and skips databases with active checks/builds;
+running branches and idle editors can otherwise be collected. Configure
+`cache_max_bytes` in `config.toml` (`0` disables it). This is a soft pool budget,
+not a physical disk quota for private workspaces or toolchains.
+
 Use `mdc cache stats DATABASE` to inspect the local shared pool with branches
 running or stopped, even when TerminusDB is offline. This excludes private
 workspace caches, including older Lake caches not yet attached to the shared pool.

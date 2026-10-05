@@ -281,10 +281,19 @@ pub(crate) async fn serve(port: u16, foreground: bool) -> Result<()> {
         writeln!(std::io::stdout(), "{}", serde_json::to_string(&state.info)?)?;
     }
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    axum::serve(listener, router).with_graceful_shutdown(async move {
+    let (gc_stop, gc_stopped) = tokio::sync::watch::channel(false);
+    let gc = tokio::spawn(crate::lean::gc::run(
+        settings.cache_root()?,
+        settings.cache_max_bytes(),
+        gc_stopped,
+    ));
+    let result = axum::serve(listener, router).with_graceful_shutdown(async move {
         tokio::select! { _ = state.stop.notified() => {}, _ = terminate.recv() => {}, _ = tokio::signal::ctrl_c() => {} }
         state.shutdown().await;
-    }).await?;
+    }).await;
+    let _ = gc_stop.send(true);
+    let _ = gc.await;
+    result?;
     Ok(())
 }
 

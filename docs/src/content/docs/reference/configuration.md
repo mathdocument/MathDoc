@@ -16,6 +16,7 @@ terminus_password = "the-existing-database-password"
 # port = 17843
 # public_origin = "https://mdc.example.test"
 # cache_dir = "/absolute/path/to/cache"
+# cache_max_bytes = 32_212_254_720
 # lean_timeout_seconds = 300
 # lean_cli_workers = 4
 # lean_web_sessions = 4
@@ -65,6 +66,21 @@ limits: a Lean/Lake process can itself use multiple threads. Defaults do not
 automatically change with CPU count. Restart the service after changing them.
 For Docker deployments, edit the supplied `config.toml` and restart the runtime;
 no image rebuild or Compose change is needed.
+
+`cache_max_bytes` is the combined shared Lean artifact budget for all databases
+and endpoint namespaces under `cache_dir`. It defaults to **30 GiB**
+(`32_212_254_720` bytes); `0` disables automatic collection. Restart the service
+after changing it. On startup and after native cache activity (coalesced to 30
+seconds), the server checks the budget; a five-minute scan is the fallback.
+When the budget is exceeded, approximate global LRU eviction targets **80%**
+(24 GiB with the default). Under-budget pools have no automatic age expiry.
+
+Checks, queued requests and native dependency builds temporarily protect their
+whole database; background GC skips busy pools and reports unmet budgets in the
+service log. Idle running branches and connected editors do not block artifact
+GC. Proof certificates are retained. The budget counts shared artifact logical
+bytes, not private build outputs, libraries, toolchains, certificates or directory
+metadata. Workspace hardlinks can retain physical disk blocks after pool eviction.
 
 Cache overrides must be absolute paths. Cache paths append an endpoint hash,
 database name and branch name. The branch record and generated Lean data

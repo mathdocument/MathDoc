@@ -1587,9 +1587,13 @@ mod tests {
             node.blocks.push(crate::store::Block { srctype: "lean".into(), content: source, ..Default::default() });
             nodes.push(node);
         }
+        let mut project = LeanProject::default();
+        project
+            .lakefile
+            .push_str("moreGlobalServerArgs = [\"-DautoImplicit=false\"]\n");
         let input = Input {
-            project: LeanProject::default().into(),
-            project_key: LeanProject::default().key(),
+            project_key: project.key(),
+            project: project.into(),
             modules: nodes
                 .iter()
                 .map(|n| {
@@ -1673,7 +1677,18 @@ mod tests {
             !marker.exists(),
             "online GC must preserve the active workspace's outputs"
         );
+        let (diagnostics, _) = editor
+            .check(&uri, "def forbidden (x : MissingType) := x\n", "reopen")
+            .await
+            .unwrap();
+        assert!(
+            diagnostics.iter().any(|d| d["severity"] == 1),
+            "native moreGlobalServerArgs must reach Lean's document workers"
+        );
         editor.server.shutdown().await;
+        std::fs::write(draft.path().join("lakefile.toml"), "name = [").unwrap();
+        let fallback = Lsp::start(draft.path()).await.unwrap();
+        fallback.server.shutdown().await;
         service.shutdown().await;
     }
 

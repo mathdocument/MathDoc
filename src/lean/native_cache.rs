@@ -29,29 +29,55 @@ pub(super) fn executable() -> Result<PathBuf> {
 pub(crate) fn run() -> Option<i32> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next()?;
-    let setup = first == "setup-file" && std::env::var_os("MATHDOC_LAKE").is_some();
-    if first != "__mdc_lake" && first != "__mdc_lean_server" && !setup {
-        return None;
-    }
-    let result = if first == "__mdc_lean_server" {
-        (|| -> Result<i32> {
-            let lake = std::env::var_os("LAKE").context("Lake did not provide its executable")?;
-            let lean = std::env::var_os("LEAN").context("Lake did not provide Lean")?;
-            Err(Command::new(lean)
-                .arg("--server")
+    if first == "__mdc_lake_server" {
+        let result = (|| -> Result<i32> {
+            // Initialize the pinned toolchain without loading a possibly invalid Lakefile.
+            anyhow::ensure!(
+                Command::new("lake")
+                    .arg("--version")
+                    .stdout(Stdio::null())
+                    .status()?
+                    .success(),
+                "cannot initialize Lake"
+            );
+            let located = Command::new("elan").args(["which", "lean"]).output()?;
+            anyhow::ensure!(located.status.success(), "cannot locate pinned Lean");
+            let lean = PathBuf::from(String::from_utf8(located.stdout)?.trim());
+            let bin = lean.parent().context("Lean executable directory")?;
+            let library = bin
+                .parent()
+                .context("Lean toolchain directory")?
+                .join("lib/lean")
+                .join(format!(
+                    "libLake_shared.{}",
+                    std::env::consts::DLL_EXTENSION
+                ));
+            Err(Command::new(&lean)
+                .arg(format!("--load-dynlib={}", library.display()))
+                .arg("--run")
                 .args(args)
-                .env("MATHDOC_LAKE", lake)
-                .env("LAKE", executable()?)
+                .arg(executable()?)
+                .env("MATHDOC_LAKE", bin.join("lake"))
                 .exec()
                 .into())
-        })()
-    } else {
-        let mut forwarded: Vec<_> = args.collect();
-        if setup {
-            forwarded.insert(0, first);
-        }
-        guarded_lake(&forwarded, setup)
-    };
+        })();
+        return Some(match result {
+            Ok(code) => code,
+            Err(e) => {
+                eprintln!("MathDoc Lean server: {e:#}");
+                1
+            }
+        });
+    }
+    let setup = first == "setup-file" && std::env::var_os("MATHDOC_LAKE").is_some();
+    if first != "__mdc_lake" && !setup {
+        return None;
+    }
+    let mut forwarded: Vec<_> = args.collect();
+    if setup {
+        forwarded.insert(0, first);
+    }
+    let result = guarded_lake(&forwarded, setup);
     Some(match result {
         Ok(code) => code,
         Err(error) => {

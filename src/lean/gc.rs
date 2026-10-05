@@ -14,10 +14,12 @@ struct File {
     meta: fs::Metadata,
 }
 fn files(root: &Path, output: &mut Vec<File>) -> Result<()> {
-    if !root.exists() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(root)? {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    for entry in entries {
         let entry = entry?;
         let kind = entry.file_type()?;
         ensure!(
@@ -28,13 +30,103 @@ fn files(root: &Path, output: &mut Vec<File>) -> Result<()> {
         if kind.is_dir() {
             files(&entry.path(), output)?;
         } else if kind.is_file() {
-            output.push(File {
-                path: entry.path(),
-                meta: entry.metadata()?,
-            });
+            match entry.metadata() {
+                Ok(meta) => output.push(File {
+                    path: entry.path(),
+                    meta,
+                }),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+                Err(e) => return Err(e.into()),
+            }
         }
     }
     Ok(())
+}
+
+fn directories(root: &Path) -> Result<Vec<PathBuf>> {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(e.into()),
+    };
+    let mut paths = vec![];
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_name().to_string_lossy().starts_with('.') && entry.file_type()?.is_dir() {
+            paths.push(entry.path());
+        }
+    }
+    Ok(paths)
+}
+
+fn automatic(root: &Path, budget: u64, since: SystemTime) -> Result<Option<Value>> {
+    // Coordinate all entry servers sharing this cache_dir. Manual GC uses the
+    // same per-pool leases and therefore cannot race this collector either.
+    let _collector = match crate::file_lock::acquire(&root.join("gc.lock"), true) {
+        Ok(lease) => lease,
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let mut pools = vec![];
+    for endpoint in directories(root)? {
+        for database in directories(&endpoint)? {
+            let shared = database.join(".shared");
+            if fs::symlink_metadata(&shared).is_ok_and(|m| m.is_dir()) {
+                pools.push(shared);
+            }
+        }
+    }
+    pools.sort();
+    let due = since
+        .elapsed()
+        .map_or(true, |age| age >= Duration::from_secs(300))
+        || pools.iter().any(|p| {
+            fs::metadata(p.join("gc.pending"))
+                .and_then(|m| m.modified())
+                .is_ok_and(|time| time >= since)
+        });
+    if !due {
+        return Ok(None);
+    }
+    // Avoid multiplication overflow for valid, unusually large configured budgets.
+    let target = budget / 5 * 4 + budget % 5 * 4 / 5;
+    let result = collect_pools(&pools, 0, Some(target), false, false, Some(budget))?;
+    Ok(Some(result))
+}
+
+pub(crate) async fn run(
+    root: PathBuf,
+    budget: u64,
+    mut stopped: tokio::sync::watch::Receiver<bool>,
+) {
+    if budget == 0 {
+        return;
+    }
+    let mut interval = tokio::time::interval(Duration::from_secs(30));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_scan = SystemTime::UNIX_EPOCH;
+    loop {
+        tokio::select! {
+            _ = stopped.changed() => return,
+            _ = interval.tick() => (),
+        }
+        let root = root.clone();
+        let started = SystemTime::now();
+        // Keep scans, JSON parsing and deletion off Tokio's request workers.
+        match tokio::task::spawn_blocking(move || automatic(&root, budget, last_scan)).await {
+            Ok(Ok(Some(report))) => {
+                last_scan = started;
+                if report["selected"]["files"].as_u64().unwrap_or(0) > 0
+                    || report["budget_met"] == false
+                {
+                    eprintln!("Lean cache GC: {report}");
+                }
+            }
+            Ok(Ok(None)) => (),
+            Ok(Err(error)) => eprintln!("Lean cache GC: {error:#}"),
+            Err(error) => eprintln!("Lean cache GC worker: {error}"),
+        }
+    }
 }
 fn totals<'a>(files: impl Iterator<Item = &'a File>) -> Value {
     let (mut count, mut logical, mut allocated) = (0u64, 0u64, 0u64);
@@ -102,30 +194,79 @@ pub fn collect(
     certificates: bool,
     dry_run: bool,
 ) -> Result<Value> {
-    // Old service binaries hold this lease for their lifetime. Never clean a
-    // pool still used by a version without the online-GC activity protocol.
-    let _lease = super::cache::lease(root, true)?;
-    let _live = super::cache::lifetime(root, certificates)
-        .context("certificate GC requires all branches of this database to be stopped")?;
-    let _access = super::cache::try_access(root, true)
-        .context("Lean cache has active checks/builds; retry when they finish")?;
+    let mut result = collect_pools(
+        &[root.to_owned()],
+        days,
+        max_bytes,
+        certificates,
+        dry_run,
+        None,
+    )?;
+    result["path"] = json!(root);
+    Ok(result)
+}
+
+fn collect_pools(
+    roots: &[PathBuf],
+    days: u64,
+    max_bytes: Option<u64>,
+    certificates: bool,
+    dry_run: bool,
+    automatic_budget: Option<u64>,
+) -> Result<Value> {
     let cutoff = SystemTime::now()
         .checked_sub(Duration::from_secs(
             days.checked_mul(86400).context("age is too large")?,
         ))
         .context("age is too large")?;
+    let mut leases = vec![];
     let mut all = vec![];
-    files(root, &mut all)?;
+    let mut skipped = vec![];
+    let mut protected = 0u64;
+    for root in roots {
+        let guards = (|| -> Result<_> {
+            // Older binaries do not participate in the online activity protocol.
+            let legacy = super::cache::lease(root, true)?;
+            let live = super::cache::lifetime(root, certificates)
+                .context("certificate GC requires all branches of this database to be stopped")?;
+            let access = super::cache::try_access(root, true)
+                .context("Lean cache has active checks/builds; retry when they finish")?;
+            Ok((legacy, live, access))
+        })();
+        let mut entries = vec![];
+        match guards {
+            Ok(guards) => {
+                leases.push(guards);
+                files(root, &mut entries)?;
+                all.extend(entries.into_iter().map(|f| (root, f)));
+            }
+            Err(error) if automatic_budget.is_some() => {
+                // Only count busy pools; never parse a mapping Lake might still
+                // be publishing. Concurrent growth makes this a soft budget.
+                if let Ok(_live) = super::cache::lifetime(root, false) {
+                    files(root, &mut entries)?;
+                    protected += entries
+                        .iter()
+                        .filter(|f| is_artifact(root, f))
+                        .map(|f| f.meta.len())
+                        .sum::<u64>();
+                }
+                skipped.push(json!({"path":root,"reason":error.to_string()}));
+            }
+            Err(error) => return Err(error),
+        }
+    }
     let objects: HashMap<_, _> = all
         .iter()
-        .filter(|f| is_artifact(root, f))
-        .map(|f| (f.path.clone(), f))
+        .filter(|(r, f)| is_artifact(r, f))
+        .map(|(_, f)| (f.path.clone(), f))
         .collect();
+    let before = protected + objects.values().map(|f| f.meta.len()).sum::<u64>();
+    let needed = automatic_budget.is_none_or(|budget| before > budget);
     let mut references: HashMap<PathBuf, usize> = HashMap::new();
     let mut mappings = vec![];
-    // Parse the complete plan before deleting anything. Unknown/corrupt mappings
-    // abort rather than guessing whether an object is unreferenced.
-    for file in all.iter().filter(|f| is_mapping(root, f)) {
+    // Plan everything before deleting anything; corrupt/unknown schemas fail closed.
+    for (root, file) in all.iter().filter(|(r, f)| needed && is_mapping(r, f)) {
         let value: Value = serde_json::from_slice(&fs::read(&file.path)?).with_context(|| {
             format!(
                 "invalid Lake mapping {}; no files removed",
@@ -144,38 +285,39 @@ pub fn collect(
             "invalid Lake object path; no files removed"
         );
         let p = parts(root, file);
-        let base = root
-            .join(p[..4].iter().collect::<PathBuf>())
-            .join("artifacts");
-        let paths: HashSet<_> = names.into_iter().map(|n| base.join(n)).collect();
+        let lake = root.join(p[..4].iter().collect::<PathBuf>());
+        let paths: HashSet<_> = names
+            .into_iter()
+            .map(|n| lake.join("artifacts").join(n))
+            .collect();
         for path in &paths {
             *references.entry(path.clone()).or_default() += 1;
         }
-        mappings.push((file, paths));
+        let access = lake.join("access").join(file.path.file_stem().unwrap());
+        let touched = fs::metadata(&access).and_then(|m| m.modified()).ok();
+        let last_use = touched.max(file.meta.modified().ok());
+        mappings.push((file, paths, access, last_use));
     }
-    mappings.sort_by_key(|(f, _)| {
-        let p = parts(root, f);
-        let access = root
-            .join(p[..4].iter().collect::<PathBuf>())
-            .join("access")
-            .join(f.path.file_stem().unwrap());
-        let touched = fs::metadata(access).and_then(|m| m.modified()).ok();
-        (touched.max(f.meta.modified().ok()), f.path.clone())
-    });
-    let before: u64 = objects.values().map(|f| f.meta.len()).sum();
+    mappings.sort_by_key(|(file, _, _, used)| (*used, file.path.clone()));
     let mut remaining = before;
     let mut remove = HashSet::new();
-    for (path, file) in &objects {
-        if !references.contains_key(path) && file.meta.modified()? <= cutoff {
-            remaining -= file.meta.len();
-            remove.insert(path.clone());
+    if needed {
+        for (path, file) in &objects {
+            if !references.contains_key(path) && file.meta.modified()? <= cutoff {
+                remaining -= file.meta.len();
+                remove.insert(path.clone());
+            }
         }
     }
-    for (file, paths) in mappings {
+    let mut retained_access = HashSet::new();
+    let mut discarded_access = HashSet::new();
+    for (file, paths, access, _) in mappings {
         if file.meta.modified()? > cutoff || max_bytes.is_some_and(|limit| remaining <= limit) {
+            retained_access.insert(access);
             continue;
         }
         remove.insert(file.path.clone());
+        discarded_access.insert(access);
         for path in paths {
             let count = references.get_mut(&path).unwrap();
             *count -= 1;
@@ -188,32 +330,36 @@ pub fn collect(
             }
         }
     }
+    remove.extend(discarded_access.difference(&retained_access).cloned());
     if certificates {
-        for file in all.iter().filter(|f| is_certificate(root, f)) {
+        for (_, file) in all.iter().filter(|(r, f)| is_certificate(r, f)) {
             if file.meta.modified()? <= cutoff {
                 remove.insert(file.path.clone());
             }
         }
     }
-    let selected: Vec<_> = all.iter().filter(|f| remove.contains(&f.path)).collect();
-    // Pool accounting does not promise freed disk: private producer outputs can
-    // still hold hardlinks. Count only last links as reclaimable file blocks.
+    let selected: Vec<_> = all
+        .iter()
+        .filter(|(_, f)| remove.contains(&f.path))
+        .collect();
+    // Named workspace outputs can keep hardlinks alive after pool eviction.
     let reclaimable: u64 = selected
         .iter()
-        .filter(|f| f.meta.nlink() == 1)
-        .map(|f| f.meta.blocks() * 512)
+        .filter(|(_, f)| f.meta.nlink() == 1)
+        .map(|(_, f)| f.meta.blocks() * 512)
         .sum();
-    let result = json!({"path":root,"dry_run":dry_run,"older_than_days":days,"max_size":max_bytes.map(size),
-        "selected":totals(selected.iter().copied()),"reclaimable_file_size":size(reclaimable),
+    let result = json!({"paths":roots,"dry_run":dry_run,"older_than_days":days,"max_size":max_bytes.map(size),
+        "budget_size":automatic_budget.map(size),
+        "selected":totals(selected.iter().map(|(_, f)| f)),"reclaimable_file_size":size(reclaimable),
         "artifact_size_before":size(before),"artifact_size_after":size(remaining),
-        "budget_met":max_bytes.is_none_or(|limit| remaining <= limit)});
+        "budget_met":automatic_budget.or(max_bytes).is_none_or(|limit| remaining <= limit),
+        "target_met":!needed || max_bytes.is_none_or(|limit| remaining <= limit),
+        "protected_artifact_size":size(protected),"skipped_pools":skipped});
     if !dry_run {
-        // Mappings/certificates disappear before their objects. Interruption can
-        // leak orphan objects, never leave a retained mapping pointing at deleted data.
-        for file in selected.iter().filter(|f| !is_artifact(root, f)) {
+        for (_, file) in selected.iter().filter(|(r, f)| !is_artifact(r, f)) {
             fs::remove_file(&file.path)?;
         }
-        for file in selected.iter().filter(|f| is_artifact(root, f)) {
+        for (_, file) in selected.iter().filter(|(r, f)| is_artifact(r, f)) {
             fs::remove_file(&file.path)?;
         }
     }
@@ -223,6 +369,101 @@ pub fn collect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn background_gc_runs_on_startup_and_zero_disables_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let object = tmp
+            .path()
+            .join("endpoint/db/.shared/v1/test/project/lake/artifacts/old.olean");
+        fs::create_dir_all(object.parent().unwrap()).unwrap();
+        fs::write(&object, [0; 4096]).unwrap();
+        let (stop, stopped) = tokio::sync::watch::channel(false);
+        run(tmp.path().to_owned(), 0, stopped.clone()).await;
+        assert!(object.exists());
+        let task = tokio::spawn(run(tmp.path().to_owned(), 1, stopped));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while object.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        stop.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[test]
+    fn automatic_gc_shares_one_budget_uses_global_lru_and_skips_active_pools() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots: Vec<_> = ["a", "b"]
+            .into_iter()
+            .map(|db| tmp.path().join("endpoint").join(db).join(".shared"))
+            .collect();
+        let old = SystemTime::now() - Duration::from_secs(600);
+        let mut objects = vec![];
+        for (i, root) in roots.iter().enumerate() {
+            let lake = root.join("v1/test/project/lake");
+            fs::create_dir_all(lake.join("artifacts")).unwrap();
+            fs::create_dir_all(lake.join("outputs/pkg")).unwrap();
+            for j in 0..2 {
+                let key = format!("{:016x}", i * 2 + j);
+                let object = lake.join("artifacts").join(format!("{key}.olean"));
+                fs::write(&object, [0; 4096]).unwrap();
+                objects.push(object);
+                let mapping = lake.join("outputs/pkg").join(format!("{key}.json"));
+                fs::write(
+                    &mapping,
+                    json!({"schemaVersion":"2026-02-25","data":format!("{key}.olean")}).to_string(),
+                )
+                .unwrap();
+                fs::File::open(mapping)
+                    .unwrap()
+                    .set_times(fs::FileTimes::new().set_modified(old))
+                    .unwrap();
+                super::super::cache::touch(&lake, &key).unwrap();
+                // Interleave ages across databases: entries 0 and 3 are oldest.
+                let age = [4, 1, 2, 3][i * 2 + j];
+                fs::File::open(lake.join("access").join(key))
+                    .unwrap()
+                    .set_times(
+                        fs::FileTimes::new().set_modified(old + Duration::from_secs(10 - age)),
+                    )
+                    .unwrap();
+            }
+        }
+        let now = SystemTime::now();
+        assert!(automatic(tmp.path(), 16384, now).unwrap().is_none());
+        fs::write(roots[0].join("gc.pending"), []).unwrap();
+        let below = automatic(tmp.path(), 16384, now).unwrap().unwrap();
+        assert_eq!(
+            below["selected"]["files"], 0,
+            "do not trim to 80% until over budget"
+        );
+        let report = automatic(tmp.path(), 12288, SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .unwrap();
+        assert_eq!(report["artifact_size_after"], "8.00 KiB");
+        assert!(!objects[0].exists() && !objects[3].exists());
+        assert!(objects[1].exists() && objects[2].exists());
+        let active = super::super::cache::try_access(&roots[0], false).unwrap();
+        let report = automatic(tmp.path(), 2048, SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .unwrap();
+        assert_eq!(report["budget_met"], false);
+        assert_eq!(report["protected_artifact_size"], "4.00 KiB");
+        assert_eq!(report["skipped_pools"].as_array().unwrap().len(), 1);
+        assert!(objects[1].exists() && !objects[2].exists());
+        drop(active);
+        let report = automatic(tmp.path(), 2048, SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .unwrap();
+        assert_eq!(report["budget_met"], true);
+        assert!(!objects[1].exists());
+    }
+
     #[test]
     fn gc_evicts_least_recently_used_mapping_without_touching_artifacts() {
         let tmp = tempfile::tempdir().unwrap();

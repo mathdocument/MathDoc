@@ -58,6 +58,11 @@ all age-eligible mappings and unreferenced objects. `--older-than-days 0` permit
 immediate cleanup. Certificates are retained unless `--certificates` is supplied;
 that option requires all branches to be stopped and removes age-eligible proof
 records independently of the artifact budget. Unknown or malformed native mappings abort the plan before deletion.
+The entry server also runs automatic GC under `cache_max_bytes` (30 GiB by default,
+across all databases under the cache root), trimming to 80% after exceeding the
+budget. It has no seven-day grace period and never deletes certificates. Busy
+pools are skipped and count toward the soft budget. Manual GC's age and capacity
+arguments remain independent of this automatic policy.
 Manual GC never runs as part of a check or branch deletion.
 Older service binaries without the activity-lease protocol must be stopped before GC. All reported sizes use
 readable binary units (B/KiB/MiB/GiB), including `max_size`, `artifact_size_before`,
@@ -167,8 +172,9 @@ protects `main`, so both CLI and browser reject its deletion before touching
 its caches, regardless of how many other branches exist. The command
 cleans that branch's private build outputs, editor workspaces, libraries and
 logs, including the branch directory and its service lock, in the configured cache
-root. The database's shared objects and certificates survive; reclaim
-them explicitly with `cache gc`. Other branches are unaffected. Immutable database
+root. The database's shared objects and certificates survive branch deletion.
+Artifacts remain eligible for automatic collection or explicit `cache gc`.
+Other branches are unaffected. Immutable database
 commits remain after their branch reference is removed.
 
 There is no CLI merge, rebase, or checkout command. These operations use

@@ -28,10 +28,11 @@ pub fn command(root: &Path, args: &[&str]) -> Result<Command> {
 }
 fn native_command(root: &Path, program: &str, args: &[&str]) -> Result<Command> {
     let mut c = if program == "lake" && args == ["serve"] {
-        let mut c = Command::new("lake");
-        c.args(["env"])
-            .arg(super::native_cache::executable()?)
-            .arg("__mdc_lean_server");
+        let script = root.join(".lake/mdc-server.lean");
+        std::fs::create_dir_all(script.parent().unwrap())?;
+        std::fs::write(&script, include_str!("server.lean"))?;
+        let mut c = Command::new(super::native_cache::executable()?);
+        c.arg("__mdc_lake_server").arg(script);
         c
     } else if program == "lake" {
         let mut c = Command::new(super::native_cache::executable()?);

@@ -10,6 +10,7 @@ pub struct Settings {
     pub terminus_user: Option<String>,
     pub terminus_password: Option<String>,
     pub cache_dir: Option<PathBuf>,
+    pub cache_max_bytes: Option<u64>,
     pub lean_timeout_seconds: Option<u64>,
     pub lean_cli_workers: Option<usize>,
     pub lean_web_sessions: Option<usize>,
@@ -29,6 +30,11 @@ fn user_dir(variable: &str, fallback: &str) -> Result<PathBuf> {
 }
 
 impl Settings {
+    /// Combined shared artifact budget under cache_dir; zero disables automatic GC.
+    pub fn cache_max_bytes(&self) -> u64 {
+        self.cache_max_bytes.unwrap_or(30 * 1024 * 1024 * 1024)
+    }
+
     pub fn lean_cli_workers(&self) -> Result<usize> {
         lean_limit(self.lean_cli_workers, "lean_cli_workers")
     }
@@ -191,6 +197,20 @@ mod tests {
 
     #[test]
     fn config_is_strict_and_accepts_user_settings() {
+        assert_eq!(Settings::default().cache_max_bytes(), 32_212_254_720);
+        assert_eq!(
+            toml::from_str::<Settings>("cache_max_bytes = 0")
+                .unwrap()
+                .cache_max_bytes(),
+            0
+        );
+        assert_eq!(
+            toml::from_str::<Settings>("cache_max_bytes = 1024")
+                .unwrap()
+                .cache_max_bytes(),
+            1024
+        );
+        assert!(toml::from_str::<Settings>("cache_max_bytes = -1").is_err());
         let settings: Settings =
             toml::from_str("terminus_password = 'private'\nlean_timeout_seconds = 600").unwrap();
         assert_eq!(settings.lean_timeout_seconds, Some(600));
