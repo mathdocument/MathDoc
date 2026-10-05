@@ -77,6 +77,10 @@ mod tests {
             remove_cache(&root).unwrap();
             assert!(!root.exists());
             let new_owner = acquire(&path, true).unwrap();
+            // Another test's pre-exec child can briefly inherit this file
+            // description. Explicitly release the retired lock before testing
+            // identity validation, just as cache::Lease does on drop.
+            assert_eq!(unsafe { libc::flock(owner.as_raw_fd(), libc::LOCK_UN) }, 0);
             drop(owner);
             assert_eq!(
                 try_lock(&stale, &path, exclusive).unwrap_err().kind(),
