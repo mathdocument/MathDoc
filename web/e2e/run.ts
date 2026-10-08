@@ -2733,6 +2733,51 @@ await test('node selection reveals complete editors together and reuses source v
   } finally { await browser.close(); }
 });
 
+await test('LaTeX native scrolling paints wrapped lines throughout both directions', {timeout: 60000}, async () => {
+  const browser = await launchBrowser();
+  const node = {fnode: randomUUID(), name: 'Scroll.LaTeX', depens: [], blocks: [
+    {srctype: 'latex', content: Array.from({length: 100}, (_, i) =>
+      `\\paragraph{第 ${i + 1} 行} ` + '带有公式 $\\log(1+x)$ 的长段落应在滚动时保持完整显示。'.repeat(6)).join('\n')},
+  ]};
+  try {
+    await fixture(browser, async ({page, url}) => {
+      for (const reducedMotion of ['reduce', 'no-preference'] as const) {
+        await page.emulateMedia({reducedMotion});
+        await page.goto(`${url}/?latex-scroll#ref=${node.fnode}`);
+        for (const view of ['Knowledge', 'Graph']) {
+          await page.getByRole('button', {name: view, exact: true}).click();
+          const scroller = page.locator('[data-srctype="latex"] .editor-scroll:not(.pending)');
+          await scroller.waitFor();
+          await scroller.scrollIntoViewIfNeeded();
+          const result = await scroller.evaluate(async el => {
+            const limit = el.scrollHeight - el.clientHeight;
+            let stale = 0, maxOffset = 0, maxGap = 0;
+            for (const direction of [1, -1]) {
+              for (let frame = 0; frame <= 45; frame++) {
+                el.scrollTop = limit * (direction > 0 ? frame / 45 : 1 - frame / 45);
+                await new Promise(requestAnimationFrame);
+                const viewport = el.getBoundingClientRect();
+                const content = el.querySelector('.lines-content')!.getBoundingClientRect();
+                const lines = [...el.querySelectorAll('.view-line')].map(line => line.getBoundingClientRect());
+                const offset = Math.abs(content.top - viewport.top + el.scrollTop);
+                const gap = Math.max(Math.min(...lines.map(line => line.top)) - viewport.top,
+                  viewport.bottom - Math.max(...lines.map(line => line.bottom)));
+                if (offset > 1 || gap > 1) stale++;
+                maxOffset = Math.max(maxOffset, offset);
+                maxGap = Math.max(maxGap, gap);
+              }
+            }
+            return {limit, stale, maxOffset, maxGap};
+          });
+          console.log('LaTeX scroll frames:', reducedMotion, view, result);
+          assert.ok(result.limit > 1000, 'the fixture exercises a long wrapped source');
+          assert.equal(result.stale, 0, 'source positions track scrolling without exposing blank rows');
+        }
+      }
+    }, [node]);
+  } finally { await browser.close(); }
+});
+
 await test('Lean native scrolling paints the current scroll position in the same frame', {timeout: 60000}, async () => {
   const browser = await launchBrowser();
   const node = {fnode: randomUUID(), name: 'Scroll.Paint', depens: [], blocks: [
