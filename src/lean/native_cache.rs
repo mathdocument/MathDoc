@@ -52,8 +52,26 @@ pub(crate) fn run() -> Option<i32> {
                     "libLake_shared.{}",
                     std::env::consts::DLL_EXTENSION
                 ));
+            // Lean 4.28/4.29 imports leave the CLI's native builtin globals
+            // uninitialized. Initialize both the DSL and CLI as plugins before
+            // importing the bootstrap. Older Lean derives the initializer from
+            // the filename, so both names must refer to the SAME loaded library.
+            let plugins = std::env::current_dir()?.join(".lake/mdc-lake");
+            std::fs::create_dir_all(&plugins)?;
+            let shared = plugins.join(library.file_name().unwrap());
+            if !shared.exists() && std::fs::hard_link(&library, &shared).is_err() {
+                std::fs::copy(&library, &shared)?;
+            }
+            let cli = plugins.join(format!(
+                "libLake_CLI_Main.{}",
+                std::env::consts::DLL_EXTENSION
+            ));
+            if !cli.exists() {
+                std::fs::hard_link(&shared, &cli)?;
+            }
             Err(Command::new(&lean)
-                .arg(format!("--load-dynlib={}", library.display()))
+                .arg(format!("--plugin={}", shared.display()))
+                .arg(format!("--plugin={}", cli.display()))
                 .arg("--run")
                 .args(args)
                 .arg(executable()?)

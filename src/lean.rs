@@ -1568,6 +1568,52 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires native Lean 4.28.0 and the default toolchain"]
+    async fn lake_server_initializes_lean_lakefiles() {
+        for toolchain in [
+            "leanprover/lean4:v4.28.0",
+            &LeanProject::default().toolchain,
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::write(root.path().join("lean-toolchain"), toolchain).unwrap();
+            std::fs::write(
+                root.path().join("lakefile.lean"),
+                "import Lake\nopen Lake DSL\npackage demo where\n  moreGlobalServerArgs := #[\"-DautoImplicit=false\"]\nlean_lib Demo\n",
+            ).unwrap();
+            std::fs::write(
+                root.path().join("Demo.lean"),
+                "theorem demo : True := by trivial\n",
+            )
+            .unwrap();
+            let source = "import Demo\nexample : True := demo\n";
+            let path = root.path().join("Main.lean");
+            std::fs::write(&path, source).unwrap();
+            let uri = file_uri(&path).unwrap();
+            let mut lsp = Lsp::start(root.path()).await.expect(toolchain);
+            let (diagnostics, _) = lsp.check(&uri, source, "deps").await.unwrap();
+            assert!(
+                !diagnostics.iter().any(|d| d["severity"] == 1),
+                "{toolchain}: {diagnostics:?}"
+            );
+            assert!(
+                root.path()
+                    .join(".lake/build/lib/lean/Demo.olean")
+                    .is_file(),
+                "Lake must load the project, not fall back to plain Lean"
+            );
+            let (diagnostics, _) = lsp
+                .check(&uri, "def forbidden (x : MissingType) := x\n", "reopen")
+                .await
+                .unwrap();
+            assert!(
+                diagnostics.iter().any(|d| d["severity"] == 1),
+                "{toolchain}: preserve native server options"
+            );
+            lsp.server.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
     #[ignore = "requires native Lean and Lake"]
     async fn cached_private_imports_load_in_cli_and_editor_workspaces() {
         let cache = tempfile::tempdir().unwrap();

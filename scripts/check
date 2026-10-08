@@ -43,6 +43,7 @@ def native(python):
     # Setting Elan's default alone does not install Lean. Resolve it before any
     # concurrent integration checks, just as on a newly provisioned workstation.
     run("elan", "run", "--install", "leanprover/lean4:v4.33.1", "lean", "--version")
+    run("elan", "run", "--install", "leanprover/lean4:v4.28.0", "lean", "--version")
     run("npm", "exec", "--prefix", "web", "--", "playwright", "install", "--no-shell", "chromium")
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
