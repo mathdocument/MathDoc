@@ -1,5 +1,13 @@
 #!/bin/sh
 # Invoke the server deployment's CLI from any working directory; preserve stdin.
+# In an exported deployment this file is `mdc` next to compose.yaml. Needs MDC_TOKEN
+# (your access token); MDC_PROJECT or -p DATABASE/BRANCH selects the branch.
+#
+# Each command runs in a one-off container from the runtime's image, sharing the
+# runtime's network (so it reaches the API at its loopback address), as the calling
+# user, on the current directory: goal files, .mdc/ and file arguments are those of
+# the directory you run it from. Replay records of review, pick and proof command
+# stay in state/ next to this file (docs/mathdoc.md §2.7.7).
 set -eu
 directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 if [ -f "$directory/compose.yaml" ]; then
@@ -9,4 +17,16 @@ else
     root=$(CDPATH= cd -- "$directory/.." && pwd)
     compose=$root/compose.server.yaml
 fi
-exec docker compose --project-directory "$root" -f "$compose" exec -T runtime mdc "$@"
+: "${MDC_TOKEN:?set MDC_TOKEN to your access token}"
+container=$(docker compose --project-directory "$root" -f "$compose" ps -q runtime)
+if [ -z "$container" ]; then
+    echo 'The runtime container is not running; start the deployment first.' >&2
+    exit 1
+fi
+image=$(docker inspect -f '{{.Config.Image}}' "$container")
+mkdir -p -m 700 "$root/state"
+exec docker run --rm -i --pull never --network "container:$container" \
+    --user "$(id -u):$(id -g)" -v "$PWD:/work" -w /work -v "$root/state:/state" \
+    -e HOME=/tmp -e MDC_STATE_DIR=/state -e MDC_URL=http://127.0.0.1:17843 \
+    -e "MDC_TOKEN=$MDC_TOKEN" -e "MDC_PROJECT=${MDC_PROJECT:-}" \
+    --entrypoint mdc "$image" "$@"

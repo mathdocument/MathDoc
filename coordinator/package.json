@@ -1,0 +1,27 @@
+{
+  "name": "@mathdoc/coordinator",
+  "version": "0.7.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc && chmod +x dist/cli.js",
+    "check": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "pg": "^8.16.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/pg": "^8.15.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.3",
+    "zod-to-json-schema": "^3.25.2"
+  },
+  "bin": {
+    "mdc": "dist/cli.js"
+  }
+}

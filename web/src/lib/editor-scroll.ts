@@ -1,4 +1,4 @@
-// Shared by source blocks and the same-origin Lean / Infoview frames.
+// Shared by the source editors (lib/monaco-scroll.ts) and the LaTeX preview.
 const paneScroll = Symbol.for('mdc.paneScroll');
 type ScrollPane = HTMLElement & { [paneScroll]?: ReturnType<typeof createPaneScroll> };
 

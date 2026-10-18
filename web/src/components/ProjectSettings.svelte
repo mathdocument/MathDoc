@@ -1,0 +1,27 @@
+<script lang="ts">
+  import { modal } from "../lib/modal";
+  import LatexProjectForm from "./LatexProjectForm.svelte";
+  import ProofEnvironmentForm from "./ProofEnvironmentForm.svelte";
+  let { onClose }: { onClose: () => void } = $props();
+  // The legacy Lake project is preserved unchanged (docs/mathdoc.md §4.2); Lean is checked by LeanGround
+  // in the database's proof environment, shared by all its branches.
+  let tab = $state<"proof" | "latex">("proof");
+  let form = $state<{canClose: () => boolean}>();
+  function close() { if (form?.canClose()) onClose(); }
+  function select(next: typeof tab) { if (next !== tab && form?.canClose()) tab = next; }
+</script>
+<dialog class="modal-dialog" aria-label="Project settings" use:modal oncancel={(event) => { event.preventDefault(); close(); }}>
+  <header class="dialog-head"><h2>Project settings</h2></header>
+  <div class="tabs" role="tablist" aria-label="Project language">
+    <button role="tab" aria-selected={tab === 'proof'} onclick={() => select('proof')}>Proof environment</button>
+    <button role="tab" aria-selected={tab === 'latex'} onclick={() => select('latex')}>LaTeX</button>
+  </div>
+  {#if tab === 'proof'}<ProofEnvironmentForm bind:this={form} onClose={close} />
+  {:else}<LatexProjectForm bind:this={form} onClose={close} />{/if}
+</dialog>
+<style>
+  dialog { width:min(760px,92vw); max-height:90vh; overflow:auto; }
+  .tabs { display:flex; gap:.4rem; padding:.75rem 1rem 0; }
+  .tabs button { padding:.4rem .9rem; border:1px solid var(--mdc-border); border-radius:var(--mdc-radius-sm); background:var(--mdc-bg); color:var(--mdc-muted); cursor:pointer; }
+  .tabs button[aria-selected="true"] { color:var(--mdc-accent); border-color:var(--mdc-accent); background:var(--mdc-accent-soft); }
+</style>

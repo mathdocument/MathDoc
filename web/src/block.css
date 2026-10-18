@@ -13,12 +13,12 @@
     box-shadow: var(--mdc-shadow-sm);
     container-type: inline-size;
   }
-  /* Each block kind uses the shared theme tokens. */
+  /* Per-srctype accent so block kinds are scannable at a glance. */
   .source-block[data-srctype="text"] { --block-accent: var(--mdc-block-text); }
   .source-block[data-srctype="latex"] { --block-accent: var(--mdc-block-latex); }
   .source-block[data-srctype="lean"] { --block-accent: var(--mdc-block-lean); }
   .source-block[data-srctype="rocq"] { --block-accent: var(--mdc-block-rocq); }
-  /* A subtle left rail groups the source and its header. */
+  /* Left rail carries the block kind; it is the only always-on decoration. */
   .source-block::before {
     content: "";
     position: absolute;
@@ -44,7 +44,7 @@
     color: var(--mdc-muted);
     border-bottom: 1px solid var(--mdc-border);
   }
-  /* The source type is stated once in the block header. */
+  /* Type is stated once, as a coloured word rather than a bordered chip. */
   .srctype {
     margin-right: 0.15rem;
     color: var(--block-accent);
@@ -55,9 +55,26 @@
     text-transform: uppercase;
   }
   .spacer { flex: 1; }
+  .dirty {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.32rem;
+    margin-right: 0.15rem;
+    color: var(--mdc-warning);
+    font-size: var(--mdc-text-2xs);
+    font-weight: 550;
+  }
+  .dirty-dot {
+    width: 5px;
+    height: 5px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--mdc-warning) 20%, transparent);
+  }
   .saving { color: var(--mdc-muted); font-family: var(--mdc-mono); font-size: var(--mdc-text-2xs); }
   .error { display: inline-flex; color: var(--mdc-error); cursor: help; }
-  .delete, .icon-btn, .preview-toggle {
+  .save, .delete, .icon-btn, .preview-toggle {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -89,6 +106,16 @@
     opacity: 0.35;
     cursor: default;
   }
+  .save:disabled { opacity: 0.3; cursor: default; }
+  /* Save only draws attention once there is something to save. */
+  .save:not(:disabled) {
+    color: var(--mdc-on-accent);
+    background: var(--block-accent);
+    font-weight: 620;
+  }
+  .save:not(:disabled):hover {
+    filter: brightness(1.08);
+  }
   .delete:hover {
     background: color-mix(in srgb, var(--mdc-error) 14%, transparent);
     color: var(--mdc-error);
@@ -101,10 +128,13 @@
     .btn-label {
       display: none;
     }
-    .preview-toggle {
+    .dirty,
+    .preview-toggle,
+    .save {
       gap: 0;
     }
-    .preview-toggle {
+    .preview-toggle,
+    .save {
       width: 26px;
       padding: 0;
     }

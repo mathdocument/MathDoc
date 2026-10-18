@@ -27,13 +27,10 @@ jobs:
         with:
           node-version: 26
           cache: npm
-          cache-dependency-path: |
-            web/package-lock.json
-            perf-base/web/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install benchmark dependencies
         run: npm ci
-        working-directory: web
 
       - name: Install Chromium
         run: npx playwright install --with-deps --no-shell chromium
@@ -43,19 +40,24 @@ jobs:
         run: npm run build
         working-directory: web
 
+      # Revisions before stage 5 lock web/ on its own; later ones use the root workspace.
       - name: Build base frontend
-        run: npm ci && npm run build
-        working-directory: perf-base/web
+        run: |
+          if [ -f perf-base/web/package-lock.json ]; then
+            (cd perf-base/web && npm ci && npm run build)
+          else
+            (cd perf-base && npm ci && npm run build -w mdc-web)
+          fi
 
       - name: Measure base revision
         run: >-
-          node web/perf/run.ts
-          --root perf-base/web --baseline
+          node web/perf/run.mjs
+          --root perf-base/web
           --output "$RUNNER_TEMP/frontend-perf-base.json"
 
       - name: Compare current revision
         run: >-
-          node perf/run.ts
+          node perf/run.mjs
           --output "$RUNNER_TEMP/frontend-perf-current.json"
           --compare "$RUNNER_TEMP/frontend-perf-base.json"
         working-directory: web

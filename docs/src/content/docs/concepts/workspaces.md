@@ -1,119 +1,121 @@
 ---
-title: Databases and references
+title: Databases, workspaces and references
 ---
 
-## Projects, branches and services
+## Databases and branches
 
-A MathDoc project is a TerminusDB database. `mdc init NAME` creates `NAME/main`;
-branches within that database have independent graph heads and share database
-history. One entry server serves the project list on port 17843 by default and
-dispatches `/p/DATABASE/BRANCH/` directly to that branch's in-process router.
-Each loaded branch has its own graph state. CLI `-p` uses the same entry server and routes.
-`mdc status` returns `server` and `projects` objects, including stopped branches.
+A MathDoc project is a TerminusDB database. `mdc init NAME` (administrators)
+creates the database `NAME` with a `main` branch. `mdc branch new NAME -p
+DATABASE/BRANCH`, or **New branch** in the browser, forks a branch from another
+branch's current commit; from then on each branch has its own commits, and
+`mdc history` shows the latest 50 of one branch. Address a branch as
+`DATABASE/BRANCH`, for example `myproject/main`; names use letters, digits, `_`
+and `-`.
 
-Several projects can use the same TerminusDB server. They remain separate
-databases, with separate graphs and Lean settings. Several branches can run at
-once within the same mdc process, without internal HTTP ports or forwarding.
-Native Lean processes remain separate; the operating system schedules them; mdc does not pin workers to CPU cores or impose a machine-wide worker
-budget. Each loaded branch owns its cache using an OS file lock.
+One API process serves every branch. A branch is loaded into memory on its first
+request and stays loaded; there is no per-branch start or stop, no per-branch
+port and no local compiler state. `mdc status` lists the branches you can read
+with your role on each.
+
+## Identity
+
+Every API request carries `Authorization: Bearer TOKEN`. Tokens are configured in
+`MDC_ACTORS` (see [Configuration](../../reference/configuration/)), a JSON object
+mapping each actor name, such as `alice` or `agent-1`, to its token and
+optionally `"admin": true`. Actor names use letters, digits, `_` and `-` (no
+`/`); the server refuses to start otherwise. The actor name is recorded as the
+author of document commits and collaboration commands. `GET /api/me` returns
+`{actor, principal, admin, scopes}` for the current token.
+
+### Delegated tokens
+
+A person can give each agent process its own token without editing
+`MDC_ACTORS`: `mdc token new NAME` (or `POST /api/tokens`) creates a **delegated
+token** that acts as `PERSON/NAME`, for example `alice/codex-1`.
+
+- Roles, project membership, ownership and administrator rights are the
+  person's: `alice/codex-1` can read what alice can read and work on alice's
+  projects.
+- Leases, submissions, notes, reviews, events and commits record the full
+  identity, so the work of two agents is told apart, and the task board adds up
+  the budget by identity.
+- Every delegated token can read what its person can read. **Scopes** limit the
+  rest, whatever the person's roles:
+
+  | Scope | Allows |
+  | --- | --- |
+  | `work` (default) | The work commands on project boards: `claim`, `heartbeat`, `finish`, `submit`, `resolve`, `note`, `negate`, `import` (a certificate), `submit_node`, `sync` and project `notes`. |
+  | `maintain` | Owner and administrator actions: the owner's board commands (`members`, `task`, `decomposition`, `policy`, `pick`, `assemble`, `retry`), setting the proof environment, creating and removing databases, deleting branches, granting roles and `set_owner`. |
+  | `edit` | Document writes, graph import, forking a branch, attaching a branch to the project, and `pick` on a branch the person may write (the owner can also pick with `maintain`). With `maintain`: creating the project board and accepting a writeback. |
+
+  A refused action answers `403 token_scope_required` (document routes: `403`
+  with the scope named).
+- Only the person's own token creates, lists and revokes delegated tokens
+  (`own_token_required` otherwise). Token names use letters, digits, `_` and
+  `-`; a name stays taken until its token is revoked. The token is shown once;
+  MathDoc keeps only its SHA-256. Revoking takes effect on the next request
+  (`401`), and so does an `--expires` time. Removing the person from
+  `MDC_ACTORS` disables their tokens.
+
+## Workspaces and roles
+
+Each database is a **workspace** with one owner and per-branch roles, stored in
+PostgreSQL. Roles are `owner`, `editor` and `viewer`; administrators act as
+`admin` everywhere.
+
+| Action | Roles allowed |
+| --- | --- |
+| read, history, export | admin, owner, editor, viewer |
+| write, branch create, proof submission (create or attach) | admin, owner, editor |
+| branch delete, import, manage members (grant roles, set the proof environment) | admin, owner |
+| database create, database delete | admin |
+
+How a role is determined on a branch:
+
+- The database's owner is `owner` on every branch that inherits the workspace
+  role. `init` makes its caller the owner; `main` inherits.
+- `mdc grant ACTOR ROLE -p DATABASE/BRANCH` gives an actor from `MDC_ACTORS` a
+  role on that one branch; `none` removes it. When several apply, the highest
+  wins.
+- A new branch copies the rules of the branch it was forked from.
+- Someone with no role on a branch gets `404 project not found`, as if it did not
+  exist. A known branch with a role that is too low gets `403`.
+- A database without a workspace record, for example one created by an older
+  MathDoc version, is visible to administrators only. An administrator adopts it
+  with the `set_owner` directory action ([HTTP API](../../reference/http-api/#directory)).
+
+Collaboration never widens these permissions: every member of a database's
+project must be able to read its `main` branch, and sees only the branches they
+can read. Creating the project needs `owner` on `main`; attaching a branch needs
+`editor` on that branch. See [Collaboration](../collaboration/#permissions).
 
 ## Where data lives
 
-| Data | Location and lifetime |
+| Data | Location |
 | --- | --- |
-| Nodes, source blocks, graph links, Lean project settings, history | TerminusDB storage; durable and independent of service processes. |
-| Database credentials and host settings | Private user configuration or environment; outside graph exports. |
-| Generated Lean sources, libraries, traces, branch record | Private branch cache, separated by endpoint/database/branch. |
-| Native Lake content objects and output mappings | `CACHE_ROOT/ENDPOINT_HASH/DATABASE/.shared/v1/PLATFORM/PROJECT_KEY/lake/`; shared within the database. |
-| Certified Lean results | The same shared project directory, under `certificates-v2/COMPILER_ID/`; reused only for matching inputs and current dependencies. |
-| Server record, background runtime log and foreground branch restore list | `CACHE_ROOT/ENDPOINT_HASH/.server/`; no durable graph data. Foreground logs use stdout/stderr. |
-| Unsaved browser drafts | Browser/editor session; save before closing or restarting. |
+| Nodes, source blocks, edges, LaTeX settings, history | TerminusDB. |
+| Workspace owners and roles, proof environments, project boards, tasks, attempts, events, jobs, delegated token hashes | PostgreSQL. |
+| Certificates and proof sources | LeanGround; MathDoc stores their IDs. |
+| Access tokens, database credentials | Server environment or a deployment's `secrets/`; never in exports. |
+| Browser access token | The browser's `localStorage` for this site. |
+| LaTeX runtime | `/opt/latex` in the Docker image; otherwise `MDC_CACHE_DIR/runtime/` when the backend installs it; regenerable. |
+| Unsaved drafts | The browser tab; save before closing. |
 
-The supplied Compose deployment mounts Docker volume `mathdoc-terminus-data` at
-`/app/terminusdb/storage`. On Docker Desktop this volume lives inside Docker's
-Linux VM, not in a MathDoc project directory. `docker volume inspect
-mathdoc-terminus-data` reports Docker's volume metadata. Preserve this volume for
-complete database history; a graph export captures only one branch snapshot.
+A graph export contains one branch snapshot only; see
+[Export and restore](../import-export/).
 
-Caches default to `~/.cache/mdc/ENDPOINT_HASH/DATABASE/BRANCH`, with XDG and explicit
-overrides described in [Configuration](../../reference/configuration/). CLI and
-browser Lean sessions keep private workspaces and reuse native Lake artifacts
-from the database's shared pool. Forking a branch copies no build tree. Keep the
-pool and workspaces on the same filesystem so Lake can hardlink the small outputs
-that require local paths; no reflink support is required. External package
-checkouts remain private to each branch. Toolchains installed by Elan remain
-host-level installations.
+## Deleting
 
-Use one cache root consistently for all commands on a host. Service discovery and
-the lock are scoped to that root; a different root cannot see or stop the old
-service. `stop DATABASE/BRANCH` unloads just that branch and retains its cache.
-Bare `mdc stop` shuts down the server and all loaded branches, including their
-Lean workers. Ordinary `mdc start` starts an empty server; load desired branches explicitly.
-`mdc start --foreground` restores the branches remembered by earlier foreground
-runs. Preserve `active-projects.json` in the server cache to retain that selection;
-deleting it forgets which branches to start but does not delete database content.
-Save drafts before stopping their branch or the whole server. `branch del` requires a stopped non-`main` branch and removes
-its entire private cache directory, preserving the database's shared pool.
-TerminusDB protects `main`; neither the browser nor CLI can delete it.
-It remains a normal working branch for editing, checking and forking. To delete
-the entire project, `mdc remove DATABASE` stops all its branches and deletes the
-database, its history and entire local cache directory, including the shared pool.
-Other projects and shared Elan toolchains are unaffected. Deletion holds the cache
-locks until the database mutation finishes, then atomically moves the directory
-aside before removing it. Lock acquisition rejects retired files, so concurrent
-same-name recreation cannot bypass a live lock or have its new cache removed.
-
-While the entry server runs, a default **30 GiB** shared artifact budget applies
-across databases and endpoint namespaces in its cache root. Automatic GC evicts
-least recently used mappings and unreferenced objects toward 80% of that budget.
-It preserves proof certificates and skips databases with active checks/builds;
-running branches and idle editors can otherwise be collected. Configure
-`cache_max_bytes` in `config.toml` (`0` disables it). This is a soft pool budget,
-not a physical disk quota for private workspaces or toolchains.
-
-Use `mdc cache stats DATABASE` to inspect the local shared pool with branches
-running or stopped, even when TerminusDB is offline. This excludes private
-workspace caches, including older Lake caches not yet attached to the shared pool.
-Sizes are reported in readable units, including logical size and allocated disk space.
-`mdc cache gc DATABASE
---dry-run` previews reclamation; omit `--dry-run` to execute it. Running branches
-and idle editors allow reclamation. Active checks (including queued requests) and
-native dependency builds protect their database until they finish; retry a busy
-manual GC later. Older service binaries must be stopped before GC. The default
-retains entries published in the last seven
-days; this is publication age, not last access. `--older-than-days 0` removes the
-grace period; `--max-bytes BYTES` limits eviction to the requested artifact
-budget. Eligible mappings are evicted by approximate last use. `--certificates`
-also removes old proof facts and still requires stopped branches. Without it, artifact
-cleanup preserves certification, while a later build may need to recreate
-objects. Neither operation touches graph content or history. See the
-[CLI reference](../../reference/workspace-commands/) for accounting and limits.
-
-No project folder or source mirror is required. Generated Lean files are owned
-by the service: editing them does not edit nodes. Import/export are explicit
-operations; ordinary commands never scan workspace files.
+`mdc branch del -p DATABASE/BRANCH` deletes a branch other than `main` (owner or
+admin). `main` can only go with the whole database: `mdc remove DATABASE` (admin)
+deletes the database, every branch and its history, and the workspace record.
+The database's proof environment and project boards stay in PostgreSQL. Both
+commands act immediately, without a prompt (the browser asks first); unsaved
+drafts in open tabs are lost.
 
 ## Node references
 
-A node reference is its exact unique `name` or complete `fnode` UUID. The name is
-also its Lean module: `MX.Dot32.Exact` maps to `MX/Dot32/Exact.lean`, without an
-added prefix. Names consist of dot-separated identifiers: each starts with a
-letter or `_`, followed by letters, digits, `_` or `'`. Empty segments, a segment
-equal to `_`, spaces, quoted identifiers and the reserved `lakefile` root are
-rejected. Names that collide ignoring case are also rejected to protect source
-files on case-insensitive systems. Paths and UUID prefixes are not references.
-
-`mdc new MX.Dot32.Exact` allocates the stable UUID. `mdc rename MX.Dot32.Exact
-MX.Dot32.Proof` changes the name and module path together, atomically updates
-managed Lean imports and literal LaTeX `name::label` references, and invalidates affected Lean evidence. UUIDs and edges
-stay unchanged. There is no separate display title or stored module field.
-Existing-project migration is not included in this naming change.
-
-Generated Lean imports quote bare names (`import «def»`) so even Lean keywords
-can be module names. This is Lean syntax escaping, not another node identifier.
-Qualified names such as `MX.Dot32.Exact` are emitted directly. Compiler workspaces
-record their generated module names and remove obsolete source/artifact paths
-after renames or deletions, including when a worker restarts.
-
-An open Lean editor rebinds to the renamed module while preserving its unsaved
-source. Adding unrelated nodes keeps existing Lean document workers warm.
+A node reference is its exact title or complete UUID. A duplicated title is
+ambiguous and needs the UUID; UUID prefixes and paths are not references. Titles
+can change; the UUID is stable. Nodes also keep a `module` field from the earlier
+Lean integration; it is preserved in exports but not used for checking.

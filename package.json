@@ -1,0 +1,27 @@
+{
+  "name": "mathdoc",
+  "version": "0.7.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "coordinator",
+    "web"
+  ],
+  "scripts": {
+    "build": "npm run build -w @mathdoc/coordinator && npm run build -w mdc-web",
+    "check": "npm run check -w @mathdoc/coordinator && npm run check -w mdc-web",
+    "test": "npm test -w @mathdoc/coordinator",
+    "start": "node coordinator/dist/main.js serve",
+    "worker": "node coordinator/dist/main.js worker",
+    "migrate": "node coordinator/dist/main.js migrate",
+    "dev": "npm run dev -w mdc-web",
+    "format": "prettier --plugin prettier-plugin-svelte --write \"coordinator/**/*.ts\""
+  },
+  "devDependencies": {
+    "prettier": "^3.9.9",
+    "prettier-plugin-svelte": "^4.1.1"
+  }
+}

@@ -8,86 +8,85 @@
 
 :root {
   /* Surface ramp */
-  --mdc-bg: #111111;
-  --mdc-panel: #171717;
-  --mdc-panel-raised: #1c1c1c;
-  --mdc-card: #222222;
-  --mdc-card-hover: #2a2a2a;
-  --mdc-card-selected: #333333;
-  --mdc-border: #303030;
-  --mdc-border-strong: #4d4d4d;
+  --mdc-bg: #08090d;
+  --mdc-panel: #0e1116;
+  --mdc-panel-raised: #14171f;
+  --mdc-card: #191d26;
+  --mdc-card-hover: #212632;
+  --mdc-card-selected: #282f3f;
+  --mdc-border: #1d212b;
+  --mdc-border-strong: #333b4b;
 
   /* Text ramp */
-  --mdc-fg: #f0f0f0;
-  --mdc-fg-soft: #d4d4d4;
-  --mdc-dim: #a3a3a3;
-  --mdc-muted: #8e8e8e;
+  --mdc-fg: #eef1f7;
+  --mdc-fg-soft: #c6cdda;
+  --mdc-dim: #8a93a3;
+  --mdc-muted: #79828f;
 
   /* Accents */
-  --mdc-accent: #e5e5e5;
-  --mdc-accent-strong: #ffffff;
+  --mdc-accent: #7c8cff;
+  --mdc-accent-strong: #9dabff;
   --mdc-accent-up: #b48cff;
   --mdc-accent-down: #4fd6ae;
   --mdc-warning: #f0b661;
   --mdc-error: #ff6f85;
-  --mdc-on-accent: #171717;
-  --mdc-on-success: #111111;
-  --mdc-on-error: #111111;
+  --mdc-on-accent: #080b18;
+  --mdc-on-success: #05100d;
+  --mdc-on-error: #180509;
 
   /* Code surfaces */
-  --mdc-code-bg: #1f1f1f;
-  --mdc-code-fg: #dddddd;
-  --mdc-code-dim: #8e8e8e;
+  --mdc-code-bg: #0a0d13;
+  --mdc-code-fg: #dde4f0;
+  --mdc-code-dim: #767f8d;
   --mdc-code-error: #ff6f85;
 
-  /* Block labels share the neutral shell palette. */
-  --mdc-block-text: var(--mdc-fg-soft);
-  --mdc-block-latex: var(--mdc-fg-soft);
-  --mdc-block-lean: var(--mdc-fg-soft);
-  --mdc-block-rocq: var(--mdc-fg-soft);
+  /* Per-srctype hues */
+  --mdc-block-text: #7c8cff;
+  --mdc-block-latex: #b48cff;
+  --mdc-block-lean: #ff9d63;
+  --mdc-block-rocq: #4fd6ae;
 
   /* Effects */
-  --mdc-backdrop: rgba(0, 0, 0, 0.66);
-  --mdc-body-glow: rgba(255, 255, 255, 0.03);
-  --mdc-grid: rgba(255, 255, 255, 0.03);
-  --mdc-selection: rgba(255, 255, 255, 0.2);
-  --mdc-editor-selection: rgba(255, 255, 255, 0.24);
-  --mdc-editor-active: rgba(255, 255, 255, 0.05);
-  --mdc-ring: rgba(255, 255, 255, 0.55);
+  --mdc-backdrop: rgba(4, 6, 10, 0.66);
+  --mdc-body-glow: rgba(94, 112, 200, 0.13);
+  --mdc-grid: rgba(124, 140, 255, 0.03);
+  --mdc-selection: rgba(124, 140, 255, 0.3);
+  --mdc-editor-selection: rgba(124, 140, 255, 0.38);
+  --mdc-editor-active: rgba(124, 140, 255, 0.09);
+  --mdc-ring: rgba(124, 140, 255, 0.55);
 
   --mdc-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.32);
   --mdc-shadow-md:
-    0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 16px -6px rgba(0, 0, 0, 0.5);
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 6px 16px -6px rgba(0, 0, 0, 0.5);
   --mdc-shadow-lg:
-    0 1px 2px rgba(0, 0, 0, 0.28), 0 12px 32px -12px rgba(0, 0, 0, 0.62);
+    0 1px 2px rgba(0, 0, 0, 0.28),
+    0 12px 32px -12px rgba(0, 0, 0, 0.62);
   --mdc-shadow-panel:
-    0 1px 2px rgba(0, 0, 0, 0.26), 0 20px 48px -20px rgba(0, 0, 0, 0.7);
+    0 1px 2px rgba(0, 0, 0, 0.26),
+    0 20px 48px -20px rgba(0, 0, 0, 0.7);
 
   color-scheme: dark;
 
   /* ----- Theme-independent tokens ----- */
 
-  --mdc-font:
-    Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
-  --mdc-mono:
-    "SFMono-Regular", "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo,
-    Consolas, monospace;
+  --mdc-font: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mdc-mono: "SFMono-Regular", "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
 
   /* Type scale */
-  --mdc-text-2xs: 0.6875rem; /* 11px — micro labels, counts */
-  --mdc-text-xs: 0.75rem; /* 12px — meta, paths, fnodes */
-  --mdc-text-sm: 0.8125rem; /* 13px — secondary UI text */
-  --mdc-text-md: 0.875rem; /* 14px — body, controls */
-  --mdc-text-xl: 1.375rem; /* 22px — node title */
+  --mdc-text-2xs: 0.6875rem;  /* 11px — micro labels, counts */
+  --mdc-text-xs: 0.75rem;     /* 12px — meta, paths, fnodes */
+  --mdc-text-sm: 0.8125rem;   /* 13px — secondary UI text */
+  --mdc-text-md: 0.875rem;    /* 14px — body, controls */
+  --mdc-text-xl: 1.375rem;    /* 22px — node title */
 
   --mdc-tracking-label: 0.055em;
   --mdc-tracking-tight: -0.018em;
 
   /* Radii */
-  --mdc-radius-sm: 5px;
-  --mdc-radius-md: 6px;
-  --mdc-radius-lg: 8px;
+  --mdc-radius-sm: 8px;
+  --mdc-radius-md: 12px;
+  --mdc-radius-lg: 16px;
   --mdc-radius-pill: 999px;
 
   /* Motion */
@@ -102,22 +101,22 @@
 }
 
 :root[data-theme="light"] {
-  --mdc-bg: #f5f5f5;
+  --mdc-bg: #f6f7f9;
   --mdc-panel: #ffffff;
-  --mdc-panel-raised: #fafafa;
-  --mdc-card: #f0f0f0;
-  --mdc-card-hover: #e8e8e8;
-  --mdc-card-selected: #e0e0e0;
-  --mdc-border: #e1e1e1;
-  --mdc-border-strong: #bdbdbd;
+  --mdc-panel-raised: #fbfcfe;
+  --mdc-card: #f3f5f8;
+  --mdc-card-hover: #eaeef4;
+  --mdc-card-selected: #e2e9f8;
+  --mdc-border: #e4e7ee;
+  --mdc-border-strong: #c2c9d6;
 
-  --mdc-fg: #202020;
-  --mdc-fg-soft: #454545;
-  --mdc-dim: #616161;
-  --mdc-muted: #707070;
+  --mdc-fg: #0f1420;
+  --mdc-fg-soft: #333c4d;
+  --mdc-dim: #5a6474;
+  --mdc-muted: #69727f;
 
-  --mdc-accent: #242424;
-  --mdc-accent-strong: #000000;
+  --mdc-accent: #4d5bd9;
+  --mdc-accent-strong: #3b47b8;
   --mdc-accent-up: #7440d0;
   --mdc-accent-down: #0a7d64;
   --mdc-warning: #96601a;
@@ -127,28 +126,37 @@
   --mdc-on-error: #ffffff;
 
   --mdc-code-bg: #ffffff;
-  --mdc-code-fg: #202020;
-  --mdc-code-dim: #707070;
+  --mdc-code-fg: #1f2430;
+  --mdc-code-dim: #6b7482;
   --mdc-code-error: #cb2431;
 
-  --mdc-backdrop: rgba(0, 0, 0, 0.32);
-  --mdc-body-glow: rgba(0, 0, 0, 0.02);
-  --mdc-grid: rgba(0, 0, 0, 0.04);
-  --mdc-selection: rgba(0, 0, 0, 0.15);
-  --mdc-editor-selection: rgba(0, 0, 0, 0.18);
-  --mdc-editor-active: rgba(0, 0, 0, 0.04);
-  --mdc-ring: rgba(0, 0, 0, 0.5);
+  --mdc-block-text: #3b47b8;
+  --mdc-block-latex: #6a3fc0;
+  --mdc-block-lean: #91430a;
+  --mdc-block-rocq: #06705a;
 
-  --mdc-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.07);
+  --mdc-backdrop: rgba(18, 26, 40, 0.32);
+  --mdc-body-glow: rgba(77, 91, 217, 0.08);
+  --mdc-grid: rgba(77, 91, 217, 0.05);
+  --mdc-selection: rgba(77, 91, 217, 0.2);
+  --mdc-editor-selection: rgba(77, 91, 217, 0.26);
+  --mdc-editor-active: rgba(77, 91, 217, 0.055);
+  --mdc-ring: rgba(77, 91, 217, 0.5);
+
+  --mdc-shadow-sm: 0 1px 2px rgba(19, 30, 51, 0.07);
   --mdc-shadow-md:
-    0 1px 2px rgba(0, 0, 0, 0.06), 0 6px 16px -8px rgba(0, 0, 0, 0.16);
+    0 1px 2px rgba(19, 30, 51, 0.06),
+    0 6px 16px -8px rgba(19, 30, 51, 0.16);
   --mdc-shadow-lg:
-    0 1px 2px rgba(0, 0, 0, 0.06), 0 12px 32px -14px rgba(0, 0, 0, 0.2);
+    0 1px 2px rgba(19, 30, 51, 0.06),
+    0 12px 32px -14px rgba(19, 30, 51, 0.2);
   --mdc-shadow-panel:
-    0 1px 2px rgba(0, 0, 0, 0.05), 0 20px 48px -24px rgba(0, 0, 0, 0.24);
+    0 1px 2px rgba(19, 30, 51, 0.05),
+    0 20px 48px -24px rgba(19, 30, 51, 0.24);
 
   color-scheme: light;
 }
+
 
 /* Shared shell geometry keeps project navigation and theme controls in place. */
 .app-header {
@@ -159,7 +167,8 @@
   flex: 0 0 var(--mdc-toolbar-h);
   padding: 0 0.75rem;
   border-bottom: 1px solid var(--mdc-border);
-  background: var(--mdc-panel);
+  background: color-mix(in srgb, var(--mdc-panel) 82%, transparent);
+  backdrop-filter: blur(12px) saturate(160%);
   position: relative;
   z-index: 4;
 }
@@ -172,25 +181,9 @@
   text-decoration: none;
   line-height: 1;
 }
-.app-brand img {
-  display: block;
-  width: 1.65rem;
-  height: 1.65rem;
-  filter: invert(1);
-}
-:root[data-theme="light"] .app-brand img {
-  filter: none;
-}
-.app-brand strong {
-  font-size: var(--mdc-text-md);
-  font-weight: 680;
-  letter-spacing: -0.03em;
-}
-.app-brand:focus-visible {
-  outline: 2px solid var(--mdc-accent);
-  outline-offset: 4px;
-  border-radius: 4px;
-}
+.app-brand img { display: block; width: 1.65rem; height: 1.65rem; }
+.app-brand strong { font-size: var(--mdc-text-md); font-weight: 680; letter-spacing: -0.03em; }
+.app-brand:focus-visible { outline: 2px solid var(--mdc-accent); outline-offset: 4px; border-radius: 4px; }
 .header-theme {
   display: grid;
   place-items: center;
@@ -205,25 +198,5 @@
   border-radius: var(--mdc-radius-sm);
   cursor: pointer;
 }
-.header-theme:hover {
-  background: var(--mdc-card-hover);
-  color: var(--mdc-fg);
-}
-@media (max-width: 1000px) {
-  .app-brand strong {
-    display: none;
-  }
-}
-
-@media (max-width: 640px) {
-  .app-header {
-    padding-inline: 8px;
-    gap: 6px;
-  }
-}
-
-/* Text fields share a quiet focus cue instead of an outer focus ring. */
-:is(input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), textarea):focus {
-  outline: none;
-  box-shadow: inset 0 -1px var(--mdc-border-strong);
-}
+.header-theme:hover { background: var(--mdc-card-hover); color: var(--mdc-fg); }
+@media (max-width: 1000px) { .app-brand strong { display: none; } }

@@ -1,19 +1,11 @@
 {
+  "extends": "@tsconfig/svelte/tsconfig.json",
   "compilerOptions": {
-    "target": "ES2022",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
-    "jsx": "react-jsx",
-    "strict": true,
-    "skipLibCheck": true,
-    "esModuleInterop": true,
-    "resolveJsonModule": true,
-    "isolatedModules": true,
+    "target": "ESNext",
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.d.ts"]
+  "include": ["src/**/*.ts", "src/**/*.svelte", "src/**/*.d.ts"]
 }

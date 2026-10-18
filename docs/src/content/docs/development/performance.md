@@ -2,181 +2,107 @@
 title: Performance measurements
 ---
 
-Run commands below from the source checkout, with service caches and disposable
-test databases outside it. Set up dependencies using [Development setup](../setup/).
-Record build mode, machine, database size and whether caches were warm.
+Run these from the source checkout against disposable data. Record the machine,
+build mode, database size and whether caches were warm; compare results only on
+the same machine.
 
-## Backend graph operations
+## Graph API
 
-### Existing project over HTTP and CLI
-
-`perf/graph-service.py` measures graph validation, roots, full graph transfer, searches,
-name/UUID resolution, node views, direct/transitive dependencies and referrers,
-leaves, dependency candidates, IOR, history, and eight concurrent readers. It
-records all samples, median/p95 and response size. It never requests Lean checking
-or opens a Lean editor.
+`perf/graph-service.py` measures a running server over HTTP: graph check, roots,
+full graph, searches, name/UUID resolution, node views, direct and transitive
+dependencies and referrers, leaves, dependency candidates, IOR, history, and
+eight concurrent readers. It records every sample, median, p95 and response
+size. It never contacts LeanGround.
 
 ```sh
-python3 perf/graph-service.py --url http://127.0.0.1:17843/p/mathlib4/main \
-  --cli "$(command -v mdc)" --proj mathlib4/main --query Algebra \
+export MDC_TOKEN=your-access-token
+python3 perf/graph-service.py --url http://127.0.0.1:17843/p/myproject/main \
+  --cli coordinator/dist/cli.js --proj myproject/main --query Algebra \
   --samples 20 --output /tmp/graph-baseline.json
 ```
 
-The benchmark's `--url` selects the HTTP measurement endpoint; `--proj` is required
-with `--cli` and must identify the same service. The mdc CLI itself has no URL option.
+`MDC_TOKEN` authenticates the HTTP requests and is passed on to the CLI. `--cli`
+is the path of an executable `mdc` (the backend build marks
+`coordinator/dist/cli.js` executable). Set `MDC_URL` if the server is not on the
+default origin. With `--cli`, `--proj` is required and must name the branch
+served at `--url`; each CLI sample is a fresh process, so it includes Node
+startup. `--query` (default `equation`) is the search term; `--samples` defaults
+to 20, after one untimed warm-up request per endpoint.
 
-The default is read-only. For writes, create a disposable database branch and run
-a separate service for that branch, then pass `--writes` to its URL. This adds
-temporary nodes and measures creation, rename, text saves, adding/removing edges,
-and rejection of stale revisions and cycles. Afterwards, run `mdc stop DATABASE/BRANCH`
-and `mdc branch del -p DATABASE/BRANCH` to remove the test branch and its caches.
-The benchmark does not delete nodes itself.
-Stop the entry server with `mdc stop` only if it is dedicated to the test run.
+The default run is read-only. `--writes` adds temporary nodes and measures
+creation, renames, text saves, adding and removing edges, and rejection of stale
+revisions and cycles. Use it only on a disposable branch
+(`mdc branch new bench -p DB/main`, then `mdc branch del -p DB/bench`); the script
+does not delete what it creates.
 
-HTTP measurements include connection establishment, response transfer and JSON
-decoding. CLI measurements additionally include a fresh client process and output
-decoding. Both require an already running service; record process startup separately.
-No OS/database caches are flushed. These local sample percentiles are observations,
-not production latency guarantees. Browser rendering is excluded.
+HTTP timings include connection setup, transfer and JSON decoding. No operating
+system or database caches are flushed; the first request to a branch also loads
+its snapshot. These are local observations, not latency guarantees.
 
-### Original Mathlib sources
+## Collaboration load
 
-`perf/mathlib-import.py` converts a pinned checkout into an import bundle. It keeps
-`Mathlib/**/*.lean` and the root `Mathlib.lean` as nodes, preserving module names,
-source bytes and file paths in metadata. Lean's native header parser supplies
-direct imports. Other non-hidden UTF-8 tracked files remain supporting project
-files; the report lists excluded files. This includes Mathlib's tactics and other
-metaprogramming needed by mathematical modules. It does not invent LaTeX or split
-theorems. The checkout remains read-only.
+`perf/board-load.ts` starts a coordinator (`coordinator/src/main.ts serve`) on a
+fresh PostgreSQL schema and TerminusDB database, writes a synthetic project board
+with N goals, and runs K agent processes that each repeat claim, two heartbeats,
+submit and finish the way `mdc` sends them (`If-Match: *`; only a claim reads the
+board first, to choose a task). No worker runs, so `submit` only queues a job and
+LeanGround is never called. It prints, per command, the latency an agent sees
+(p50, p95, max, including that read and any retry), throughput, revision
+conflicts, lost claims, errors and board size, and whether every command's p95
+meets `--target-p95`. It needs `MDC_TEST_DATABASE_URL`, `MDC_TEST_TERMINUS_URL`
+and `MDC_TEST_TERMINUS_PASSWORD`.
 
-```sh
-python3 perf/mathlib-import.py --source .external/mathlib4 --output /tmp/mdc-mathlib/mathlib.json
-mdc init mathlib4
-mdc start mathlib4/main
-mdc import /tmp/mdc-mathlib/mathlib.json -p mathlib4/main
-MDC_BENCH_BUNDLE=/tmp/mdc-mathlib/mathlib.json \
-MDC_BENCH_REPORT=/tmp/mdc-mathlib/preparation.json \
-  cargo test --release --locked --test test_mathlib_bench \
-  mathlib_snapshot_and_editor_preparation -- --ignored --nocapture
-```
-
-The preparation test measures snapshot capture, initial source materialization,
-unchanged editor refresh and invalidation. It does not compile Lean. Import only
-into an empty branch; mutation benchmarks belong on a disposable fork.
-
-For compiler comparison, install the source's exact toolchain and use an unused
-external run directory:
+`perf/sync-cost.ts` times the worker's sync job on a board with F certificates,
+each read again from the LeanGround double on loopback; no branch is attached. It
+needs only `MDC_TEST_DATABASE_URL`. Both remove what they create.
 
 ```sh
-MDC_BENCH_BUNDLE=/tmp/mdc-mathlib/mathlib.json \
-MDC_BENCH_RUN_DIR=/tmp/mdc-mathlib/compile-run \
-MDC_BENCH_MODULE=Mathlib.Data.Nat.Log MDC_LEAN_TIMEOUT_SECONDS=1800 \
-  cargo test --release --locked --test test_mathlib_bench \
-  mathlib_lake_and_mdc_incremental_builds -- --ignored --nocapture
+npx tsx perf/board-load.ts --agents 20 --goals 1000 --rounds 10 --target-p95 500 [--seed 1]
+npx tsx perf/sync-cost.ts --facts 1000 [--runs 3]
 ```
 
-This runs native `lake build +MODULE` and mdc check/build with separate local
-artifact caches. Toolchain installation, project materialization and pinned Git
-dependency downloads are outside the timed interval. Cold builds, unchanged
-builds, target edits and a `Mathlib.Init` dependency edit use identical sources;
-both sides must produce artifacts successfully. Remote artifact downloads are
-disabled with `LAKE_NO_CACHE=true` and `MATHLIB_NO_CACHE_ON_UPDATE=1`. The default
-target has 143 managed modules in this pinned revision, not the whole library.
-Results are saved in `MDC_BENCH_RUN_DIR/result.json`. Cold build times include
-compilation of required external libraries, and are distinct from graph latency
-or interactive editor latency.
-
-The [Mathlib benchmark report](https://github.com/mathdocument/MathDoc/tree/main/perf/reports/2026-09-12-mathlib)
-records the source commit, counts, measurements, and observed toolchain limitations.
-
-### Synthetic graph regression
-
-The Rust benchmark exercises the real TerminusDB-backed service on a synthetic
-47,435-node / 368,017-edge graph. It reports one-time import and startup separately,
-then seven graph-check samples and their median, including the database revision
-lookup and API response decoding. It excludes CLI startup, HTTP client transport
-and browser rendering.
-
-```sh
-cargo test --release --locked --test test_service_scale -- --ignored --nocapture
-```
-
-The test creates a separate database and a temporary compiler cache, and removes
-both when it finishes, including on assertion failure. A local database and
-credentials in `MDC_TERMINUS_PASSWORD` are required. CI runs with `--release`;
-compare results only with the same build mode and machine.
-
-The benchmark validates node/edge counts and acyclicity. It reports timing without
-enforcing a machine-independent latency threshold. Browser measurements are described below.
-
-The filesystem/SQLite benchmark targets, preparation script and active budgets
-are no longer active. [Archived reports](https://github.com/mathdocument/MathDoc/tree/main/perf/reports)
-preserve their historical measurements, including the earlier ETP investigation. Commands inside those
-reports refer to their original Git revisions.
+The values shown are the defaults, except `--facts` (default 358).
 
 ## Frontend performance
 
-The benchmark runs the production build in Chromium at 1440x900 against fixed,
-in-process API fixtures. It measures the shell and total compressed payload,
-a 500-line LaTeX editor, and a 10,000-node / 19,993-edge graph. Browser timings
-use a warm HTTP cache and report median values, except for the graph frame p95.
-The same run checks an 8,311-dependency list: bounded DOM size, scrolling to its
-end, keyboard navigation, node selection and scroll preservation across view
-switches. Its timings are recorded in `rawSamples.relations`. Canvas resize
-checks reject backing-size resets that leave a blank frame before painting.
-A 3840×2160, 2× Retina check reaches the canvas pixel cap, verifies that the
-bitmap fits its viewport, and checks the default 40% editor proportion at
-multiple desktop window widths.
-The large-list check also verifies dependency removal pagination, filtering,
-selection retention and the exact submitted dependency IDs.
-Navigation checks delay the shell script and require a header on the first
-frame, stable header height, directory/project transitions, browser back and
-forward, theme persistence and reduced-motion behavior.
+The benchmark runs the production build in Chromium at 1440×900 against fixed,
+in-process API fixtures. It measures the shell and total compressed payload, a
+500-line LaTeX editor, and a 10,000-node / 19,993-edge graph. Browser timings use
+a warm HTTP cache and report medians, except the graph frame p95. The same run
+checks an 8,311-dependency list: bounded DOM size, scrolling to the end, keyboard
+navigation, node selection and scroll preservation across view switches (timings
+in `rawSamples.relations`). Canvas checks reject a blank frame on resize; a
+3840×2160, 2× check reaches the canvas pixel cap and verifies the fixed 3/8
+sidebar at several widths. The list check also covers dependency-removal
+pagination, filtering, selection and the exact submitted IDs. Navigation checks
+delay the shell script and require a header on the first frame, stable header
+geometry, directory/project transitions, back and forward, theme persistence and
+reduced motion.
 
 ```sh
-npm exec --prefix web -- playwright install --no-shell chromium
-npm --prefix web run perf
+npm exec -w mdc-web -- playwright install --no-shell chromium
+npm run perf -w mdc-web
 ```
 
-Run the same interaction checks in WebKit (Safari's engine) without comparing
-its timings to the Chromium baseline:
+WebKit (Safari's engine), for interaction checks without comparing timings to
+the Chromium baseline:
 
 ```sh
-npm exec --prefix web -- playwright install webkit
-node web/perf/run.ts --browser webkit --output /tmp/mdc-webkit-perf.json
+npm exec -w mdc-web -- playwright install webkit
+node web/perf/run.mjs --browser webkit --output /tmp/mdc-webkit-perf.json
 ```
 
-`npm --prefix web run perf` compares a new run with `web/perf/baseline.json`. Run it on the same
-machine when checking a local change. `npm --prefix web run perf:measure` writes an
-uncompared report to `web/perf/latest.json`; that file is ignored. Use
-`npm --prefix web run perf:record` only when intentionally accepting a new baseline.
+`npm run perf -w mdc-web` compares the run with `web/perf/baseline.json`.
+`npm run perf:measure -w mdc-web` writes an uncompared `web/perf/latest.json`
+(ignored by Git). Use `npm run perf:record -w mdc-web` only to accept a new
+baseline intentionally, and review baseline or budget changes together with the
+change that needs them. `MDC_PERF_SAMPLES` sets the samples per metric (default
+5). The committed baseline dates from 2026-09-07, before the Lean editor and
+Infoview were removed, so local comparisons are against that older build.
 
-Runtime timings vary across machines. Pull requests therefore benchmark the
-base and head revisions on the same GitHub runner and apply the tolerances in
-`web/perf/budgets.json`. Bundle budgets are also capped absolutely. CI uploads both raw
-reports so an unexpected result can be inspected without rerunning it.
-
-Changes to fixtures, budgets, or `web/perf/baseline.json` should be reviewed alongside
-the optimization that requires them. Lower values are better for every metric.
-
-The lazy native Monaco/Infoview bundle is included in the recorded total of
-about 19.2 MB compressed, with a 20 MB absolute ceiling and an 8% regression
-budget. The initial shell has a separate 192 KiB ceiling. Runtime fixtures measure
-LaTeX and graph interaction; native Lean is checked by the real-server browser test.
-
-Run the real-server suite with `MDC_E2E_BROWSER=webkit` to check Safari's engine
-as well as the default Chromium (see [test setup](../setup/)).
-
-### React shell migration
-
-The React shell has a 192 KiB gzip cap, including its initial CSS and HTML.
-React DOM, Base UI accessibility behavior and virtual lists
-replace the previous Svelte runtime. For the first comparison from the Svelte shell to `react`, only the shell payload uses this absolute
-cap; later React changes also enforce the existing 8% relative budget. Total
-assets retain their 8% relative guard; the absolute total cap is corrected to
-20 MB because the existing main revision already bundles 19.05 MB (including
-TikZ and its fonts). Editor timings and graph frame budgets keep their existing limits.
-The current harness recognizes both shell structures for timing the same interactions.
-The CI base run uses `--baseline` to collect timings; virtual-list, Retina and
-navigation regression assertions run on the head revision. Fixtures and environment
-metadata must still match for a valid comparison.
+Timings vary across machines, so pull requests benchmark the base and head
+revisions on the same GitHub runner and apply the tolerances in
+`web/perf/budgets.json`: at most 8% growth of the shell and of the total payload,
+with absolute ceilings of 57,344 bytes for the shell and 9,000,000 bytes in total,
+and 15–20% for runtime metrics. Lower is better for every metric. CI uploads both
+raw reports.

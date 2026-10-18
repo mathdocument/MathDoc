@@ -4,51 +4,59 @@ title: LaTeX previews and references
 
 LaTeX blocks are document bodies. Shared macros and bibliography belong to the
 branch's LaTeX project, configured with `mdc project latex set --preamble macros.tex
---bib references.bib -p myproject/main`. The macro file may also be a `.cls` file.
-Only filenames and content are stored; the service does not watch the source files.
+--bib references.bib -p myproject/main` (both files are required). The macro
+file may also be a `.cls` file. Only filenames and content are stored; the
+service does not watch the source files.
 
 ## Editing
 
-Open **Project settings → LaTeX**, select a `.cls` or `.tex` file and a `.bib`
-file, then save. The CLI command above performs the same operation. The two
-file contents are versioned in the branch; later changes to the local files
-require uploading them again.
+Open **Project settings → LaTeX**, select a `.cls` or `.tex` file, a `.bib`
+file or both, then **Save LaTeX project**. The CLI command above performs the
+same operation. The two file contents are versioned in the branch and copied to
+branches forked from it; later changes to the local files require uploading them
+again.
 
-Saving stores the uploaded text without parsing or formatting it. Only filenames,
-size limits and the branch revision are checked; incomplete LaTeX or BibTeX can
-be saved. Parsing errors are reported when loading completions or previews.
+Saving stores the uploaded text without parsing or formatting it. Only filenames
+(`.tex`/`.cls` and `.bib`, without paths), sizes (2 MiB macro file, 16 MiB
+bibliography) and the branch revision are checked; incomplete LaTeX or BibTeX
+can be saved. Parsing errors are reported when loading completions or previews.
 
-Each block has an **Edit / Preview** toggle. The selected mode is shared by
+Each LaTeX block has an **Edit / Preview** toggle. The selected mode is shared by
 LaTeX blocks in the current page: switching nodes keeps it, while a new page
 starts in Edit unless opened at a specific reference. Reading-mode navigation
 prepares the destination preview before switching nodes. Initial rendering starts
-immediately; only typing is debounced. Previews use the unsaved draft; only
-**Save node** in the metadata row saves all changed blocks together. The source editor is created when entering Edit, so reading another node does not
-initialize a hidden editor. Once opened, it stays available for Edit / Preview
-switches on that node. The imported-dependency list stays visible in both Edit and Preview, is derived
-from `dep`, and never enters the block source. Reference, citation, macro and
-environment completions appear as you type, or with **Ctrl+Space**. References
-are scoped to the selected node; bibliography candidates are shared by the
-branch. Reference completion shows the target's name and inserts
-`Node.Name::label` for dependencies, or just `label` within the current node.
-Matching and relevance scores use Monaco's native fuzzy matcher. Citation searches
-include the key, title, authors and year; the best 50 matches from the entire
-catalog appear in a natively scrolling list. The display limit does not restrict
-which bibliography entries can be found.
+immediately; only typing is debounced (250 ms). Previews use the unsaved draft;
+only **Save** writes the node. The source editor is created when entering Edit,
+so reading another node does not initialize a hidden editor. Once opened, it
+stays available for Edit / Preview switches on that node. The
+imported-dependency list stays visible in both Edit and Preview, is derived from
+`dep`, and never enters the block source. Rendering diagnostics, such as
+unknown references or unsupported commands, are listed below the block.
+
+Reference, citation, macro and environment completions appear as you type, or
+with **Ctrl+Space**; Enter or Tab accepts one. References are offered inside
+`\ref`, `\cref`, `\Cref`, `\nameref` and `\eqref`, citations inside `\cite`.
+References are scoped to the selected node; bibliography candidates are shared
+by the branch. Reference completion shows each target's title (or label) and
+its node's title, and inserts `NODE_UUID::label` for dependencies, or just
+`label` within the current node. Matching and relevance scores use Monaco's
+native fuzzy matcher. Citation searches include the key, title, authors and
+year. Each list shows the best 50 matches from the entire catalog in a natively
+scrolling list; the display limit does not restrict which entries can be found.
 
 Click a reference to open its node and scroll to the label in Preview. Opening
-the link in a new tab also targets that label. The header's **Back / Forward**
-buttons follow browser history, keep the selected Edit / Preview mode and
-confirm before discarding unsaved edits. Citation links scroll to the
+the link in a new tab also targets that label. The toolbar's **Back** /
+**Forward** buttons follow browser history, keep the selected Edit / Preview
+mode and confirm before discarding unsaved edits. Citation links scroll to the
 node's bibliography. Dependency and project changes are checked every five
 seconds while the editor is visible; slow context requests are allowed to finish
 and stale draft responses are discarded. Completion catalogs must match the
 requested project version before they can be cached.
 No TeX language server is started.
 
-All source blocks, including Lean, are capped at the node pane's visible height.
-Empty text, LaTeX and Rocq editors start with 10rem (about 160px) of writing
-space; the visible-height cap takes priority in short windows.
+Source editors of every block type start with at least 10rem (about 160px) of
+writing space and grow with their content up to the node pane's visible height;
+in short windows the visible-height cap takes priority.
 Long editors and LaTeX previews scroll inside their block, leaving its toolbar
 in place. At a block's boundary, scrolling continues in the surrounding node
 pane for the rest of the gesture, without entering another editor. The pane
@@ -69,11 +77,14 @@ Use ordinary LaTeX definitions, for example:
 plasTeX expands macros and parses document structure. The web preview uses MathJax 4
 for math. This is HTML generation, not XeLaTeX compilation: page layout, font
 configuration, arbitrary packages, filesystem input and external commands are
-not executed. Upload the original class or preamble: MDC imports ordinary macro,
+not executed. Upload the original class or preamble: MathDoc imports ordinary macro,
 environment, math-operator and theorem declarations while skipping global setup
 calls and their arguments. Unsupported package declarations such as `etoolbox`,
-`geometry` and `fontspec` do not prevent independent macros from loading. Supported
-built-in plasTeX packages still supply their content commands.
+`geometry` and `fontspec` do not prevent independent macros from loading. The
+supported built-in plasTeX packages still supply their content commands:
+`amsmath`, `amssymb`, `amsfonts`, `amsthm`, `mathtools`, `mathrsfs`, `xcolor`
+(also as `color`), `hyperref`, `cleveref` and `tikz-cd`. In a node body,
+`\usepackage` of any other package is an error.
 
 Proof environments retain optional captions, including through aliases:
 `\begin{prf}[Sketch of the proof] ... \end{prf}`. Preview text uses the bundled
@@ -82,8 +93,8 @@ complete OpenType regular, italic, bold and bold-italic faces retain accented
 letters such as `ö`, `é` and `ü` in the same typeface, including bibliography
 titles. These TeX fonts are served locally under the GUST Font License; clients
 do not need a TeX installation. Ordinary formulas use MathJax's official
-TeX font package (Computer Modern with AMS blackboard bold), pinned with the
-renderer and bundled locally. This follows conventional LaTeX/`amssymb`, rather
+TeX font package (Computer Modern with AMS blackboard bold), pinned with
+MathJax (4.1.3) and bundled locally. This follows conventional LaTeX/`amssymb`, rather
 than Latin Modern Math's different `\mathbb` alphabet; class-specific font
 selections are not applied to HTML. No CDN requests are needed. Math is rendered
 asynchronously, and closing or changing a preview releases its MathJax items
@@ -132,15 +143,18 @@ xcolor's named colors and color expressions; shared `\definecolor` and
 `\colorlet` declarations apply to text and math.
 
 `tikzcd` renders as SVG with the bundled TikZJax TeX WebAssembly runtime, in a
-browser worker. Standard arrows, labels, TikZ options and shared macro definitions
+browser worker. A `tikzcd` inside a formula is rendered together with that
+formula. Standard arrows, labels, TikZ options and shared macro definitions
 are interpreted by TeX. The runtime and fonts load on the first diagram, from
-the MDC server; no CDN, host TeX installation or additional Docker service is
-required. Rendering is serialized per browser page, with a 30-second limit and
-a small cache keyed by diagram source and preamble.
+the MathDoc server; no CDN, host TeX installation or additional Docker service is
+required. Rendering is serialized per browser page, with a 30-second limit, an
+8 MiB SVG limit and a cache of the last 32 diagrams keyed by diagram source and
+preamble.
 
-Only imported macro/color declarations and `\usetikzlibrary`/`\tikzset` settings
-are forwarded to diagrams; print layout setup is skipped. TeX reads only bundled
-runtime files, and generated SVG is sanitized before display. Diagram labels are
+A diagram receives only the shared declarations it uses (with the declarations
+those use), color definitions and `\usetikzlibrary`/`\tikzset` settings; print
+layout setup is skipped. TeX reads only bundled runtime files, and generated SVG
+is sanitized before display. Diagram labels are
 local TeX content; graph `\ref` and bibliography links belong in the surrounding
 HTML body. The diagram keeps a white drawing surface so explicit colors retain
 their TeX meaning in either UI theme.
@@ -162,14 +176,17 @@ C \arrow[r,"k"'] & D
 
 `dep` is the only source of external imports. A preview sees the current node's
 labels and labels exported by its **direct** dependencies. Unused dependencies
-are allowed. Source-level `\externaldocument` and filesystem `\input` are rejected.
+are allowed. Node source may not use `\input`, `\include`, `\externaldocument`,
+`\includegraphics`, `\bibliography`, `\bibliographystyle`, `\openin`,
+`\openout`, `\read`, `\write`, `\immediate` or `\special`; they are rejected.
 
 A label is written normally, such as `\label{thm:main}`. In the web editor,
-type `thm:main` inside `\cref{…}` or `\nameref{…}` and accept a suggestion with
-Enter: external references insert `Node.Name::thm:main` using the target's complete
-name; references within the current node insert only `thm:main`. Completion
-also searches theorem titles and node names. Agents using `mdc edit --type latex`
-should write the qualified form directly for external references.
+type `thm:main` inside `\cref{…}`, `\nameref{…}` or another reference command
+and accept a suggestion with Enter: external references insert
+`NODE_UUID::thm:main` using the target's full UUID; references within the
+current node insert only `thm:main`. Completion also searches theorem and node
+titles. Agents using `mdc edit --type latex` should write the qualified form
+directly for external references.
 
 Bare labels remain supported when they identify exactly one target among the
 current node and its direct dependencies; collisions report an ambiguity
@@ -179,24 +196,18 @@ Removing a dependency immediately removes access to its labels; transitive
 dependencies are not implicitly imported.
 
 Use `\cref` for numbered references: a local reference reads `Theorem 1`, and a
-cross-node reference reads `Node.Name::Theorem 1`. The prefix is the target
-node's complete name; navigation still uses its full UUID.
-External `\ref`, `\Cref` and `\eqref` also show the capitalized target type and number.
+cross-node reference reads `12345678::Theorem 1`. The prefix is the target
+node's first eight UUID characters; navigation still uses its full UUID.
+External `\ref`, `\Cref` and `\eqref` also show the target type and number.
 Within a node, `\ref` displays the number and `\eqref` puts it in parentheses.
 
 For numbered external targets, `\nameref` uses the same type and number as
 `\cref`. Within the current node, it retains the theorem's optional title or the
-section title. Unnumbered external targets retain their title (or their node
-name and label when unnamed), prefixed by `Node.Name::`.
+section title. An unnumbered external target reads `12345678::Type (Title)`,
+where a target without a title of its own uses `Node title — label`; `\nameref`
+to a titled one reads just `12345678::Title`.
 References carry the target UUID and label so the web client can navigate to the
 correct node without reading an `.aux` file or building a PDF.
-
-`mdc rename` rewrites literal `name::label` arguments in saved `\ref`, `\cref`,
-`\Cref`, `\nameref` and `\eqref` commands in the same transaction as the name
-and Lean imports. Local labels, comments and verbatim text are preserved.
-Names constructed by custom macros are not rewritten. Existing open drafts
-remain revision-guarded and must be refreshed if another node's rename changes
-their saved source. Old `UUID::label` references are not supported.
 
 `\cite{key}` uses the shared BibTeX database. Pybtex's BibTeX interpreter runs the
 bundled, unmodified AMS `amsalpha.bst` (version 2.0, under LPPL 1.3c or later).
@@ -215,13 +226,19 @@ put ordinary content macros in the shared `.cls` or `.tex` file.
 
 ## Runtime and caching
 
-Python 3.9+ with venv support is required. First use installs the pinned plasTeX and
-Pybtex dependencies into a shared virtual environment under the MDC cache root,
-then reuses it across branches. Initial installation requires network access.
-For preinstalled/offline deployments, install `src/latex/requirements.txt` into a
-virtual environment and set `MDC_LATEX_PYTHON` to its Python executable.
+The API process runs the Python renderer in `renderer/` (`MDC_RENDERER_DIR` in the
+image). Python 3.9+ with venv support is required. Unless `MDC_LATEX_PYTHON` is
+set, first use installs the pinned plasTeX 3.1 and Pybtex 0.26.1 into a shared
+virtual environment under `MDC_CACHE_DIR/runtime/` (an absolute path; default
+`$XDG_CACHE_HOME/mathdoc/runtime/`, or `~/.cache/mathdoc/runtime/`) and reuses it
+for all branches; this needs `python3` and network access once. For offline
+hosts, install `renderer/requirements.txt` into a virtual environment and set
+`MDC_LATEX_PYTHON` to its Python executable. The Docker image ships such an
+environment in `/opt/latex`.
 
-Each branch lazily starts one rendering worker. Parsed results are content-keyed
+Each branch lazily starts one rendering worker, which handles one request at a
+time; when 8 requests of a branch are already waiting or running, more are
+refused as busy. Parsed results are content-keyed
 and bounded to 128 entries / 32 MiB; bibliography results are cached separately.
 The shared preamble and bibliography stay resident in that worker. Their content
 hash is retained with the branch snapshot, and the full configuration is sent
@@ -235,5 +252,9 @@ preparation. Draft requests never update persisted
 node labels or another client's document. Unchanged context queries return only
 version information, and rendering checks again for dependency changes before
 returning a result. No full-graph compilation or workspace synchronization occurs.
-Rendering has a 10-second timeout and bounded request/output sizes. Stopping a
-branch also stops its renderer.
+Rendering has a 10-second timeout and bounded sizes: 2 MiB per LaTeX block,
+32 MiB per renderer request or response (the block, its dependencies' blocks
+and, when it changed, the configuration), 8 MiB of rendered HTML and 200,000
+expanded tokens per parse. After a timeout, or when the renderer stops or exceeds
+its response limit, the next request starts a new one. A branch's renderer stops
+when the branch is deleted or the API process exits.

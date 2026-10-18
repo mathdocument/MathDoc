@@ -1,0 +1,835 @@
+{
+  "document_permission": {
+    "schema_version": "mathdoc.document-permission.v1",
+    "workspace_id": "workspace-demo",
+    "owner": "alice",
+    "branch_rules": [
+      {
+        "branch": "main",
+        "inherit_workspace_role": true,
+        "grants": [
+          {
+            "actor": "alice",
+            "role": "owner"
+          },
+          {
+            "actor": "bob",
+            "role": "editor"
+          },
+          {
+            "actor": "carol",
+            "role": "viewer"
+          }
+        ]
+      }
+    ],
+    "authorization_matrix": [
+      {
+        "action": "read",
+        "roles": [
+          "admin",
+          "owner",
+          "editor",
+          "viewer"
+        ]
+      },
+      {
+        "action": "write",
+        "roles": [
+          "admin",
+          "owner",
+          "editor"
+        ]
+      },
+      {
+        "action": "history",
+        "roles": [
+          "admin",
+          "owner",
+          "editor",
+          "viewer"
+        ]
+      },
+      {
+        "action": "branch_create",
+        "roles": [
+          "admin",
+          "owner",
+          "editor"
+        ]
+      },
+      {
+        "action": "branch_delete",
+        "roles": [
+          "admin",
+          "owner"
+        ]
+      },
+      {
+        "action": "export",
+        "roles": [
+          "admin",
+          "owner",
+          "editor",
+          "viewer"
+        ]
+      },
+      {
+        "action": "import",
+        "roles": [
+          "admin",
+          "owner"
+        ]
+      },
+      {
+        "action": "database_create",
+        "roles": [
+          "admin"
+        ]
+      },
+      {
+        "action": "database_delete",
+        "roles": [
+          "admin"
+        ]
+      },
+      {
+        "action": "member_manage",
+        "roles": [
+          "admin",
+          "owner"
+        ]
+      },
+      {
+        "action": "proof_request_create",
+        "roles": [
+          "admin",
+          "owner",
+          "editor"
+        ]
+      }
+    ]
+  },
+  "proof_environments": [
+    {
+      "schema_version": "mathdoc.proof-environment.v1",
+      "environment_id": "env-v1",
+      "base": {
+        "base_id": "fixture-base",
+        "base_key": 17,
+        "root_module": "Mathlib",
+        "lean_version": "4.33.1",
+        "lean_githash": "fixture-lean-revision",
+        "package_revision": "fixture-package-revision",
+        "package_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "module_list_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "build_flags_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "platform": "aarch64-linux",
+        "promotion_generation": 0,
+        "schema_version": 1
+      },
+      "context": {
+        "local_options": [
+          "set_option autoImplicit false"
+        ],
+        "opens": [
+          "open Nat"
+        ]
+      },
+      "options": {
+        "maxHeartbeats": 200000
+      },
+      "minimum_trust": "audited",
+      "project_lean_compatibility": "preserved_unmodified",
+      "proof_request": {
+        "database": "docs",
+        "branch": "main",
+        "data_version": "branch:v1",
+        "root": {
+          "node_id": "c1111111-1111-4111-8111-111111111111",
+          "lean_content_sha256": "d81d89e899b97e8b329245cbc9c74d4784f1095f6fd445c70fa2fd2c7a90c919"
+        },
+        "dependencies": [
+          {
+            "node_id": "a0000000-0000-4000-8000-000000000000",
+            "relation": "definition",
+            "lean_content_sha256": "0deaf37578d315d41611f65630f2cfaaf518f147da02e05bf7161f70aa3705c7"
+          },
+          {
+            "node_id": "a1111111-1111-4111-8111-111111111111",
+            "relation": "definition",
+            "lean_content_sha256": "7191c0395875bef3c50c56f1be9ec01079dd6db7ed449e4e7c4c67cb604d76fc"
+          },
+          {
+            "node_id": "b1111111-1111-4111-8111-111111111111",
+            "relation": "premise",
+            "lean_content_sha256": "b9ded70033fb6135b4a0a04ef3c6352a3f2d8fb5be24f9dd12fb9ead14558fcc"
+          }
+        ]
+      }
+    },
+    {
+      "schema_version": "mathdoc.proof-environment.v1",
+      "environment_id": "env-v2",
+      "base": {
+        "base_id": "fixture-base",
+        "base_key": 17,
+        "root_module": "Mathlib",
+        "lean_version": "4.33.1",
+        "lean_githash": "fixture-lean-revision",
+        "package_revision": "fixture-package-revision",
+        "package_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "module_list_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "build_flags_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "platform": "aarch64-linux",
+        "promotion_generation": 0,
+        "schema_version": 1
+      },
+      "context": {
+        "local_options": [
+          "set_option autoImplicit false"
+        ],
+        "opens": [
+          "open Nat"
+        ]
+      },
+      "options": {
+        "maxHeartbeats": 400000
+      },
+      "minimum_trust": "audited",
+      "project_lean_compatibility": "preserved_unmodified",
+      "replaces_environment_id": "env-v1",
+      "proof_request": {
+        "database": "docs",
+        "branch": "main",
+        "data_version": "branch:v1",
+        "root": {
+          "node_id": "c1111111-1111-4111-8111-111111111111",
+          "lean_content_sha256": "d81d89e899b97e8b329245cbc9c74d4784f1095f6fd445c70fa2fd2c7a90c919"
+        },
+        "dependencies": [
+          {
+            "node_id": "a0000000-0000-4000-8000-000000000000",
+            "relation": "definition",
+            "lean_content_sha256": "0deaf37578d315d41611f65630f2cfaaf518f147da02e05bf7161f70aa3705c7"
+          },
+          {
+            "node_id": "a1111111-1111-4111-8111-111111111111",
+            "relation": "definition",
+            "lean_content_sha256": "7191c0395875bef3c50c56f1be9ec01079dd6db7ed449e4e7c4c67cb604d76fc"
+          },
+          {
+            "node_id": "b1111111-1111-4111-8111-111111111111",
+            "relation": "premise",
+            "lean_content_sha256": "b9ded70033fb6135b4a0a04ef3c6352a3f2d8fb5be24f9dd12fb9ead14558fcc"
+          }
+        ]
+      }
+    }
+  ],
+  "declaration_bindings": [
+    {
+      "source": "def twice (n : Nat) := n + n\n",
+      "contract": {
+        "schema_version": "mathdoc.declaration-binding.v1",
+        "node_id": "11111111-1111-4111-8111-111111111111",
+        "block_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_sha256": "6a1a47f71438b99f8615ad16060e72131aefb21f9c071dc6e0dd7656fbe160e1",
+        "classification": "definition_only",
+        "definitions": [
+          {
+            "name": "twice",
+            "declaration_kind": "def",
+            "dependency_definition_ids": []
+          }
+        ],
+        "required_context": {},
+        "classification_source": "syntax_scan"
+      }
+    },
+    {
+      "source": "theorem target (n : Nat) : n = n := by rfl\n",
+      "contract": {
+        "schema_version": "mathdoc.declaration-binding.v1",
+        "node_id": "22222222-2222-4222-8222-222222222222",
+        "block_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "source_sha256": "f6bf173c215dd95b2747d29517cbef3fc6e1f7fd3ce65596b6500bfa1df1909e",
+        "classification": "theorem",
+        "conclusion": {
+          "name": "target",
+          "declaration_kind": "theorem",
+          "goal": {
+            "key": "fixture-goal"
+          }
+        },
+        "premise_placeholders": [],
+        "definitions": [],
+        "new_definitions": [],
+        "component": "lean-worker",
+        "mode": "leaf",
+        "required_context": {},
+        "classification_source": "syntax_scan"
+      }
+    },
+    {
+      "source": "instance : Inhabited Nat := ⟨0⟩\n",
+      "contract": {
+        "schema_version": "mathdoc.declaration-binding.v1",
+        "node_id": "33333333-3333-4333-8333-333333333333",
+        "block_revision": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "source_sha256": "72fbf1fd7146f76c1dee4e40e3d35c21190cd2b49a9822a4f505b369864927c8",
+        "classification": "unsupported",
+        "reason": "unsupported_declaration",
+        "details": "docs/12 only permits instances in the fixed proof environment context",
+        "required_context": {}
+      }
+    }
+  ],
+  "writeback": {
+    "schema_version": "mathdoc.writeback-batch.v1",
+    "batch_id": "batch-demo-1",
+    "replay_key": "proof-request-7:assembly-3:batch-1",
+    "review_branch": {
+      "database": "docs",
+      "branch": "review-proof-7",
+      "data_version": "branch:review-v1"
+    },
+    "source_proof_request_id": "proof-request-7",
+    "operations": [
+      {
+        "operation_id": "create-definition-node",
+        "kind": "create_definition_node",
+        "node_id": "44444444-4444-4444-8444-444444444444",
+        "source_sha256": "6a1a47f71438b99f8615ad16060e72131aefb21f9c071dc6e0dd7656fbe160e1",
+        "definition_id": "definition-content-id",
+        "preserve_public_declaration_name": true
+      },
+      {
+        "operation_id": "update-root-node",
+        "kind": "update_lean_block",
+        "node_id": "22222222-2222-4222-8222-222222222222",
+        "expected_node_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "source_sha256": "f6bf173c215dd95b2747d29517cbef3fc6e1f7fd3ce65596b6500bfa1df1909e",
+        "certification_id": "final-certification-id",
+        "preserve_public_declaration_name": true
+      }
+    ],
+    "conflict_resolution": "abort_entire_batch",
+    "certification_visibility": "after_full_batch_commit"
+  },
+  "legacy_revision": [
+    {
+      "node": {
+        "fnode": "55555555-5555-4555-8555-555555555555",
+        "title": "Fixture node",
+        "module": "Lib.N_55555555555545558555555555555555",
+        "depens": [
+          "77777777-7777-4777-8777-777777777777",
+          "66666666-6666-4666-8666-666666666666"
+        ],
+        "blocks": [
+          {
+            "srctype": "lean",
+            "content": "theorem fixture : True := by trivial\n",
+            "metadata": {
+              "z": "last",
+              "a": "first"
+            }
+          }
+        ]
+      },
+      "expected": "2003daf127ac9364284afda6b4665aaba8225ba8747be65c166e9ac9c2db99c5"
+    },
+    {
+      "node": {
+        "fnode": "15555555-5555-4555-8555-555555555555",
+        "title": "∀ n : ℕ，n = n",
+        "module": "Lib.N_55555555555545558555555555555555",
+        "depens": [
+          "77777777-7777-4777-8777-777777777777",
+          "66666666-6666-4666-8666-666666666666"
+        ],
+        "blocks": [
+          {
+            "srctype": "lean",
+            "content": "theorem 示例 (n : Nat) : n = n := rfl\n",
+            "metadata": {
+              "z": "last",
+              "a": "first"
+            }
+          }
+        ]
+      },
+      "expected": "179a0f174df39a5f08e530a04c5238f0828778061b3563fd39ae1c2b7d8b49e0"
+    },
+    {
+      "node": {
+        "fnode": "25555555-5555-4555-8555-555555555555",
+        "title": "latex",
+        "module": "Lib.N_55555555555545558555555555555555",
+        "depens": [
+          "77777777-7777-4777-8777-777777777777",
+          "66666666-6666-4666-8666-666666666666"
+        ],
+        "blocks": [
+          {
+            "srctype": "lean",
+            "content": "\\section{A \"quote\"} $\\forall n \\in \\mathbb{N}$",
+            "metadata": {
+              "z": "last",
+              "a": "first"
+            }
+          }
+        ]
+      },
+      "expected": "612f9ff9dad97e97b97d57156b641f647ef5cde9f53e2407db15019bc4575e51"
+    },
+    {
+      "node": {
+        "fnode": "35555555-5555-4555-8555-555555555555",
+        "title": "controls",
+        "module": "Lib.N_55555555555545558555555555555555",
+        "depens": [
+          "77777777-7777-4777-8777-777777777777",
+          "66666666-6666-4666-8666-666666666666"
+        ],
+        "blocks": [
+          {
+            "srctype": "lean",
+            "content": "a\u0000b\b\f\n\r\t\u001f",
+            "metadata": {
+              "z": "last",
+              "a": "first"
+            }
+          },
+          {
+            "srctype": "latex",
+            "content": "second block\n",
+            "metadata": {
+              "note": "line\tbreak"
+            }
+          }
+        ]
+      },
+      "expected": "857e260d44d3d110da0247345e3cd182b0b00b476df2ccd15b0d962fbfefab54"
+    }
+  ],
+  "staleness_cases": {
+    "nodes": {
+      "a0000000-0000-4000-8000-000000000000": {
+        "fnode": "a0000000-0000-4000-8000-000000000000",
+        "title": "偏移量",
+        "module": "Lib.N_a0000000000040008000000000000000",
+        "depens": [],
+        "blocks": [
+          {
+            "srctype": "lean",
+            "content": "def offset : Nat := 0\n",
+            "metadata": {}
+          }
+        ]
+      },
+      "a1111111-1111-4111-8111-111111111111": {
+        "fnode": "a1111111-1111-4111-8111-111111111111",
+        "title": "倍数",
+        "module": "Lib.N_a1111111111141118111111111111111",
+        "depens": [
+          "a0000000-0000-4000-8000-000000000000"
+        ],
+        "blocks": [
+          {
+            "srctype": "lean",
+            "content": "def double (n : Nat) : Nat := n + n + offset\n",
+            "metadata": {}
+          },
+          {
+            "srctype": "latex",
+            "content": "$\\operatorname{double}(n) = 2n$",
+            "metadata": {}
+          }
+        ]
+      },
+      "b0000000-0000-4000-8000-000000000000": {
+        "fnode": "b0000000-0000-4000-8000-000000000000",
+        "title": "辅助引理",
+        "module": "Lib.N_b0000000000040008000000000000000",
+        "depens": [],
+        "blocks": [
+          {
+            "srctype": "lean",
+            "content": "theorem helper (n : Nat) : n + 0 = n := rfl\n",
+            "metadata": {}
+          }
+        ]
+      },
+      "b1111111-1111-4111-8111-111111111111": {
+        "fnode": "b1111111-1111-4111-8111-111111111111",
+        "title": "double 的公式",
+        "module": "Lib.N_b1111111111141118111111111111111",
+        "depens": [
+          "a1111111-1111-4111-8111-111111111111",
+          "b0000000-0000-4000-8000-000000000000"
+        ],
+        "blocks": [
+          {
+            "srctype": "lean",
+            "content": "theorem double_eq (n : Nat) : double n = 2 * n := by\n  simp [double, offset, helper]; omega\n",
+            "metadata": {}
+          }
+        ]
+      },
+      "c1111111-1111-4111-8111-111111111111": {
+        "fnode": "c1111111-1111-4111-8111-111111111111",
+        "title": "double 3 = 6",
+        "module": "Lib.N_c1111111111141118111111111111111",
+        "depens": [
+          "a1111111-1111-4111-8111-111111111111",
+          "b1111111-1111-4111-8111-111111111111"
+        ],
+        "blocks": [
+          {
+            "srctype": "lean",
+            "content": "theorem target : double 3 = 6 := by\n  rw [double_eq]\n",
+            "metadata": {}
+          },
+          {
+            "srctype": "latex",
+            "content": "根定理的说明",
+            "metadata": {}
+          }
+        ]
+      },
+      "d1111111-1111-4111-8111-111111111111": {
+        "fnode": "d1111111-1111-4111-8111-111111111111",
+        "title": "无关节点",
+        "module": "Lib.N_d1111111111141118111111111111111",
+        "depens": [],
+        "blocks": [
+          {
+            "srctype": "lean",
+            "content": "theorem unrelated : True := trivial\n",
+            "metadata": {}
+          }
+        ]
+      }
+    },
+    "roles": {
+      "a0000000-0000-4000-8000-000000000000": "definition",
+      "a1111111-1111-4111-8111-111111111111": "definition",
+      "b0000000-0000-4000-8000-000000000000": "theorem",
+      "b1111111-1111-4111-8111-111111111111": "theorem",
+      "c1111111-1111-4111-8111-111111111111": "theorem",
+      "d1111111-1111-4111-8111-111111111111": "theorem"
+    },
+    "root": "c1111111-1111-4111-8111-111111111111",
+    "cases": [
+      {
+        "change": "unrelated_node_edited",
+        "replace": {
+          "d1111111-1111-4111-8111-111111111111": {
+            "fnode": "d1111111-1111-4111-8111-111111111111",
+            "title": "无关节点",
+            "module": "Lib.N_d1111111111141118111111111111111",
+            "depens": [],
+            "blocks": [
+              {
+                "srctype": "lean",
+                "content": "theorem unrelated : True := by trivial\n",
+                "metadata": {}
+              }
+            ]
+          }
+        },
+        "expected_stale": false
+      },
+      {
+        "change": "definition_metadata_written",
+        "replace": {
+          "a1111111-1111-4111-8111-111111111111": {
+            "fnode": "a1111111-1111-4111-8111-111111111111",
+            "title": "倍数",
+            "module": "Lib.N_a1111111111141118111111111111111",
+            "depens": [
+              "a0000000-0000-4000-8000-000000000000"
+            ],
+            "blocks": [
+              {
+                "srctype": "lean",
+                "content": "def double (n : Nat) : Nat := n + n + offset\n",
+                "metadata": {
+                  "leanground_definition_id": "f4693b0c6eb1a4f6990160b1df1deddc1fd3cfc845d169cbdb8cd8bc42cfc25f"
+                }
+              },
+              {
+                "srctype": "latex",
+                "content": "$\\operatorname{double}(n) = 2n$",
+                "metadata": {}
+              }
+            ]
+          }
+        },
+        "expected_stale": false
+      },
+      {
+        "change": "definition_prose_edited",
+        "replace": {
+          "a1111111-1111-4111-8111-111111111111": {
+            "fnode": "a1111111-1111-4111-8111-111111111111",
+            "title": "倍数",
+            "module": "Lib.N_a1111111111141118111111111111111",
+            "depens": [
+              "a0000000-0000-4000-8000-000000000000"
+            ],
+            "blocks": [
+              {
+                "srctype": "lean",
+                "content": "def double (n : Nat) : Nat := n + n + offset\n",
+                "metadata": {}
+              },
+              {
+                "srctype": "latex",
+                "content": "$\\operatorname{double}(n) = n + n$",
+                "metadata": {}
+              }
+            ]
+          }
+        },
+        "expected_stale": false
+      },
+      {
+        "change": "root_title_edited",
+        "replace": {
+          "c1111111-1111-4111-8111-111111111111": {
+            "fnode": "c1111111-1111-4111-8111-111111111111",
+            "title": "double 3 等于 6",
+            "module": "Lib.N_c1111111111141118111111111111111",
+            "depens": [
+              "a1111111-1111-4111-8111-111111111111",
+              "b1111111-1111-4111-8111-111111111111"
+            ],
+            "blocks": [
+              {
+                "srctype": "lean",
+                "content": "theorem target : double 3 = 6 := by\n  rw [double_eq]\n",
+                "metadata": {}
+              },
+              {
+                "srctype": "latex",
+                "content": "根定理的说明",
+                "metadata": {}
+              }
+            ]
+          }
+        },
+        "expected_stale": false
+      },
+      {
+        "change": "premise_own_dependency_edited",
+        "replace": {
+          "b0000000-0000-4000-8000-000000000000": {
+            "fnode": "b0000000-0000-4000-8000-000000000000",
+            "title": "辅助引理",
+            "module": "Lib.N_b0000000000040008000000000000000",
+            "depens": [],
+            "blocks": [
+              {
+                "srctype": "lean",
+                "content": "theorem helper (n : Nat) : n + 0 = n := Nat.add_zero n\n",
+                "metadata": {}
+              }
+            ]
+          }
+        },
+        "expected_stale": false
+      },
+      {
+        "change": "root_lean_edited",
+        "replace": {
+          "c1111111-1111-4111-8111-111111111111": {
+            "fnode": "c1111111-1111-4111-8111-111111111111",
+            "title": "double 3 = 6",
+            "module": "Lib.N_c1111111111141118111111111111111",
+            "depens": [
+              "a1111111-1111-4111-8111-111111111111",
+              "b1111111-1111-4111-8111-111111111111"
+            ],
+            "blocks": [
+              {
+                "srctype": "lean",
+                "content": "theorem target : double 3 = 6 := by\n  simp [double_eq]\n",
+                "metadata": {}
+              },
+              {
+                "srctype": "latex",
+                "content": "根定理的说明",
+                "metadata": {}
+              }
+            ]
+          }
+        },
+        "expected_stale": true
+      },
+      {
+        "change": "direct_definition_lean_edited",
+        "replace": {
+          "a1111111-1111-4111-8111-111111111111": {
+            "fnode": "a1111111-1111-4111-8111-111111111111",
+            "title": "倍数",
+            "module": "Lib.N_a1111111111141118111111111111111",
+            "depens": [
+              "a0000000-0000-4000-8000-000000000000"
+            ],
+            "blocks": [
+              {
+                "srctype": "lean",
+                "content": "def double (n : Nat) : Nat := 2 * n + offset\n",
+                "metadata": {}
+              },
+              {
+                "srctype": "latex",
+                "content": "$\\operatorname{double}(n) = 2n$",
+                "metadata": {}
+              }
+            ]
+          }
+        },
+        "expected_stale": true
+      },
+      {
+        "change": "transitive_definition_lean_edited",
+        "replace": {
+          "a0000000-0000-4000-8000-000000000000": {
+            "fnode": "a0000000-0000-4000-8000-000000000000",
+            "title": "偏移量",
+            "module": "Lib.N_a0000000000040008000000000000000",
+            "depens": [],
+            "blocks": [
+              {
+                "srctype": "lean",
+                "content": "def offset : Nat := 1\n",
+                "metadata": {}
+              }
+            ]
+          }
+        },
+        "expected_stale": true
+      },
+      {
+        "change": "premise_lean_edited",
+        "replace": {
+          "b1111111-1111-4111-8111-111111111111": {
+            "fnode": "b1111111-1111-4111-8111-111111111111",
+            "title": "double 的公式",
+            "module": "Lib.N_b1111111111141118111111111111111",
+            "depens": [
+              "a1111111-1111-4111-8111-111111111111",
+              "b0000000-0000-4000-8000-000000000000"
+            ],
+            "blocks": [
+              {
+                "srctype": "lean",
+                "content": "theorem double_eq (n : Nat) : double n = n + n := by\n  simp [double, offset]\n",
+                "metadata": {}
+              }
+            ]
+          }
+        },
+        "expected_stale": true
+      },
+      {
+        "change": "premise_node_missing",
+        "replace": {
+          "b1111111-1111-4111-8111-111111111111": null
+        },
+        "expected_stale": true
+      },
+      {
+        "change": "definition_lean_block_removed",
+        "replace": {
+          "a1111111-1111-4111-8111-111111111111": {
+            "fnode": "a1111111-1111-4111-8111-111111111111",
+            "title": "倍数",
+            "module": "Lib.N_a1111111111141118111111111111111",
+            "depens": [
+              "a0000000-0000-4000-8000-000000000000"
+            ],
+            "blocks": [
+              {
+                "srctype": "latex",
+                "content": "$\\operatorname{double}(n) = 2n$",
+                "metadata": {}
+              }
+            ]
+          }
+        },
+        "expected_stale": true
+      }
+    ]
+  },
+  "context_cases": [
+    {
+      "required": {
+        "opens": [
+          "open Nat"
+        ]
+      },
+      "expected": null
+    },
+    {
+      "required": {
+        "opens": [
+          "open Int"
+        ]
+      },
+      "expected": "local_context_mismatch"
+    },
+    {
+      "required": {
+        "local_options": [
+          "set_option autoImplicit true"
+        ]
+      },
+      "expected": "local_context_mismatch"
+    }
+  ],
+  "premise_collision_cases": [
+    {
+      "names": [
+        "shared",
+        "shared"
+      ],
+      "conclusion": "target"
+    },
+    {
+      "names": [
+        "target"
+      ],
+      "conclusion": "target"
+    }
+  ],
+  "legacy_revision_key_order": [
+    {
+      "node": {
+        "fnode": "85555555-5555-4555-8555-555555555555",
+        "title": "Ordering",
+        "module": "Lib.N_85555555555545558555555555555555",
+        "depens": [],
+        "blocks": [
+          {
+            "srctype": "lean",
+            "content": "theorem t : True := trivial\n",
+            "metadata": {
+              "10": "ten",
+              "9": "nine",
+              "a,b": "comma",
+              "a": "plain",
+              "￿": "bmp",
+              "😀": "astral"
+            }
+          }
+        ]
+      },
+      "expected": "cb115ad74abccbfc396e3efef3893a0716deab83c6c683202699996ea781229f"
+    }
+  ]
+}

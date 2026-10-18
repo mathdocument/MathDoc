@@ -12,5 +12,7 @@ __pycache__/
 *.log
 
 # Local server deployment state (never commit credentials).
-/config.toml
+/mathdoc.env
 /secrets/
+# Replay records of the deployment's mdc wrapper (scripts/mdc-docker).
+/state/

@@ -4,28 +4,33 @@ title: Graph, search and metrics
 
 ```sh
 mdc search theorem -n 20 -p myproject/main
-mdc graph check -p myproject/main -m
+mdc graph check -p myproject/main
 mdc graph roots -p myproject/main
 mdc graph full -p myproject/main
 mdc metric ior 'Theorem' -p myproject/main
 ```
 
-`search QUERY` matches names and UUIDs case-insensitively. It returns node
-summaries, with `-n/--max-results` in 0–200 (default 200). It does not search block
-contents or fuzzy-match names, and it does not paginate beyond that limit.
+`search QUERY` matches titles and UUIDs case-insensitively and returns node
+summaries (`fnode`, `title`, `depth`), at most `-n` (default 200; larger values
+are capped at 200). It does not search block contents, does not fuzzy-match and
+does not paginate.
 
-Graph operations read the service's validated projection. `check` returns node
-and edge counts; it does not compile Lean. Invalid nodes, missing dependencies
-and cycles are rejected when loading or committing a graph, so a failed graph
-load returns an error instead of a partial projection with issue lists.
-`full` returns node summaries, each with its cached `lean` status, and index-pair
-edges for visualization. It does not compile Lean to obtain colors. `roots`
-returns unreferenced nodes with topological depth and weak component size.
+Graph commands read the branch's in-memory projection. `check` returns the node
+and edge counts, `{nodes, edges}`; every commit is validated (no missing
+dependency, no cycle) before it is written, so there are no issues to list.
+`full` returns node summaries, each with a `lean` field (`no_code` or
+`unverified`: whether a Lean block exists), and index-pair edges for
+visualization. `roots` returns unreferenced nodes, deepest first, with
+topological depth and weak component size. None of them contact LeanGround;
+certification is reported per node by `show` and the node view.
 
-`metric ior` is a single-node operation. Its result includes UUID, in-degree,
-out-degree and `ior = ln((in_degree + 1) / (out_degree + 1))`. Reverse queries use
-the resident reverse adjacency map. Every request checks the database revision;
-external commits can trigger a projection reload. There is no file scan.
+A node's `depth` is its topological depth: 0 for a node without dependencies,
+otherwise one more than its deepest dependency.
 
-For repeatable graph benchmarks and their scope, see
+`metric ior` returns the node's UUID, in-degree, out-degree and
+`ior = ln((in_degree + 1) / (out_degree + 1))`, as
+`{fnode, in_degree, out_degree, ior}`.
+
+Each request checks the branch's current commit and reloads the projection after
+commits made elsewhere. For benchmarks see
 [Performance measurements](../../development/performance/).

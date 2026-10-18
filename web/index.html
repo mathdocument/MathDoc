@@ -3,15 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#111111" />
+    <meta name="theme-color" content="#08090d" />
+    <script>
+      let storedTheme = null;
+      try { storedTheme = localStorage.getItem("mdc-theme"); } catch {}
+      const initialTheme = storedTheme === "light" || storedTheme === "dark"
+        ? storedTheme
+        : matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      document.documentElement.dataset.theme = initialTheme;
+      document.querySelector('meta[name="theme-color"]').content =
+        initialTheme === "light" ? "#f6f7f9" : "#08090d";
+    </script>
     <meta
       name="description"
       content="MathDoc — a versioned graph for formal mathematics: write, link, and organize lemmas across text, Lean, Rocq, and LaTeX."
     />
     <title>MathDoc</title>
-    <link rel="icon" type="image/svg+xml" href="/src/assets/mdc-logo.svg?no-inline" />
+    <link rel="icon" type="image/svg+xml" href="/mdc-logo.svg" />
     <!-- Mount the header before the first paint and incoming navigation snapshot. -->
-    <script type="module" blocking="render" src="/src/main.tsx"></script>
+    <script type="module" blocking="render" src="/src/main.ts"></script>
   </head>
   <body>
     <div id="app"></div>

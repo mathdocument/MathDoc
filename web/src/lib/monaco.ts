@@ -10,14 +10,14 @@ import { editor, languages, Uri } from 'monaco-editor';
 import type { Theme } from './theme';
 
 export const sourceOptions: editor.IStandaloneEditorConstructionOptions = {
-  automaticLayout: false, fontFamily: 'JuliaMono', fontSize: 13, tabSize: 2,
+  automaticLayout: false, fontFamily: "ui-monospace, 'SF Mono', Menlo, Consolas, 'DejaVu Sans Mono', monospace", fontSize: 13, tabSize: 2,
   wordWrap: 'on', wrappingStrategy: 'simple', minimap: {enabled: false},
   folding: false, stickyScroll: {enabled: false}, lineNumbersMinChars: 1,
   lineDecorationsWidth: 5, scrollBeyondLastLine: false, mouseWheelZoom: false,
-  // Keep the editor's thumb visible while native boundary handoff suspends overflow.
-  scrollbar: {handleMouseWheel: false, vertical: 'visible', horizontal: 'visible', verticalScrollbarSize: 10, horizontalScrollbarSize: 10},
+  scrollbar: {handleMouseWheel: false, vertical: 'hidden', horizontal: 'hidden'},
   fixedOverflowWidgets: true, renderLineHighlight: 'gutter',
-  unicodeHighlight: {ambiguousCharacters: false, nonBasicASCII: false},
+  // Lean's ℕ and CJK punctuation are not confusables here; invisible characters stay marked.
+  unicodeHighlight: {ambiguousCharacters: false},
 };
 /** Finish visible syntax before revealing an editor; leave the rest to its worker. */
 export function renderSource(view: editor.IStandaloneCodeEditor) {
@@ -38,9 +38,6 @@ export function initializeMonaco() {
     };
     await initialize({...getConfiguration(), ...getTextmate(), ...getTheme(), ...getLanguages(), ...getModels()}, document.body, {workspaceProvider: {trusted: true, workspace: {workspaceUri: Uri.file('/workspace.code-workspace')}, async open() {return false;}}});
     await (await import('@codingame/monaco-vscode-theme-defaults-default-extension')).whenReady;
-    const font = new FontFace('JuliaMono', `url(${new URL('lean4monaco/dist/fonts/JuliaMono-Regular.ttf', import.meta.url)})`);
-    document.fonts.add(font);
-    await font.load();
   })();
 }
 export async function setMonacoTheme(theme: Theme) {
@@ -51,6 +48,8 @@ const grammars = {
   text: () => import('@shikijs/langs/markdown'),
   latex: () => import('@shikijs/langs/latex'),
   rocq: () => import('@shikijs/langs/coq'),
+  // Without the native Lean editor, Lean is highlighted like the other source blocks.
+  lean: () => import('@shikijs/langs/lean4'),
 };
 const loaded = new Map<string, Promise<string>>();
 /** Use the same native TextMate engine as Lean; the package supplies only grammars. */
@@ -60,7 +59,7 @@ export function loadSourceLanguage(type: keyof typeof grammars) {
     pending = (async () => {
       await initializeMonaco();
       const definitions = (await grammars[type]()).default;
-      const language = type === 'text' ? 'markdown' : type === 'rocq' ? 'coq' : 'latex';
+      const language = {text: 'markdown', rocq: 'coq', latex: 'latex', lean: 'lean'}[type];
       const extension = registerExtension({
         name: `mdc-${type}`, publisher: 'mathdoc', version: '1.0.0', engines: {vscode: '*'},
         contributes: {
@@ -75,7 +74,13 @@ export function loadSourceLanguage(type: keyof typeof grammars) {
       languages.setLanguageConfiguration(language, {
         brackets: [['{', '}'], ['[', ']'], ['(', ')']],
         autoClosingPairs: [{open: '{', close: '}'}, {open: '[', close: ']'}, {open: '(', close: ')'}],
-        comments: type === 'latex' ? {lineComment: '%'} : type === 'rocq' ? {blockComment: ['(*', '*)']} : {blockComment: ['<!--', '-->']},
+        comments: type === 'latex' ? {lineComment: '%'} : type === 'rocq' ? {blockComment: ['(*', '*)']}
+          : type === 'lean' ? {lineComment: '--', blockComment: ['/-', '-/']} : {blockComment: ['<!--', '-->']},
+        // Markdown: typing a mark over a selection wraps it, as the toolbar does.
+        ...(type === 'text' ? {surroundingPairs: [
+          {open: '{', close: '}'}, {open: '[', close: ']'}, {open: '(', close: ')'},
+          {open: '*', close: '*'}, {open: '_', close: '_'}, {open: '`', close: '`'}, {open: '$', close: '$'},
+        ]} : {}),
       });
       await editor.colorize('', language, {});
       return language;

@@ -6,4 +6,5 @@ Chromium benchmarks for payload size, block editing and graph interaction.
 - [Baseline](baseline.json)
 - [Budgets](budgets.json)
 
-Native Lean behavior is covered by the real-server browser integration suite.
+Lean blocks are plain source editors here; their LeanGround flow is covered by the browser
+suite (`web/e2e/run.mjs`).

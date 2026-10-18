@@ -1,4 +1,59 @@
+# The MathDoc server. `scripts/package-deployment DIR` exports it (as compose.yaml) with
+# mathdoc.env, the `mdc` wrapper and a secrets/ directory; no source checkout is needed.
+#
+# secrets/database-password and secrets/postgres-password are generated on first start.
+# Before starting, create secrets/actors.json (access tokens) and secrets/leanground-token
+# (the coordinator's LeanGround fact token); see mathdoc.env.
 name: mathdoc
+x-secrets-init: &secrets-init |
+  # Generate a missing password once; refuse to replace one that initialized data.
+  generate() {
+    secret=/run/mathdoc-secrets/$$1
+    if [ ! -e "$$secret" ]; then
+      if [ -n "$$(ls -A "$$2" 2>/dev/null)" ]; then
+        echo "Data exists but secrets/$$1 is missing; restore the original password file." >&2
+        exit 1
+      fi
+      umask 077
+      temporary=$$(mktemp /run/mathdoc-secrets/.password.XXXXXX)
+      trap 'rm -f "$$temporary"' EXIT
+      od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$$temporary"
+      printf '\n' >> "$$temporary"
+      mv "$$temporary" "$$secret"
+      trap - EXIT
+    fi
+    if [ ! -f "$$secret" ] || [ -z "$$(cat "$$secret")" ]; then
+      echo "Password file secrets/$$1 is empty or invalid; restore the original password file." >&2
+      exit 1
+    fi
+  }
+  # The runtime (uid/gid 10001) reads every secret; reapply after a restore by another user.
+  secure() {
+    chgrp 10001 /run/mathdoc-secrets
+    chmod 0750 /run/mathdoc-secrets
+    for file in /run/mathdoc-secrets/*; do
+      [ -f "$$file" ] || continue
+      chown "$$(stat -c %u /run/mathdoc-secrets):10001" "$$file"
+      chmod 0440 "$$file"
+    done
+  }
+x-mathdoc: &mathdoc
+  image: ${MATHDOC_IMAGE:-ghcr.io/mathdocument/mathdoc-runtime:0.7.0}
+  init: true
+  env_file:
+    - path: ./mathdoc.env
+      required: true
+  environment: &mathdoc-environment
+    MDC_TERMINUS_URL: http://database:6363
+    MDC_TERMINUS_PASSWORD_FILE: /run/mathdoc-secrets/database-password
+    MDC_DATABASE_URL: postgresql://mathdoc@postgres:5432/mathdoc
+    MDC_DATABASE_PASSWORD_FILE: /run/mathdoc-secrets/postgres-password
+    MDC_ACTORS_FILE: /run/mathdoc-secrets/actors.json
+    LEANGROUND_FACT_TOKEN_FILE: /run/mathdoc-secrets/leanground-token
+  volumes:
+    - ./secrets:/run/mathdoc-secrets:ro
+  logging:
+    driver: local
 services:
   database:
     container_name: ${COMPOSE_PROJECT_NAME:-mathdoc}-database
@@ -7,33 +62,14 @@ services:
     environment:
       TERMINUSDB_ADMIN_PASS_FILE: /run/mathdoc-secrets/database-password
       TERMINUSDB_SERVER_PORT: "6363"
+      SECRETS_INIT: *secrets-init
     # Generate the password before invoking the pinned image's original entrypoint.
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
-        secret=/run/mathdoc-secrets/database-password
-        chgrp 10001 /run/mathdoc-secrets
-        chmod 0750 /run/mathdoc-secrets
-        if [ ! -e "$$secret" ]; then
-          if [ -d /app/terminusdb/storage/db ]; then
-            echo 'Database exists but secrets/database-password is missing; restore the original password file.' >&2
-            exit 1
-          fi
-          umask 077
-          temporary=$$(mktemp /run/mathdoc-secrets/.password.XXXXXX)
-          trap 'rm -f "$$temporary"' EXIT
-          od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$$temporary"
-          printf '\n' >> "$$temporary"
-          mv "$$temporary" "$$secret"
-          trap - EXIT
-        fi
-        if [ ! -f "$$secret" ] || [ -z "$$(cat "$$secret")" ]; then
-          echo 'Database password file is empty or invalid; restore the original password file.' >&2
-          exit 1
-        fi
-        # Reapply access after a backup is restored by a different host user.
-        chown "$$(stat -c %u /run/mathdoc-secrets):10001" "$$secret"
-        chmod 0440 "$$secret"
+        eval "$$SECRETS_INIT"
+        generate database-password /app/terminusdb/storage/db
+        secure
         exec /app/terminusdb/init_docker.sh
     volumes:
       - data:/app/terminusdb/storage
@@ -47,43 +83,82 @@ services:
       start_period: 30s
     logging:
       driver: local
-  runtime:
-    container_name: ${COMPOSE_PROJECT_NAME:-mathdoc}-runtime
-    image: ${MATHDOC_IMAGE:-ghcr.io/mathdocument/mathdoc-runtime:0.6.0}
-    init: true
+  postgres:
+    container_name: ${COMPOSE_PROJECT_NAME:-mathdoc}-postgres
+    image: postgres:17-bookworm
     restart: unless-stopped
-    stop_grace_period: 60s
+    environment:
+      POSTGRES_USER: mathdoc
+      POSTGRES_DB: mathdoc
+      SECRETS_INIT: *secrets-init
+    # The password reaches PostgreSQL only inside this process, never the container config.
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        eval "$$SECRETS_INIT"
+        generate postgres-password /var/lib/postgresql/data/PG_VERSION
+        secure
+        POSTGRES_PASSWORD=$$(cat /run/mathdoc-secrets/postgres-password)
+        export POSTGRES_PASSWORD
+        exec docker-entrypoint.sh postgres
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - ./secrets:/run/mathdoc-secrets
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "mathdoc", "-d", "mathdoc"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 20s
+    logging:
+      driver: local
+  migrate:
+    <<: *mathdoc
+    container_name: ${COMPOSE_PROJECT_NAME:-mathdoc}-migrate
+    restart: "no"
+    command: ["migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+  runtime:
+    <<: *mathdoc
+    container_name: ${COMPOSE_PROJECT_NAME:-mathdoc}-runtime
+    restart: unless-stopped
+    stop_grace_period: 30s
+    command: ["serve"]
     depends_on:
       database:
         condition: service_healthy
-    environment:
-      MDC_CONFIG: /etc/mathdoc/config.toml
-      MDC_TERMINUS_URL: http://database:6363
-      MDC_TERMINUS_PASSWORD_FILE: /run/mathdoc-secrets/database-password
-      MDC_LISTEN_ADDRESS: 0.0.0.0
-    # Edit 127.0.0.1 to 0.0.0.0 for trusted LAN access, and set public_origin.
+      migrate:
+        condition: service_completed_successfully
+    # Edit 127.0.0.1 to 0.0.0.0 for trusted LAN access, and set MDC_PUBLIC_ORIGIN.
     # The container always uses 17843; MDC_PORT changes only the host port.
     ports:
       - "127.0.0.1:${MDC_PORT:-17843}:17843"
     volumes:
-      - cache:/var/lib/mdc/cache
-      - tools:/var/lib/mdc/tools
-      - type: bind
-        source: ./config.toml
-        target: /etc/mathdoc/config.toml
-        read_only: true
-        bind:
-          create_host_path: false
       - ./secrets:/run/mathdoc-secrets:ro
+      - cache:/var/lib/mdc/cache
     networks: [backend, outbound]
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "--output", "/dev/null", "http://127.0.0.1:17843/api/status"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:17843/').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
       interval: 5s
       timeout: 5s
       retries: 24
-      start_period: 30s
-    logging:
-      driver: local
+      start_period: 20s
+  worker:
+    <<: *mathdoc
+    container_name: ${COMPOSE_PROJECT_NAME:-mathdoc}-worker
+    restart: unless-stopped
+    stop_grace_period: 30s
+    command: ["worker"]
+    depends_on:
+      database:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks: [backend, outbound]
 networks:
   backend:
     internal: true
@@ -91,7 +166,7 @@ networks:
 volumes:
   data:
     name: ${COMPOSE_PROJECT_NAME:-mathdoc}-vol-data
+  postgres:
+    name: ${COMPOSE_PROJECT_NAME:-mathdoc}-vol-postgres
   cache:
     name: ${COMPOSE_PROJECT_NAME:-mathdoc}-vol-cache
-  tools:
-    name: ${COMPOSE_PROJECT_NAME:-mathdoc}-vol-tools

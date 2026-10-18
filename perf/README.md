@@ -1,12 +1,11 @@
 # Backend performance
 
-Real TerminusDB graph and CLI benchmarks, plus archived measurements.
+Benchmarks of the TypeScript backend; how to run them and what they measure is in
+[Performance measurements](../docs/src/content/docs/development/performance.md).
 
-- [Benchmark workflow and measurement scope](../docs/src/content/docs/development/performance.md)
-- [Graph benchmark script](graph-service.py)
-- [Historical reports](reports/)
-- [Mathlib benchmark and source adapter](reports/2026-09-12-mathlib/README.md)
-- [Native Lake shared-cache experiment on Linux/ext4](reports/2026-09-22-linux-shared-cache/README.md)
+- [graph-service.py](graph-service.py): the document and graph API of a running server, over HTTP and the CLI.
+- [board-load.ts](board-load.ts): K agents working on one project board (docs/mathdoc.md §2.7.5).
+- [sync-cost.ts](sync-cost.ts): one sync job on a board with F certificates.
 
-Archived reports describe their original revisions and retain the commands used
-at the time.
+Reports of the removed Rust backend and the Mathlib import scripts were deleted;
+they remain in Git history (`git show bcb161c:perf/reports/`).

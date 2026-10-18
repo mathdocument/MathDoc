@@ -23,14 +23,10 @@ export function currentTheme(): Theme {
   return document.documentElement.dataset.theme === "light" ? "light" : "dark";
 }
 
-export function initializeTheme() {
-  applyTheme(preferredTheme(), false);
-}
-
 export function applyTheme(theme: Theme, persist = true) {
   document.documentElement.dataset.theme = theme;
   document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
-    ?.setAttribute("content", theme === "light" ? "#f5f5f5" : "#111111");
+    ?.setAttribute("content", theme === "light" ? "#f6f7f9" : "#08090d");
   if (!persist) return;
   try {
     localStorage.setItem(STORAGE_KEY, theme);
