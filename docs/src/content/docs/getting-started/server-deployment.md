@@ -7,7 +7,7 @@ checkout, Rust, Node, Python or a host Lean installation. The deployment runs tw
 containers, `mathdoc-runtime` and `mathdoc-database`, and three named volumes.
 
 The runtime uses Debian Trixie slim and includes the embedded web frontend,
-Python/LaTeX dependencies, Elan and **Lean 4.33.1**. That Lean release works on
+Python/LaTeX dependencies, Elan and **Lean 4.36.0**. That Lean release works on
 first start without a toolchain download. Project libraries may still need
 network access and compilation. The release workflow currently targets Linux
 AMD64; ARM64 support in the Dockerfile has not been verified end to end.
@@ -67,15 +67,17 @@ access the deployment and its credentials. Do not put the deployment's generated
 ```
 
 `init` creates the graph in TerminusDB and is not needed again after a restart.
-Lean 4.33.1 is already available. Projects with other pinned versions can install
-them into the tools volume:
+New projects use the bundled Lean 4.36.0. Projects that pin another Lean release
+use that version. Install additional releases once into the persistent tools volume:
 
 ```sh
 docker compose exec -T runtime elan toolchain install leanprover/lean4:VERSION
 ```
 
-Replace `VERSION` with the project's release, such as `v4.33.1`. Project settings,
-including its toolchain and dependency lockfile, remain versioned in the database.
+Replace `VERSION` with the project's release, such as `v4.33.1`. For an offline
+server, provision the older toolchain before resuming work on that project.
+Project settings, including the toolchain and dependency lockfile, are versioned
+in the database.
 The tools volume has a `lean/` directory and can accommodate future Rocq
 installations; the deployment does not currently install a Rocq compiler.
 
@@ -159,6 +161,10 @@ source and project settings, not full database history or compiler caches.
 
 ## Restart, upgrade and roll back
 
+**Breaking change in 0.7.0.** A node's qualified name is its Lean module name.
+UUIDs still identify nodes and dependency edges. Databases and graph exports using the
+0.6.0 node schema are incompatible with this release.
+
 The foreground server remembers started branches in the cache volume and restores
 them after container restarts. Explicitly stopping a branch removes it from that
 selection. Use Compose to stop the whole deployment: bare `mdc stop` exits the
@@ -196,7 +202,9 @@ an upgrade or rollback.
 | `mathdoc-vol-cache` | Generated sources, dependencies, compiler caches and branch restart selection. |
 | `mathdoc-vol-tools` | Elan state and additional Lean toolchains under `lean/`; room for future compiler tools. |
 
-Lean 4.33.1 itself stays in the image; the tools volume contains a link to it.
+Lean 4.36.0 lives in the image. On upgrade, the runtime registers it in the
+tools volume and updates Elan's default if it pointed to the previous bundled
+release. Separately installed toolchains and custom defaults are preserved.
 The cache volume can be regenerated, but losing it also loses branch restart
 selection. Do not reuse native compiler caches from a different OS or architecture.
 
@@ -260,12 +268,12 @@ reuse and recovery from a missing or empty password file.
    image in `compose.server.yaml`, and version examples in the documentation.
    Commit the changes and run `./scripts/check`.
 2. Push the commit and wait for **Release check** to pass on that exact commit.
-3. Create and push the matching annotated tag, for example `v0.6.0`, then publish
+3. Create and push the matching annotated tag, for example `v0.7.0`, then publish
    a GitHub release for that tag with release notes. Pushing a tag alone does not
    publish the runtime.
 4. Wait for **Publish runtime** to finish. The `runtime-release.yml` workflow
    builds and smoke-tests the Linux AMD64 image, pushes it to
-   `ghcr.io/mathdocument/mathdoc-runtime:0.6.0`, then packages the exact pushed
+   `ghcr.io/mathdocument/mathdoc-runtime:0.7.0`, then packages the exact pushed
    digest and uploads `mathdoc-deployment-linux-amd64.tar.gz` to the release.
 5. Configure the GHCR package as public once so servers can pull without registry
    login. Download the release bundle into a fresh directory, pull the images
