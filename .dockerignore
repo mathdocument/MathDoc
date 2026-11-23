@@ -1,6 +1,7 @@
 **
 !Cargo.toml
 !Cargo.lock
+!lean-toolchain
 !src/
 !src/**
 !docker/

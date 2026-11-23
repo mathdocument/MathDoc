@@ -9,7 +9,7 @@ FROM rust:1.95.0-slim-trixie AS build
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock lean-toolchain ./
 COPY src ./src
 COPY --from=frontend /build/web/dist ./web/dist
 RUN cargo build --release --locked && strip target/release/mdc
@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Elan and the default Lean toolchain are immutable image contents. Additional
 # toolchains live under /var/lib/mdc/tools, alongside future Rocq installations.
+COPY lean-toolchain /opt/lean-toolchain
 RUN set -eu; \
     arch="$(uname -m)"; \
     case "$arch" in \
@@ -33,9 +34,10 @@ RUN set -eu; \
     echo "$checksum  /tmp/elan.tar.gz" | sha256sum -c -; \
     tar -xzf /tmp/elan.tar.gz -C /tmp; \
     ELAN_HOME=/opt/elan /tmp/elan-init -y --no-modify-path --default-toolchain none; \
-    ELAN_HOME=/opt/elan /opt/elan/bin/elan toolchain install leanprover/lean4:v4.33.1; \
+    toolchain="$(cat /opt/lean-toolchain)"; version="${toolchain##*:v}"; \
+    ELAN_HOME=/opt/elan /opt/elan/bin/elan toolchain install "$toolchain"; \
     mkdir -p /opt/lean; \
-    mv /opt/elan/toolchains/leanprover--lean4---v4.33.1 /opt/lean/4.33.1; \
+    mv "/opt/elan/toolchains/leanprover--lean4---v$version" "/opt/lean/$version"; \
     rm /tmp/elan.tar.gz /tmp/elan-init
 
 COPY src/latex/requirements.txt /tmp/latex-requirements.txt

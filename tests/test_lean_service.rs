@@ -5,7 +5,7 @@ use mathdoc::{
 use std::collections::HashMap;
 
 #[tokio::test]
-#[ignore = "requires native Lean v4.33.1 and Lake"]
+#[ignore = "requires the pinned Lean toolchain and Lake"]
 async fn renames_reuse_certificates_only_when_lake_inputs_are_unchanged() {
     for public_import in [false, true] {
         let temp = tempfile::tempdir().unwrap();
@@ -141,13 +141,13 @@ fn lazy_toolchain_installation_preserves_shared_cache_single_flight() {
         &lake,
         r#"#!/bin/sh
 set -eu
-toolchain="$ELAN_HOME/toolchains/leanprover--lean4---v4.33.1"
+toolchain="$ELAN_HOME/toolchains/leanprover--lean4---v${MATHDOC_TEST_TOOLCHAIN##*:v}"
 if [ ! -e "$toolchain" ]; then
     sleep 1
     mkdir -p "$ELAN_HOME/toolchains"
     ln -s "$MATHDOC_TEST_COMPILER" "$toolchain" 2>/dev/null || test -L "$toolchain"
 fi
-exec elan run leanprover/lean4:v4.33.1 lake "$@"
+exec elan run "$MATHDOC_TEST_TOOLCHAIN" lake "$@"
 "#,
     )
     .unwrap();
@@ -166,6 +166,7 @@ exec elan run leanprover/lean4:v4.33.1 lake "$@"
         .env("PATH", path)
         .env("ELAN_HOME", root.path().join("elan"))
         .env_remove("ELAN_TOOLCHAIN")
+        .env("MATHDOC_TEST_TOOLCHAIN", toolchain)
         .env(
             "MATHDOC_TEST_COMPILER",
             compiler.parent().unwrap().parent().unwrap(),
@@ -390,7 +391,7 @@ async fn pinned_external_library_builds_and_reuses_artifacts() {
 }
 
 #[tokio::test]
-#[ignore = "requires native Lean v4.33.1 and Lake"]
+#[ignore = "requires the pinned Lean toolchain and Lake"]
 async fn native_lean_incremental_diagnostics_goals_and_imports() {
     let temp = tempfile::tempdir().unwrap();
     let service = LeanService::new(temp.path().to_path_buf()).unwrap();

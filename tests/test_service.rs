@@ -323,7 +323,7 @@ async fn delete_node_atomically_detaches_referrers_and_invalidates_affected_keys
 }
 
 #[tokio::test]
-#[ignore = "requires TerminusDB and native Lean v4.33.1"]
+#[ignore = "requires TerminusDB and the pinned Lean toolchain"]
 async fn api_mutations_use_database_revisions_without_workspace_files() {
     let fixture = common::TestDatabase::new("mdcapi").await;
     let db = &fixture.db;

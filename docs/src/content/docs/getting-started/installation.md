@@ -21,7 +21,7 @@ From the source checkout:
 npm --prefix web ci
 npm --prefix web run build
 cargo install --path . --locked
-elan toolchain install leanprover/lean4:v4.33.1
+elan toolchain install "$(cat lean-toolchain)"
 mdc --help
 ```
 

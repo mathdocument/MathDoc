@@ -21,13 +21,36 @@ def main():
     parser.add_argument("--image", default="mathdoc-runtime:local")
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[1]
-    print("Checking the bundled toolchain offline with a fresh tools volume…", flush=True)
-    subprocess.run([
+    toolchain = (repo / "lean-toolchain").read_text().strip()
+    version = toolchain.removeprefix("leanprover/lean4:v")
+    print("Checking fresh and upgraded tools volumes offline...", flush=True)
+    offline = [
         "docker", "run", "--rm", "--pull", "never", "--network", "none", "--mount",
         "type=volume,destination=/var/lib/mdc/tools", "--entrypoint", "sh", args.image,
-        "-ec", "mathdoc-entrypoint --help >/dev/null; lean --version; lake --version; "
-        "test -L \"$ELAN_HOME/toolchains/leanprover--lean4---v4.33.1\"",
-    ], check=True)
+        "-ec",
+    ]
+    subprocess.run([*offline, """
+        mathdoc-entrypoint --help >/dev/null
+        lean --version | grep -F "version $1,"
+        lake --version
+        test -L "$ELAN_HOME/toolchains/leanprover--lean4---v$1"
+    """, "sh", version], check=True)
+    subprocess.run([*offline, """
+        tools="$ELAN_HOME/toolchains"
+        old="$tools/leanprover--lean4---v4.33.1"
+        mkdir -p "$tools"
+        ln -s /opt/lean/4.33.1 "$old"
+        elan default leanprover/lean4:v4.33.1
+        mathdoc-entrypoint --help >/dev/null
+        test ! -L "$old"
+        lean --version | grep -F "version $1,"
+        elan toolchain link custom "/opt/lean/$1"
+        elan default custom
+        ln -s /opt/lean/4.33.1 "$old"
+        mathdoc-entrypoint --help >/dev/null
+        test ! -L "$old"
+        test "$(elan which lean)" = "$tools/custom/bin/lean"
+    """, "sh", version], check=True)
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -106,9 +129,9 @@ def main():
             http("/", headers={"Host": "untrusted.example"}, expected=403)
             http("/", headers={"Origin": "http://untrusted.example"}, expected=403)
             assert cli("status")["server"]["port"] == 17843
-            assert "4.33.1" in run("exec", "-T", "runtime", "lean", "--version")
+            assert f"version {version}," in run("exec", "-T", "runtime", "lean", "--version")
             assert run("exec", "-T", "runtime", "readlink",
-                       "/var/lib/mdc/tools/lean/toolchains/leanprover--lean4---v4.33.1").strip() == "/opt/lean/4.33.1"
+                       f"/var/lib/mdc/tools/lean/toolchains/leanprover--lean4---v{version}").strip() == f"/opt/lean/{version}"
             # Password files are read by exec'd CLI processes, without entrypoint magic.
             for path, error in (("/missing-password", "read database password file"),
                                 ("/dev/null", "database password file is empty")):
@@ -118,6 +141,7 @@ def main():
                 "runtime", "mdc", "status", error="set only one of")
             cli("init", "smoke")
             cli("start", "smoke/main")
+            assert cli("project", "show", "-p", "smoke/main")["project"]["toolchain"] == toolchain
             cli("branch", "new", "paused", "-p", "smoke/main")
             cli("start", "smoke/paused")
             cli("stop", "smoke/paused")

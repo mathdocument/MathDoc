@@ -130,7 +130,7 @@ A minimal complete input object is:
 
 ```json
 {
-  "toolchain": "leanprover/lean4:v4.33.1",
+  "toolchain": "leanprover/lean4:v4.36.0",
   "lakefile": "name = \"MathDoc\"\nversion = \"0.1.0\"\n",
   "manifest": null
 }

@@ -215,10 +215,12 @@ pub struct LeanProject {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub files: BTreeMap<String, String>,
 }
+const DEFAULT_LEAN_TOOLCHAIN: &str = include_str!("../lean-toolchain");
+
 impl Default for LeanProject {
     fn default() -> Self {
         Self {
-            toolchain: "leanprover/lean4:v4.33.1".into(),
+            toolchain: DEFAULT_LEAN_TOOLCHAIN.trim().into(),
             lakefile: "name = \"MathDoc\"\nversion = \"0.1.0\"\n".into(),
             manifest: None,
             lakefile_name: None,
@@ -247,7 +249,10 @@ impl LeanProject {
         if !self.toolchain.starts_with("leanprover/lean4:v")
             || self.toolchain.chars().any(char::is_whitespace)
         {
-            bail!("pin a Lean toolchain release, such as leanprover/lean4:v4.33.1");
+            bail!(
+                "pin a Lean toolchain release, such as {}",
+                DEFAULT_LEAN_TOOLCHAIN.trim()
+            );
         }
         let config: toml::Value = match self.lakefile_name() {
             "lakefile.toml" => toml::from_str(&self.lakefile)?,

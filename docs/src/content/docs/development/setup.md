@@ -3,7 +3,7 @@ title: Development setup
 ---
 
 Use the [installation instructions](../../getting-started/installation/) for a
-local TerminusDB instance and pinned Lean v4.33.1 toolchain. Node.js is required
+local TerminusDB instance and the toolchain pinned in `lean-toolchain`. Node.js is required
 to build from source and develop the frontend/documentation, but not to run the
 installed binary. The build and CI use Node.js 26.
 
