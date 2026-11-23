@@ -8,15 +8,27 @@ use std::{
     process::{Command, Stdio},
 };
 
+// Cargo's test harness cannot dispatch MathDoc's Lake helper commands.
+fn test_profile(exe: &Path) -> Option<&Path> {
+    let dir = exe.parent()?;
+    if dir.ends_with("deps") {
+        return dir.parent();
+    }
+    // Cargo 1.100 places test binaries in PROFILE/build/PACKAGE/HASH/out.
+    let package = dir.parent()?.parent()?;
+    if dir.ends_with("out") && package.ends_with("build/mathdoc") {
+        return package.parent()?.parent();
+    }
+    None
+}
+
 pub(super) fn executable() -> Result<PathBuf> {
     let exe = std::env::current_exe()?;
-    // Native library/integration tests use the sibling CLI built by Cargo.
-    if exe
-        .parent()
-        .and_then(Path::file_name)
-        .is_some_and(|n| n == "deps")
-    {
-        let binary = exe.parent().unwrap().parent().unwrap().join("mdc");
+    if exe.file_name().is_some_and(|name| name == "mdc") {
+        return Ok(exe);
+    }
+    if let Some(profile) = test_profile(&exe) {
+        let binary = profile.join("mdc");
         anyhow::ensure!(
             binary.is_file(),
             "build mdc before running native Lean tests"
