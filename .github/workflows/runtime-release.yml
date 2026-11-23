@@ -58,12 +58,12 @@ jobs:
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           docker tag mathdoc-runtime:local "$IMAGE"
           docker push "$IMAGE"
-          reference=$(docker image inspect "$IMAGE" --format '{{index .RepoDigests 0}}')
-          case "$reference" in
-            ghcr.io/*@sha256:*) ;;
-            *) echo 'Published image digest is missing' >&2; exit 1 ;;
-          esac
-          printf 'image=%s\n' "$reference" >> "$GITHUB_OUTPUT"
+          digest=$(docker buildx imagetools inspect "$IMAGE" --format '{{.Manifest.Digest}}')
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo 'GHCR did not return a valid manifest digest' >&2
+            exit 1
+          fi
+          printf 'image=%s@%s\n' "${IMAGE%:*}" "$digest" >> "$GITHUB_OUTPUT"
 
       - name: Package deployment pinned to the published digest
         env:
