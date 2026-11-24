@@ -94,13 +94,17 @@
   margin-right: -16px;
   padding: 24px 16px 24px 0;
 }
-.project-scroll::after {
-  content: "";
-  position: absolute;
-  top: 100%;
-  width: 1px;
-  height: 1px;
-  pointer-events: none;
+/* The extra pixel enables native bounce on short lists. Firefox also draws
+   a scrollbar for that pixel, even when the directory is empty. */
+@supports not (-moz-appearance: none) {
+  .project-scroll::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    width: 1px;
+    height: 1px;
+    pointer-events: none;
+  }
 }
 .project-list {
   display: grid;

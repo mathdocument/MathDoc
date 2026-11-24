@@ -395,6 +395,11 @@ await test('project directory creates, forks, starts, stops and deletes branches
       await page.goto(base);
       await page.getByRole('textbox', {name: 'Search projects and branches'}).fill(database);
       await row(main).getByText('Running', {exact: true}).waitFor();
+      if (browser.browserType() === firefox) {
+        const list = page.locator('.project-scroll');
+        assert.equal(await list.evaluate(el => el.scrollHeight - el.clientHeight), 0,
+          'a single project fits without a scrollbar in Firefox');
+      }
       assert.equal(await page.getByText('MAIN', {exact: true}).count(), 0);
       assert.equal(await page.getByText('MATHEMATICAL WORKSPACE', {exact: true}).count(), 0);
       assert.match(await row(main).locator('.branch-counts').innerText(), /3.*nodes/);
