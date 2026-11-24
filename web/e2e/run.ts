@@ -219,6 +219,85 @@ await test('short relationship lists retain native boundary scrolling', async ()
   } finally { await browser.close(); }
 });
 
+await test('starred graph preserves positions and only draws the selected node’s direct starred edges', async () => {
+  const browser = await launchBrowser();
+  try {
+    await fixture(browser, async ({page, cli}) => {
+      // A four-node chain is laid out on one horizontal line in dependency order.
+      await cli('dep', 'add', 'Beta', '--target', 'Gamma');
+      await cli('dep', 'add', 'Gamma', '--target', 'Delta');
+      await page.getByRole('button', {name: 'Graph', exact: true}).click();
+      const graph = page.locator('.graph-container');
+      const canvas = graph.locator('canvas');
+      const all = graph.getByRole('button', {name: 'All nodes'});
+      const starred = graph.getByRole('button', {name: 'Starred'});
+      const star = center(page).getByRole('button', {name: 'Star node'});
+      const empty = () => center(page).getByText('No node selected').waitFor();
+      const rowAlpha = () => canvas.evaluate(async (el: HTMLCanvasElement) => {
+        await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+        const ctx = el.getContext('2d')!;
+        const row = ctx.getImageData(0, Math.floor(el.height / 2), el.width, 1).data;
+        return Array.from({length: el.width}, (_, i) => row[i * 4 + 3]!);
+      });
+
+      assert.equal(await all.getAttribute('aria-pressed'), 'true');
+      assert.equal(await star.getAttribute('aria-pressed'), 'false');
+      await starred.click();
+      await graph.getByText(/No starred nodes/).waitFor();
+      assert.ok((await rowAlpha()).every(alpha => alpha === 0));
+      await all.click();
+      await canvas.click({position: {x: 5, y: 5}});
+      await empty();
+      // Locate the opaque node cores in the actual bitmap, without duplicating the layout.
+      const row = await rowAlpha();
+      const centers: number[] = [];
+      for (let i = 0; i < row.length; i++) {
+        if (row[i] !== 255) continue;
+        const start = i;
+        while (row[i + 1] === 255) i++;
+        centers.push(Math.round((start + i) / 2));
+      }
+      assert.equal(centers.length, 4);
+      const bounds = (await canvas.boundingBox())!;
+      const pick = (index: number) => canvas.click({position: {x: centers[index]! * bounds.width / row.length, y: bounds.height / 2}});
+      const edgePixels = async () => {
+        const pixels = await rowAlpha();
+        return centers.slice(1).map((right, i) => pixels[Math.round((centers[i]! + right) / 2)]! > 0);
+      };
+
+      for (const [index, name] of [[0, 'Alpha'], [2, 'Gamma'], [3, 'Delta']] as const) {
+        await pick(index);
+        await title(page, name);
+        await star.click();
+        await center(page).getByRole('button', {name: 'Star node', pressed: true}).waitFor();
+      }
+      await pick(2);
+      await title(page, 'Gamma');
+      assert.deepEqual(await edgePixels(), [false, true, true]);
+      await starred.click();
+      await graph.getByText(/Starred graph with 3 nodes/).waitFor({state: 'attached'});
+      assert.deepEqual(await edgePixels(), [false, false, true]);
+      const filtered = await rowAlpha();
+      assert.deepEqual(centers.map(x => filtered[x]! > 0), [true, false, true, true]);
+      await pick(1); // Hidden Beta is now empty canvas.
+      await empty();
+      assert.deepEqual(await edgePixels(), [false, false, false]);
+      await pick(0);
+      await title(page, 'Alpha');
+      assert.deepEqual(await edgePixels(), [false, false, false]); // No shortcut from Alpha through Beta.
+      await pick(3);
+      await title(page, 'Delta');
+      assert.deepEqual(await edgePixels(), [false, false, true]); // Incoming edge from Gamma.
+      await star.click();
+      await graph.getByText(/Starred graph with 2 nodes/).waitFor({state: 'attached'});
+      await title(page, 'Delta'); // Filtering does not discard the active editor.
+      assert.deepEqual(await edgePixels(), [false, false, false]);
+      await all.click();
+      assert.deepEqual(await edgePixels(), [false, false, true]);
+    }, [{fnode: randomUUID(), name: 'Delta', depens: [], blocks: []}]);
+  } finally { await browser.close(); }
+});
+
 await test('node names validate creation, collisions and renames in the browser', {timeout: 60000}, async () => {
   const browser = await launchBrowser();
   try {

@@ -39,11 +39,16 @@ export default forwardRef<GraphHandle, Props>(function Graph(
   ref,
 ) {
   const [session] = useState(() => new GraphSession());
+  const [starredOnly, setStarredOnly] = useState(false);
   useModel(session);
   const host = useRef<HTMLDivElement>(null),
     canvas = useRef<HTMLCanvasElement>(null);
   const renderer = useRef<GraphRenderer | null>(null);
   const select = useLatest(onSelect);
+  const shownNodes = useMemo(() => {
+    const nodes = session.data?.nodes ?? [];
+    return starredOnly ? nodes.filter((node) => node.starred) : nodes;
+  }, [session.data, starredOnly]);
   const counts = useMemo(() => {
     const result: Record<FormalCodeStatus, number> = {
       unverified: 0,
@@ -51,10 +56,10 @@ export default forwardRef<GraphHandle, Props>(function Graph(
       conditional: 0,
       verified: 0,
     };
-    for (const node of session.data?.nodes ?? [])
+    for (const node of shownNodes)
       result[node.lean ?? "unverified"]++;
     return result;
-  }, [session.data]);
+  }, [shownNodes]);
   useLayoutEffect(() => {
     const instance = createGraphRenderer(canvas.current!, host.current!, (id) =>
       select.current(id),
@@ -66,8 +71,8 @@ export default forwardRef<GraphHandle, Props>(function Graph(
     };
   }, [select]);
   useLayoutEffect(() => {
-    renderer.current?.update({ active, theme, selectedFnode });
-  }, [active, theme, selectedFnode]);
+    renderer.current?.update({ active, theme, selectedFnode, starredOnly });
+  }, [active, theme, selectedFnode, starredOnly]);
   useLayoutEffect(() => {
     if (session.data) renderer.current?.setGraph(session.data);
   }, [session.data]);
@@ -78,7 +83,8 @@ export default forwardRef<GraphHandle, Props>(function Graph(
   useImperativeHandle(ref, () => ({ prepare: () => session.prepare() }), [
     session,
   ]);
-  const total = session.data?.nodes.length ?? 0;
+  const total = shownNodes.length;
+  const selectionShown = selectedFnode && (!starredOnly || shownNodes.some((node) => node.fnode === selectedFnode));
   return (
     <div className="graph-container" ref={host}>
       <table className="graph-legend" aria-label="Lean verification colors">
@@ -104,6 +110,9 @@ export default forwardRef<GraphHandle, Props>(function Graph(
           Loading graph
         </div>
       )}
+      {starredOnly && session.data && !session.error && total === 0 && (
+        <div className="graph-empty">No starred nodes. Use the star beside a node’s name.</div>
+      )}
       {session.error && (
         <div className="graph-error" role="alert">
           {session.error}
@@ -111,8 +120,8 @@ export default forwardRef<GraphHandle, Props>(function Graph(
         </div>
       )}
       <p className="graph-summary" role="status">
-        Knowledge graph with {total} nodes.
-        {selectedFnode ? ` Selected node: ${selectedFnode}.` : ""} Use Search to
+        {starredOnly ? "Starred graph" : "Knowledge graph"} with {total} {total === 1 ? "node" : "nodes"}.
+        {selectionShown ? ` Selected node: ${selectedFnode}.` : ""} Use Search to
         select a node.
       </p>
       <canvas ref={canvas} aria-hidden="true" />
@@ -130,6 +139,10 @@ export default forwardRef<GraphHandle, Props>(function Graph(
           >
             <Minus size={15} />
           </IconButton>
+        </div>
+        <div className="segmented" role="group" aria-label="Graph nodes">
+          <button aria-pressed={!starredOnly} onClick={() => setStarredOnly(false)}>All nodes</button>
+          <button aria-pressed={starredOnly} onClick={() => setStarredOnly(true)}>Starred</button>
         </div>
         <Button onClick={() => renderer.current?.fit()} aria-label="Fit graph">
           <Maximize2 size={13} />

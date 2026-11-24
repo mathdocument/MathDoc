@@ -21,6 +21,12 @@ Click the star beside a node's name to mark or unmark it for everyone on the
 current branch. New nodes start unstarred. Changing a star saves immediately
 and leaves unsaved source edits in the editor.
 
+Graph opens on **All nodes**. Choose **Starred** to show only marked nodes at
+their original positions, keeping the current zoom and pan. In both views,
+select a visible node to see its incoming and outgoing direct dependencies.
+In **Starred**, the other endpoint must also be starred. A path through a
+hidden node never becomes a direct edge.
+
 The node name is its Lean module name; use it in imports from other nodes.
 Graph nodes share the Lean status colors: gray for Unverified
 (no Lean code, or unchecked, failed or stale evidence), red for Sorry,

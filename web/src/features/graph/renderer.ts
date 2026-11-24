@@ -6,6 +6,7 @@ export interface GraphAppearance {
   active: boolean;
   theme: Theme;
   selectedFnode: string | null;
+  starredOnly: boolean;
 }
 
 /** Canvas ownership stays outside React: pointer frames never update component state. */
@@ -17,6 +18,7 @@ export function createGraphRenderer(
   let active = false;
   let theme: Theme = "light";
   let selectedFnode: string | null = null;
+  let starredOnly = false;
   interface SimNode {
     id: string;
     name: string;
@@ -25,13 +27,14 @@ export function createGraphRenderer(
     inDegree: number;
     outDegree: number;
     lean: FormalCodeStatus;
+    starred: boolean;
     baseRadius: number;
     order: number;
     x: number;
     y: number;
   }
 
-  let nodes: SimNode[] = [];
+  let fullLayout: SimNode[] = [];
   let rafId = 0;
   let running = true;
   let hoveredNode: SimNode | null = null;
@@ -125,7 +128,7 @@ export function createGraphRenderer(
   }
 
   function installGraph(data: GraphFull) {
-    nodes = data.nodes.map((node) => ({
+    const nodes = data.nodes.map((node) => ({
       id: node.fnode,
       name: node.name,
       labelLines: null,
@@ -133,21 +136,25 @@ export function createGraphRenderer(
       inDegree: 0,
       outDegree: 0,
       lean: node.lean ?? "unverified",
+      starred: node.starred,
       baseRadius: 6,
       order: 0,
       x: 0,
       y: 0,
     }));
-    nodesById = new Map(nodes.map((node) => [node.id, node]));
     computeMetadata(nodes, data.edges);
-    applyStaticGraphLayout();
+    fullLayout = applyStaticGraphLayout(nodes);
+    indexVisibleNodes();
+  }
+
+  function indexVisibleNodes() {
+    // Keep the full graph's positions and radii. Only index what can be seen or picked.
+    nodesByX = starredOnly ? fullLayout.filter((node) => node.starred) : fullLayout;
+    nodesById = new Map(nodesByX.map((node) => [node.id, node]));
     computeGraphBounds();
     buildSpatialIndexes();
     edgePathSelection = undefined;
-    selectedOutgoingPath = new Path2D();
-    selectedIncomingPath = new Path2D();
-    hoveredNode = null;
-    if (canvasEl) canvasEl.style.cursor = "grab";
+    finishPointer(null, true);
   }
 
   // ── Static depth layout ──────────────────────────────────────────────────────
@@ -156,7 +163,7 @@ export function createGraphRenderer(
     return left < right ? -1 : left > right ? 1 : 0;
   }
 
-  function applyStaticGraphLayout() {
+  function applyStaticGraphLayout(nodes: SimNode[]) {
     const layers = new Map<number, SimNode[]>();
     for (const node of nodes) {
       const layer = layers.get(node.depth) ?? [];
@@ -171,7 +178,7 @@ export function createGraphRenderer(
     );
     const spacing = 58;
     let cursorX = 0;
-    nodesByX = [];
+    const ordered: SimNode[] = [];
     for (const depth of depths) {
       const layer = layers.get(depth)!;
       layer.sort(
@@ -185,14 +192,15 @@ export function createGraphRenderer(
         const row = index % rowsPerColumn;
         node.x = cursorX + column * spacing;
         node.y = (row - (rows - 1) / 2) * spacing;
-        node.order = nodesByX.length;
-        nodesByX.push(node);
+        node.order = ordered.length;
+        ordered.push(node);
       }
       cursorX += Math.max(140, columns * spacing + 90);
     }
 
     const offsetX = cursorX / 2;
     for (const node of nodes) node.x = (node.x ?? 0) - offsetX;
+    return ordered;
   }
 
   function computeGraphBounds() {
@@ -200,7 +208,7 @@ export function createGraphRenderer(
       maxX = -Infinity,
       minY = Infinity,
       maxY = -Infinity;
-    for (const node of nodes) {
+    for (const node of nodesByX) {
       minX = Math.min(minX, node.x - node.baseRadius);
       maxX = Math.max(maxX, node.x + node.baseRadius);
       minY = Math.min(minY, node.y - node.baseRadius);
@@ -217,7 +225,7 @@ export function createGraphRenderer(
 
   function buildSpatialIndexes() {
     nodeSpatialIndex = new Map();
-    for (const node of nodes) {
+    for (const node of nodesByX) {
       const key = spatialKey(node.x, node.y);
       const bucket = nodeSpatialIndex.get(key);
       if (bucket) bucket.push(node);
@@ -307,6 +315,7 @@ export function createGraphRenderer(
     const incomingIds = new Set(incoming.map((node) => node.id));
     const outgoingIds = new Set(outgoing.map((node) => node.id));
     for (const target of outgoing) {
+      if (starredOnly && !target.starred) continue;
       appendEdge(
         selectedOutgoingPath,
         selected,
@@ -315,6 +324,7 @@ export function createGraphRenderer(
       );
     }
     for (const source of incoming) {
+      if (starredOnly && !source.starred) continue;
       appendEdge(
         selectedIncomingPath,
         source,
@@ -578,8 +588,8 @@ export function createGraphRenderer(
   function findNodeAt(canvasX: number, canvasY: number): SimNode | null {
     const { x: wx, y: wy } = screenToWorld(canvasX, canvasY);
     const selection = selectedFnode;
-    let candidates = nodes;
-    if (nodes.length > 500 && nodeSpatialIndex.size > 0) {
+    let candidates = nodesByX;
+    if (nodesByX.length > 500 && nodeSpatialIndex.size > 0) {
       candidates = [];
       const cellX = Math.floor(wx / SPATIAL_CELL_SIZE);
       const cellY = Math.floor(wy / SPATIAL_CELL_SIZE);
@@ -731,7 +741,7 @@ export function createGraphRenderer(
 
   function fitToNodes() {
     const container = containerEl;
-    if (!container || nodes.length === 0) return;
+    if (!container || nodesByX.length === 0) return;
     const { minX, maxX, minY, maxY } = graphBounds;
     if (minX === Infinity) return;
     const graphW = maxX - minX;
@@ -766,16 +776,19 @@ export function createGraphRenderer(
   }
 
   let needsFit = true;
+  function fitWhenReady() {
+    if (needsFit && nodesByX.length && containerEl.clientWidth && containerEl.clientHeight) {
+      fitToNodes();
+      needsFit = false;
+    }
+  }
   const observer = new ResizeObserver(() => {
     if (
       canvasCssWidth !== containerEl.clientWidth ||
       canvasCssHeight !== containerEl.clientHeight
     )
       requestRender();
-    if (needsFit && containerEl.clientWidth && containerEl.clientHeight) {
-      needsFit = false;
-      fitToNodes();
-    }
+    fitWhenReady();
   });
   const blur = () => finishPointer(null, true);
   canvasEl.style.cursor = "grab";
@@ -792,21 +805,20 @@ export function createGraphRenderer(
   window.addEventListener("resize", requestRender);
   return {
     setGraph(data: GraphFull) {
-      const wasEmpty = nodes.length === 0;
+      if (fullLayout.length === 0) needsFit = true;
       installGraph(data);
-      if (wasEmpty) {
-        needsFit = true;
-        if (containerEl.clientWidth && containerEl.clientHeight) {
-          fitToNodes();
-          needsFit = false;
-        }
-      }
+      fitWhenReady();
       requestRender();
     },
     update(next: GraphAppearance) {
       active = next.active;
       theme = next.theme;
       selectedFnode = next.selectedFnode;
+      if (starredOnly !== next.starredOnly) {
+        starredOnly = next.starredOnly;
+        indexVisibleNodes();
+        fitWhenReady();
+      }
       if (active) requestRender();
       else {
         finishPointer(null, true);

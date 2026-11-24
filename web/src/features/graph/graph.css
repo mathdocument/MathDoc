@@ -76,6 +76,7 @@
   left: 20px;
   right: 20px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
   pointer-events: none;
@@ -99,7 +100,8 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
-.graph-loading {
+.graph-loading,
+.graph-empty {
   position: absolute;
   z-index: 2;
   inset: 0;
@@ -109,6 +111,11 @@
   gap: 10px;
   color: var(--mdc-muted);
   font-size: 12px;
+}
+.graph-empty {
+  text-align: center;
+  padding: 0 20px;
+  pointer-events: none;
 }
 .graph-error {
   position: absolute;
