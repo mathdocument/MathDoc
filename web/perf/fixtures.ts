@@ -26,6 +26,7 @@ function summary(index = 0) {
     fnode: index === 0 ? rootFnode : `perf-node-${String(index).padStart(5, "0")}`,
     name: index === 0 ? "Performance.Fixture" : `Deterministic.Graph.Node${index}`,
     depth: Math.floor(Math.log2(index + 1)),
+    starred: false,
   };
 }
 

@@ -248,15 +248,23 @@ export class NodeSession extends ObservableModel {
         node.revision !== revision
       )
         return false;
-      if (view.node.revision !== revision) {
+      const next = view.node;
+      const starChanged = next.starred !== node.starred;
+      // A teammate can star this node while its source is being edited.
+      // Advance the write revision only if the saved editable data still matches.
+      if (next.revision !== revision && (
+        !starChanged || next.name !== node.name ||
+        JSON.stringify(next.depens) !== JSON.stringify(node.depens) ||
+        JSON.stringify(next.blocks) !== JSON.stringify(node.blocks)
+      )) {
         throw new Error(
           `${fnode} changed externally; refresh before continuing`,
         );
       }
       this.snapshot = {
-        node: node.formalization.lean === view.node.formalization.lean &&
-          node.formalization.rocq === view.node.formalization.rocq
-          ? node : { ...node, formalization: view.node.formalization },
+        node: !starChanged && node.formalization.lean === next.formalization.lean &&
+          node.formalization.rocq === next.formalization.rocq
+          ? node : { ...node, revision: next.revision, starred: next.starred, formalization: next.formalization },
         referrers: view.referrers,
         children: view.children,
       };

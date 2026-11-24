@@ -10,6 +10,7 @@ function node(revision: string): NodeDetail {
     fnode: "node",
     name: `Node ${revision}`,
     depth: 1,
+    starred: false,
     revision,
     depens: [revision],
     blocks: [{ srctype: "text", content: revision, metadata: {} }],
@@ -76,10 +77,22 @@ describe("NodeSession", () => {
     const session = new NodeSession();
     const original = { node: node("r1"), referrers: [], children: [] };
     session.snapshot = original;
-    vi.spyOn(api, "nodeView").mockResolvedValue({ node: node("r2"), referrers: [], children: [] });
+    vi.spyOn(api, "nodeView").mockResolvedValue({ node: { ...node("r2"), starred: true }, referrers: [], children: [] });
 
     await expect(session.syncView()).rejects.toThrow("changed externally");
     expect(session.snapshot).toBe(original);
+  });
+
+  it("picks up a shared star and its write revision without replacing the editor's blocks", async () => {
+    const session = new NodeSession();
+    const original = node("r1");
+    session.snapshot = { node: original, referrers: [], children: [] };
+    vi.spyOn(api, "nodeView").mockResolvedValue({
+      node: { ...structuredClone(original), starred: true, revision: "r2" }, referrers: [], children: [],
+    });
+    expect(await session.syncView()).toBe(true);
+    expect(session.node).toMatchObject({ starred: true, revision: "r2" });
+    expect(session.node?.blocks).toBe(original.blocks);
   });
 
   it("updates relation columns while preserving an active draft generation", async () => {
@@ -90,6 +103,7 @@ describe("NodeSession", () => {
       fnode: "relation",
       name: "Relation",
       depth: 2,
+      starred: false,
       formalization: { lean: "verified", rocq: "unverified" },
     };
     let resolveView!: (view: { node: NodeDetail; referrers: NodePreview[]; children: NodePreview[] }) => void;

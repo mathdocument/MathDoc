@@ -198,6 +198,12 @@ export const api = {
       headers: { "content-type": "application/json", "if-match": `"${revision}"` },
       body: JSON.stringify({ name } satisfies NameBody),
     })),
+  setStarred: (fnode: string, starred: boolean, expectedRevision: string) =>
+    mutateNode(fnode, expectedRevision, (revision) => req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}/starred`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", "if-match": `"${revision}"` },
+      body: JSON.stringify({ starred }),
+    })),
   addDep: (fnode: string, depFnode: string, expectedRevision: string) =>
     mutateNode(fnode, expectedRevision, (revision) => req<NodeDetail>(`/api/node/${encodeURIComponent(fnode)}/dep/add`, {
       method: "POST",

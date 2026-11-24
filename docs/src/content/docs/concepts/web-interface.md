@@ -17,6 +17,10 @@ node editor appears on the left and the graph on the right. Both Graph and
 Knowledge views use fixed column widths.
 Switching views preserves the active Lean session and unsaved edits.
 
+Click the star beside a node's name to mark or unmark it for everyone on the
+current branch. New nodes start unstarred. Changing a star saves immediately
+and leaves unsaved source edits in the editor.
+
 The node name is its Lean module name; use it in imports from other nodes.
 Graph nodes share the Lean status colors: gray for Unverified
 (no Lean code, or unchecked, failed or stale evidence), red for Sorry,

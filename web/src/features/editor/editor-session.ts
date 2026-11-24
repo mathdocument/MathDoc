@@ -176,6 +176,20 @@ export class EditorSession extends ObservableModel {
     this.titleDraft = this.load.node.name;
     this.editingTitle = true;
   };
+  toggleStar = async () => {
+    const node = this.node;
+    if (!node || hasPendingMutations()) return;
+    const release = trackMutation();
+    this.saveError = null;
+    try {
+      const updated = await api.setStarred(node.fnode, !node.starred, node.revision);
+      if (this.alive && this.node?.fnode === node.fnode) this.onRefresh?.(updated, true);
+    } catch (error) {
+      if (this.alive && this.node?.fnode === node.fnode) this.saveError = errMsg(error);
+    } finally {
+      release();
+    }
+  };
   saveTitle = async () => {
     if (this.load.kind !== "ready" || this.titleSaving) return;
     const newTitle = this.titleDraft;

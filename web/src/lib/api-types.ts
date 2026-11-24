@@ -1,6 +1,6 @@
 // Wire types for the versioned MathDoc web service.
 
-export type NodeSummary = { fnode: string, name: string, depth: number, };
+export type NodeSummary = { fnode: string, name: string, depth: number, starred: boolean, };
 
 export type FormalCodeStatus = "unverified" | "sorry" | "conditional" | "verified";
 
@@ -20,7 +20,7 @@ export type GraphCheckReport = { nodes: number, edges: number, };
 
 export type SrcBlock = { srctype: string, content: string, metadata: { [key in string]: string }, };
 
-export type NodeDetail = { fnode: string, name: string, depth: number,
+export type NodeDetail = NodeSummary & {
 /**
  * Revision of the database node represented by this response.
  */

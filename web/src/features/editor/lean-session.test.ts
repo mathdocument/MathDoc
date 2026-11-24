@@ -66,7 +66,7 @@ test("native messages are scoped to this frame; navigation resets drafts without
 
 test("certification never replaces the editor with a different database revision", async () => {
   const node: NodeDetail = {
-    fnode: "a", name: "A", revision: "1", depth: 0, depens: [],
+    fnode: "a", name: "A", revision: "1", depth: 0, depens: [], starred: false,
     blocks: [{ srctype: "lean", content: "saved", metadata: {} }],
     formalization: { lean: "verified", rocq: "unverified" },
   };
