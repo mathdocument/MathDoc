@@ -33,6 +33,60 @@ async fn call(
 }
 
 #[tokio::test]
+#[ignore = "requires local TerminusDB and MDC_TERMINUS_PASSWORD"]
+async fn node_stars_are_revision_guarded_and_travel_with_the_branch() {
+    let fixture = common::TestDatabase::new("mdcstars").await;
+    let db = &fixture.db;
+    let app = service::router(Service::open(db.clone()).await.unwrap());
+    let (_, node) = call(&app, "POST", "/api/node/new", json!({"name":"A"}), None).await;
+    let id = node["fnode"].as_str().unwrap();
+    let path = format!("/api/node/{id}/starred");
+    assert_eq!(node["starred"], false);
+    let set = json!({"starred":true});
+    let unset = json!({"starred":false});
+    assert_eq!(call(&app, "PUT", &path, set.clone(), None).await.0, 428);
+    let (status, starred) = call(&app, "PUT", &path, set.clone(), node["revision"].as_str()).await;
+    assert_eq!(status, 200, "{starred}");
+    assert_eq!(starred["starred"], true);
+    let revision = starred["revision"].as_str();
+    assert_ne!(revision, node["revision"].as_str());
+    let version = db.version().await.unwrap();
+    assert_eq!(call(&app, "PUT", &path, set, revision).await.0, 200);
+    assert_eq!(
+        call(&app, "PUT", &path, unset.clone(), node["revision"].as_str())
+            .await
+            .0,
+        412
+    );
+    assert_eq!(db.version().await.unwrap(), version);
+
+    db.create_branch("copy").await.unwrap();
+    let mut branch = db.clone();
+    branch.branch = "copy".into();
+    let fork = service::router(Service::open(branch).await.unwrap());
+    let (_, graph) = call(&fork, "GET", "/api/graph/full", Value::Null, None).await;
+    assert_eq!(graph["nodes"][0]["starred"], true);
+    let (status, updated) = call(&fork, "PUT", &path, unset, revision).await;
+    assert_eq!(status, 200, "{updated}");
+    assert_eq!(updated["starred"], false);
+    let (_, mut bundle) = call(&app, "GET", "/api/export", Value::Null, None).await;
+    assert_eq!(bundle["nodes"][0]["starred"], true);
+
+    let restore = common::TestDatabase::new("mdcstarimport").await;
+    let restored = service::router(Service::open(restore.db.clone()).await.unwrap());
+    let old_id = uuid::Uuid::new_v4().to_string();
+    bundle["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"fnode":old_id,"name":"Legacy"}));
+    let (status, result) = call(&restored, "POST", "/api/import", bundle, None).await;
+    assert_eq!(status, 200, "{result}");
+    let reloaded = restore.db.load().await.unwrap();
+    assert!(reloaded.nodes[id].starred);
+    assert!(!reloaded.nodes[&old_id].starred);
+}
+
+#[tokio::test]
 #[ignore = "requires local TerminusDB, MDC_TERMINUS_PASSWORD and native Lean"]
 async fn rename_leaves_certificates_stale_until_an_explicit_check() {
     use mathdoc::{

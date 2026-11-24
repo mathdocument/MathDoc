@@ -31,6 +31,7 @@ pub struct Service {
 }
 impl Service {
     pub async fn open(db: Database) -> Result<Arc<Self>> {
+        db.ensure_starred_field().await?;
         let lean =
             crate::lean::LeanService::with_shared_cache(db.cache_path()?, db.shared_cache_path()?)?;
         let snapshot = db.load().await?;
@@ -133,7 +134,7 @@ fn check_revision(headers: &HeaderMap, node: &Node) -> ApiResult<()> {
     Ok(())
 }
 fn summary(snapshot: &Snapshot, node: &Node) -> Value {
-    json!({"fnode":node.fnode,"name":node.name,"depth":snapshot.depths.get(&node.fnode).copied().unwrap_or(0)})
+    json!({"fnode":node.fnode,"name":node.name,"starred":node.starred,"depth":snapshot.depths.get(&node.fnode).copied().unwrap_or(0)})
 }
 fn preview(snapshot: &Snapshot, node: &Node, lean: &crate::lean::LeanService) -> Value {
     let mut value = summary(snapshot, node);
@@ -182,6 +183,7 @@ pub fn router(service: Arc<Service>) -> Router {
         .route("/lean/session/:id", get(editor_info).delete(close_editor))
         .route("/lean/session/:id/ws", get(editor_socket))
         .route("/node/:id/name", put(name))
+        .route("/node/:id/starred", put(set_starred))
         .route("/node/:id/block/:language", put(block).delete(delete_block))
         .route("/node/:id/blocks", put(blocks))
         .route("/node/:id/dep/candidates", get(candidates))
@@ -858,6 +860,27 @@ async fn name(
         }
     }
     s.save(&mut snapshot, changes, "Rename node").await?;
+    Ok(revision_response(&snapshot, &node, &s.lean))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Starred {
+    starred: bool,
+}
+async fn set_starred(
+    State(s): State<Arc<Service>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Starred>,
+) -> ApiResult<Response> {
+    let mut snapshot = s.read().await?;
+    let mut node = snapshot.resolve(&id)?.clone();
+    check_revision(&headers, &node)?;
+    if node.starred != body.starred {
+        node.starred = body.starred;
+        s.save(&mut snapshot, vec![node.clone()], "Update node star")
+            .await?;
+    }
     Ok(revision_response(&snapshot, &node, &s.lean))
 }
 #[derive(Deserialize)]

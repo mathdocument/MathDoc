@@ -19,7 +19,7 @@ UUIDs; CLI references are resolved by exact name or UUID first.
 | --- | --- | --- |
 | `GET /graph/check` | `graph check` | Node/edge counts from the validated graph. |
 | `GET /graph/roots` | `graph roots` | Root summaries with depth and component size. |
-| `GET /graph/full` | `graph full` | Node summaries with `lean` status (`unverified`, `sorry`, `conditional`, `verified`) and index-pair edges. |
+| `GET /graph/full` | `graph full` | Node summaries with `starred` and `lean` status (`unverified`, `sorry`, `conditional`, `verified`) and direct index-pair edges. |
 | `GET /graph/revision` | — | `{graph, lean}`: graph commit and in-memory evidence generation for lightweight status polling; does not compile. |
 | `GET /search?q=TEXT&n=N` | `search TEXT -n N` | Title/UUID matches; default/cap 200. |
 | `GET /resolve?ref=NAME_OR_UUID` | Used by node commands | `{fnode, name}`. |
@@ -27,6 +27,7 @@ UUIDs; CLI references are resolved by exact name or UUID first.
 | `POST /node/new` | `new NAME [--parent REF]` | Body `{name, parent_fnode?}`; optionally creates an edge atomically. |
 | `DELETE /node/ID` | `del SOURCE` | Atomically delete the node and detach all referrers; `{fnode, deleted: true, removed_edges}`. |
 | `PUT /node/ID/name` | `rename` | Body `{name}`; updated node. |
+| `PUT /node/ID/starred` | — | Set the branch's star for this node with `{"starred": true}` or `{"starred": false}` and the node's quoted `If-Match` revision. Returns the updated node. |
 | `PUT /node/ID/block/TYPE` | `edit --type TYPE` | Body `{content}`; updated node. |
 | `PUT /node/ID/blocks` | `edit --json` | Nonempty `{TYPE: source_string, ...}`; atomically update specified blocks and return the updated node. Omitted blocks and existing metadata are preserved. |
 | `DELETE /node/ID/block/TYPE` | `edit --type TYPE --delete` | Delete text/lean/rocq/latex block; updated node. |

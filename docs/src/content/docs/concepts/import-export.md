@@ -7,6 +7,9 @@ title: JSON export and restore
 Import and export always operate on the entire selected branch graph. There is no
 single-node mode. Bundles contain no compiler caches or `.olean` files.
 
+Starred nodes carry `"starred": true` in the bundle. A missing flag, including
+in older exports, means the node is unstarred.
+
 ```sh
 mdc export -p myproject/main > backup.json
 mdc init other

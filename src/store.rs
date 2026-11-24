@@ -117,6 +117,8 @@ pub struct Node {
     pub depens: Vec<String>,
     #[serde(default)]
     pub blocks: Vec<Block>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub starred: bool,
 }
 
 impl Node {
@@ -127,6 +129,7 @@ impl Node {
             name,
             depens: vec![],
             blocks: vec![],
+            starred: false,
         };
         node.validate()?;
         Ok(node)
@@ -168,10 +171,14 @@ impl Node {
         Ok(())
     }
     fn document(&self) -> Value {
-        json!({"@id":format!("Node/{}", self.fnode), "@type":"Node", "fnode":self.fnode,
+        let mut doc = json!({"@id":format!("Node/{}", self.fnode), "@type":"Node", "fnode":self.fnode,
             "name":self.name,
             "depens":self.depens.iter().map(|id| format!("Node/{id}")).collect::<Vec<_>>(),
-            "blocks":serde_json::to_string(&self.blocks).expect("serializable blocks")})
+            "blocks":serde_json::to_string(&self.blocks).expect("serializable blocks")});
+        if self.starred {
+            doc["starred"] = json!(true);
+        }
+        doc
     }
     fn from_document(value: Value) -> Result<Self> {
         let string = |field: &str| {
@@ -195,6 +202,11 @@ impl Node {
                 })
                 .collect::<Result<_>>()?,
             blocks: serde_json::from_str(&string("blocks")?)?,
+            starred: value
+                .get("starred")
+                .map(|v| v.as_bool().context("invalid Node.starred"))
+                .transpose()?
+                .unwrap_or(false),
         };
         node.validate()?;
         Ok(node)
@@ -461,6 +473,9 @@ impl Database {
             .map(str::to_owned)
             .map_err(Into::into)
     }
+    fn starred_field() -> Value {
+        json!({"@type":"Optional", "@class":"xsd:boolean"})
+    }
     pub async fn initialize(&self) -> Result<()> {
         self.server
             .request(
@@ -473,7 +488,7 @@ impl Database {
             .await?;
         let schema = json!([
             {"@type":"Class", "@id":"Node", "@key":{"@type":"Lexical","@fields":["fnode"]},
-             "fnode":"xsd:string", "name":"xsd:string", "blocks":"xsd:string",
+             "fnode":"xsd:string", "name":"xsd:string", "blocks":"xsd:string", "starred":Self::starred_field(),
              "depens":{"@type":"Set","@class":"Node"}},
             {"@type":"Class", "@id":"Project", "@key":{"@type":"Lexical","@fields":["name"]},
              "name":"xsd:string", "config":"xsd:string"}
@@ -493,6 +508,39 @@ impl Database {
             .await?;
         self.server.request(Method::POST, &format!("document/{}",self.path()), &[("author","mdc"),("message","Initialize Lean project")],
             Some(json!({"@type":"Project","name":"lean","config":serde_json::to_string(&LeanProject::default())?})),None).await?;
+        Ok(())
+    }
+    /// Upgrade this branch in place without rewriting existing node documents.
+    pub(crate) async fn ensure_starred_field(&self) -> Result<()> {
+        let path = format!("document/{}", self.path());
+        let response = self
+            .server
+            .request(
+                Method::GET,
+                &path,
+                &[("graph_type", "schema"), ("id", "Node")],
+                None,
+                None,
+            )
+            .await?;
+        let version = Self::response_version(&response)?;
+        let mut schema: Value = response.json().await?;
+        if schema.get("starred").is_none() {
+            schema["starred"] = Self::starred_field();
+            self.server
+                .request(
+                    Method::PUT,
+                    &path,
+                    &[
+                        ("graph_type", "schema"),
+                        ("author", "mdc"),
+                        ("message", "Add optional node stars"),
+                    ],
+                    Some(schema),
+                    Some(&version),
+                )
+                .await?;
+        }
         Ok(())
     }
     pub async fn version(&self) -> Result<String> {
