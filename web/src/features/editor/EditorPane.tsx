@@ -39,8 +39,10 @@ export default function EditorPane(props: EditorSessionProps & {ref?: Ref<{prepa
   );
   const [session] = useState(() => new EditorSession(props));
   useSessionLifetime(session);
-  const s = useModel(session),
-    { node, BlockEditorComponent, selection } = s;
+  const s = useModel(session);
+  const { BlockEditorComponent } = s;
+  const { load, selection = 0 } = props;
+  const node = load.kind === "ready" ? load.node : null;
   useImperativeHandle(props.ref, () => ({prepare: s.prepare}), [s]);
   useLayoutEffect(() => {
     s.update(props);
@@ -54,13 +56,13 @@ export default function EditorPane(props: EditorSessionProps & {ref?: Ref<{prepa
   const dirty = Object.keys(s.changes).length > 0;
   return (
     <section className="center" aria-label="current node">
-      {props.load.kind === "idle" ? (
+      {load.kind === "idle" ? (
         <div className="empty-state">
           <FileText size={28} />
           <strong>No node selected</strong>
         </div>
-      ) : props.load.kind === "error" ? (
-        <div className="empty-state error-message">{props.load.message}</div>
+      ) : load.kind === "error" ? (
+        <div className="empty-state error-message">{load.message}</div>
       ) : (
         node && (
           <header className="node-head">
@@ -232,11 +234,7 @@ export default function EditorPane(props: EditorSessionProps & {ref?: Ref<{prepa
                     onSave={s.saveNode}
                     latexPreview={props.latexPreview}
                     onPreviewChange={props.onPreviewChange}
-                    preparedLatex={
-                      s.load.kind === "ready"
-                        ? s.load.latexPreview
-                        : undefined
-                    }
+                    preparedLatex={load.kind === "ready" ? load.latexPreview : undefined}
                     focusLabel={
                       props.latexTarget?.fnode === node.fnode
                         ? props.latexTarget.label

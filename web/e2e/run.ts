@@ -298,6 +298,28 @@ await test('starred graph preserves positions and only draws the selected nodeâ€
   } finally { await browser.close(); }
 });
 
+await test('shared stars reach an open editor without replacing its draft', async () => {
+  const browser = await launchBrowser();
+  try {
+    await fixture(browser, async ({page, cli}) => {
+      const peer = await browser.newPage();
+      try {
+        await peer.goto(page.url());
+        await title(peer, 'Alpha');
+        await rename(page, 'Renamed.Alpha');
+        await center(peer).getByRole('button', {name: 'Star node'}).click();
+        await center(peer).getByRole('button', {name: 'Star node', pressed: true}).waitFor();
+        await page.bringToFront();
+        await center(page).getByRole('button', {name: 'Star node', pressed: true}).waitFor({timeout: 10000});
+        assert.equal(await page.getByRole('textbox', {name: 'Node name'}).inputValue(), 'Renamed.Alpha');
+        await center(page).getByRole('button', {name: 'Save name'}).click();
+        await title(page, 'Renamed.Alpha');
+        assert.equal(JSON.parse((await cli('show', 'Renamed.Alpha')).stdout).starred, true);
+      } finally { await peer.close(); }
+    });
+  } finally { await browser.close(); }
+});
+
 await test('node names validate creation, collisions and renames in the browser', {timeout: 60000}, async () => {
   const browser = await launchBrowser();
   try {
