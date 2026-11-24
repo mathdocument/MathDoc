@@ -68,6 +68,17 @@ export default function EditorPane(props: EditorSessionProps & {ref?: Ref<{prepa
           <header className="node-head">
             <div className="node-heading">
               <div className="title-row">
+                <Button
+                  variant="quiet"
+                  className="icon-button"
+                  aria-label="Star node"
+                  aria-pressed={node.starred}
+                  title={node.starred ? "Remove star" : "Star node"}
+                  onClick={() => void s.toggleStar()}
+                  disabled={hasPendingMutations()}
+                >
+                  <Star size={16} fill={node.starred ? "currentColor" : "none"} />
+                </Button>
                 {s.editingTitle ? (
                   <>
                     <input
@@ -115,17 +126,6 @@ export default function EditorPane(props: EditorSessionProps & {ref?: Ref<{prepa
                     </button>
                   </h1>
                 )}
-                <Button
-                  variant="quiet"
-                  className="icon-button"
-                  aria-label="Star node"
-                  aria-pressed={node.starred}
-                  title={node.starred ? "Remove star" : "Star node"}
-                  onClick={() => void s.toggleStar()}
-                  disabled={hasPendingMutations()}
-                >
-                  <Star size={16} fill={node.starred ? "currentColor" : "none"} />
-                </Button>
               </div>
               {(s.titleError ||
                 (s.editingTitle && nodeNameError(s.titleDraft))) && (
